@@ -1384,9 +1384,6 @@ fun MainActivity.mainEntryProvider(
     entry<MainRouteReadAloudSettings> {
         io.legado.app.ui.ttssrv.ReadAloudSettingsRouteScreen(
             onBackClick = { onNavigateBack() },
-            onOpenCasting = { url ->
-                onNavigateToRoute(MainRouteBookVoiceCasting(url))
-            },
         )
     }
 

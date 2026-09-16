@@ -49,6 +49,15 @@ class TtsCacheViewModel : ViewModel() {
             TtsCacheIntent.ShowClearAllDialog ->
                 _uiState.update { it.copy(activeDialog = TtsCacheDialog.ClearAll) }
 
+            TtsCacheIntent.ShowClearLogsDialog ->
+                _uiState.update { it.copy(activeDialog = TtsCacheDialog.ClearLogs) }
+
+            TtsCacheIntent.ClearLogs -> {
+                AppLog.clear()
+                loadLogs()
+                _effects.tryEmit(TtsCacheEffect.ShowToast("朗读日志已清空"))
+            }
+
             TtsCacheIntent.DismissDialog ->
                 _uiState.update { it.copy(activeDialog = null) }
 

@@ -199,11 +199,6 @@ fun MyScreen(
                 title = stringResource(R.string.other)
             ) {
                 ClickableSettingItem(
-                    title = stringResource(R.string.ai_chat),
-                    imageVector = Icons.Default.AutoAwesome,
-                    onClick = onNavigateToChat
-                )
-                ClickableSettingItem(
                     title = stringResource(R.string.setting),
                     imageVector = Icons.Default.Settings,
                     onClick = {

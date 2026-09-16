@@ -42,6 +42,8 @@ sealed interface TtsCacheIntent {
     data class DeleteFile(val name: String) : TtsCacheIntent
     data object ClearAll : TtsCacheIntent
     data object ShowClearAllDialog : TtsCacheIntent
+    data object ShowClearLogsDialog : TtsCacheIntent
+    data object ClearLogs : TtsCacheIntent
     data object DismissDialog : TtsCacheIntent
     data class ShowFileDetail(
         val name: String,
@@ -60,4 +62,5 @@ sealed interface TtsCacheEffect {
 
 sealed interface TtsCacheDialog {
     data object ClearAll : TtsCacheDialog
+    data object ClearLogs : TtsCacheDialog
 }

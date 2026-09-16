@@ -1036,6 +1036,25 @@ class TtsServerCenterRepository(private val app: Application) {
             true
         }.getOrDefault(false)
     }
+
+    /** 重置响度数据（清除扩展设置响度字段 + 已知响度学习数据文件） */
+    suspend fun resetLoudnessData(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val f = extSettingsFile()
+            if (f.exists()) {
+                val o = runCatching { JSONObject(f.readText().removePrefix("\uFEFF")) }
+                    .getOrElse { JSONObject() }
+                o.remove("loudnessBalance")
+                f.writeText(o.toString())
+            }
+            listOf("loudness_stats.json", "loudness_learn.json").forEach { name ->
+                runCatching {
+                    File(TtsDirProvider.baseDir(ctx), name).takeIf { it.exists() }?.delete()
+                }
+            }
+            true
+        }.getOrDefault(false)
+    }
 }
 
 data class LocaleOption(val id: String, val name: String)

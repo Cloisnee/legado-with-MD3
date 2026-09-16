@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -191,6 +192,11 @@ fun ReadAloudPlayerScreenContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    MediumTonalButton(
+                        onClick = { onIntent(ReadAloudPlayerIntent.OpenReadAloudLogs) },
+                        icon = Icons.Default.List,
+                        contentDescription = "朗读日志",
+                    )
                 }
             }
         },

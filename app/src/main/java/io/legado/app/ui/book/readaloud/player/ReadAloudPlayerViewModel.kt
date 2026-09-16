@@ -46,6 +46,7 @@ class ReadAloudPlayerViewModel(
             ReadAloudPlayerIntent.PreviousChapter -> coordinator.previousChapter()
             ReadAloudPlayerIntent.NextChapter -> coordinator.nextChapter()
             ReadAloudPlayerIntent.OpenSettings -> effect(ReadAloudPlayerEffect.ReturnToReaderSettings)
+            ReadAloudPlayerIntent.OpenReadAloudLogs -> effect(ReadAloudPlayerEffect.OpenReadAloudLogs)
             ReadAloudPlayerIntent.SwitchToClassic -> effect(ReadAloudPlayerEffect.ReturnToClassic)
             ReadAloudPlayerIntent.CycleBgMode -> cycleBgMode()
             is ReadAloudPlayerIntent.SelectChapter -> coordinator.selectChapter(intent.index)

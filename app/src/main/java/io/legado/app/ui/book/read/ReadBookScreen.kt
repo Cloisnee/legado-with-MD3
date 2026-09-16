@@ -571,6 +571,8 @@ fun ReadBookScreen(
                         onIntent(ReadBookIntent.DismissSheet)
                     ReadAloudPlayerEffect.ReturnToClassic ->
                         onIntent(ReadBookIntent.OpenClassicReadAloudControls)
+                    ReadAloudPlayerEffect.OpenReadAloudLogs ->
+                        onIntent(ReadBookIntent.OpenTtsCache)
                 }
             }
         }

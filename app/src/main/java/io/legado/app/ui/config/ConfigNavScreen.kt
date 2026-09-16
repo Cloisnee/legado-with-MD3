@@ -79,14 +79,6 @@ fun ConfigNavScreen(
                         onClick = onNavigateToBackup
                     )
                     ClickableSettingItem(
-                        title = stringResource(R.string.ai_config),
-                        onClick = onNavigateToAi
-                    )
-                    ClickableSettingItem(
-                        title = stringResource(R.string.translation_config),
-                        onClick = onNavigateToTranslation
-                    )
-                    ClickableSettingItem(
                         title = stringResource(R.string.lab_setting),
                         onClick = onNavigateToLab
                     )

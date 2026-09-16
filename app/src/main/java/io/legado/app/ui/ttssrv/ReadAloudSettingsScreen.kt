@@ -50,21 +50,14 @@ import org.koin.core.context.GlobalContext
  * 朗读设置独立页（从阅读内提取到「我的 → 朗读」，阅读内仅保留播放界面）。
  */
 @Composable
-fun ReadAloudSettingsRouteScreen(
-    onBackClick: () -> Unit,
-    onOpenCasting: (String) -> Unit,
-) {
-    ReadAloudSettingsScreen(
-        onBack = onBackClick,
-        onOpenCasting = onOpenCasting,
-    )
+fun ReadAloudSettingsRouteScreen(onBackClick: () -> Unit) {
+    ReadAloudSettingsScreen(onBack = onBackClick)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReadAloudSettingsScreen(
     onBack: () -> Unit,
-    onOpenCasting: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -92,6 +85,11 @@ fun ReadAloudSettingsScreen(
         preDownloadNum = readRepo.currentSettings.preDownloadNum
         bgMode = AppConfigStore.getInt(PreferKey.readAloudPlayerBgMode) ?: ReadAloudBgMode.Blur
         loudness = extRepo.getLoudnessBalance()
+        // 多角色开关已移除：默认全开（新分析管线接管）
+        if (!st.useMultiSpeaker) {
+            st = st.copy(useMultiSpeaker = true)
+            repo.update { it.copy(useMultiSpeaker = true) }
+        }
     }
 
     var showPreDownload by remember { mutableStateOf(false) }
@@ -242,52 +240,6 @@ fun ReadAloudSettingsScreen(
                             if (v) postEvent(EventBus.MEDIA_BUTTON, false)
                         },
                     )
-                }
-            }
-            item {
-                SplicedColumnGroup(title = "语音与分析") {
-                    TinySwitchSettingItem(
-                        title = stringResource(R.string.use_multi_speaker),
-                        description = stringResource(R.string.use_multi_speaker_summary),
-                        checked = st.useMultiSpeaker,
-                        onCheckedChange = { v ->
-                            update { it.copy(useMultiSpeaker = v) }
-                            if (BaseReadAloudService.isRun) {
-                                context.toastOnUi("已保存：重启朗读后生效")
-                            }
-                        },
-                    )
-                    TinyDropdownSettingItem(
-                        title = stringResource(R.string.speech_analysis_mode),
-                        selectedValue = st.speechAnalysisMode,
-                        displayEntries = arrayOf(
-                            stringResource(R.string.speech_analysis_rule),
-                            stringResource(R.string.speech_analysis_rule_ai),
-                            stringResource(R.string.speech_analysis_ai),
-                        ),
-                        entryValues = arrayOf("rule", "rule_with_ai", "ai_understanding"),
-                        description = when (st.speechAnalysisMode) {
-                            "rule_with_ai" -> stringResource(R.string.speech_analysis_rule_ai_summary)
-                            "ai_understanding" -> stringResource(R.string.speech_analysis_ai_summary)
-                            else -> stringResource(R.string.speech_analysis_rule_summary)
-                        },
-                        onValueChange = { value ->
-                            scope.launch {
-                                if (value != "rule") {
-                                    val configured = aiGateway.getTaskPreset(AiTaskType.ANALYZE_SPEECH)
-                                        ?: aiGateway.getTaskPreset(AiTaskType.CHAT)
-                                    if (configured == null) {
-                                        context.toastOnUi(
-                                            context.getString(R.string.speech_analysis_ai_model_required)
-                                        )
-                                        return@launch
-                                    }
-                                }
-                                st = st.copy(speechAnalysisMode = value)
-                                repo.update { it.copy(speechAnalysisMode = value) }
-                            }
-                        },
-                    )
                     TinySwitchSettingItem(
                         title = "响度均衡",
                         description = "统一不同插件声线的响度（处理逻辑将在后续版本生效）",
@@ -297,22 +249,20 @@ fun ReadAloudSettingsScreen(
                             scope.launch { extRepo.setLoudnessBalance(v) }
                         },
                     )
+                    TinyClickableSettingItem(
+                        title = "重置响度数据",
+                        description = "清除已收集的响度学习数据",
+                        onClick = {
+                            scope.launch {
+                                extRepo.resetLoudnessData()
+                                context.toastOnUi("已重置响度数据")
+                            }
+                        },
+                    )
                 }
             }
             item {
                 SplicedColumnGroup(title = "其他") {
-                    TinyClickableSettingItem(
-                        title = stringResource(R.string.read_aloud_character_casting),
-                        description = stringResource(R.string.book_voice_casting_entry_summary),
-                        onClick = {
-                            val url = ReadBook.book?.bookUrl
-                            if (url == null) {
-                                context.toastOnUi("请先在阅读中打开一本书")
-                            } else {
-                                onOpenCasting(url)
-                            }
-                        },
-                    )
                     TinyClickableSettingItem(
                         title = stringResource(R.string.sys_tts_config),
                         onClick = { IntentHelp.openTTSSetting() },
@@ -345,13 +295,6 @@ fun ReadAloudSettingsScreen(
                             st.audioCacheCleanTime,
                         ),
                         onClick = { showCleanTime = true },
-                    )
-                    TinyClickableSettingItem(
-                        title = stringResource(R.string.clear_cache),
-                        onClick = {
-                            TTSCacheUtils.clearTtsCache()
-                            context.toastOnUi(context.getString(R.string.clear_cache_success))
-                        },
                     )
                 }
             }
