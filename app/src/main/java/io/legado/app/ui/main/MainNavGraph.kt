@@ -1321,7 +1321,6 @@ fun MainActivity.mainEntryProvider(
             onIntent = viewModel::onIntent,
             effects = viewModel.effects,
             onBack = { onNavigateBack() },
-            onManageCloudTts = { onNavigateToRoute(MainRouteCloudTtsEngines(route.bookUrl)) },
         )
     }
 

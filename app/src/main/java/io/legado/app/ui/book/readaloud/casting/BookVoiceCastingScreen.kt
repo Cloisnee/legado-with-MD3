@@ -60,7 +60,6 @@ fun BookVoiceCastingScreen(
     onIntent: (BookVoiceCastingIntent) -> Unit,
     effects: Flow<BookVoiceCastingEffect>,
     onBack: () -> Unit,
-    onManageCloudTts: () -> Unit,
 ) {
     val context = LocalContext.current
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
@@ -80,11 +79,6 @@ fun BookVoiceCastingScreen(
                 title = stringResource(R.string.book_voice_casting),
                 navigationIcon = { TopBarNavigationButton(onClick = onBack) },
                 actions = {
-                    TopBarActionButton(
-                        imageVector = Icons.Default.RecordVoiceOver,
-                        contentDescription = stringResource(R.string.read_aloud_engines_and_voices),
-                        onClick = onManageCloudTts,
-                    )
                     TopBarActionButton(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = stringResource(R.string.refresh),

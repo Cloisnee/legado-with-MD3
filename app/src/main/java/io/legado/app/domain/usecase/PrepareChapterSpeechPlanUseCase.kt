@@ -1,5 +1,6 @@
 package io.legado.app.domain.usecase
 
+import io.legado.app.constant.AppLog
 import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
@@ -35,6 +36,12 @@ class PrepareChapterSpeechPlanUseCase(
             RuleBasedSpeechSegmenter.VERSION
         } else {
             runCatching { refineSpeechWithAi.resolverVersion(bookUrl, requestedMode) }
+                .onFailure {
+                    AppLog.put(
+                        "朗读AI分析不可用（模式=${requestedMode.storageValue}），已降级规则解析: ${it.localizedMessage}",
+                        it
+                    )
+                }
                 .getOrDefault(RuleBasedSpeechSegmenter.VERSION)
         }
         val effectiveMode = if (resolverVersion == RuleBasedSpeechSegmenter.VERSION) {
@@ -62,6 +69,8 @@ class PrepareChapterSpeechPlanUseCase(
                     mode = effectiveMode,
                     reasoningLevel = analysisReasoningLevel,
                 )
+            }.onFailure {
+                AppLog.put("朗读AI精修失败，已降级本地解析: ${it.localizedMessage}", it)
             }.getOrDefault(locallyResolved)
         }
         return buildSpeechPlan(
