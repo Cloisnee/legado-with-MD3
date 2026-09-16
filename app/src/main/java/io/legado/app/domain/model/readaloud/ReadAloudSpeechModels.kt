@@ -19,6 +19,7 @@ data class ReadAloudVoice(
         const val ENGINE_SYSTEM = "system"
         const val ENGINE_HTTP = "http"
         const val ENGINE_CLOUD = "cloud_tts"
+        const val ENGINE_TTS_SERVER = "tts_server"
         const val MANAGED_BY_USER = "user"
         const val MANAGED_BY_CONFIGURED_TTS = "configured_tts"
     }

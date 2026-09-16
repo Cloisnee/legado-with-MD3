@@ -145,9 +145,34 @@ class ReadAloudDelegate(
                         )
                     )
                 }
+                // [TTS-Server 移植] 并入移植层声线目录（<数据根>/_store/voices.json：标签→声线）
+                runCatching {
+                    val arr = com.github.jing332.tts.store.TtsConfigStore.loadVoices(context)
+                    for (g in 0 until arr.length()) {
+                        val list = arr.optJSONObject(g)?.optJSONArray("list") ?: continue
+                        for (i in 0 until list.length()) {
+                            val entry = list.optJSONObject(i) ?: continue
+                            val cfg = entry.optJSONObject("config") ?: continue
+                            val sr = cfg.optJSONObject("speechRule") ?: continue
+                            val tag = sr.optString("tag")
+                            val ruleId = sr.optString("tagRuleId")
+                            if (tag.isBlank() || ruleId.isBlank()) continue
+                            add(
+                                VoiceCatalogEntry(
+                                    engineType = "tts_server",
+                                    engineId = ruleId,
+                                    speakerId = tag,
+                                    displayName = entry.optString("displayName").ifBlank { sr.optString("tagName", tag) },
+                                    traitsJson = cfg.toString(),
+                                    managedBy = ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS,
+                                )
+                            )
+                        }
+                    }
+                }
             },
             managedSources = setOf(ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS),
-            removeMissingEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP),
+            removeMissingEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP, "tts_server"),
         )
     }
 

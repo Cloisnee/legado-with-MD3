@@ -40,7 +40,7 @@ object ReadAloud {
     private fun getReadAloudClass(): Class<*> {
         val ttsEngine = ttsEngine
         GSON.fromJsonObject<ReadAloudEngineSelection>(ttsEngine).getOrNull()
-            ?.takeIf { it.engineType == ReadAloudVoice.ENGINE_CLOUD }
+            ?.takeIf { it.engineType == ReadAloudVoice.ENGINE_CLOUD || it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
             ?.let { selection ->
                 coordinatorDefaultEngineType = selection.engineType
                 coordinatorDefaultEngineId = selection.engineId
@@ -93,6 +93,7 @@ object ReadAloud {
                     it.id in voiceIds && it.engineType in setOf(
                         ReadAloudVoice.ENGINE_HTTP,
                         ReadAloudVoice.ENGINE_CLOUD,
+                        ReadAloudVoice.ENGINE_TTS_SERVER,
                     ) &&
                         it.enabled && it.available
                 }

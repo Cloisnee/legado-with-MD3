@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
@@ -168,6 +169,29 @@ fun MyScreen(
                     title = stringResource(R.string.highlight_tag_config),
                     imageVector = Icons.Default.Sell,
                     onClick = { onNavigate(PrefClickEvent.OpenHighlightTagRule) }
+                )
+            }
+
+            SplicedColumnGroup(
+                title = "朗读"
+            ) {
+                ClickableSettingItem(
+                    title = stringResource(R.string.read_aloud_engines_and_voices),
+                    description = "声线插件 · 配置列表 · 内置引擎",
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    onClick = { onNavigate(PrefClickEvent.OpenTtsServerCenter) }
+                )
+                ClickableSettingItem(
+                    title = stringResource(R.string.aloud_config),
+                    description = "界面 / 播放行为 / 语音与分析 / 性能",
+                    imageVector = Icons.Default.Settings,
+                    onClick = { onNavigate(PrefClickEvent.OpenReadAloudSettings) }
+                )
+                ClickableSettingItem(
+                    title = stringResource(R.string.tts_cache_manage),
+                    description = "查看朗读 / 合成操作日志",
+                    imageVector = Icons.Default.History,
+                    onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
                 )
             }
 

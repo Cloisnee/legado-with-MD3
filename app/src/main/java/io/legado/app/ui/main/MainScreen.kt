@@ -128,6 +128,9 @@ fun MainScreen(
     onNavigateToLocalImport: () -> Unit,
     onNavigateToCache: (Long) -> Unit,
     onNavigateToBookCacheManage: () -> Unit,
+    onNavigateToTtsServerCenter: () -> Unit,
+    onNavigateToReadAloudLogs: () -> Unit,
+    onNavigateToReadAloudSettings: () -> Unit,
     onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
     onNavigateToBookInfo: (name: String, author: String, bookUrl: String, origin: String?, coverPath: String?, sharedCoverKey: String?) -> Unit,
@@ -591,6 +594,9 @@ fun MainScreen(
                                 onNavigate = { event ->
                                     when (event) {
                                         PrefClickEvent.OpenBookCacheManage -> onNavigateToBookCacheManage()
+                                        PrefClickEvent.OpenTtsServerCenter -> onNavigateToTtsServerCenter()
+                                        PrefClickEvent.OpenReadAloudLogs -> onNavigateToReadAloudLogs()
+                                        PrefClickEvent.OpenReadAloudSettings -> onNavigateToReadAloudSettings()
                                         PrefClickEvent.OpenBookSourceManage -> onNavigateToBookSourceManage()
                                         PrefClickEvent.OpenReadRecord -> onNavigateToReadRecord()
                                         else -> onIntent(MainUiIntent.HandlePreferenceClick(event))

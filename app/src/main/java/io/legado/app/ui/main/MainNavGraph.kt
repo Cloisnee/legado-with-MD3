@@ -386,6 +386,15 @@ fun MainActivity.mainEntryProvider(
             onNavigateToBookCacheManage = {
                 onNavigateToRoute(MainRouteBookCacheManage)
             },
+            onNavigateToTtsServerCenter = {
+                onNavigateToRoute(MainRouteTtsServerCenter)
+            },
+            onNavigateToReadAloudLogs = {
+                onNavigateToRoute(MainRouteTtsCache)
+            },
+            onNavigateToReadAloudSettings = {
+                onNavigateToRoute(MainRouteReadAloudSettings)
+            },
             onOpenBookshelfBook = { book, sharedCoverKey ->
                 if (book.isAudio) {
                     this@mainEntryProvider.startActivityForBook(book)
@@ -645,7 +654,8 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteBookCacheManage> {
         BookCacheManageRouteScreen(
-            onBackClick = { onNavigateBack() }
+            onBackClick = { onNavigateBack() },
+            onOpenTtsAudioCache = { onNavigateToRoute(MainRouteTtsAudioCache) },
         )
     }
 
@@ -1357,6 +1367,27 @@ fun MainActivity.mainEntryProvider(
     entry<MainRouteTtsCache> {
         TtsCacheRouteScreen(
             onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteTtsServerCenter> {
+        io.legado.app.ui.ttssrv.TtsServerCenterRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteTtsAudioCache> {
+        io.legado.app.ui.ttssrv.TtsAudioCacheRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteReadAloudSettings> {
+        io.legado.app.ui.ttssrv.ReadAloudSettingsRouteScreen(
+            onBackClick = { onNavigateBack() },
+            onOpenCasting = { url ->
+                onNavigateToRoute(MainRouteBookVoiceCasting(url))
+            },
         )
     }
 

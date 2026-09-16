@@ -191,11 +191,6 @@ fun ReadAloudPlayerScreenContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    MediumTonalButton(
-                        onClick = { onIntent(ReadAloudPlayerIntent.OpenSettings) },
-                        icon = Icons.Default.Settings,
-                        contentDescription = stringResource(R.string.setting),
-                    )
                 }
             }
         },

@@ -115,10 +115,14 @@ object MainNavigator {
             MainRouteImportRemote,
             is MainRouteCache,
             MainRouteBookCacheManage,
+            MainRouteTtsServerCenter,
+            MainRouteTtsAudioCache,
+            MainRouteReadAloudSettings,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (
                     currentRoute == MainRouteHome ||
+                    currentRoute == MainRouteBookCacheManage ||
                     currentRoute is MainRouteBookInfo
                 ) {
                     backStack.add(route)

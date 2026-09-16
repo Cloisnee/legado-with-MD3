@@ -230,6 +230,7 @@ dependencies {
     implementation(libs.intellij.markdown)
     implementation(project(":modules:book"))
     implementation(project(":modules:rhino"))
+    implementation(project(":modules:lib-tts"))
     implementation(libs.okhttp)
     implementation(fileTree(mapOf("dir" to "cronetlib", "include" to listOf("*.jar", "*.aar"))))
     implementation(libs.protobuf.javalite)

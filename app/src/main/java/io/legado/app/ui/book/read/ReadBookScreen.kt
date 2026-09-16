@@ -442,7 +442,7 @@ fun ReadBookScreen(
         valueRange = 0f..100f,
         onValueChange = { onIntent(ReadBookIntent.ApplyPreDownloadNum(it)) },
         onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+            onIntent(ReadBookIntent.DismissSheet)
         },
     )
     ReadAloudNumberConfigSheet(
@@ -456,7 +456,7 @@ fun ReadBookScreen(
         valueRange = 1f..8f,
         onValueChange = { onIntent(ReadBookIntent.ApplyPreSynthesisConcurrency(it)) },
         onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+            onIntent(ReadBookIntent.DismissSheet)
         },
     )
     ReadAloudNumberConfigSheet(
@@ -471,7 +471,7 @@ fun ReadBookScreen(
         valueRange = 0f..10080f,
         onValueChange = { onIntent(ReadBookIntent.ApplyAudioCacheCleanTime(it)) },
         onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+            onIntent(ReadBookIntent.DismissSheet)
         },
     )
     ReadAloudNumberConfigSheet(
@@ -486,7 +486,7 @@ fun ReadBookScreen(
         valueRange = 0f..5000f,
         onValueChange = { onIntent(ReadBookIntent.ApplyParagraphInterval(it)) },
         onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+            onIntent(ReadBookIntent.DismissSheet)
         },
     )
     AppLogSheet(
@@ -548,7 +548,6 @@ fun ReadBookScreen(
         rememberThemeOverride(seedColor)
     }
     val readAloudPage = when (state.activeSheet) {
-        ReadBookSheet.ReadAloudConfig -> ReadAloudPage.Config
         ReadBookSheet.ReadAloudPlayer -> ReadAloudPage.Player
         else -> null
     }
@@ -569,7 +568,7 @@ fun ReadBookScreen(
             aloudPlayerViewModel.effects.collectLatest { effect ->
                 when (effect) {
                     ReadAloudPlayerEffect.ReturnToReaderSettings ->
-                        onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+                        onIntent(ReadBookIntent.DismissSheet)
                     ReadAloudPlayerEffect.ReturnToClassic ->
                         onIntent(ReadBookIntent.OpenClassicReadAloudControls)
                 }

@@ -194,6 +194,15 @@ data class MainRouteCloudTtsEngines(val bookUrl: String? = null) : MainRoute
 data object MainRouteTtsCache : MainRoute
 
 @Serializable
+data object MainRouteTtsServerCenter : MainRoute
+
+@Serializable
+data object MainRouteTtsAudioCache : MainRoute
+
+@Serializable
+data object MainRouteReadAloudSettings : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute

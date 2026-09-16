@@ -103,6 +103,10 @@ class App : Application(), SingletonImageLoader.Factory {
         // 首行初始化设置快照层：同步预加载 DataStore（触发 SP 迁移），
         // 之后所有 getPref* 门面读取均为纯内存查找，须先于一切主题/配置读取
         AppConfigStore.init(this)
+        // [TTS-Server 移植] 网络桥注入 + 冒烟自检 + _ops 指令通道（后台运行，不阻塞启动）
+        com.github.jing332.compat.net.HostHttp.init { io.legado.app.help.http.okHttpClient }
+        com.github.jing332.tts.debug.SmokeRunner.run(this)
+        com.github.jing332.tts.debug.OpsRunner.run(this)
         // 一次性迁移：把旧版语言偏好写入 AppCompat per-app locales，之后交由
         // autoStoreLocales 持久化。不能每次启动都执行——API 33+ 上会覆盖用户在
         // 系统设置里选择的应用语言，API <33 上此时 AppCompat 存储尚未加载、

@@ -1,0 +1,1487 @@
+package io.legado.app.ui.ttssrv
+
+import android.app.Application
+import android.media.MediaPlayer
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import io.legado.app.R
+import io.legado.app.data.repository.EngineOption
+import io.legado.app.data.repository.EntryRow
+import io.legado.app.data.repository.GroupRow
+import io.legado.app.data.repository.LocaleOption
+import io.legado.app.data.repository.PluginRow
+import io.legado.app.data.repository.TtsServerCenterRepository
+import io.legado.app.data.repository.VarField
+import io.legado.app.data.repository.VoiceOption
+import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.ActionItem
+import io.legado.app.ui.widget.components.AppTextField
+import io.legado.app.ui.widget.components.DraggableSelectionHandler
+import io.legado.app.ui.widget.components.SectionTitle
+import io.legado.app.ui.widget.components.SplicedColumnGroup
+import io.legado.app.ui.widget.components.alert.AppAlertDialog
+import io.legado.app.ui.widget.components.button.series.SmallPlainButton
+import io.legado.app.ui.widget.components.card.GlassCard
+import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
+import io.legado.app.ui.widget.components.checkBox.AppCheckbox
+import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
+import io.legado.app.ui.widget.components.list.ListUiState
+import io.legado.app.ui.widget.components.log.LogDetailSheet
+import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
+import io.legado.app.ui.widget.components.rules.RuleListScaffold
+import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.tabRow.AppTabRow
+import io.legado.app.ui.widget.components.text.AppText
+import io.legado.app.ui.widget.components.topbar.TopBarActionButton
+import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import sh.calvin.reorderable.rememberReorderableLazyListState
+
+private sealed interface CenterSheet {
+    data class EntryActions(val entry: EntryRow) : CenterSheet
+    data object PickPluginForNew : CenterSheet
+    data object ManualImport : CenterSheet
+}
+
+private sealed interface PickerPurpose {
+    data object Audition : PickerPurpose
+    data object NewEntry : PickerPurpose
+}
+
+private data class PickerTarget(
+    val pluginId: String,
+    val pluginName: String,
+    val purpose: PickerPurpose,
+)
+
+private data class VoicePrefill(
+    val pluginId: String,
+    val pluginName: String,
+    val locale: String,
+    val voice: String,
+    val voiceName: String,
+)
+
+private class CenterListUiState<T>(
+    override val items: List<T>,
+    override val selectedIds: Set<Any>,
+    override val searchKey: String,
+    override val isSearch: Boolean,
+    override val isLoading: Boolean = false,
+) : ListUiState<T>
+
+@Composable
+fun TtsServerCenterRouteScreen(onBackClick: () -> Unit) {
+    val context = LocalContext.current
+    TtsServerCenterScreen(
+        app = context.applicationContext as Application,
+        onBack = onBackClick,
+    )
+}
+
+/**
+ * TTS-Server 管理中心（书源管理式复刻版 v2）：
+ *  - 顶栏：返回 / 搜索(展开) / 导入(按页面校验) / 切换引擎
+ *  - 插件页：可拖动排序，点击选中；行内开关 + 编辑(元信息+变量)
+ *  - 配置页：组/二级 默认收起 + 缩进 + 原版箭头；长按任一层级进入多选
+ *  - 选中后：左侧 60dp 边缘滑选（复刻书源）+ 底部工具条
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val repo = remember(app) { TtsServerCenterRepository(app) }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+
+    var selectedTab by remember { mutableStateOf(0) }
+    var plugins by remember { mutableStateOf<List<PluginRow>>(emptyList()) }
+    var groups by remember { mutableStateOf<List<GroupRow>>(emptyList()) }
+    var engineValue by remember { mutableStateOf<String?>(null) }
+    var engineLoaded by remember { mutableStateOf(false) }
+    var engineOptions by remember { mutableStateOf<List<EngineOption>>(emptyList()) }
+
+    var searchMode by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    val collapsedGroups = remember { mutableStateMapOf<String, Boolean>() }
+    val collapsedCats = remember { mutableStateMapOf<String, Boolean>() }
+
+    var selPlugins by remember { mutableStateOf(setOf<String>()) }
+    var selEntries by remember { mutableStateOf(setOf<String>()) }
+    var selGroupNames by remember { mutableStateOf(setOf<String>()) }
+    var selCatKeys by remember { mutableStateOf(setOf<String>()) }
+    var selGroupContext by remember { mutableStateOf<String?>(null) }
+
+    // 插件拖动排序
+    var dragOrder by remember { mutableStateOf<List<PluginRow>?>(null) }
+
+    var sheet by remember { mutableStateOf<CenterSheet?>(null) }
+    var showImportPicker by remember { mutableStateOf(false) }
+    var detailTitle by remember { mutableStateOf("") }
+    var detailText by remember { mutableStateOf<String?>(null) }
+
+    var showEngineSheet by remember { mutableStateOf(false) }
+    var pendingEngine by remember { mutableStateOf<EngineOption?>(null) }
+    var showScopeDialog by remember { mutableStateOf(false) }
+
+    var showDeleteEntry by remember { mutableStateOf<EntryRow?>(null) }
+    var renameTarget by remember { mutableStateOf<EntryRow?>(null) }
+
+    var importText by remember { mutableStateOf("") }
+    var renameText by remember { mutableStateOf("") }
+    var varsEditorPlugin by remember { mutableStateOf<PluginRow?>(null) }
+    var varFields by remember { mutableStateOf<List<VarField>>(emptyList()) }
+    val varValues = remember { mutableStateMapOf<String, String>() }
+    var vsName by remember { mutableStateOf("") }
+    var vsId by remember { mutableStateOf("") }
+    var vsAuthor by remember { mutableStateOf("") }
+    var vsVersion by remember { mutableStateOf("") }
+
+    var pickerTarget by remember { mutableStateOf<PickerTarget?>(null) }
+    var pickerLocales by remember { mutableStateOf<List<LocaleOption>>(emptyList()) }
+    var pickerVoices by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
+    var pickerLocale by remember { mutableStateOf<LocaleOption?>(null) }
+    var pickerBusy by remember { mutableStateOf(false) }
+    var newEntryGroupDefault by remember { mutableStateOf<String?>(null) }
+    var newEntryPrefill by remember { mutableStateOf<VoicePrefill?>(null) }
+    var neGroup by remember { mutableStateOf("") }
+    var neName by remember { mutableStateOf("") }
+    var neTag by remember { mutableStateOf("") }
+    var neRuleId by remember { mutableStateOf("mingwuyan") }
+    var neTagName by remember { mutableStateOf("") }
+    var neCategory by remember { mutableStateOf("自建") }
+    var editTarget by remember { mutableStateOf<EntryRow?>(null) }
+    var edName by remember { mutableStateOf("") }
+    var edTag by remember { mutableStateOf("") }
+    var edRuleId by remember { mutableStateOf("") }
+    var edTagName by remember { mutableStateOf("") }
+    var edCategory by remember { mutableStateOf("") }
+    var edSpeed by remember { mutableStateOf("") }
+    var edVolume by remember { mutableStateOf("") }
+    var edPitch by remember { mutableStateOf("") }
+    var renameGroupTarget by remember { mutableStateOf<String?>(null) }
+    var renameGroupText by remember { mutableStateOf("") }
+
+    val player = remember { MediaPlayer() }
+    DisposableEffect(player) {
+        onDispose { runCatching { player.release() } }
+    }
+
+    fun reload() {
+        scope.launch {
+            plugins = repo.loadPlugins()
+            groups = repo.loadGroups()
+            engineOptions = repo.loadEngineOptions()
+            engineValue = repo.currentEngineValue()
+            engineLoaded = true
+        }
+    }
+
+    fun entryKeyOf(e: EntryRow): String = "${e.tagRuleId}|${e.tag}"
+
+    fun uniqueEntryList(src: List<EntryRow>): List<EntryRow> {
+        val seen = HashSet<String>()
+        return src.filter { seen.add(entryKeyOf(it)) }
+    }
+
+    fun pluginNameOf(id: String): String =
+        plugins.firstOrNull { it.pluginId == id }?.name ?: id
+
+    fun matchedEntries(): List<EntryRow> {
+        val all = groups.flatMap { it.entries }
+        if (query.isBlank()) return all
+        return all.filter {
+            it.displayName.contains(query, true) || it.tag.contains(query, true) ||
+                    it.voice.contains(query, true) || pluginNameOf(it.pluginId).contains(query, true)
+        }
+    }
+
+    fun displayedPlugins(): List<PluginRow> {
+        if (query.isBlank()) return plugins
+        return plugins.filter {
+            it.name.contains(query, true) || it.author.contains(query, true) ||
+                    it.pluginId.contains(query, true)
+        }
+    }
+
+    /** 选择集变化后，由 selEntries 重新推导 组/分类 级别标记（反选/全选后勾子随动） */
+    fun normalizeSelection() {
+        val gSet = LinkedHashSet<String>()
+        groups.forEach { g ->
+            val keys = g.entries.map { entryKeyOf(it) }
+            if (keys.isNotEmpty() && keys.all { it in selEntries }) gSet.add(g.name)
+        }
+        selGroupNames = gSet
+        val cSet = LinkedHashSet<String>()
+        groups.forEach { g ->
+            g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }.forEach { (cat, list) ->
+                val keys = list.map { entryKeyOf(it) }
+                if (keys.isNotEmpty() && keys.all { it in selEntries }) cSet.add("${g.name}|$cat")
+            }
+        }
+        selCatKeys = cSet
+    }
+
+    fun play(path: String) {
+        runCatching {
+            player.reset()
+            player.setDataSource(path)
+            player.prepare()
+            player.start()
+        }.onFailure {
+            context.toastOnUi("播放失败：${it.message.orEmpty()}")
+        }
+    }
+
+    fun auditionEntry(e: EntryRow) {
+        scope.launch {
+            context.toastOnUi("正在合成…")
+            val r = repo.auditionDetailed(e.tagRuleId, e.tag, "你好，这里是移植层试听。")
+            if (r.ok && r.path != null) {
+                play(r.path)
+                context.toastOnUi("播放中：${r.path.substringAfterLast('/')}")
+            } else {
+                detailTitle = "试听失败（诊断报告）"
+                detailText = r.message
+                context.toastOnUi("合成失败（详情已弹出）")
+            }
+        }
+    }
+
+    fun openPluginEditor(p: PluginRow) {
+        scope.launch {
+            val fields = repo.loadVarFields(p.pluginId)
+            varValues.clear()
+            fields.forEach { varValues[it.key] = it.value }
+            varFields = fields
+            vsName = p.name
+            vsId = p.pluginId
+            vsAuthor = p.author
+            vsVersion = p.version.toString()
+            varsEditorPlugin = p
+        }
+    }
+
+    LaunchedEffect(Unit) { reload() }
+
+    // 组默认收起（只对首次出现的组设置）
+    LaunchedEffect(groups) {
+        groups.forEach { g ->
+            if (!collapsedGroups.containsKey(g.name)) {
+                collapsedGroups[g.name] = true
+            }
+        }
+    }
+
+    // 插件拖动排序状态
+    val reorderState = rememberReorderableLazyListState(listState) { from, to ->
+        val base = dragOrder ?: displayedPlugins()
+        val moved = base.toMutableList()
+        if (from.index in moved.indices && to.index in moved.indices) {
+            moved.add(to.index, moved.removeAt(from.index))
+            dragOrder = moved
+        }
+    }
+    LaunchedEffect(reorderState.isAnyItemDragging, plugins) {
+        if (!reorderState.isAnyItemDragging) {
+            dragOrder?.let { pending ->
+                val ids = pending.map { it.pluginId }
+                if (plugins.map { it.pluginId } == ids) {
+                    dragOrder = null
+                } else {
+                    scope.launch {
+                        repo.setPluginsOrder(ids)
+                        dragOrder = null
+                        reload()
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(pickerTarget) {
+        val t = pickerTarget ?: return@LaunchedEffect
+        pickerBusy = true
+        pickerLocales = repo.loadLocales(t.pluginId)
+        pickerVoices = emptyList()
+        pickerLocale = null
+        pickerBusy = false
+        if (pickerLocales.isEmpty()) {
+            detailTitle = "读取语言列表失败"
+            detailText = "插件「${t.pluginName}」未返回语言列表（检查插件是否启用 / 是否被沙箱拦截）。"
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val text = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)
+                            ?.bufferedReader()?.use { it.readText() }
+                    }
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    context.toastOnUi("读取文件为空或失败")
+                } else {
+                    val msg =
+                        if (selectedTab == 0) repo.importPlugins(text) else repo.importVoices(text)
+                    context.toastOnUi(msg)
+                    reload()
+                }
+            }
+        }
+    }
+
+    val engineSubtitle =
+        if (!engineLoaded) "当前引擎：…" else "当前引擎：${repo.engineLabel(engineValue)}"
+
+    val pluginSelActive = selPlugins.isNotEmpty()
+    val entrySelActive = selEntries.isNotEmpty()
+
+    val uiState: ListUiState<Any> = if (selectedTab == 0) {
+        CenterListUiState(
+            items = (dragOrder ?: displayedPlugins()).map { it as Any },
+            selectedIds = selPlugins,
+            searchKey = query,
+            isSearch = searchMode,
+        )
+    } else {
+        CenterListUiState(
+            items = groups.flatMap { it.entries }.map { it as Any },
+            selectedIds = selEntries,
+            searchKey = query,
+            isSearch = searchMode,
+        )
+    }
+
+    val secondaryActions: List<ActionItem> = if (selectedTab == 0) {
+        buildList {
+            add(ActionItem("导出所选") { scope.launch {
+                detailTitle = "导出完成（所选插件）"
+                detailText = repo.exportPluginsByIds(selPlugins)
+            } })
+            add(ActionItem("启用所选") { scope.launch {
+                repo.setPluginsEnabled(selPlugins, true)
+                context.toastOnUi("已启用")
+                reload()
+            } })
+            add(ActionItem("停用所选") { scope.launch {
+                repo.setPluginsEnabled(selPlugins, false)
+                context.toastOnUi("已停用")
+                reload()
+            } })
+            add(ActionItem("置顶") { scope.launch {
+                repo.movePluginsToEdge(selPlugins, true)
+                reload()
+            } })
+            add(ActionItem("置底") { scope.launch {
+                repo.movePluginsToEdge(selPlugins, false)
+                reload()
+            } })
+            if (selPlugins.size == 1) {
+                val pid = selPlugins.first()
+                add(ActionItem("试听（选语言）") {
+                    pickerTarget = PickerTarget(pid, pluginNameOf(pid), PickerPurpose.Audition)
+                })
+            }
+        }
+    } else {
+        buildList {
+            add(ActionItem("导出所选") { scope.launch {
+                detailTitle = "导出完成（所选条目）"
+                detailText = repo.exportEntries(selEntries)
+            } })
+            add(ActionItem("置顶") { scope.launch {
+                when {
+                    selGroupNames.isNotEmpty() -> repo.moveGroupsToEdge(selGroupNames, true)
+                    selCatKeys.isNotEmpty() -> repo.moveCategoriesToEdge(selCatKeys, true)
+                    else -> repo.moveEntriesToEdge(selEntries, true)
+                }
+                reload()
+            } })
+            add(ActionItem("置底") { scope.launch {
+                when {
+                    selGroupNames.isNotEmpty() -> repo.moveGroupsToEdge(selGroupNames, false)
+                    selCatKeys.isNotEmpty() -> repo.moveCategoriesToEdge(selCatKeys, false)
+                    else -> repo.moveEntriesToEdge(selEntries, false)
+                }
+                reload()
+            } })
+            val g = selGroupContext
+            if (g != null) {
+                add(ActionItem("重命名分组") {
+                    renameGroupText = g
+                    renameGroupTarget = g
+                })
+                add(ActionItem("导出分组") { scope.launch {
+                    detailTitle = "导出完成（分组）"
+                    detailText = repo.exportGroup(g)
+                } })
+                add(ActionItem("在此组新建条目") {
+                    newEntryGroupDefault = g
+                    sheet = CenterSheet.PickPluginForNew
+                })
+            }
+        }
+    }
+
+    RuleListScaffold(
+        title = stringResource(R.string.read_aloud_engines_and_voices),
+        state = uiState,
+        subtitle = engineSubtitle,
+        onBackClick = onBack,
+        onSearchToggle = { searchMode = it; if (!it) query = "" },
+        onSearchQueryChange = { query = it },
+        searchPlaceholder = if (selectedTab == 0) {
+            "搜索插件：名称 / 作者 / ID"
+        } else {
+            "搜索：名称 / 标签 / 音色 / 插件名"
+        },
+        topBarActions = {
+            TopBarActionButton(
+                onClick = { showImportPicker = true },
+                imageVector = Icons.Default.FileDownload,
+                contentDescription = "导入",
+            )
+            TopBarActionButton(
+                onClick = { showEngineSheet = true },
+                imageVector = Icons.Default.SwapHoriz,
+                contentDescription = "切换朗读引擎",
+            )
+        },
+        bottomContent = { _ ->
+            AppTabRow(
+                tabTitles = listOf("音色插件", "配置列表"),
+                selectedTabIndex = selectedTab,
+                onTabSelected = { t ->
+                    selectedTab = t
+                    query = ""
+                    searchMode = false
+                    selPlugins = emptySet()
+                    selEntries = emptySet()
+                    selGroupNames = emptySet()
+                    selCatKeys = emptySet()
+                    selGroupContext = null
+                },
+                isScrollable = false,
+            )
+        },
+        onClearSelection = {
+            selPlugins = emptySet()
+            selEntries = emptySet()
+            selGroupNames = emptySet()
+            selCatKeys = emptySet()
+            selGroupContext = null
+        },
+        onSelectAll = {
+            if (selectedTab == 0) {
+                selPlugins = (dragOrder ?: displayedPlugins()).map { it.pluginId }.toSet()
+            } else {
+                selEntries = matchedEntries().map { entryKeyOf(it) }.toSet()
+                normalizeSelection()
+            }
+        },
+        onSelectInvert = {
+            if (selectedTab == 0) {
+                val disp = (dragOrder ?: displayedPlugins()).map { it.pluginId }.toSet()
+                selPlugins = disp - selPlugins
+            } else {
+                val disp = matchedEntries().map { entryKeyOf(it) }.toSet()
+                selEntries = disp - selEntries
+                normalizeSelection()
+            }
+        },
+        selectionSecondaryActions = secondaryActions,
+        onDeleteSelected = { ids ->
+            val set = ids.filterIsInstance<String>().toSet()
+            if (selectedTab == 0) {
+                scope.launch {
+                    repo.deletePlugins(set)
+                    selPlugins = emptySet()
+                    reload()
+                }
+            } else {
+                scope.launch {
+                    repo.deleteEntries(set)
+                    selEntries = emptySet()
+                    selGroupNames = emptySet()
+                    selCatKeys = emptySet()
+                    selGroupContext = null
+                    reload()
+                }
+            }
+        },
+        onAddClick = if (selectedTab == 1) {
+            {
+                newEntryGroupDefault = null
+                sheet = CenterSheet.PickPluginForNew
+            }
+        } else null,
+        snackbarHostState = remember { SnackbarHostState() },
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                contentPadding = adaptiveContentPadding(
+                    top = padding.calculateTopPadding() + 8.dp,
+                    bottom = padding.calculateBottomPadding() + 120.dp,
+                ),
+            ) {
+                if (selectedTab == 0) {
+                    val pluginList = dragOrder ?: displayedPlugins()
+                    if (plugins.isEmpty()) {
+                        item {
+                            SplicedColumnGroup(title = "音色插件") {
+                                TinyClickableSettingItem(
+                                    title = "暂无插件",
+                                    description = "点右上角「导入」添加音色插件 JSON",
+                                    onClick = {},
+                                )
+                            }
+                        }
+                    }
+                    itemsIndexed(pluginList, key = { _, p -> p.pluginId }) { index, p ->
+                        ReorderableSelectionItem(
+                            state = reorderState,
+                            key = p.pluginId,
+                            title = p.name,
+                            subtitle = "${p.pluginId} · v${p.version} · ${p.author}",
+                            isEnabled = p.enabled,
+                            onEnabledChange = { enabled ->
+                                scope.launch {
+                                    repo.setPluginEnabled(p.pluginId, enabled)
+                                    reload()
+                                }
+                            },
+                            isSelected = p.pluginId in selPlugins,
+                            inSelectionMode = pluginSelActive,
+                            onToggleSelection = {
+                                if (pluginSelActive) {
+                                    selPlugins = if (p.pluginId in selPlugins) {
+                                        selPlugins - p.pluginId
+                                    } else {
+                                        selPlugins + p.pluginId
+                                    }
+                                } else {
+                                    selPlugins = setOf(p.pluginId)
+                                }
+                            },
+                            onClickEdit = { openPluginEditor(p) },
+                            canReorder = query.isBlank(),
+                            reorderIndex = index,
+                            reorderItemCount = pluginList.size,
+                            onMoveItem = { from, to ->
+                                val moved = pluginList.toMutableList()
+                                if (from in moved.indices && to in moved.indices) {
+                                    moved.add(to, moved.removeAt(from))
+                                    scope.launch {
+                                        repo.setPluginsOrder(moved.map { it.pluginId })
+                                        dragOrder = null
+                                        reload()
+                                    }
+                                }
+                            },
+                        )
+                    }
+                } else {
+                    val missingIds = groups.flatMap { it.entries }.map { it.pluginId }
+                        .filter { it.isNotBlank() }.toSet() -
+                            plugins.map { it.pluginId }.toSet()
+                    if (missingIds.isNotEmpty()) {
+                        item {
+                            SplicedColumnGroup(title = "⚠ 缺失插件") {
+                                TinyClickableSettingItem(
+                                    title = "有 ${missingIds.size} 个插件未安装",
+                                    description = missingIds.joinToString() +
+                                            "（相关声线合成会失败；导入对应插件即可）",
+                                    onClick = {},
+                                )
+                            }
+                        }
+                    }
+                    if (groups.isEmpty()) {
+                        item {
+                            SplicedColumnGroup(title = "配置列表") {
+                                TinyClickableSettingItem(
+                                    title = "暂无配置列表",
+                                    description = "点右上角「导入」，或右下角 + 新建条目",
+                                    onClick = {},
+                                )
+                            }
+                        }
+                    }
+                    if (query.isNotBlank()) {
+                        val filtered = uniqueEntryList(matchedEntries())
+                        item { SectionTitle("搜索结果（${filtered.size}）") }
+                        items(filtered, key = { entryKeyOf(it) }) { e ->
+                            LevelRow(
+                                title = "[${e.tag}] ${e.displayName}",
+                                subtitle = "${e.voice} · ${pluginNameOf(e.pluginId)}",
+                                arrowExpanded = null,
+                                indent = 16.dp,
+                                selActive = entrySelActive,
+                                selected = entryKeyOf(e) in selEntries,
+                                onClick = {
+                                    if (entrySelActive) {
+                                        val k = entryKeyOf(e)
+                                        selEntries = if (k in selEntries) selEntries - k
+                                        else selEntries + k
+                                    } else {
+                                        sheet = CenterSheet.EntryActions(e)
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!entrySelActive) {
+                                        selEntries = setOf(entryKeyOf(e))
+                                    }
+                                },
+                                trailing = {
+                                    SmallPlainButton(
+                                        icon = Icons.Default.PlayArrow,
+                                        contentDescription = "试听",
+                                        onClick = { auditionEntry(e) },
+                                    )
+                                },
+                            )
+                        }
+                    } else {
+                        val seen = HashSet<String>()
+                        groups.forEach { g ->
+                            val groupKeys = g.entries.map { entryKeyOf(it) }
+                            val groupAllSel =
+                                g.entries.isNotEmpty() && groupKeys.all { it in selEntries }
+                            item(key = "g_${g.name}") {
+                                val gSel = g.name in selGroupNames
+                                LevelRow(
+                                    title = g.name,
+                                    subtitle = "共 ${g.entries.size} 条",
+                                    arrowExpanded = collapsedGroups[g.name] != true,
+                                    indent = 0.dp,
+                                    selActive = entrySelActive,
+                                    selected = gSel,
+                                    onClick = {
+                                        if (entrySelActive) {
+                                            if (gSel) {
+                                                selEntries = selEntries - groupKeys.toSet()
+                                            } else {
+                                                selEntries = selEntries + groupKeys.toSet()
+                                                selGroupContext = g.name
+                                            }
+                                            normalizeSelection()
+                                        } else {
+                                            collapsedGroups[g.name] =
+                                                !(collapsedGroups[g.name] ?: false)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (!entrySelActive) {
+                                            selEntries = groupKeys.toSet()
+                                            selGroupContext = g.name
+                                            normalizeSelection()
+                                        }
+                                    },
+                                )
+                            }
+                            if (collapsedGroups[g.name] != true) {
+                                val byCat =
+                                    g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }
+                                byCat.forEach { (cat, list) ->
+                                    val catKey = "${g.name}|$cat"
+                                    val fresh = list.filter { seen.add(entryKeyOf(it)) }
+                                    val catKeys = fresh.map { entryKeyOf(it) }
+                                    val catAllSel =
+                                        fresh.isNotEmpty() && catKeys.all { it in selEntries }
+                                    item(key = "c_$catKey") {
+                                        val cSel = catKey in selCatKeys
+                                        LevelRow(
+                                            title = cat,
+                                            subtitle = "共 ${fresh.size} 条",
+                                            arrowExpanded = collapsedCats[catKey] != true,
+                                            indent = 16.dp,
+                                            selActive = entrySelActive,
+                                            selected = cSel,
+                                            onClick = {
+                                                if (entrySelActive) {
+                                                    if (cSel) {
+                                                        selEntries = selEntries - catKeys.toSet()
+                                                    } else {
+                                                        selEntries = selEntries + catKeys.toSet()
+                                                        selGroupContext = g.name
+                                                    }
+                                                    normalizeSelection()
+                                                } else {
+                                                    collapsedCats[catKey] =
+                                                        !(collapsedCats[catKey] ?: false)
+                                                }
+                                            },
+                                            onLongClick = {
+                                                if (!entrySelActive) {
+                                                    selEntries = catKeys.toSet()
+                                                    selGroupContext = g.name
+                                                    normalizeSelection()
+                                                }
+                                            },
+                                        )
+                                    }
+                                    if (collapsedCats[catKey] != true) {
+                                        items(fresh, key = { entryKeyOf(it) }) { e ->
+                                            LevelRow(
+                                                title = "[${e.tag}] ${e.displayName}",
+                                                subtitle = "${e.voice} · ${pluginNameOf(e.pluginId)}",
+                                                arrowExpanded = null,
+                                                indent = 16.dp,
+                                                selActive = entrySelActive,
+                                                selected = entryKeyOf(e) in selEntries,
+                                                onClick = {
+                                                    if (entrySelActive) {
+                                                        val k = entryKeyOf(e)
+                                                        selEntries =
+                                                            if (k in selEntries) selEntries - k
+                                                            else selEntries + k
+                                                        normalizeSelection()
+                                                    } else {
+                                                        sheet = CenterSheet.EntryActions(e)
+                                                    }
+                                                },
+                                                onLongClick = {
+                                                    if (!entrySelActive) {
+                                                        selEntries = setOf(entryKeyOf(e))
+                                                        normalizeSelection()
+                                                    }
+                                                },
+                                                trailing = {
+                                                    SmallPlainButton(
+                                                        icon = Icons.Default.PlayArrow,
+                                                        contentDescription = "试听",
+                                                        onClick = { auditionEntry(e) },
+                                                    )
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 边缘滑动选取（复刻书源管理的左侧 60dp 拖选条）
+            if (selectedTab == 0 && pluginSelActive) {
+                val pluginList = dragOrder ?: displayedPlugins()
+                DraggableSelectionHandler(
+                    listState = listState,
+                    items = pluginList,
+                    selectedIds = selPlugins,
+                    onSelectionChange = { selPlugins = it },
+                    idProvider = { it.pluginId },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
+            } else if (selectedTab == 1 && entrySelActive) {
+                val flat = uniqueEntryList(groups.flatMap { it.entries })
+                DraggableSelectionHandler(
+                    listState = listState,
+                    items = flat,
+                    selectedIds = selEntries,
+                    onSelectionChange = { sel ->
+                        selEntries = sel.filter { it.contains("|") }.toSet()
+                    },
+                    idProvider = { entryKeyOf(it) },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
+            }
+        }
+    }
+
+    // ---------------- 导入选择 ----------------
+    FilePickerSheet(
+        show = showImportPicker,
+        onDismissRequest = { showImportPicker = false },
+        title = if (selectedTab == 0) "导入音色插件" else "导入配置列表",
+        onSelectSysFile = { types ->
+            showImportPicker = false
+            importLauncher.launch(types)
+        },
+        onManualInput = {
+            showImportPicker = false
+            sheet = CenterSheet.ManualImport
+        },
+        allowExtensions = arrayOf("json", "txt"),
+    )
+
+    // ---------------- 手动粘贴 ----------------
+    AppModalBottomSheet(
+        show = sheet is CenterSheet.ManualImport,
+        onDismissRequest = { sheet = null },
+        title = if (selectedTab == 0) "粘贴插件 JSON" else "粘贴配置列表 JSON",
+    ) {
+        AppTextField(
+            value = importText,
+            onValueChange = { importText = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = "粘贴 JSON 内容",
+            minLines = 6,
+            maxLines = 12,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        TinyClickableSettingItem(
+            title = "从剪贴板粘贴",
+            onClick = {
+                val cm = context.getSystemService(android.content.ClipboardManager::class.java)
+                val t = cm?.primaryClip?.takeIf { it.itemCount > 0 }
+                    ?.getItemAt(0)?.coerceToText(context)?.toString()
+                if (t.isNullOrBlank()) {
+                    context.toastOnUi("剪贴板为空")
+                } else {
+                    importText = t
+                    context.toastOnUi("已粘贴 ${t.length} 字符")
+                }
+            },
+        )
+        TinyClickableSettingItem(
+            title = "确认导入",
+            onClick = {
+                val text = importText
+                sheet = null
+                importText = ""
+                if (text.isBlank()) {
+                    context.toastOnUi("内容为空")
+                } else {
+                    scope.launch {
+                        val msg =
+                            if (selectedTab == 0) repo.importPlugins(text) else repo.importVoices(text)
+                        context.toastOnUi(msg)
+                        reload()
+                    }
+                }
+            },
+        )
+        TinyClickableSettingItem(title = "取消", onClick = { sheet = null })
+    }
+
+    // ---------------- 选择插件（新建条目） ----------------
+    AppModalBottomSheet(
+        show = sheet is CenterSheet.PickPluginForNew,
+        onDismissRequest = { sheet = null },
+        title = "选择插件（新条目）",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            if (plugins.isEmpty()) {
+                TinyClickableSettingItem(title = "暂无可用插件", onClick = {})
+            }
+            plugins.forEach { p ->
+                TinyClickableSettingItem(
+                    title = p.name,
+                    description = "${p.pluginId}${if (p.enabled) "" else "（未启用）"}",
+                    onClick = {
+                        sheet = null
+                        pickerTarget = PickerTarget(p.pluginId, p.name, PickerPurpose.NewEntry)
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------- 声线选择（试听 / 新建共用） ----------------
+    AppModalBottomSheet(
+        show = pickerTarget != null,
+        onDismissRequest = { pickerTarget = null },
+        title = pickerTarget?.let {
+            (if (it.purpose == PickerPurpose.Audition) "试听" else "新建条目") + "：" + it.pluginName
+        } ?: "",
+    ) {
+        val t = pickerTarget
+        if (t != null) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (pickerBusy) {
+                    TinyClickableSettingItem(title = "加载中…", onClick = {})
+                } else if (pickerLocale == null) {
+                    if (pickerLocales.isEmpty()) {
+                        TinyClickableSettingItem(title = "无可用语言", onClick = {})
+                    }
+                    pickerLocales.forEach { loc ->
+                        TinyClickableSettingItem(
+                            title = loc.name.ifBlank { loc.id },
+                            description = loc.id,
+                            onClick = {
+                                scope.launch {
+                                    pickerBusy = true
+                                    pickerVoices = repo.loadVoices(t.pluginId, loc.id)
+                                    pickerLocale = loc
+                                    pickerBusy = false
+                                    if (pickerVoices.isEmpty()) {
+                                        context.toastOnUi("该语言下未读取到音色")
+                                    }
+                                }
+                            },
+                        )
+                    }
+                } else {
+                    TinyClickableSettingItem(
+                        title = "← 返回语言列表",
+                        onClick = {
+                            pickerLocale = null
+                            pickerVoices = emptyList()
+                        },
+                    )
+                    if (pickerVoices.isEmpty()) {
+                        TinyClickableSettingItem(title = "无可用音色", onClick = {})
+                    }
+                    pickerVoices.forEach { v ->
+                        TinyClickableSettingItem(
+                            title = v.name.ifBlank { v.id },
+                            description = v.id,
+                            onClick = {
+                                val loc = pickerLocale ?: return@TinyClickableSettingItem
+                                when (t.purpose) {
+                                    PickerPurpose.Audition -> {
+                                        pickerTarget = null
+                                        scope.launch {
+                                            context.toastOnUi("正在合成…")
+                                            val r = repo.auditionDirect(
+                                                t.pluginId, loc.id, v.id, "你好，这是插件试听。"
+                                            )
+                                            if (r.ok && r.path != null) {
+                                                play(r.path)
+                                                context.toastOnUi("播放中")
+                                            } else {
+                                                detailTitle = "试听失败（诊断报告）"
+                                                detailText = r.message
+                                            }
+                                        }
+                                    }
+
+                                    PickerPurpose.NewEntry -> {
+                                        pickerTarget = null
+                                        neGroup = newEntryGroupDefault
+                                            ?: groups.firstOrNull()?.name ?: "自建"
+                                        neName = v.name.ifBlank { v.id }
+                                        neTag = ""
+                                        neRuleId = "mingwuyan"
+                                        neTagName = ""
+                                        neCategory = "自建"
+                                        newEntryPrefill = VoicePrefill(
+                                            pluginId = t.pluginId,
+                                            pluginName = t.pluginName,
+                                            locale = loc.id,
+                                            voice = v.id,
+                                            voiceName = v.name.ifBlank { v.id },
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------- 新建条目表单 ----------------
+    AppModalBottomSheet(
+        show = newEntryPrefill != null,
+        onDismissRequest = { newEntryPrefill = null },
+        title = "新建条目（${newEntryPrefill?.voiceName.orEmpty()}）",
+    ) {
+        val pf = newEntryPrefill
+        if (pf != null) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                TinyClickableSettingItem(
+                    title = "声线：${pf.voiceName}（${pf.voice}）",
+                    description = "插件：${pf.pluginName} · 语言：${pf.locale} · 点击试听",
+                    imageVector = Icons.Default.PlayArrow,
+                    onClick = {
+                        scope.launch {
+                            context.toastOnUi("正在合成…")
+                            val r = repo.auditionDirect(
+                                pf.pluginId, pf.locale, pf.voice, "你好，这是新建试听。"
+                            )
+                            if (r.ok && r.path != null) {
+                                play(r.path)
+                                context.toastOnUi("播放中")
+                            } else {
+                                detailTitle = "试听失败（诊断报告）"
+                                detailText = r.message
+                            }
+                        }
+                    },
+                )
+                SheetField("分组", neGroup) { neGroup = it }
+                SheetField("显示名", neName) { neName = it }
+                SheetField("标签（tag，如 女童01）", neTag) { neTag = it }
+                SheetField("标签规则（tagRuleId）", neRuleId) { neRuleId = it }
+                SheetField("标签显示名（tagName，可空）", neTagName) { neTagName = it }
+                SheetField("分类路径（categoryPath）", neCategory) { neCategory = it }
+                TinyClickableSettingItem(
+                    title = "保存新条目",
+                    onClick = {
+                        val p = newEntryPrefill ?: return@TinyClickableSettingItem
+                        if (neTag.isBlank()) {
+                            context.toastOnUi("标签（tag）不能为空")
+                            return@TinyClickableSettingItem
+                        }
+                        newEntryPrefill = null
+                        scope.launch {
+                            val ok = repo.appendVoiceEntry(
+                                groupName = neGroup.ifBlank { "自建" },
+                                displayName = neName.ifBlank { p.voiceName },
+                                tag = neTag.trim(),
+                                tagRuleId = neRuleId.ifBlank { "mingwuyan" },
+                                tagName = neTagName,
+                                categoryPath = neCategory.ifBlank { "自建" },
+                                pluginId = p.pluginId,
+                                locale = p.locale,
+                                voice = p.voice,
+                            )
+                            context.toastOnUi(if (ok) "已保存新条目" else "保存失败")
+                            reload()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------- 编辑条目表单 ----------------
+    AppModalBottomSheet(
+        show = editTarget != null,
+        onDismissRequest = { editTarget = null },
+        title = "编辑条目：${editTarget?.displayName.orEmpty()}",
+    ) {
+        val t = editTarget
+        if (t != null) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                SheetField("显示名", edName) { edName = it }
+                SheetField("标签（tag）", edTag) { edTag = it }
+                SheetField("标签规则（tagRuleId）", edRuleId) { edRuleId = it }
+                SheetField("标签显示名（tagName）", edTagName) { edTagName = it }
+                SheetField("分类路径（categoryPath）", edCategory) { edCategory = it }
+                SheetField("语速（0=跟随，1.0=原速）", edSpeed) { edSpeed = it }
+                SheetField("音量（0=跟随，1.0=原量）", edVolume) { edVolume = it }
+                SheetField("音高（0=跟随，1.0=原调）", edPitch) { edPitch = it }
+                TinyClickableSettingItem(
+                    title = "保存修改",
+                    onClick = {
+                        if (edTag.isBlank() || edRuleId.isBlank()) {
+                            context.toastOnUi("标签 / 标签规则不能为空")
+                            return@TinyClickableSettingItem
+                        }
+                        editTarget = null
+                        scope.launch {
+                            val ok = repo.updateVoiceEntry(
+                                oldRuleId = t.tagRuleId,
+                                oldTag = t.tag,
+                                newName = edName,
+                                newTag = edTag.trim(),
+                                newRuleId = edRuleId.trim(),
+                                newTagName = edTagName,
+                                newCategoryPath = edCategory,
+                                speed = edSpeed.toFloatOrNull() ?: 0f,
+                                volume = edVolume.toFloatOrNull() ?: 0f,
+                                pitch = edPitch.toFloatOrNull() ?: 0f,
+                            )
+                            context.toastOnUi(if (ok) "已保存" else "保存失败")
+                            reload()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------- 编辑插件（元信息 + 变量） ----------------
+    AppModalBottomSheet(
+        show = varsEditorPlugin != null,
+        onDismissRequest = { varsEditorPlugin = null },
+        title = "编辑插件：${varsEditorPlugin?.name.orEmpty()}",
+    ) {
+        val p = varsEditorPlugin
+        if (p != null) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                SheetField("插件名（name）", vsName) { vsName = it }
+                SheetField("插件 ID（pluginId）", vsId) { vsId = it }
+                SheetField("作者（author）", vsAuthor) { vsAuthor = it }
+                SheetField("版本号（version，数字）", vsVersion) { vsVersion = it }
+                TinyClickableSettingItem(
+                    title = "—— 插件变量 ——",
+                    onClick = {},
+                )
+                if (varFields.isEmpty()) {
+                    TinyClickableSettingItem(title = "此插件未定义变量", onClick = {})
+                }
+                varFields.forEach { f ->
+                    AppTextField(
+                        value = varValues[f.key] ?: "",
+                        onValueChange = { varValues[f.key] = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = if (f.description.isNotBlank()) {
+                            "${f.label}（${f.description}）"
+                        } else {
+                            f.label
+                        },
+                        singleLine = true,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                TinyClickableSettingItem(
+                    title = "保存插件与变量",
+                    description = "保存后引擎缓存自动刷新",
+                    onClick = {
+                        val id = vsId.trim().ifBlank { p.pluginId }
+                        varsEditorPlugin = null
+                        scope.launch {
+                            val ok = repo.updatePluginMeta(
+                                oldId = p.pluginId,
+                                newName = vsName,
+                                newId = id,
+                                newAuthor = vsAuthor,
+                                newVersion = vsVersion.toIntOrNull() ?: p.version,
+                            )
+                            val ok2 = repo.savePluginUserVars(id, varValues.toMap())
+                            context.toastOnUi(
+                                if (ok && ok2) "插件已保存" else "部分保存失败（检查 ID 是否重复）"
+                            )
+                            reload()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------- 声线条目操作 ----------------
+    AppModalBottomSheet(
+        show = sheet is CenterSheet.EntryActions,
+        onDismissRequest = { sheet = null },
+        title = (sheet as? CenterSheet.EntryActions)?.entry?.let {
+            "[${it.tag}] ${it.displayName}"
+        } ?: "声线条目",
+    ) {
+        val e = (sheet as? CenterSheet.EntryActions)?.entry
+        if (e != null) {
+            TinyClickableSettingItem(
+                title = "试听（合成并播放）",
+                description = "走 内置引擎 → 标签 ${e.tag}",
+                imageVector = Icons.Default.PlayArrow,
+                onClick = {
+                    sheet = null
+                    auditionEntry(e)
+                },
+            )
+            TinyClickableSettingItem(
+                title = "编辑条目（名称/标签/分类/音频参数）",
+                onClick = {
+                    sheet = null
+                    edName = e.displayName
+                    edTag = e.tag
+                    edRuleId = e.tagRuleId
+                    edTagName = e.tagName
+                    edCategory = e.categoryPath
+                    edSpeed = if (e.speed > 0f) e.speed.toString() else "0"
+                    edVolume = if (e.volume > 0f) e.volume.toString() else "0"
+                    edPitch = if (e.pitch > 0f) e.pitch.toString() else "0"
+                    editTarget = e
+                },
+            )
+            TinyClickableSettingItem(
+                title = "重命名显示名",
+                description = "当前：${e.displayName}",
+                onClick = {
+                    renameText = e.displayName
+                    sheet = null
+                    renameTarget = e
+                },
+            )
+            TinyClickableSettingItem(
+                title = "删除此声线配置",
+                onClick = {
+                    sheet = null
+                    showDeleteEntry = e
+                },
+            )
+        }
+    }
+
+    // ---------------- 引擎切换 ----------------
+    AppModalBottomSheet(
+        show = showEngineSheet,
+        onDismissRequest = { showEngineSheet = false },
+        title = "切换朗读引擎",
+    ) {
+        engineOptions.forEach { opt ->
+            val current = (opt.value == null && engineValue.isNullOrBlank()) ||
+                    (opt.value != null && opt.value == engineValue)
+            TinyClickableSettingItem(
+                title = (if (current) "✓ " else "") + opt.label,
+                onClick = {
+                    showEngineSheet = false
+                    pendingEngine = opt
+                    showScopeDialog = true
+                },
+            )
+        }
+    }
+
+    AppAlertDialog(
+        show = showScopeDialog,
+        onDismissRequest = {
+            showScopeDialog = false
+            pendingEngine = null
+        },
+        title = stringResource(R.string.read_aloud_default_engine),
+        text = stringResource(R.string.speak_engine_apply_scope),
+        confirmText = stringResource(R.string.general),
+        onConfirm = {
+            val opt = pendingEngine ?: return@AppAlertDialog
+            showScopeDialog = false
+            pendingEngine = null
+            scope.launch {
+                val msg = repo.applyEngine(opt.value, forBook = false)
+                context.toastOnUi(msg)
+                reload()
+            }
+        },
+        dismissText = stringResource(R.string.book),
+        onDismiss = {
+            val opt = pendingEngine ?: return@AppAlertDialog
+            showScopeDialog = false
+            pendingEngine = null
+            scope.launch {
+                val msg = repo.applyEngine(opt.value, forBook = true)
+                context.toastOnUi(msg)
+                reload()
+            }
+        },
+    )
+
+    // ---------------- 删除确认（单条） ----------------
+    AppAlertDialog(
+        show = showDeleteEntry != null,
+        onDismissRequest = { showDeleteEntry = null },
+        title = "删除声线配置",
+        text = "确认删除 [${showDeleteEntry?.tag.orEmpty()}] ${showDeleteEntry?.displayName.orEmpty()} ？",
+        confirmText = "删除",
+        onConfirm = {
+            val e = showDeleteEntry ?: return@AppAlertDialog
+            showDeleteEntry = null
+            scope.launch {
+                repo.deleteEntry(e.tagRuleId, e.tag)
+                context.toastOnUi("已删除")
+                reload()
+            }
+        },
+        dismissText = "取消",
+        onDismiss = { showDeleteEntry = null },
+    )
+
+    // ---------------- 重命名（条目/分组） ----------------
+    AppAlertDialog(
+        show = renameTarget != null,
+        onDismissRequest = { renameTarget = null },
+        title = "重命名声线",
+        text = "当前：${renameTarget?.displayName.orEmpty()}",
+        content = {
+            AppTextField(
+                value = renameText,
+                onValueChange = { renameText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "新显示名",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            val e = renameTarget ?: return@AppAlertDialog
+            val name = renameText.trim()
+            renameTarget = null
+            if (name.isNotBlank()) {
+                scope.launch {
+                    val ok = repo.renameEntry(e.tagRuleId, e.tag, name)
+                    context.toastOnUi(if (ok) "已重命名" else "未找到条目")
+                    reload()
+                }
+            }
+        },
+        dismissText = "取消",
+        onDismiss = { renameTarget = null },
+    )
+
+    AppAlertDialog(
+        show = renameGroupTarget != null,
+        onDismissRequest = { renameGroupTarget = null },
+        title = "重命名分组：${renameGroupTarget.orEmpty()}",
+        content = {
+            AppTextField(
+                value = renameGroupText,
+                onValueChange = { renameGroupText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "新分组名",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            val old = renameGroupTarget ?: return@AppAlertDialog
+            renameGroupTarget = null
+            scope.launch {
+                val ok = repo.renameGroup(old, renameGroupText.trim())
+                context.toastOnUi(if (ok) "已重命名" else "未找到分组")
+                reload()
+            }
+        },
+        dismissText = "取消",
+        onDismiss = { renameGroupTarget = null },
+    )
+
+    // ---------------- 详情/结果 ----------------
+    LogDetailSheet(
+        show = detailText != null,
+        title = detailTitle,
+        content = detailText.orEmpty(),
+        onDismissRequest = { detailText = null },
+    )
+}
+
+/**
+ * 层级行（组 / 二级分类 / 声线）：原版箭头（KeyboardArrowDown 旋转）、方框、长按多选
+ */
+@Composable
+private fun LevelRow(
+    title: String,
+    subtitle: String? = null,
+    arrowExpanded: Boolean? = null,
+    indent: Dp = 0.dp,
+    modifier: Modifier = Modifier,
+    selActive: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    val rotation by animateFloatAsState(
+        targetValue = if (arrowExpanded == true) 0f else -90f,
+        label = "levelArrow",
+    )
+    GlassCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = indent),
+        cornerRadius = 12.dp,
+        containerColor = if (selected) {
+            LegadoTheme.colorScheme.secondaryContainer
+        } else {
+            LegadoTheme.colorScheme.surfaceContainer
+        },
+        onClick = onClick,
+        onLongClick = onLongClick,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (selActive) {
+                AppCheckbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    includeStateSemantics = false,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                AppText(
+                    text = title,
+                    style = LegadoTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                subtitle?.let {
+                    AppText(
+                        text = it,
+                        style = LegadoTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            trailing?.invoke()
+            if (arrowExpanded != null) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.rotate(rotation),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetField(label: String, value: String, onChange: (String) -> Unit) {
+    AppTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = Modifier.fillMaxWidth(),
+        label = label,
+        singleLine = true,
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+}

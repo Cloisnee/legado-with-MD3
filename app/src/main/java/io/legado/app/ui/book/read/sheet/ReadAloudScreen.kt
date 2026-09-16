@@ -355,11 +355,6 @@ fun ReadAloudContent(
                 onClick = onGoToBackground,
             )
             ActionButton(
-                icon = Icons.Default.Settings,
-                label = stringResource(R.string.setting),
-                onClick = onShowReadAloudConfig,
-            )
-            ActionButton(
                 icon = Icons.Default.Headphones,
                 label = stringResource(R.string.switch_to_read_aloud_player),
                 onClick = { onIntent(ReadBookIntent.OpenReadAloudPlayer) },

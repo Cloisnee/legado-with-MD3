@@ -47,7 +47,9 @@ import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
+import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
+import io.legado.app.ui.widget.components.settingItem.ClickableSettingItem
 import io.legado.app.ui.widget.components.button.series.SmallTonalButton
 import io.legado.app.ui.widget.components.card.NormalCard
 import io.legado.app.ui.widget.components.card.TextCard
@@ -77,6 +79,7 @@ private data class BookCacheManageListState(
 @Composable
 fun BookCacheManageRouteScreen(
     onBackClick: () -> Unit,
+    onOpenTtsAudioCache: () -> Unit = {},
     viewModel: BookCacheManageViewModel = koinViewModel()
 ) {
     LaunchedEffect(Unit) {
@@ -94,7 +97,8 @@ fun BookCacheManageRouteScreen(
     BookCacheManageScreen(
         state = state,
         onBackClick = onBackClick,
-        onIntent = viewModel::onIntent
+        onIntent = viewModel::onIntent,
+        onOpenTtsAudioCache = onOpenTtsAudioCache,
     )
 }
 
@@ -104,6 +108,7 @@ private fun BookCacheManageScreen(
     state: BookCacheManageUiState,
     onBackClick: () -> Unit,
     onIntent: (BookCacheManageIntent) -> Unit,
+    onOpenTtsAudioCache: () -> Unit = {},
 ) {
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
     var pendingDeleteBook by remember { mutableStateOf<BookCacheBookItem?>(null) }
@@ -238,6 +243,15 @@ private fun BookCacheManageScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                item(key = "tts_audio_cache_entry") {
+                    SplicedColumnGroup {
+                        ClickableSettingItem(
+                            title = "朗读音频缓存",
+                            description = "管理 TTS 合成产生的音频文件",
+                            onClick = { onOpenTtsAudioCache() }
+                        )
+                    }
+                }
                 cacheSection(
                     title = bookshelfSectionTitle,
                     emptyText = bookshelfSectionEmptyText,

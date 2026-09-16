@@ -171,6 +171,10 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val cloudTtsAudioSynthesizer by lazy {
         CloudTtsAudioSynthesizer(get(CloudTtsEngineGateway::class.java))
     }
+    // [TTS-Server 移植] 内嵌引擎合成器（engineType = tts_server）
+    private val ttsServerSynthesizer by lazy {
+        com.github.jing332.tts.readaloud.TtsServerSynthesizer(this)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -302,6 +306,19 @@ class HttpReadAloudService : BaseReadAloudService(),
                                     }
                                 }
 
+                                ReadAloudVoice.ENGINE_TTS_SERVER -> {
+                                    val output = getSpeakFileAsMd5(fileName)
+                                    if (!ttsServerSynthesizer.synthesize(
+                                            routedVoice.engineId,
+                                            routedVoice.speakerId,
+                                            speakText,
+                                            output,
+                                        )
+                                    ) {
+                                        createSilentSound(fileName)
+                                    }
+                                }
+
                                 ReadAloudVoice.ENGINE_CLOUD -> {
                                     val output = getSpeakFileAsMd5(fileName)
                                     if (!cloudTtsAudioSynthesizer.synthesize(
@@ -336,6 +353,9 @@ class HttpReadAloudService : BaseReadAloudService(),
                     }
                     if (speakText.isNotEmpty() && hasSpeakFile(fileName)) {
                         writeTextIndexEntry(fileName, speakText)
+                        writeCacheMetaEntry(
+                            fileName, speakText, ReadBook.book?.durChapterTitle.orEmpty()
+                        )
                     }
                     val file = getSpeakFileAsMd5(fileName)
                     val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
@@ -533,6 +553,16 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
         val success = runCatching {
             when (routedVoice.engineType) {
+                ReadAloudVoice.ENGINE_TTS_SERVER -> {
+                    val output = getSpeakFileAsMd5(fileName)
+                    ttsServerSynthesizer.synthesize(
+                        routedVoice.engineId,
+                        routedVoice.speakerId,
+                        speakText,
+                        output,
+                    )
+                }
+
                 ReadAloudVoice.ENGINE_CLOUD -> {
                     val output = getSpeakFileAsMd5(fileName)
                     cloudTtsAudioSynthesizer.synthesize(
@@ -568,6 +598,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
         if (success && speakText.isNotEmpty()) {
             writeTextIndexEntry(fileName, speakText)
+            writeCacheMetaEntry(fileName, speakText, chapterTitle)
         }
         return success
     }
@@ -600,6 +631,32 @@ class HttpReadAloudService : BaseReadAloudService(),
                 indexFile.writeText(buildIndexJson(trimmed))
             } else {
                 indexFile.writeText(buildIndexJson(index))
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** [TTS-Server 移植] 追加朗读音频缓存元数据（jsonl：文件名 -> 书 / 章节 / 文本） */
+    private fun writeCacheMetaEntry(fileName: String, text: String, chapterTitle: String) {
+        try {
+            val baseDir = externalCacheDir ?: cacheDir
+            val dir = File(baseDir, "httpTTS").apply { mkdirs() }
+            val metaFile = File(dir, "tts_cache_meta.jsonl")
+            val book = ReadBook.book
+            val shortText = if (text.length > 200) text.substring(0, 200) + "…" else text
+            fun esc(s: String): String = s
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+            val line = "{\"f\":\"" + esc(fileName) + "\",\"b\":\"" + esc(book?.name.orEmpty()) +
+                    "\",\"u\":\"" + esc(book?.bookUrl.orEmpty()) + "\",\"c\":\"" + esc(chapterTitle) +
+                    "\",\"t\":\"" + esc(shortText) + "\"}"
+            metaFile.appendText(line + "\n")
+            runCatching {
+                val lines = metaFile.readLines()
+                if (lines.size > 4000) {
+                    metaFile.writeText(lines.takeLast(4000).joinToString("\n", postfix = "\n"))
+                }
             }
         } catch (_: Exception) {
         }
@@ -743,7 +800,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                         return@async
                     }
                     val cue = prepared.queue.cues.getOrNull(index)
-                    if (routedVoice.engineType == ReadAloudVoice.ENGINE_CLOUD) {
+                    if (routedVoice.engineType == ReadAloudVoice.ENGINE_CLOUD ||
+                        routedVoice.engineType == ReadAloudVoice.ENGINE_TTS_SERVER) {
                         val sourceKey = sourceKeyForCue(routedVoice, cue, httpTts)
                         val fileName = md5SpeakFileName(
                             content, prepared.chapterTitle, sourceKey = sourceKey,
@@ -916,6 +974,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             setOf(
                 ReadAloudVoice.ENGINE_SYSTEM,
                 ReadAloudVoice.ENGINE_CLOUD,
+                ReadAloudVoice.ENGINE_TTS_SERVER,
             )
     }
 
@@ -942,6 +1001,10 @@ class HttpReadAloudService : BaseReadAloudService(),
                         "${characterPerformance?.updatedAt.orZero()}:" +
                         "${CloudTtsRoleInstructionMapper.VERSION}:" +
                         cueRoleType.storageValue
+
+            ReadAloudVoice.ENGINE_TTS_SERVER ->
+                "tts_server:${routedVoice.id}:${routedVoice.revision}:" +
+                        "${routedVoice.engineId}:${routedVoice.speakerId}:$cueEmotion"
 
             else -> {
                 val itemHttpTts = routedVoice.engineId.toLongOrNull()
@@ -970,6 +1033,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 ReadAloudVoice.ENGINE_HTTP,
                 ReadAloudVoice.ENGINE_SYSTEM,
                 ReadAloudVoice.ENGINE_CLOUD,
+                ReadAloudVoice.ENGINE_TTS_SERVER,
             ),
             defaultRoute = SpeechEngineRoute(
                 engineType = ReadAloud.coordinatorDefaultEngineType,

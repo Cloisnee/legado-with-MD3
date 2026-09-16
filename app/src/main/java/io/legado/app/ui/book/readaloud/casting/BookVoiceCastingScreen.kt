@@ -345,6 +345,7 @@ private fun voiceDescription(voice: VoiceOptionUi): String {
     val engineType = when (voice.engineType) {
         ReadAloudVoice.ENGINE_SYSTEM -> stringResource(R.string.system_tts)
         ReadAloudVoice.ENGINE_HTTP -> stringResource(R.string.http_tts)
+        ReadAloudVoice.ENGINE_TTS_SERVER -> "TTS Server(内嵌)"
         else -> voice.engineType
     }
     return if (voice.selectable) {

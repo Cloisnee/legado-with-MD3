@@ -75,21 +75,10 @@ fun TtsCacheScreen(
                 navigationIcon = {
                     TopBarNavigationButton(onClick = onBackClick)
                 },
-                bottomContent = {
-                    AppTabRow(
-                        tabTitles = listOf(
-                            stringResource(R.string.tts_cache_tab_files),
-                            stringResource(R.string.tts_cache_tab_logs),
-                        ),
-                        selectedTabIndex = state.selectedTab.ordinal,
-                        onTabSelected = { onIntent(TtsCacheIntent.SelectTab(TtsCacheTab.entries[it])) },
-                        isScrollable = false,
-                    )
-                }
             )
         },
         floatingActionButton = {
-            if (state.selectedTab == TtsCacheTab.Files && state.files.isNotEmpty()) {
+            if (false) {
                 AppFloatingActionButton(
                     onClick = { onIntent(TtsCacheIntent.ShowClearAllDialog) },
                     icon = Icons.Default.DeleteSweep,
@@ -105,7 +94,7 @@ fun TtsCacheScreen(
                 bottom = paddingValues.calculateBottomPadding() + 96.dp,
             ),
         ) {
-            if (state.selectedTab == TtsCacheTab.Files) {
+            if (false) {
                 item {
                     val sizeText = TtsCacheViewModel.formatSize(state.totalSizeBytes)
                     val countText =
