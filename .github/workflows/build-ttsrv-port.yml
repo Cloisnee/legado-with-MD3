@@ -45,7 +45,8 @@ jobs:
 
       - name: Unzip TTS-Server overlay
         run: |
-          unzip -o ttsrv-port-overlay.zip -d "$GITHUB_WORKSPACE"
+          # -n：只补缺失文件，绝不覆盖仓库现有文件（v1.25+ 仓库即真源，overlay 仅作回退种子）
+          unzip -n ttsrv-port-overlay.zip -d "$GITHUB_WORKSPACE"
           echo "---- modules ----"
           ls -la modules
 
