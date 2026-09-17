@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -192,6 +193,12 @@ fun MyScreen(
                     description = "查看朗读 / 合成操作日志",
                     imageVector = Icons.Default.History,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
+                )
+                ClickableSettingItem(
+                    title = "模型管理",
+                    description = "AI 服务商 / 模型 / 阶段配额与轮换",
+                    imageVector = Icons.Default.Tune,
+                    onClick = { onNavigate(PrefClickEvent.OpenAiModelManage) }
                 )
             }
 

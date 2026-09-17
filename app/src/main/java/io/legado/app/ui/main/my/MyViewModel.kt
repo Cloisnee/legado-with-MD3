@@ -30,6 +30,7 @@ sealed class PrefClickEvent {
     object OpenTtsServerCenter : PrefClickEvent()
     object OpenReadAloudLogs : PrefClickEvent()
     object OpenReadAloudSettings : PrefClickEvent()
+    object OpenAiModelManage : PrefClickEvent()
     object OpenBookSourceManage : PrefClickEvent()
     object OpenHighlightTagRule : PrefClickEvent()
     object OpenAbout : PrefClickEvent()

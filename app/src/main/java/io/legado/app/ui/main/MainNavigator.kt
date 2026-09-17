@@ -118,6 +118,7 @@ object MainNavigator {
             MainRouteTtsServerCenter,
             MainRouteTtsAudioCache,
             MainRouteReadAloudSettings,
+            MainRouteAiModelManage,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (

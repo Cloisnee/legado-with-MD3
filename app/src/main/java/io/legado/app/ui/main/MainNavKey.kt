@@ -203,6 +203,9 @@ data object MainRouteTtsAudioCache : MainRoute
 data object MainRouteReadAloudSettings : MainRoute
 
 @Serializable
+data object MainRouteAiModelManage : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute

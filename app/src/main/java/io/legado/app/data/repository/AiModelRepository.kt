@@ -1,0 +1,227 @@
+package io.legado.app.data.repository
+
+import android.app.Application
+import com.github.jing332.compat.fs.TtsDirProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * 朗读分析 · AI 模型管理（复刻自研插件「厂商模式模型管理」的存储层）。
+ *
+ * 结构（_store/ai_models.json）：
+ *  providers：[{id,name,baseUrl,apiKey,protocol,enabled}]
+ *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs}]
+ *  stages   ：{stage1:[modelId...], stage2:[...], stage4:[...], emotion:[...]}
+ *   - requestAttempts：响应尝试次数（超时/HTTP错/非JSON → 算一次），1=只试一次
+ *   - validateRetries：内容校验重试次数（JSON合法但字段不符 → 算一次）
+ */
+data class AiProvider(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val protocol: String = "openai",
+    val enabled: Boolean = true,
+)
+
+data class AiModelEntry(
+    val id: String,
+    val providerId: String,
+    val name: String,
+    val modelId: String,
+    val enabled: Boolean = true,
+    val requestAttempts: Int = 2,
+    val validateRetries: Int = 2,
+    val timeoutMs: Long = 120_000L,
+)
+
+data class AiStageAssignments(
+    val stage1: List<String> = emptyList(),
+    val stage2: List<String> = emptyList(),
+    val stage4: List<String> = emptyList(),
+    val emotion: List<String> = emptyList(),
+)
+
+data class AiModelsConfig(
+    val providers: List<AiProvider> = emptyList(),
+    val models: List<AiModelEntry> = emptyList(),
+    val stages: AiStageAssignments = AiStageAssignments(),
+)
+
+class AiModelRepository(private val app: Application) {
+
+    private fun file(): File =
+        File(TtsDirProvider.baseDir(app), "_store/ai_models.json")
+
+    suspend fun load(): AiModelsConfig = withContext(Dispatchers.IO) {
+        runCatching {
+            val f = file()
+            if (!f.exists()) return@runCatching AiModelsConfig()
+            parse(JSONObject(f.readText().removePrefix("\uFEFF")))
+        }.getOrDefault(AiModelsConfig())
+    }
+
+    private fun parse(o: JSONObject): AiModelsConfig {
+        val providers = buildList {
+            val arr = o.optJSONArray("providers") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val p = arr.optJSONObject(i) ?: continue
+                add(
+                    AiProvider(
+                        id = p.optString("id"),
+                        name = p.optString("name"),
+                        baseUrl = p.optString("baseUrl"),
+                        apiKey = p.optString("apiKey"),
+                        protocol = p.optString("protocol", "openai").ifBlank { "openai" },
+                        enabled = p.optBoolean("enabled", true),
+                    )
+                )
+            }
+        }
+        val models = buildList {
+            val arr = o.optJSONArray("models") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val m = arr.optJSONObject(i) ?: continue
+                add(
+                    AiModelEntry(
+                        id = m.optString("id"),
+                        providerId = m.optString("providerId"),
+                        name = m.optString("name"),
+                        modelId = m.optString("modelId"),
+                        enabled = m.optBoolean("enabled", true),
+                        requestAttempts = m.optInt("requestAttempts", 2).coerceIn(1, 5),
+                        validateRetries = m.optInt("validateRetries", 2).coerceIn(0, 5),
+                        timeoutMs = m.optLong("timeoutMs", 120_000L).coerceIn(5_000L, 600_000L),
+                    )
+                )
+            }
+        }
+        val stagesObj = o.optJSONObject("stages") ?: JSONObject()
+        fun ids(key: String): List<String> {
+            val arr = stagesObj.optJSONArray(key) ?: return emptyList()
+            return buildList {
+                for (i in 0 until arr.length()) {
+                    val v = arr.optString(i)
+                    if (v.isNotBlank()) add(v)
+                }
+            }
+        }
+        return AiModelsConfig(
+            providers = providers,
+            models = models,
+            stages = AiStageAssignments(
+                stage1 = ids("stage1"),
+                stage2 = ids("stage2"),
+                stage4 = ids("stage4"),
+                emotion = ids("emotion"),
+            ),
+        )
+    }
+
+    suspend fun save(cfg: AiModelsConfig): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject()
+            val pArr = JSONArray()
+            cfg.providers.forEach { p ->
+                pArr.put(JSONObject().apply {
+                    put("id", p.id); put("name", p.name); put("baseUrl", p.baseUrl)
+                    put("apiKey", p.apiKey); put("protocol", p.protocol); put("enabled", p.enabled)
+                })
+            }
+            o.put("providers", pArr)
+            val mArr = JSONArray()
+            cfg.models.forEach { m ->
+                mArr.put(JSONObject().apply {
+                    put("id", m.id); put("providerId", m.providerId); put("name", m.name)
+                    put("modelId", m.modelId); put("enabled", m.enabled)
+                    put("requestAttempts", m.requestAttempts)
+                    put("validateRetries", m.validateRetries)
+                    put("timeoutMs", m.timeoutMs)
+                })
+            }
+            o.put("models", mArr)
+            o.put("stages", JSONObject().apply {
+                put("stage1", JSONArray(cfg.stages.stage1))
+                put("stage2", JSONArray(cfg.stages.stage2))
+                put("stage4", JSONArray(cfg.stages.stage4))
+                put("emotion", JSONArray(cfg.stages.emotion))
+            })
+            val f = file()
+            f.parentFile?.mkdirs()
+            f.writeText(o.toString())
+            true
+        }.getOrDefault(false)
+    }
+
+    // ---------------- provider / model 增删改 ----------------
+
+    suspend fun upsertProvider(p: AiProvider): Boolean {
+        val cfg = load()
+        val id = p.id.ifBlank { "p_${System.currentTimeMillis()}" }
+        val newP = p.copy(id = id)
+        val list = cfg.providers.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx >= 0) list[idx] = newP else list.add(newP)
+        return save(cfg.copy(providers = list))
+    }
+
+    suspend fun deleteProvider(id: String): Boolean {
+        val cfg = load()
+        val modelIds = cfg.models.filter { it.providerId == id }.map { it.id }.toSet()
+        return save(
+            cfg.copy(
+                providers = cfg.providers.filterNot { it.id == id },
+                models = cfg.models.filterNot { it.providerId == id },
+                stages = cfg.stages.copy(
+                    stage1 = cfg.stages.stage1.filterNot { it in modelIds },
+                    stage2 = cfg.stages.stage2.filterNot { it in modelIds },
+                    stage4 = cfg.stages.stage4.filterNot { it in modelIds },
+                    emotion = cfg.stages.emotion.filterNot { it in modelIds },
+                ),
+            )
+        )
+    }
+
+    suspend fun upsertModel(m: AiModelEntry): Boolean {
+        val cfg = load()
+        val id = m.id.ifBlank { "m_${System.currentTimeMillis()}" }
+        val newM = m.copy(id = id)
+        val list = cfg.models.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx >= 0) list[idx] = newM else list.add(newM)
+        return save(cfg.copy(models = list))
+    }
+
+    suspend fun deleteModel(id: String): Boolean {
+        val cfg = load()
+        return save(
+            cfg.copy(
+                models = cfg.models.filterNot { it.id == id },
+                stages = cfg.stages.copy(
+                    stage1 = cfg.stages.stage1.filterNot { it == id },
+                    stage2 = cfg.stages.stage2.filterNot { it == id },
+                    stage4 = cfg.stages.stage4.filterNot { it == id },
+                    emotion = cfg.stages.emotion.filterNot { it == id },
+                ),
+            )
+        )
+    }
+
+    // ---------------- 阶段分配 ----------------
+
+    suspend fun updateStage(stageKey: String, ids: List<String>): Boolean {
+        val cfg = load()
+        val s = cfg.stages
+        val newStages = when (stageKey) {
+            "stage1" -> s.copy(stage1 = ids)
+            "stage2" -> s.copy(stage2 = ids)
+            "stage4" -> s.copy(stage4 = ids)
+            "emotion" -> s.copy(emotion = ids)
+            else -> return false
+        }
+        return save(cfg.copy(stages = newStages))
+    }
+}
