@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -205,6 +206,12 @@ fun MyScreen(
                     description = "书籍角色 · 声线 · 合并 / 别名",
                     imageVector = Icons.Default.Person,
                     onClick = { onNavigate(PrefClickEvent.OpenCharacterManage) }
+                )
+                ClickableSettingItem(
+                    title = "书籍管理",
+                    description = "剧本查看 · 改标签 / 章节管理",
+                    imageVector = Icons.Default.MenuBook,
+                    onClick = { onNavigate(PrefClickEvent.OpenBookManage) }
                 )
                 ClickableSettingItem(
                     title = stringResource(R.string.tts_cache_manage),

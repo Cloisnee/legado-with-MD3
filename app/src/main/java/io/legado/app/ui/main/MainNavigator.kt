@@ -120,6 +120,7 @@ object MainNavigator {
             MainRouteReadAloudSettings,
             MainRouteAiModelManage,
             MainRouteCharacterManage,
+            MainRouteBookManage,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (

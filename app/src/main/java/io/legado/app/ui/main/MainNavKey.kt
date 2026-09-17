@@ -209,6 +209,9 @@ data object MainRouteAiModelManage : MainRoute
 data object MainRouteCharacterManage : MainRoute
 
 @Serializable
+data object MainRouteBookManage : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute

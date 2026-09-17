@@ -43,6 +43,12 @@ data class ReplayResult(
     val viaWords: List<String>,
 )
 
+data class ScriptLineRow(
+    val absIndex: Int,
+    val speaker: String,
+    val text: String,
+)
+
 class ReadAloudDataRepository(private val app: Application) {
 
     companion object {
@@ -552,6 +558,246 @@ class ReadAloudDataRepository(private val app: Application) {
                 CHAPTER_MARKER.find(l)?.groupValues?.get(1)?.toIntOrNull()?.let { if (it !in this) add(it) }
             }
         }.sorted()
+    }
+
+    // ---------------- 书籍管理：剧本读取 / 修改 / 删除 ----------------
+
+    private fun writeBookRev(book: String, chapter: Int) {
+        writeText(
+            bookFile(book, "book_rev.json"),
+            JSONObject().apply {
+                put("ts", System.currentTimeMillis())
+                put("chapter", chapter)
+            }.toString()
+        )
+    }
+
+    /** 读取某章的剧本行（absIndex=整书文件行号，供修改定位） */
+    suspend fun loadChapterScript(book: String, chapter: Int): List<ScriptLineRow> =
+        withContext(Dispatchers.IO) {
+            val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
+            if (txt.isEmpty()) return@withContext emptyList()
+            val lines = txt.split("\n")
+            var start = -1
+            var end = lines.size
+            for (i in lines.indices) {
+                val m = CHAPTER_MARKER.find(lines[i]) ?: continue
+                val ch = m.groupValues[1].toIntOrNull() ?: continue
+                if (ch == chapter) {
+                    start = i
+                } else if (start >= 0 && i > start) {
+                    end = i
+                    break
+                }
+            }
+            if (start < 0) return@withContext emptyList()
+            buildList {
+                for (i in start + 1 until end) {
+                    val raw = lines[i]
+                    if (raw.isBlank()) continue
+                    val spk = speakerOf(raw)
+                    val close = raw.indexOf('〗', 1)
+                    val rest = if (spk != null && close != -1) raw.substring(close + 1) else raw
+                    add(
+                        ScriptLineRow(
+                            absIndex = i,
+                            speaker = spk.orEmpty(),
+                            text = stripEmoRest(rest),
+                        )
+                    )
+                }
+            }
+        }
+
+    /** 修改某章若干行的说话标记；同步 chapter_cache 该章 scriptText；剔除该章合并账本 op；写 book_rev */
+    suspend fun rewriteChapterSpeakers(
+        book: String,
+        chapter: Int,
+        changes: Map<Int, String>,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (changes.isEmpty()) return@withContext false
+        val f = bookFile(book, "all_clean_text_$book.txt")
+        val txt = readText(f)
+        if (txt.isEmpty()) return@withContext false
+        val lines = txt.split("\n").toMutableList()
+        var start = -1
+        var end = lines.size
+        for (i in lines.indices) {
+            val m = CHAPTER_MARKER.find(lines[i]) ?: continue
+            val ch = m.groupValues[1].toIntOrNull() ?: continue
+            if (ch == chapter) {
+                start = i
+            } else if (start >= 0 && i > start) {
+                end = i
+                break
+            }
+        }
+        if (start < 0) return@withContext false
+        var changed = 0
+        changes.forEach chgLoop@{ (absIdx, newSpk) ->
+            if (absIdx <= start || absIdx >= end) return@chgLoop
+            val line = lines.getOrNull(absIdx) ?: return@chgLoop
+            val close = line.indexOf('〗', 1)
+            if (!line.startsWith("〖") || close == -1) return@chgLoop
+            lines[absIdx] = "〖$newSpk〗" + line.substring(close + 1)
+            changed++
+        }
+        if (changed == 0) return@withContext false
+        writeText(f, lines.joinToString("\n"))
+        // 同步 chapter_cache 该章 scriptText
+        runCatching {
+            val cacheFile = bookFile(book, "chapter_cache.$book.json")
+            val raw = readText(cacheFile)
+            if (raw.isNotEmpty()) {
+                val cache = JSONObject(raw)
+                val keys = buildList { val it = cache.keys(); while (it.hasNext()) add(it.next()) }
+                var t = 0
+                keys.forEach keyLoop@{ key ->
+                    val parts = key.split("|")
+                    if (parts.size < 2 || parts.last() != chapter.toString()) return@keyLoop
+                    val c = cache.optJSONObject(key) ?: return@keyLoop
+                    val script = c.optString("scriptText")
+                    if (script.isEmpty()) return@keyLoop
+                    val body = script.split("\n").toMutableList()
+                    changes.forEach chg2@{ (absIdx, newSpk) ->
+                        val rel = absIdx - (start + 1)
+                        if (rel < 0 || rel >= body.size) return@chg2
+                        val line = body[rel]
+                        val close = line.indexOf('〗', 1)
+                        if (!line.startsWith("〖") || close == -1) return@chg2
+                        body[rel] = "〖$newSpk〗" + line.substring(close + 1)
+                        t++
+                    }
+                    c.put("scriptText", body.joinToString("\n"))
+                }
+                if (t > 0) writeText(cacheFile, cache.toString())
+            }
+        }
+        // 剔除该章合并账本 op（人物记录不动）
+        runCatching {
+            val ops = readMergeLog(book)
+            val kept = ops.filterNot { it.optInt("chapter", -1) == chapter }
+            if (kept.size != ops.size) writeMergeLog(book, kept)
+        }
+        writeBookRev(book, chapter)
+        true
+    }
+
+    /** 删除章节剧本：轻量=剧本+缓存+状态；回滚=另含 合并账本/人物逆向（用于"接续到末尾的连续章"） */
+    suspend fun deleteChapterScripts(
+        book: String,
+        chapters: Set<Int>,
+        rollback: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (chapters.isEmpty()) return@withContext false
+        val f = bookFile(book, "all_clean_text_$book.txt")
+        val txt = readText(f)
+        var changed = false
+        if (txt.isNotEmpty()) {
+            val lines = txt.split("\n")
+            val kept = mutableListOf<String>()
+            var cur = -1
+            lines.forEach lineLoop@{ l ->
+                val m = CHAPTER_MARKER.find(l)
+                if (m != null) {
+                    cur = m.groupValues[1].toIntOrNull() ?: -1
+                    if (cur in chapters) {
+                        changed = true
+                        return@lineLoop
+                    }
+                }
+                if (cur in chapters) {
+                    changed = true
+                    return@lineLoop
+                }
+                kept.add(l)
+            }
+            if (changed) writeText(f, kept.joinToString("\n"))
+        }
+        // 缓存
+        runCatching {
+            val cacheFile = bookFile(book, "chapter_cache.$book.json")
+            val raw = readText(cacheFile)
+            if (raw.isNotEmpty()) {
+                val cache = JSONObject(raw)
+                val keys = buildList { val it = cache.keys(); while (it.hasNext()) add(it.next()) }
+                keys.forEach { key ->
+                    val ch = key.split("|").lastOrNull()?.toIntOrNull() ?: return@forEach
+                    if (ch in chapters) cache.remove(key)
+                }
+                writeText(cacheFile, cache.toString())
+            }
+        }
+        // 合并账本（回滚时剔除并做人物逆向）
+        runCatching {
+            val ops = readMergeLog(book)
+            if (rollback) {
+                val removed = ops.filter { it.optInt("chapter", -1) in chapters }
+                val kept = ops.filterNot { it.optInt("chapter", -1) in chapters }
+                if (removed.isNotEmpty()) {
+                    writeMergeLog(book, kept)
+                    rollbackCharacters(book, removed, chapters)
+                }
+            }
+        }
+        writeBookRev(book, chapters.minOrNull() ?: -1)
+        true
+    }
+
+    /** 人物逆向：按被删合并账本回退别名/重建被合并角色，并按删除章清理出场数组 */
+    private fun rollbackCharacters(
+        book: String,
+        removedOps: List<JSONObject>,
+        deletedChapters: Set<Int>,
+    ) {
+        runCatching {
+            val current = parseRecords(readText(bookFile(book, "shuming.$book.json"))).toMutableList()
+            removedOps.forEach opLoop@{ op ->
+                if (op.optString("status") != "active") return@opLoop
+                val from = op.optString("from")
+                val to = op.optString("to")
+                if (from.isBlank() || to.isBlank() || from == to) return@opLoop
+                val extra = mutableListOf<String>()
+                op.optJSONArray("aliases")?.let { a ->
+                    for (i in 0 until a.length()) {
+                        a.optString(i).takeIf { it.isNotBlank() }?.let(extra::add)
+                    }
+                }
+                current.firstOrNull { it.name == to }?.let { target ->
+                    target.aliases = target.aliases.split("|")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .filterNot { it == from || it in extra }
+                        .joinToString("|")
+                }
+                if (current.none { it.name == from }) {
+                    current.add(
+                        CharacterRecord(
+                            name = from,
+                            aliases = extra.joinToString("|"),
+                            roletype = if (from.contains("【第")) "路人" else "核心",
+                            gender = "男",
+                            age = "男青年",
+                        )
+                    )
+                }
+            }
+            val iter = current.iterator()
+            while (iter.hasNext()) {
+                val r = iter.next()
+                val had = r.appearanceChapters.isNotEmpty()
+                r.appearanceChapters.removeAll { it in deletedChapters }
+                r.lastAppearanceChapter = r.appearanceChapters.maxOrNull() ?: -1
+                r.appearanceCount = r.appearanceChapters.size
+                if (had && r.appearanceChapters.isEmpty() && r.lastAppearanceChapter < 0) {
+                    iter.remove()
+                }
+            }
+            val json = recordsJson(current)
+            writeText(bookFile(book, "shuming.$book.json"), json)
+            writeText(rootFile("characterRecords.json"), json)
+            writeText(rootFile("characterRecords_backup.json"), json)
+        }
     }
 
     // ---------------- 配音前缀工具 ----------------
