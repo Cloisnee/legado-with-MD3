@@ -174,6 +174,17 @@ fun MyScreen(
             }
 
             SplicedColumnGroup(
+                title = "AI 服务"
+            ) {
+                ClickableSettingItem(
+                    title = "模型管理",
+                    description = "服务商 / 模型 / 文本分析阶段配",
+                    imageVector = Icons.Default.Tune,
+                    onClick = { onNavigate(PrefClickEvent.OpenAiModelManage) }
+                )
+            }
+
+            SplicedColumnGroup(
                 title = "朗读"
             ) {
                 ClickableSettingItem(
@@ -193,12 +204,6 @@ fun MyScreen(
                     description = "查看朗读 / 合成操作日志",
                     imageVector = Icons.Default.History,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
-                )
-                ClickableSettingItem(
-                    title = "模型管理",
-                    description = "AI 服务商 / 模型 / 阶段配额与轮换",
-                    imageVector = Icons.Default.Tune,
-                    onClick = { onNavigate(PrefClickEvent.OpenAiModelManage) }
                 )
             }
 

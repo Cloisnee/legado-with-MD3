@@ -1055,6 +1055,31 @@ class TtsServerCenterRepository(private val app: Application) {
             true
         }.getOrDefault(false)
     }
+
+    // ---------------- 当前声线库（配置列表 · 一级分组选中） ----------------
+
+    suspend fun getActiveVoiceBank(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val f = extSettingsFile()
+            if (!f.exists()) null
+            else JSONObject(f.readText().removePrefix("\uFEFF"))
+                .optString("activeVoiceBank").takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
+    suspend fun setActiveVoiceBank(name: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val f = extSettingsFile()
+            val o = if (f.exists()) {
+                runCatching { JSONObject(f.readText().removePrefix("\uFEFF")) }
+                    .getOrElse { JSONObject() }
+            } else JSONObject()
+            if (name.isNullOrBlank()) o.remove("activeVoiceBank") else o.put("activeVoiceBank", name)
+            f.parentFile?.mkdirs()
+            f.writeText(o.toString())
+            true
+        }.getOrDefault(false)
+    }
 }
 
 data class LocaleOption(val id: String, val name: String)

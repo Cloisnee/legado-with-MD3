@@ -27,6 +27,12 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -42,7 +48,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -158,6 +166,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var selGroupNames by remember { mutableStateOf(setOf<String>()) }
     var selCatKeys by remember { mutableStateOf(setOf<String>()) }
     var selGroupContext by remember { mutableStateOf<String?>(null) }
+    var activeBank by remember { mutableStateOf<String?>(null) }
 
     // 插件拖动排序
     var dragOrder by remember { mutableStateOf<List<PluginRow>?>(null) }
@@ -309,7 +318,21 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { reload() }
+    fun switchTab(t: Int) {
+        selectedTab = t
+        query = ""
+        searchMode = false
+        selPlugins = emptySet()
+        selEntries = emptySet()
+        selGroupNames = emptySet()
+        selCatKeys = emptySet()
+        selGroupContext = null
+    }
+
+    LaunchedEffect(Unit) {
+        reload()
+        activeBank = repo.getActiveVoiceBank()
+    }
 
     // 组默认收起（只对首次出现的组设置）
     LaunchedEffect(groups) {
@@ -503,16 +526,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             AppTabRow(
                 tabTitles = listOf("音色插件", "配置列表"),
                 selectedTabIndex = selectedTab,
-                onTabSelected = { t ->
-                    selectedTab = t
-                    query = ""
-                    searchMode = false
-                    selPlugins = emptySet()
-                    selEntries = emptySet()
-                    selGroupNames = emptySet()
-                    selCatKeys = emptySet()
-                    selGroupContext = null
-                },
+                onTabSelected = { t -> switchTab(t) },
                 isScrollable = false,
             )
         },
@@ -569,7 +583,25 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         } else null,
         snackbarHostState = remember { SnackbarHostState() },
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+        var swipeAccum by remember { mutableStateOf(0f) }
+        val swipeState = rememberDraggableState { delta -> swipeAccum += delta }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = swipeState,
+                    onDragStarted = { swipeAccum = 0f },
+                    onDragStopped = {
+                        when {
+                            swipeAccum <= -swipeThresholdPx && selectedTab == 0 -> switchTab(1)
+                            swipeAccum >= swipeThresholdPx && selectedTab == 1 -> switchTab(0)
+                        }
+                        swipeAccum = 0f
+                    },
+                ),
+        ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -711,6 +743,19 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     indent = 0.dp,
                                     selActive = entrySelActive,
                                     selected = gSel,
+                                    trailing = {
+                                        BankTag(
+                                            active = activeBank == g.name,
+                                            onClick = {
+                                                scope.launch {
+                                                    val next =
+                                                        if (activeBank == g.name) null else g.name
+                                                    repo.setActiveVoiceBank(next)
+                                                    activeBank = next
+                                                }
+                                            },
+                                        )
+                                    },
                                     onClick = {
                                         if (entrySelActive) {
                                             if (gSel) {
@@ -1471,6 +1516,34 @@ private fun LevelRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun BankTag(active: Boolean, onClick: () -> Unit) {
+    val bg = if (active) {
+        LegadoTheme.colorScheme.primary
+    } else {
+        LegadoTheme.colorScheme.surfaceVariant
+    }
+    val fg = if (active) {
+        LegadoTheme.colorScheme.onPrimary
+    } else {
+        LegadoTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = Modifier
+            .padding(end = 8.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        AppText(
+            text = if (active) "已选中" else "未选中",
+            style = LegadoTheme.typography.labelSmall,
+            color = fg,
+        )
     }
 }
 
