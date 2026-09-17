@@ -1058,23 +1058,31 @@ class TtsServerCenterRepository(private val app: Application) {
 
     // ---------------- 当前声线库（配置列表 · 一级分组选中） ----------------
 
-    suspend fun getActiveVoiceBank(): String? = withContext(Dispatchers.IO) {
+    /** 当前声线库（多选：多个池同时生效；自动分配只看选中的池，缺标签则走默认声线） */
+    suspend fun getActiveVoiceBanks(): List<String> = withContext(Dispatchers.IO) {
         runCatching {
             val f = extSettingsFile()
-            if (!f.exists()) null
-            else JSONObject(f.readText().removePrefix("\uFEFF"))
-                .optString("activeVoiceBank").takeIf { it.isNotBlank() }
-        }.getOrNull()
+            if (!f.exists()) return@runCatching emptyList()
+            val arr = JSONObject(f.readText().removePrefix("\uFEFF"))
+                .optJSONArray("activeVoiceBanks") ?: return@runCatching emptyList()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val v = arr.optString(i)
+                    if (v.isNotBlank()) add(v)
+                }
+            }
+        }.getOrDefault(emptyList())
     }
 
-    suspend fun setActiveVoiceBank(name: String?): Boolean = withContext(Dispatchers.IO) {
+    suspend fun setActiveVoiceBanks(names: List<String>): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val f = extSettingsFile()
             val o = if (f.exists()) {
                 runCatching { JSONObject(f.readText().removePrefix("\uFEFF")) }
                     .getOrElse { JSONObject() }
             } else JSONObject()
-            if (name.isNullOrBlank()) o.remove("activeVoiceBank") else o.put("activeVoiceBank", name)
+            o.remove("activeVoiceBank")
+            o.put("activeVoiceBanks", org.json.JSONArray(names.distinct()))
             f.parentFile?.mkdirs()
             f.writeText(o.toString())
             true

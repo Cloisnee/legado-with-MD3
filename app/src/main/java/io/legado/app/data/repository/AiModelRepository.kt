@@ -3,6 +3,11 @@ package io.legado.app.data.repository
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import kotlinx.coroutines.Dispatchers
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -158,14 +163,14 @@ class AiModelRepository(private val app: Application) {
 
     // ---------------- provider / model 增删改 ----------------
 
-    suspend fun upsertProvider(p: AiProvider): Boolean {
+    suspend fun upsertProvider(p: AiProvider): String? {
         val cfg = load()
         val id = p.id.ifBlank { "p_${System.currentTimeMillis()}" }
         val newP = p.copy(id = id)
         val list = cfg.providers.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx >= 0) list[idx] = newP else list.add(newP)
-        return save(cfg.copy(providers = list))
+        return if (save(cfg.copy(providers = list))) id else null
     }
 
     suspend fun deleteProvider(id: String): Boolean {
@@ -224,4 +229,181 @@ class AiModelRepository(private val app: Application) {
         }
         return save(cfg.copy(stages = newStages))
     }
+
+    // ---------------- 厂商模型拉取 / 测试 / 批量与排序 ----------------
+
+    /** 拉取厂商模型列表（openai: GET /models Bearer；google: GET /models?key=；claude: GET /models x-api-key） */
+    suspend fun fetchProviderModels(p: AiProvider): Result<List<String>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val base = p.baseUrl.trim().trimEnd('/')
+                require(base.isNotBlank()) { "BaseUrl 为空" }
+                val client = http()
+                val request = when (p.protocol.lowercase()) {
+                    "google" -> Request.Builder()
+                        .url("$base/models?key=${p.apiKey}")
+                        .get()
+                        .build()
+
+                    "claude" -> Request.Builder()
+                        .url("$base/models")
+                        .header("x-api-key", p.apiKey)
+                        .header("anthropic-version", "2023-06-01")
+                        .get()
+                        .build()
+
+                    else -> Request.Builder()
+                        .url("$base/models")
+                        .header("Authorization", "Bearer ${p.apiKey}")
+                        .get()
+                        .build()
+                }
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    require(resp.isSuccessful) { "HTTP ${resp.code}: ${body.take(160)}" }
+                    val root = JSONObject(body)
+                    val arr = when {
+                        root.has("data") -> root.optJSONArray("data")
+                        root.has("models") -> root.optJSONArray("models")
+                        else -> null
+                    } ?: JSONArray()
+                    buildList {
+                        for (i in 0 until arr.length()) {
+                            val o = arr.optJSONObject(i) ?: continue
+                            val id = o.optString("id").ifBlank {
+                                o.optString("name").removePrefix("models/")
+                            }
+                            if (id.isNotBlank()) add(id)
+                        }
+                    }
+                }
+            }
+        }
+
+    /** 单模型连通性测试（最小请求；返回延迟与错误信息） */
+    suspend fun testModel(m: AiModelEntry, p: AiProvider): TestResult =
+        withContext(Dispatchers.IO) {
+            val start = System.currentTimeMillis()
+            try {
+                val base = p.baseUrl.trim().trimEnd('/')
+                require(base.isNotBlank()) { "BaseUrl 为空" }
+                val client = http()
+                val jsonType = "application/json; charset=utf-8".toMediaType()
+                val request = when (p.protocol.lowercase()) {
+                    "google" -> Request.Builder()
+                        .url("$base/models/${m.modelId}:generateContent?key=${p.apiKey}")
+                        .post(
+                            """{"contents":[{"parts":[{"text":"ping"}]}]}"""
+                                .toRequestBody(jsonType)
+                        )
+                        .build()
+
+                    "claude" -> Request.Builder()
+                        .url("$base/messages")
+                        .header("x-api-key", p.apiKey)
+                        .header("anthropic-version", "2023-06-01")
+                        .post(
+                            """{"model":"${m.modelId}","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"""
+                                .toRequestBody(jsonType)
+                        )
+                        .build()
+
+                    else -> Request.Builder()
+                        .url("$base/chat/completions")
+                        .header("Authorization", "Bearer ${p.apiKey}")
+                        .post(
+                            """{"model":"${m.modelId}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}"""
+                                .toRequestBody(jsonType)
+                        )
+                        .build()
+                }
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    val latency = System.currentTimeMillis() - start
+                    if (resp.isSuccessful) {
+                        TestResult(ok = true, latencyMs = latency, message = "")
+                    } else {
+                        TestResult(
+                            ok = false,
+                            latencyMs = latency,
+                            message = "HTTP ${resp.code}: ${body.take(140)}",
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                TestResult(
+                    ok = false,
+                    latencyMs = System.currentTimeMillis() - start,
+                    message = e.localizedMessage ?: e.javaClass.simpleName,
+                )
+            }
+        }
+
+    /** 批量写入厂商模型（已存在则跳过），返回新增数量 */
+    suspend fun addModelsFromProvider(providerId: String, names: List<String>): Int {
+        val cfg = load()
+        val existing =
+            cfg.models.filter { it.providerId == providerId }.map { it.modelId }.toSet()
+        val toAdd = names.distinct().filterNot { it in existing }
+        if (toAdd.isEmpty()) return 0
+        val now = System.currentTimeMillis()
+        val list = cfg.models + toAdd.mapIndexed { i, name ->
+            AiModelEntry(
+                id = "m_${now}_$i",
+                providerId = providerId,
+                name = name,
+                modelId = name,
+            )
+        }
+        save(cfg.copy(models = list))
+        return toAdd.size
+    }
+
+    /** 批量启用/停用（对应"选中/未选中"） */
+    suspend fun setModelsEnabled(ids: Set<String>, enabled: Boolean): Boolean {
+        if (ids.isEmpty()) return false
+        val cfg = load()
+        return save(
+            cfg.copy(
+                models = cfg.models.map { if (it.id in ids) it.copy(enabled = enabled) else it }
+            )
+        )
+    }
+
+    /** 厂商置顶/置底 */
+    suspend fun moveProvider(id: String, toTop: Boolean): Boolean {
+        val cfg = load()
+        val list = cfg.providers.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return false
+        val item = list.removeAt(idx)
+        if (toTop) list.add(0, item) else list.add(item)
+        return save(cfg.copy(providers = list))
+    }
+
+    /** 模型在其厂商内 置顶/置底 */
+    suspend fun moveModel(id: String, toTop: Boolean): Boolean {
+        val cfg = load()
+        val target = cfg.models.firstOrNull { it.id == id } ?: return false
+        val others = cfg.models.toMutableList()
+        val idx = others.indexOfFirst { it.id == id }
+        if (idx < 0) return false
+        val item = others.removeAt(idx)
+        if (toTop) {
+            val firstIdx = others.indexOfFirst { it.providerId == target.providerId }
+            if (firstIdx >= 0) others.add(firstIdx, item) else others.add(item)
+        } else {
+            val lastIdx = others.indexOfLast { it.providerId == target.providerId }
+            if (lastIdx >= 0) others.add(lastIdx + 1, item) else others.add(item)
+        }
+        return save(cfg.copy(models = others))
+    }
+
+    private fun http(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
+        .build()
 }
+
+data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)

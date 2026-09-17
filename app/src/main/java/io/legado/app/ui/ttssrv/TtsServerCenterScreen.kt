@@ -166,7 +166,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var selGroupNames by remember { mutableStateOf(setOf<String>()) }
     var selCatKeys by remember { mutableStateOf(setOf<String>()) }
     var selGroupContext by remember { mutableStateOf<String?>(null) }
-    var activeBank by remember { mutableStateOf<String?>(null) }
+    var activeBanks by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // 插件拖动排序
     var dragOrder by remember { mutableStateOf<List<PluginRow>?>(null) }
@@ -331,7 +331,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         reload()
-        activeBank = repo.getActiveVoiceBank()
+        activeBanks = repo.getActiveVoiceBanks().toSet()
     }
 
     // 组默认收起（只对首次出现的组设置）
@@ -745,13 +745,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     selected = gSel,
                                     trailing = {
                                         BankTag(
-                                            active = activeBank == g.name,
+                                            active = g.name in activeBanks,
                                             onClick = {
                                                 scope.launch {
-                                                    val next =
-                                                        if (activeBank == g.name) null else g.name
-                                                    repo.setActiveVoiceBank(next)
-                                                    activeBank = next
+                                                    val next = if (g.name in activeBanks) {
+                                                        activeBanks - g.name
+                                                    } else {
+                                                        activeBanks + g.name
+                                                    }
+                                                    repo.setActiveVoiceBanks(next.toList())
+                                                    activeBanks = next
                                                 }
                                             },
                                         )
