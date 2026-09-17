@@ -31,6 +31,7 @@ sealed class PrefClickEvent {
     object OpenReadAloudLogs : PrefClickEvent()
     object OpenReadAloudSettings : PrefClickEvent()
     object OpenAiModelManage : PrefClickEvent()
+    object OpenCharacterManage : PrefClickEvent()
     object OpenBookSourceManage : PrefClickEvent()
     object OpenHighlightTagRule : PrefClickEvent()
     object OpenAbout : PrefClickEvent()

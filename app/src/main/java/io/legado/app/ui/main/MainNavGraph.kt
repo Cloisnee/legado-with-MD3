@@ -398,6 +398,9 @@ fun MainActivity.mainEntryProvider(
             onNavigateToAiModelManage = {
                 onNavigateToRoute(MainRouteAiModelManage)
             },
+            onNavigateToCharacterManage = {
+                onNavigateToRoute(MainRouteCharacterManage)
+            },
             onOpenBookshelfBook = { book, sharedCoverKey ->
                 if (book.isAudio) {
                     this@mainEntryProvider.startActivityForBook(book)
@@ -1392,6 +1395,12 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteAiModelManage> {
         io.legado.app.ui.ttssrv.AiModelManageRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteCharacterManage> {
+        io.legado.app.ui.ttssrv.CharacterManageRouteScreen(
             onBackClick = { onNavigateBack() },
         )
     }

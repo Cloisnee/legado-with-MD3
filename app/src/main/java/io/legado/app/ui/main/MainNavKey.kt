@@ -206,6 +206,9 @@ data object MainRouteReadAloudSettings : MainRoute
 data object MainRouteAiModelManage : MainRoute
 
 @Serializable
+data object MainRouteCharacterManage : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute
