@@ -184,10 +184,9 @@ class ReadAloudDataRepository(private val app: Application) {
                     put("voice", r.voice)
                     put("lastAppearanceChapter", r.lastAppearanceChapter)
                     put("appearanceCount", r.appearanceCount)
-                    put(
-                        "appearanceChapters",
-                        JSONArray().apply { r.appearanceChapters.forEach { add(it) } }
-                    )
+                    val chaptersArr = JSONArray()
+                    r.appearanceChapters.forEach { chaptersArr.put(it) }
+                    put("appearanceChapters", chaptersArr)
                     put("usageCount", r.usageCount)
                 }
             )
@@ -211,9 +210,11 @@ class ReadAloudDataRepository(private val app: Application) {
     }
 
     private fun writeMergeLog(book: String, ops: List<JSONObject>) {
+        val opsArr = JSONArray()
+        ops.forEach { opsArr.put(it) }
         writeText(
             bookFile(book, "merge_log.$book.json"),
-            JSONObject().apply { put("ops", JSONArray().apply { ops.forEach { add(it) } }) }.toString()
+            JSONObject().apply { put("ops", opsArr) }.toString()
         )
     }
 
