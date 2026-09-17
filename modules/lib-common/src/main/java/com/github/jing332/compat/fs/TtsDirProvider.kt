@@ -8,13 +8,14 @@ import android.os.Environment
 import java.io.File
 
 /**
- * TTS-Server 数据目录策略（与补丁版兼容）：
- *  1) 首选：/storage/emulated/0/Download/chajian/<pluginId>（授权"所有文件访问"时）
- *  2) 回退：context.filesDir/ttsrv/<pluginId>（未授权或不可写时）
- * 规则与补丁版一致：路径以 "/" 开头时直接拼在引擎根之后（见 JsExtensions.getFile）。
+ * 数据目录策略（本项目）：
+ *  1) 首选：/storage/emulated/0/Download/<包名>（授权"所有文件访问"时；包名动态取，无任何个人/插件烙印）
+ *  2) 回退：context.filesDir/ttsrv（未授权或不可写时）
+ * 规则：路径以 "/" 开头时直接拼在引擎根之后（见 JsExtensions）。
+ * 朗读分析数据另在 <根>/data 子目录（书籍/剧本/角色/词库）。
  */
 object TtsDirProvider {
-    private const val PREFERRED_SEGMENT = "Download/chajian"
+    private const val PREFERRED_ROOT = "Download"
     private const val FALLBACK_SEGMENT = "ttsrv"
 
     @Volatile
@@ -42,7 +43,10 @@ object TtsDirProvider {
     }
 
     private fun resolveBase(context: Context): File {
-        val preferred = File(Environment.getExternalStorageDirectory(), PREFERRED_SEGMENT)
+        val preferred = File(
+            Environment.getExternalStorageDirectory(),
+            "$PREFERRED_ROOT/${context.packageName}"
+        )
         val usable = runCatching {
             canWriteExternal(context) && ensureWritable(preferred)
         }.getOrDefault(false)
