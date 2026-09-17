@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +63,7 @@ import io.legado.app.data.repository.AiProvider
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
+import io.legado.app.ui.widget.components.AdaptiveSwitch
 import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
@@ -128,6 +130,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var libCtx by remember { mutableStateOf<String?>(null) }
     var selVendors by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selModels by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var modelScopeVendor by remember { mutableStateOf<String?>(null) }
     val expandedVendors = remember { mutableStateMapOf<String, Boolean>() }
     val vendorQueries = remember { mutableStateMapOf<String, String>() }
     val testInflight = remember { mutableStateMapOf<String, Boolean>() }
@@ -166,6 +169,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         libCtx = null
         selVendors = emptySet()
         selModels = emptySet()
+        modelScopeVendor = null
         queueCtx = null
         selQueue = emptySet()
     }
@@ -190,7 +194,14 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         when (tab) {
             0 -> when (libCtx) {
                 "vendor" -> selVendors = c.providers.map { it.id }.toSet()
-                "model" -> selModels = c.models.map { it.id }.toSet()
+                "model" -> {
+                    val pid = modelScopeVendor
+                    val scope = c.models
+                        .filter { pid == null || it.providerId == pid }
+                        .map { it.id }
+                        .toSet()
+                    selModels = selModels + scope
+                }
             }
 
             1 -> {
@@ -205,7 +216,14 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         when (tab) {
             0 -> when (libCtx) {
                 "vendor" -> selVendors = c.providers.map { it.id }.toSet() - selVendors
-                "model" -> selModels = c.models.map { it.id }.toSet() - selModels
+                "model" -> {
+                    val pid = modelScopeVendor
+                    val scope = c.models
+                        .filter { pid == null || it.providerId == pid }
+                        .map { it.id }
+                        .toSet()
+                    selModels = (selModels - scope) + (scope - selModels)
+                }
             }
 
             1 -> {
@@ -465,6 +483,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                             libCtx = "model"
                             selModels = setOf(m.id)
                             selVendors = emptySet()
+                            modelScopeVendor = m.providerId
                         } else if (libCtx == "model") {
                             selModels = if (m.id in selModels) selModels - m.id else selModels + m.id
                         }
@@ -850,13 +869,17 @@ private fun ModelLibraryPage(
                             },
                             subtitle = m.modelId,
                             isEnabled = m.enabled,
-                            onEnabledChange = if (libActive) null else {
-                                { v -> onToggleModelEnabled(m, v) }
-                            },
                             inSelectionMode = mSelActive,
                             isSelected = mSelected,
                             trailingAction = if (libActive) null else {
-                                { TestChip(testState) { onTestModel(m, p) } }
+                                {
+                                    TestChip(testState) { onTestModel(m, p) }
+                                    AdaptiveSwitch(
+                                        checked = m.enabled,
+                                        onCheckedChange = { v -> onToggleModelEnabled(m, v) },
+                                        modifier = Modifier.scale(0.8f),
+                                    )
+                                }
                             },
                         )
                     }

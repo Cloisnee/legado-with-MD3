@@ -132,7 +132,7 @@ fun SearchBar(
         )
     } else {
         Surface(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .padding(bottom = 4.dp),
             shape = shape,
@@ -140,7 +140,7 @@ fun SearchBar(
         ) {
             AppDenseTextField(
                 state = textFieldState,
-                modifier = modifier
+                modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester),
                 placeholder = { AppText(resolvedPlaceholder) },
