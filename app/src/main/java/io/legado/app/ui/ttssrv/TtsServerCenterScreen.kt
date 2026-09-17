@@ -1,6 +1,7 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import android.content.ClipData
 import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,10 +24,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -50,6 +56,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -57,7 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
-import io.legado.app.data.repository.EngineOption
+import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.repository.EntryRow
 import io.legado.app.data.repository.GroupRow
 import io.legado.app.data.repository.LocaleOption
@@ -68,24 +76,31 @@ import io.legado.app.data.repository.VoiceOption
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
+import io.legado.app.ui.widget.components.AppRadioButton
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.SectionTitle
 import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
+import io.legado.app.ui.widget.components.card.SelectionItemCard
 import io.legado.app.ui.widget.components.checkBox.AppCheckbox
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.list.ListUiState
 import io.legado.app.ui.widget.components.log.LogDetailSheet
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
+import io.legado.app.utils.GSON
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -154,7 +169,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var groups by remember { mutableStateOf<List<GroupRow>>(emptyList()) }
     var engineValue by remember { mutableStateOf<String?>(null) }
     var engineLoaded by remember { mutableStateOf(false) }
-    var engineOptions by remember { mutableStateOf<List<EngineOption>>(emptyList()) }
 
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -177,8 +191,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var detailText by remember { mutableStateOf<String?>(null) }
 
     var showEngineSheet by remember { mutableStateOf(false) }
-    var pendingEngine by remember { mutableStateOf<EngineOption?>(null) }
-    var showScopeDialog by remember { mutableStateOf(false) }
+    var engineList by remember { mutableStateOf<List<HttpTTS>>(emptyList()) }
+    var engineEditor by remember { mutableStateOf<HttpTTS?>(null) }
+    var isNewEngine by remember { mutableStateOf(false) }
+    var engineMenuOpen by remember { mutableStateOf(false) }
+    var showNetImport by remember { mutableStateOf(false) }
+    var netImportUrl by remember { mutableStateOf("") }
+    var showDeleteEngine by remember { mutableStateOf<HttpTTS?>(null) }
 
     var showDeleteEntry by remember { mutableStateOf<EntryRow?>(null) }
     var renameTarget by remember { mutableStateOf<EntryRow?>(null) }
@@ -227,8 +246,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         scope.launch {
             plugins = repo.loadPlugins()
             groups = repo.loadGroups()
-            engineOptions = repo.loadEngineOptions()
             engineValue = repo.currentEngineValue()
+            engineList = repo.loadHttpTtsList()
             engineLoaded = true
         }
     }
@@ -401,6 +420,43 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     context.toastOnUi(msg)
                     reload()
                 }
+            }
+        }
+    }
+
+    val engineImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val text = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)
+                            ?.bufferedReader()?.use { it.readText() }
+                    }
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    context.toastOnUi("读取文件为空或失败")
+                } else {
+                    context.toastOnUi(repo.importHttpTts(text))
+                    reload()
+                }
+            }
+        }
+    }
+
+    val engineExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val json = repo.exportHttpTtsJson()
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray())
+                    }
+                }
+                context.toastOnUi("导出成功")
             }
         }
     }
@@ -1309,56 +1365,172 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 引擎切换 ----------------
+    // ---------------- 引擎切换（MD3：添加/编辑/删除/导入导出/全局直选） ----------------
     AppModalBottomSheet(
         show = showEngineSheet,
         onDismissRequest = { showEngineSheet = false },
         title = "切换朗读引擎",
     ) {
-        engineOptions.forEach { opt ->
-            val current = (opt.value == null && engineValue.isNullOrBlank()) ||
-                    (opt.value != null && opt.value == engineValue)
-            TinyClickableSettingItem(
-                title = (if (current) "✓ " else "") + opt.label,
-                onClick = {
-                    showEngineSheet = false
-                    pendingEngine = opt
-                    showScopeDialog = true
-                },
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MediumTonalButton(
+                    onClick = {
+                        isNewEngine = true
+                        engineEditor = HttpTTS(name = "", url = "", speed = 5)
+                    },
+                    icon = Icons.Default.Add,
+                    contentDescription = "添加引擎",
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Box {
+                    MediumTonalButton(
+                        onClick = { engineMenuOpen = true },
+                        icon = Icons.Default.MoreVert,
+                        contentDescription = "更多",
+                    )
+                    RoundDropdownMenu(
+                        expanded = engineMenuOpen,
+                        onDismissRequest = { engineMenuOpen = false },
+                    ) {
+                        RoundDropdownMenuItem(
+                            text = "本地导入",
+                            onClick = {
+                                engineMenuOpen = false
+                                engineImportLauncher.launch(
+                                    arrayOf("application/json", "text/plain", "*/*")
+                                )
+                            },
+                        )
+                        RoundDropdownMenuItem(
+                            text = "网络导入",
+                            onClick = {
+                                engineMenuOpen = false
+                                netImportUrl = ""
+                                showNetImport = true
+                            },
+                        )
+                        RoundDropdownMenuItem(
+                            text = "导出",
+                            onClick = {
+                                engineMenuOpen = false
+                                engineExportLauncher.launch("httpTTS.json")
+                            },
+                        )
+                    }
+                }
+            }
+
+            fun selectEngine(value: String?) {
+                showEngineSheet = false
+                scope.launch {
+                    val msg = repo.applyEngine(value, forBook = false)
+                    context.toastOnUi(msg)
+                    reload()
+                }
+            }
+
+            EngineRow(
+                label = "系统 TTS",
+                subtitle = null,
+                current = engineValue.isNullOrBlank(),
+                editable = false,
+                onSelect = { selectEngine(null) },
             )
+            EngineRow(
+                label = "内置引擎（TTS Server）",
+                subtitle = null,
+                current = engineValue == TtsServerCenterRepository.BUILTIN_ENGINE_JSON,
+                editable = false,
+                onSelect = { selectEngine(TtsServerCenterRepository.BUILTIN_ENGINE_JSON) },
+            )
+            engineList.forEach { h ->
+                EngineRow(
+                    label = "在线朗读 · ${h.name}",
+                    subtitle = h.url,
+                    current = engineValue == h.id.toString(),
+                    editable = true,
+                    onSelect = { selectEngine(h.id.toString()) },
+                    onEdit = {
+                        isNewEngine = false
+                        engineEditor = h
+                    },
+                    onDelete = { showDeleteEngine = h },
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 
+    // ---------------- 引擎编辑器（复刻原版添加云 TTS 参数） ----------------
+    EngineEditorSheet(
+        value = engineEditor,
+        isNew = isNewEngine,
+        onDismiss = { engineEditor = null },
+        onSave = { saved ->
+            engineEditor = null
+            scope.launch {
+                repo.saveHttpTts(saved)
+                context.toastOnUi("已保存")
+                reload()
+            }
+        },
+    )
+
     AppAlertDialog(
-        show = showScopeDialog,
-        onDismissRequest = {
-            showScopeDialog = false
-            pendingEngine = null
+        show = showNetImport,
+        onDismissRequest = { showNetImport = false },
+        title = "网络导入引擎",
+        content = {
+            AppTextField(
+                value = netImportUrl,
+                onValueChange = { netImportUrl = it },
+                label = "URL（httpTTS.json / 直链）",
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
         },
-        title = stringResource(R.string.read_aloud_default_engine),
-        text = stringResource(R.string.speak_engine_apply_scope),
-        confirmText = stringResource(R.string.general),
+        confirmText = "导入",
         onConfirm = {
-            val opt = pendingEngine ?: return@AppAlertDialog
-            showScopeDialog = false
-            pendingEngine = null
+            val url = netImportUrl.trim()
+            showNetImport = false
+            if (url.isNotBlank()) {
+                scope.launch {
+                    context.toastOnUi("下载中…")
+                    context.toastOnUi(repo.importHttpTts(url))
+                    reload()
+                }
+            }
+        },
+        dismissText = "取消",
+        onDismiss = { showNetImport = false },
+    )
+
+    AppAlertDialog(
+        show = showDeleteEngine != null,
+        onDismissRequest = { showDeleteEngine = null },
+        title = "删除引擎",
+        text = "确认删除「在线朗读 · ${showDeleteEngine?.name.orEmpty()}」？",
+        confirmText = "删除",
+        onConfirm = {
+            val h = showDeleteEngine ?: return@AppAlertDialog
+            showDeleteEngine = null
             scope.launch {
-                val msg = repo.applyEngine(opt.value, forBook = false)
-                context.toastOnUi(msg)
+                repo.deleteHttpTts(h.id)
+                if (engineValue == h.id.toString()) {
+                    repo.applyEngine(null, forBook = false)
+                }
+                context.toastOnUi("已删除")
                 reload()
             }
         },
-        dismissText = stringResource(R.string.book),
-        onDismiss = {
-            val opt = pendingEngine ?: return@AppAlertDialog
-            showScopeDialog = false
-            pendingEngine = null
-            scope.launch {
-                val msg = repo.applyEngine(opt.value, forBook = true)
-                context.toastOnUi(msg)
-                reload()
-            }
-        },
+        dismissText = "取消",
+        onDismiss = { showDeleteEngine = null },
     )
 
     // ---------------- 删除确认（单条） ----------------
@@ -1518,6 +1690,257 @@ private fun LevelRow(
                     modifier = Modifier.rotate(rotation),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun EngineRow(
+    label: String,
+    subtitle: String?,
+    current: Boolean,
+    editable: Boolean,
+    onSelect: () -> Unit,
+    onEdit: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+) {
+    SelectionItemCard(
+        title = label,
+        subtitle = subtitle,
+        isSelected = current,
+        onToggleSelection = onSelect,
+        leadingContent = {
+            AppRadioButton(
+                selected = current,
+                onClick = null,
+            )
+        },
+        trailingAction = if (editable) {
+            {
+                Row {
+                    SmallPlainButton(
+                        onClick = { onEdit?.invoke() },
+                        icon = Icons.Default.Edit,
+                        contentDescription = "编辑",
+                    )
+                    SmallPlainButton(
+                        onClick = { onDelete?.invoke() },
+                        icon = Icons.Default.Delete,
+                        contentDescription = "删除",
+                    )
+                }
+            }
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun EngineEditorSheet(
+    value: HttpTTS?,
+    isNew: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (HttpTTS) -> Unit,
+) {
+    var cached by remember { mutableStateOf(value) }
+    if (value != null) cached = value
+    val source = cached ?: return
+    val context = LocalContext.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+
+    var name by remember(source) { mutableStateOf(source.name) }
+    var url by remember(source) { mutableStateOf(source.url) }
+    var contentType by remember(source) { mutableStateOf(source.contentType.orEmpty()) }
+    var concurrentRate by remember(source) { mutableStateOf(source.concurrentRate ?: "0") }
+    var header by remember(source) { mutableStateOf(source.header.orEmpty()) }
+    var loginUrl by remember(source) { mutableStateOf(source.loginUrl.orEmpty()) }
+    var loginUi by remember(source) { mutableStateOf(source.loginUi.orEmpty()) }
+    var loginCheckJs by remember(source) { mutableStateOf(source.loginCheckJs.orEmpty()) }
+    var jsLib by remember(source) { mutableStateOf(source.jsLib.orEmpty()) }
+    var speed by remember(source) { mutableStateOf((source.speed ?: 5).toFloat()) }
+
+    fun current() = source.copy(
+        name = name.trim(),
+        url = url.trim(),
+        contentType = contentType.ifBlank { null },
+        concurrentRate = concurrentRate,
+        header = header.ifBlank { null },
+        loginUrl = loginUrl.ifBlank { null },
+        loginUi = loginUi.ifBlank { null },
+        loginCheckJs = loginCheckJs.ifBlank { null },
+        jsLib = jsLib.ifBlank { null },
+        speed = speed.toInt(),
+        lastUpdateTime = System.currentTimeMillis(),
+    )
+
+    AppModalBottomSheet(
+        show = value != null,
+        onDismissRequest = onDismiss,
+        title = if (isNew) "添加引擎" else "编辑引擎",
+        startAction = {
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                MediumTonalButton(
+                    onClick = { expanded = true },
+                    icon = Icons.Default.MoreVert,
+                    contentDescription = "更多",
+                )
+                RoundDropdownMenu(expanded, { expanded = false }) {
+                    RoundDropdownMenuItem(
+                        text = "复制文本",
+                        onClick = {
+                            expanded = false
+                            scope.launch {
+                                clipboard.setClipEntry(
+                                    ClipEntry(
+                                        ClipData.newPlainText("httpTTS", GSON.toJson(current()))
+                                    )
+                                )
+                            }
+                        },
+                    )
+                    RoundDropdownMenuItem(
+                        text = "粘贴源",
+                        onClick = {
+                            expanded = false
+                            scope.launch {
+                                val text = clipboard.getClipEntry()?.clipData
+                                    ?.getItemAt(0)?.coerceToText(context)?.toString()
+                                    ?: return@launch
+                                HttpTTS.fromJson(text).getOrNull()?.let { imported ->
+                                    name = imported.name
+                                    url = imported.url
+                                    contentType = imported.contentType.orEmpty()
+                                    concurrentRate = imported.concurrentRate ?: "0"
+                                    header = imported.header.orEmpty()
+                                    loginUrl = imported.loginUrl.orEmpty()
+                                    loginUi = imported.loginUi.orEmpty()
+                                    loginCheckJs = imported.loginCheckJs.orEmpty()
+                                    jsLib = imported.jsLib.orEmpty()
+                                    speed = (imported.speed ?: 5).toFloat()
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        },
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val c = current()
+                    if (c.name.isBlank() || c.url.isBlank()) {
+                        context.toastOnUi("名称 / URL 不能为空")
+                    } else {
+                        onSave(c)
+                    }
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "保存",
+            )
+        },
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                AppTextField(
+                    name,
+                    { name = it },
+                    label = stringResource(R.string.name),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    url,
+                    { url = it },
+                    label = "URL",
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                TinySliderSettingItem(
+                    title = stringResource(R.string.read_aloud_speed),
+                    description = stringResource(R.string.tts_source_speed_summary),
+                    value = speed,
+                    valueRange = 0f..80f,
+                    steps = 79,
+                    onValueChange = { speed = it },
+                )
+            }
+            item {
+                AppTextField(
+                    contentType,
+                    { contentType = it },
+                    label = "Content-Type",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    concurrentRate,
+                    { concurrentRate = it },
+                    label = stringResource(R.string.concurrent_rate),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    header,
+                    { header = it },
+                    label = stringResource(R.string.source_http_header),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    loginUrl,
+                    { loginUrl = it },
+                    label = stringResource(R.string.login_url),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    loginUi,
+                    { loginUi = it },
+                    label = stringResource(R.string.login_ui),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    loginCheckJs,
+                    { loginCheckJs = it },
+                    label = stringResource(R.string.login_check_js),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item {
+                AppTextField(
+                    jsLib,
+                    { jsLib = it },
+                    label = "jsLib",
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 }

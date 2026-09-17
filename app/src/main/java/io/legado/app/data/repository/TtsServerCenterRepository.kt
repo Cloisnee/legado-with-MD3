@@ -9,12 +9,18 @@ import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.data.appDb
+import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
+import io.legado.app.utils.isJsonArray
+import io.legado.app.utils.isJsonObject
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -168,6 +174,62 @@ class TtsServerCenterRepository(private val app: Application) {
         value.contains("tts_server") -> "内置引擎"
         else -> GSON.fromJsonObject<ReadAloudEngineSelection>(value).getOrNull()
             ?.displayName?.takeIf { it.isNotBlank() } ?: "在线朗读"
+    }
+
+    // ---------------- 引擎（在线朗读 HttpTTS）管理 ----------------
+
+    suspend fun loadHttpTtsList(): List<HttpTTS> = withContext(Dispatchers.IO) {
+        runCatching { appDb.httpTTSDao.all }.getOrDefault(emptyList())
+    }
+
+    suspend fun saveHttpTts(source: HttpTTS): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            appDb.httpTTSDao.insert(source)
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun deleteHttpTts(id: Long): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            appDb.httpTTSDao.get(id)?.let { appDb.httpTTSDao.delete(it) }
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun exportHttpTtsJson(): String = withContext(Dispatchers.IO) {
+        runCatching { GSON.toJson(appDb.httpTTSDao.all) }.getOrDefault("[]")
+    }
+
+    /** 导入在线朗读引擎（支持 URL / JSON 对象 / JSON 数组 / Base64；返回结果描述） */
+    suspend fun importHttpTts(text: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            val list = parseHttpTts(text.trim())
+            require(list.isNotEmpty()) { "未解析到任何引擎" }
+            list.forEach { appDb.httpTTSDao.insert(it) }
+            "导入成功：${list.size} 个引擎"
+        }.getOrElse { "导入失败：${it.localizedMessage ?: "格式错误"}" }
+    }
+
+    private fun parseHttpTts(text: String): List<HttpTTS> = when {
+        text.startsWith("http", ignoreCase = true) -> {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build()
+            val request = Request.Builder().url(text).get().build()
+            val body = client.newCall(request).execute().use { it.body?.string().orEmpty() }
+            require(body.isNotBlank()) { "响应为空" }
+            parseHttpTts(body)
+        }
+
+        text.isJsonObject() -> listOf(HttpTTS.fromJson(text).getOrThrow())
+        text.isJsonArray() -> HttpTTS.fromJsonArray(text).getOrThrow()
+        else -> {
+            val decoded = runCatching {
+                String(android.util.Base64.decode(text, android.util.Base64.DEFAULT))
+            }.getOrNull() ?: throw IllegalArgumentException("无法识别的格式")
+            parseHttpTts(decoded)
+        }
     }
 
     private fun gateway(): ReadAloudSettingsGateway =
