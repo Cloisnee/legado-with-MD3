@@ -24,20 +24,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,14 +61,15 @@ import io.legado.app.data.repository.AiModelsConfig
 import io.legado.app.data.repository.AiProvider
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SearchBar
+import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
-import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
-import io.legado.app.ui.widget.components.checkBox.AppCheckbox
+import io.legado.app.ui.widget.components.card.SelectionItemCardContent
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
@@ -77,16 +77,16 @@ import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
-import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
 
 /**
- * AI 服务 · 模型管理（复刻「引擎与音色」交互）：
- *  - 四标签页（可左右滑动）：模型库 / 文本分析 / 图像生成 / 背景音乐与音效
- *  - 模型库：厂商卡片（x/y 已选中标签）+ 展开搜索 + 模型行（测试三态/延迟/滑动开关）+ 多级多选 + ⋮
- *  - 文本分析：四卡（话语分析/话语归属与人物/历史人物比对/情绪分析），点卡=连续添加模型，展开=队列，点模型=调次数
+ * AI 服务 · 模型管理（对齐真身 MD3 / 书源管理交互）：
+ *  - 两标签页（可左右滑动）：模型库 / 模型分配
+ *  - 长按卡片 → 底部 SelectionBottomBar（书源管理同款：全选/反选/删除/⋮）
+ *  - 选择上下文：厂商 / 模型 / 阶段队列，互不越界
+ *  - 测试标签与延迟数据持久化；添加模型默认关闭
  */
 @Composable
 fun AiModelManageRouteScreen(onBackClick: () -> Unit) {
@@ -97,17 +97,22 @@ fun AiModelManageRouteScreen(onBackClick: () -> Unit) {
     )
 }
 
-private data class LibSelection(
-    val vendors: Set<String> = emptySet(),
-    val models: Set<String> = emptySet(),
-)
-
 private sealed interface TestUi {
     data object Untested : TestUi
     data object Testing : TestUi
     data class Pass(val latencyMs: Long) : TestUi
     data class Fail(val message: String) : TestUi
 }
+
+private val STAGE_CARDS = listOf(
+    "stage1" to "话语分析",
+    "stage2" to "话语归属与人物",
+    "stage4" to "历史人物比对",
+    "emotion" to "情绪分析",
+)
+
+private fun stageTitle(key: String?): String =
+    STAGE_CARDS.firstOrNull { it.first == key }?.second ?: "阶段"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,12 +124,13 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var cfg by remember { mutableStateOf<AiModelsConfig?>(null) }
     var tab by remember { mutableStateOf(0) }
 
-    // 模型库
-    var libSel by remember { mutableStateOf(LibSelection()) }
+    // 模型库：选择上下文（vendor / model）
+    var libCtx by remember { mutableStateOf<String?>(null) }
+    var selVendors by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selModels by remember { mutableStateOf<Set<String>>(emptySet()) }
     val expandedVendors = remember { mutableStateMapOf<String, Boolean>() }
     val vendorQueries = remember { mutableStateMapOf<String, String>() }
-    val testStates = remember { mutableStateMapOf<String, TestUi>() }
-    var menuOpen by remember { mutableStateOf(false) }
+    val testInflight = remember { mutableStateMapOf<String, Boolean>() }
 
     // 厂商编辑
     var vendorSheet by remember { mutableStateOf(false) }
@@ -134,19 +140,16 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var veKey by remember { mutableStateOf("") }
     var veProtocol by remember { mutableStateOf("openai") }
 
-    // 文本分析
-    var stageSheetExpanded by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 模型分配：阶段队列选择上下文
+    var expandedStages by remember { mutableStateOf<Set<String>>(emptySet()) }
     var addStageKey by remember { mutableStateOf<String?>(null) }
     var quotaTarget by remember { mutableStateOf<AiModelEntry?>(null) }
     var qAttempts by remember { mutableStateOf("2") }
     var qValidate by remember { mutableStateOf("2") }
     var qTimeoutSec by remember { mutableStateOf("120") }
-    var queueSelStage by remember { mutableStateOf<String?>(null) }
+    var queueCtx by remember { mutableStateOf<String?>(null) }
     var selQueue by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    // 删除确认
-    var confirmDelVendor by remember { mutableStateOf<AiProvider?>(null) }
-    var confirmDelModel by remember { mutableStateOf<AiModelEntry?>(null) }
     var confirmBulkDel by remember { mutableStateOf(false) }
 
     fun reload() {
@@ -155,24 +158,22 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { reload() }
 
-    val libSelActive = libSel.vendors.isNotEmpty() || libSel.models.isNotEmpty()
-    val queueSelActive = queueSelStage != null && selQueue.isNotEmpty()
-    val selActive = libSelActive || queueSelActive
-    val selCount = libSel.vendors.size + libSel.models.size + selQueue.size
+    val libActive = selVendors.isNotEmpty() || selModels.isNotEmpty()
+    val queueActive = queueCtx != null && selQueue.isNotEmpty()
+    val selActive = libActive || queueActive
 
     fun clearSel() {
-        libSel = LibSelection()
-        queueSelStage = null
+        libCtx = null
+        selVendors = emptySet()
+        selModels = emptySet()
+        queueCtx = null
         selQueue = emptySet()
     }
 
     fun switchTab(t: Int) {
         tab = t
         clearSel()
-        menuOpen = false
     }
-
-    // ---------------- 选择操作 ----------------
 
     fun stageIds(c: AiModelsConfig, key: String): List<String> = when (key) {
         "stage1" -> c.stages.stage1
@@ -182,15 +183,18 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         else -> emptyList()
     }
 
+    // ---------------- 选择操作（上下文隔离） ----------------
+
     fun selectAllCurrent() {
         val c = cfg ?: return
         when (tab) {
-            0 -> libSel = LibSelection(
-                vendors = c.providers.map { it.id }.toSet(),
-                models = c.models.map { it.id }.toSet(),
-            )
+            0 -> when (libCtx) {
+                "vendor" -> selVendors = c.providers.map { it.id }.toSet()
+                "model" -> selModels = c.models.map { it.id }.toSet()
+            }
+
             1 -> {
-                val key = queueSelStage ?: return
+                val key = queueCtx ?: return
                 selQueue = stageIds(c, key).toSet()
             }
         }
@@ -199,12 +203,13 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     fun invertCurrent() {
         val c = cfg ?: return
         when (tab) {
-            0 -> libSel = LibSelection(
-                vendors = c.providers.map { it.id }.toSet() - libSel.vendors,
-                models = c.models.map { it.id }.toSet() - libSel.models,
-            )
+            0 -> when (libCtx) {
+                "vendor" -> selVendors = c.providers.map { it.id }.toSet() - selVendors
+                "model" -> selModels = c.models.map { it.id }.toSet() - selModels
+            }
+
             1 -> {
-                val key = queueSelStage ?: return
+                val key = queueCtx ?: return
                 selQueue = stageIds(c, key).toSet() - selQueue
             }
         }
@@ -215,12 +220,12 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         when (tab) {
             0 -> confirmBulkDel = true
             1 -> {
-                val key = queueSelStage ?: return
+                val key = queueCtx ?: return
                 val newQ = stageIds(c, key).filterNot { it in selQueue }
                 scope.launch {
                     repo.updateStage(key, newQ)
                     selQueue = emptySet()
-                    queueSelStage = null
+                    queueCtx = null
                     reload()
                 }
             }
@@ -229,8 +234,15 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     fun setEnabledForSelected(enabled: Boolean) {
         val c = cfg ?: return
-        val target = libSel.models.toMutableSet()
-        c.models.filter { it.providerId in libSel.vendors }.forEach { target += it.id }
+        val target = when (libCtx) {
+            "vendor" -> c.models
+                .filter { it.providerId in selVendors }
+                .map { it.id }
+                .toSet()
+
+            "model" -> selModels
+            else -> return
+        }
         if (target.isEmpty()) return
         scope.launch {
             repo.setModelsEnabled(target, enabled)
@@ -241,24 +253,32 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     fun moveSelectedTopBottom(toTop: Boolean) {
         val c = cfg ?: return
         scope.launch {
-            if (tab == 0) {
-                val vendors = c.providers.filter { it.id in libSel.vendors }
-                (if (toTop) vendors.reversed() else vendors).forEach {
-                    repo.moveProvider(it.id, toTop)
+            when (tab) {
+                0 -> when (libCtx) {
+                    "vendor" -> {
+                        val vendors = c.providers.filter { it.id in selVendors }
+                        (if (toTop) vendors.reversed() else vendors).forEach {
+                            repo.moveProvider(it.id, toTop)
+                        }
+                    }
+
+                    "model" -> {
+                        val models = c.models.filter { it.id in selModels }
+                        (if (toTop) models.reversed() else models).forEach {
+                            repo.moveModel(it.id, toTop)
+                        }
+                    }
                 }
-                val models = c.models.filter { it.id in libSel.models }
-                (if (toTop) models.reversed() else models).forEach {
-                    repo.moveModel(it.id, toTop)
+
+                1 -> {
+                    val key = queueCtx ?: return@launch
+                    val queue = stageIds(c, key)
+                    val sel = queue.filter { it in selQueue }
+                    val rest = queue.filterNot { it in selQueue }
+                    repo.updateStage(key, if (toTop) sel + rest else rest + sel)
                 }
-                reload()
-            } else {
-                val key = queueSelStage ?: return@launch
-                val queue = stageIds(c, key)
-                val sel = queue.filter { it in selQueue }
-                val rest = queue.filterNot { it in selQueue }
-                repo.updateStage(key, if (toTop) sel + rest else rest + sel)
-                reload()
             }
+            reload()
         }
     }
 
@@ -298,7 +318,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     .onSuccess { list ->
                         val n = repo.addModelsFromProvider(id, list)
                         context.toastOnUi(
-                            if (n > 0) "拉取到 ${list.size} 个模型（新增 $n）"
+                            if (n > 0) "拉取到 ${list.size} 个模型（默认关闭，按需开启）"
                             else "拉取成功：无新增（共 ${list.size} 个）"
                         )
                         reload()
@@ -307,6 +327,33 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             } else {
                 context.toastOnUi("已保存")
             }
+        }
+    }
+
+    fun refetchModels(p: AiProvider) {
+        scope.launch {
+            context.toastOnUi("正在重新拉取…")
+            repo.fetchProviderModels(p)
+                .onSuccess { list ->
+                    val n = repo.addModelsFromProvider(p.id, list)
+                    context.toastOnUi("拉取完成，新增 $n 个")
+                    reload()
+                }
+                .onFailure { context.toastOnUi("拉取失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun testOne(m: AiModelEntry, p: AiProvider) {
+        testInflight[m.id] = true
+        scope.launch {
+            val r = repo.testModel(m, p)
+            testInflight.remove(m.id)
+            repo.updateModelTest(m.id, r.ok, r.latencyMs, r.message)
+            context.toastOnUi(
+                if (r.ok) "✅ ${m.name} 通过 · ${r.latencyMs}ms"
+                else "❌ ${m.name} 异常：${r.message}"
+            )
+            reload()
         }
     }
 
@@ -321,84 +368,18 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = if (selActive) "已选 $selCount" else "模型管理",
-                subtitle = if (selActive) null else "服务商 / 模型 / 文本分析阶段配",
+                title = "模型管理",
+                subtitle = "模型库 / 模型分配",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     TopBarNavigationButton(onClick = onBack)
                 },
-                actions = {
-                    if (selActive) {
-                        TopBarActionButton(
-                            onClick = { clearSel() },
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "取消选择",
-                        )
-                        TopBarActionButton(
-                            onClick = { selectAllCurrent() },
-                            imageVector = Icons.Default.DoneAll,
-                            contentDescription = "全选",
-                        )
-                        TopBarActionButton(
-                            onClick = { invertCurrent() },
-                            imageVector = Icons.Default.SwapHoriz,
-                            contentDescription = "反选",
-                        )
-                        TopBarActionButton(
-                            onClick = { deleteSelected() },
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = if (tab == 0) "删除" else "移除",
-                        )
-                        Box {
-                            TopBarActionButton(
-                                onClick = { menuOpen = true },
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "更多",
-                            )
-                            DropdownMenu(
-                                expanded = menuOpen,
-                                onDismissRequest = { menuOpen = false },
-                            ) {
-                                if (tab == 0) {
-                                    DropdownMenuItem(
-                                        text = { AppText("启用所有") },
-                                        onClick = {
-                                            menuOpen = false
-                                            setEnabledForSelected(true)
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { AppText("关闭所有") },
-                                        onClick = {
-                                            menuOpen = false
-                                            setEnabledForSelected(false)
-                                        },
-                                    )
-                                }
-                                DropdownMenuItem(
-                                    text = { AppText("置顶") },
-                                    onClick = {
-                                        menuOpen = false
-                                        moveSelectedTopBottom(true)
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { AppText("置底") },
-                                    onClick = {
-                                        menuOpen = false
-                                        moveSelectedTopBottom(false)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                },
                 bottomContent = {
                     AppTabRow(
-                        tabTitles = listOf("模型库", "文本分析", "图像生成", "背景音乐与音效"),
+                        tabTitles = listOf("模型库", "模型分配"),
                         selectedTabIndex = tab,
                         onTabSelected = { t -> switchTab(t) },
-                        isScrollable = true,
+                        isScrollable = false,
                     )
                 },
             )
@@ -422,7 +403,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     onDragStarted = { swipeAccum = 0f },
                     onDragStopped = {
                         when {
-                            swipeAccum <= -swipeThresholdPx && tab < 3 -> switchTab(tab + 1)
+                            swipeAccum <= -swipeThresholdPx && tab < 1 -> switchTab(tab + 1)
                             swipeAccum >= swipeThresholdPx && tab > 0 -> switchTab(tab - 1)
                         }
                         swipeAccum = 0f
@@ -432,37 +413,61 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             when (tab) {
                 0 -> ModelLibraryPage(
                     config = cfg,
-                    selActive = libSelActive,
-                    libSel = libSel,
+                    libActive = libActive,
+                    libCtx = libCtx,
+                    selVendors = selVendors,
+                    selModels = selModels,
                     expandedVendors = expandedVendors,
                     vendorQueries = vendorQueries,
-                    testStates = testStates,
+                    testInflight = testInflight,
                     contentPaddingTop = padding.calculateTopPadding(),
                     contentPaddingBottom = padding.calculateBottomPadding(),
-                    onToggleVendorSel = { id ->
-                        libSel = if (id in libSel.vendors) {
-                            libSel.copy(vendors = libSel.vendors - id)
+                    onVendorClick = { p ->
+                        if (libActive) {
+                            if (libCtx == "vendor") {
+                                selVendors = if (p.id in selVendors) {
+                                    selVendors - p.id
+                                } else {
+                                    selVendors + p.id
+                                }
+                            }
                         } else {
-                            libSel.copy(vendors = libSel.vendors + id)
-                        }
-                    },
-                    onToggleModelSel = { id ->
-                        libSel = if (id in libSel.models) {
-                            libSel.copy(models = libSel.models - id)
-                        } else {
-                            libSel.copy(models = libSel.models + id)
+                            expandedVendors[p.id] = !(expandedVendors[p.id] ?: false)
+                            if (expandedVendors[p.id] == false) vendorQueries[p.id] = ""
                         }
                     },
                     onVendorLongClick = { p ->
-                        if (!libSelActive) libSel = libSel.copy(vendors = setOf(p.id))
-                    },
-                    onModelLongClick = { m ->
-                        if (!libSelActive) libSel = libSel.copy(models = setOf(m.id))
+                        if (!libActive) {
+                            libCtx = "vendor"
+                            selVendors = setOf(p.id)
+                            selModels = emptySet()
+                        } else if (libCtx == "vendor") {
+                            selVendors = if (p.id in selVendors) selVendors - p.id else selVendors + p.id
+                        }
                     },
                     onToggleExpand = { id ->
-                        val now = expandedVendors[id] ?: false
-                        expandedVendors[id] = !now
-                        if (now) vendorQueries[id] = ""
+                        expandedVendors[id] = !(expandedVendors[id] ?: false)
+                        if (expandedVendors[id] == false) vendorQueries[id] = ""
+                    },
+                    onModelClick = { m ->
+                        if (libActive) {
+                            if (libCtx == "model") {
+                                selModels = if (m.id in selModels) {
+                                    selModels - m.id
+                                } else {
+                                    selModels + m.id
+                                }
+                            }
+                        }
+                    },
+                    onModelLongClick = { m ->
+                        if (!libActive) {
+                            libCtx = "model"
+                            selModels = setOf(m.id)
+                            selVendors = emptySet()
+                        } else if (libCtx == "model") {
+                            selModels = if (m.id in selModels) selModels - m.id else selModels + m.id
+                        }
                     },
                     onQueryChange = { id, q -> vendorQueries[id] = q },
                     onToggleModelEnabled = { m, enabled ->
@@ -471,70 +476,88 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                             reload()
                         }
                     },
-                    onTestModel = { m, p ->
-                        testStates[m.id] = TestUi.Testing
-                        scope.launch {
-                            context.toastOnUi("测试中：${m.name}")
-                            val r = repo.testModel(m, p)
-                            testStates[m.id] = if (r.ok) {
-                                TestUi.Pass(r.latencyMs)
-                            } else {
-                                TestUi.Fail(r.message)
-                            }
-                            context.toastOnUi(
-                                if (r.ok) "✅ ${m.name} 通过 · ${r.latencyMs}ms"
-                                else "❌ ${m.name} 异常：${r.message}"
-                            )
-                        }
-                    },
-                    onEditVendor = { p -> openVendorEdit(p) },
-                    onDeleteVendor = { p -> confirmDelVendor = p },
-                    onRefetchVendor = { p ->
-                        scope.launch {
-                            context.toastOnUi("正在重新拉取…")
-                            repo.fetchProviderModels(p)
-                                .onSuccess { list ->
-                                    val n = repo.addModelsFromProvider(p.id, list)
-                                    context.toastOnUi("拉取完成，新增 $n 个")
-                                    reload()
-                                }
-                                .onFailure { context.toastOnUi("拉取失败：${it.localizedMessage}") }
-                        }
-                    },
+                    onTestModel = { m, p -> testOne(m, p) },
                 )
 
-                1 -> TextAnalysisPage(
+                1 -> AllocationPage(
                     config = cfg,
-                    expandedStages = stageSheetExpanded,
-                    selStage = queueSelStage,
+                    expandedStages = expandedStages,
+                    queueCtx = queueCtx,
                     selQueue = selQueue,
                     contentPaddingTop = padding.calculateTopPadding(),
                     contentPaddingBottom = padding.calculateBottomPadding(),
                     onToggleExpand = { key ->
-                        stageSheetExpanded = if (key in stageSheetExpanded) {
-                            stageSheetExpanded - key
+                        expandedStages = if (key in expandedStages) {
+                            expandedStages - key
                         } else {
-                            stageSheetExpanded + key
+                            expandedStages + key
                         }
                     },
                     onOpenAddSheet = { key -> addStageKey = key },
-                    onToggleQueueSel = { key, id ->
-                        if (queueSelStage == key) {
+                    onQueueItemClick = { key, id ->
+                        if (queueCtx == key) {
                             selQueue = if (id in selQueue) selQueue - id else selQueue + id
                         } else {
-                            queueSelStage = key
-                            selQueue = setOf(id)
+                            val c = cfg
+                            val m = c?.models?.firstOrNull { it.id == id }
+                            if (m != null) {
+                                quotaTarget = m
+                                qAttempts = m.requestAttempts.toString()
+                                qValidate = m.validateRetries.toString()
+                                qTimeoutSec = (m.timeoutMs / 1000L).toString()
+                            }
                         }
                     },
-                    onQuotaEdit = { m ->
-                        quotaTarget = m
-                        qAttempts = m.requestAttempts.toString()
-                        qValidate = m.validateRetries.toString()
-                        qTimeoutSec = (m.timeoutMs / 1000L).toString()
+                    onQueueItemLongClick = { key, id ->
+                        if (queueCtx != key) {
+                            queueCtx = key
+                            selQueue = setOf(id)
+                        } else {
+                            selQueue = if (id in selQueue) selQueue - id else selQueue + id
+                        }
                     },
                 )
+            }
 
-                else -> PlaceholderPage(tab = tab)
+            // 书源管理同款底部操作条（长按后出现）
+            if (selActive) {
+                val primaryText = if (tab == 0) "删除" else "移除"
+                val secondary = buildList {
+                    if (tab == 0 && libCtx == "vendor") {
+                        add(ActionItem("开启所有", Icons.Default.Check) { setEnabledForSelected(true) })
+                        add(ActionItem("关闭所有", Icons.Default.Close) { setEnabledForSelected(false) })
+                        val target = cfg?.providers?.firstOrNull { it.id in selVendors }
+                        add(ActionItem("编辑服务商", Icons.Default.Edit) {
+                            if (selVendors.size == 1 && target != null) {
+                                openVendorEdit(target)
+                            } else {
+                                context.toastOnUi("请只选择一个服务商再编辑")
+                            }
+                        })
+                        add(ActionItem("重新拉取模型", Icons.Default.Refresh) {
+                            if (selVendors.size == 1 && target != null) {
+                                refetchModels(target)
+                            } else {
+                                context.toastOnUi("请只选择一个服务商再拉取")
+                            }
+                        })
+                    }
+                    if (tab == 0 && libCtx == "model") {
+                        add(ActionItem("开启", Icons.Default.Check) { setEnabledForSelected(true) })
+                        add(ActionItem("关闭", Icons.Default.Close) { setEnabledForSelected(false) })
+                    }
+                    add(ActionItem("置顶", Icons.Default.VerticalAlignTop) { moveSelectedTopBottom(true) })
+                    add(ActionItem("置底", Icons.Default.VerticalAlignBottom) { moveSelectedTopBottom(false) })
+                }
+                SelectionBottomBar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                    onSelectAll = { selectAllCurrent() },
+                    onSelectInvert = { invertCurrent() },
+                    primaryAction = ActionItem(primaryText, Icons.Default.Delete) { deleteSelected() },
+                    secondaryActions = secondary,
+                )
             }
         }
     }
@@ -565,7 +588,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 文本分析 · 添加模型 ----------------
+    // ---------------- 模型分配 · 添加模型（数字顺序 + 二次点击取消） ----------------
     val addKey = addStageKey
     AppModalBottomSheet(
         show = addKey != null,
@@ -577,7 +600,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             val queue = stageIds(c, addKey)
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 AppText(
-                    text = "点击顺序 = 该阶段失败后的轮换顺序（可连续添加）",
+                    text = "点击顺序 = 失败后的轮换顺序；再点一次取消",
                     style = LegadoTheme.typography.labelSmall,
                     color = LegadoTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -594,16 +617,22 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                         models.forEach { m ->
-                            val added = m.id in queue
+                            val idx = queue.indexOf(m.id)
                             TinyClickableSettingItem(
-                                title = m.name + if (added) "  ✓" else "",
+                                title = m.name,
                                 description = m.modelId,
+                                trailingContent = {
+                                    if (idx >= 0) NumberBadge(idx + 1)
+                                },
                                 onClick = {
-                                    if (!added) {
-                                        scope.launch {
-                                            repo.updateStage(addKey, queue + m.id)
-                                            reload()
+                                    scope.launch {
+                                        val newQ = if (idx >= 0) {
+                                            queue.filterNot { it == m.id }
+                                        } else {
+                                            queue + m.id
                                         }
+                                        repo.updateStage(addKey, newQ)
+                                        reload()
                                     }
                                 },
                             )
@@ -612,7 +641,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 }
                 if (!any) {
                     TinyClickableSettingItem(
-                        title = "没有已选中的模型（先去模型库打开开关）",
+                        title = "没有已开启的模型（先去模型库打开开关）",
                         onClick = {},
                     )
                 }
@@ -620,7 +649,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 文本分析 · 次数设置 ----------------
+    // ---------------- 模型分配 · 次数设置 ----------------
     AppModalBottomSheet(
         show = quotaTarget != null,
         onDismissRequest = { quotaTarget = null },
@@ -654,55 +683,24 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 删除确认 ----------------
     AppAlertDialog(
-        show = confirmDelVendor != null,
-        onDismissRequest = { confirmDelVendor = null },
-        title = "删除服务商",
-        text = "确认删除「${confirmDelVendor?.name.orEmpty()}」及其全部模型？",
-        confirmText = "删除",
-        onConfirm = {
-            val p = confirmDelVendor ?: return@AppAlertDialog
-            confirmDelVendor = null
-            scope.launch {
-                repo.deleteProvider(p.id)
-                context.toastOnUi("已删除")
-                reload()
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { confirmDelVendor = null },
-    )
-
-    AppAlertDialog(
-        show = confirmDelModel != null,
-        onDismissRequest = { confirmDelModel = null },
-        title = "删除模型",
-        text = "确认删除「${confirmDelModel?.name.orEmpty()}」？（同时从各阶段队列移除）",
-        confirmText = "删除",
-        onConfirm = {
-            val m = confirmDelModel ?: return@AppAlertDialog
-            confirmDelModel = null
-            scope.launch {
-                repo.deleteModel(m.id)
-                context.toastOnUi("已删除")
-                reload()
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { confirmDelModel = null },
-    )
-
-    AppAlertDialog(
         show = confirmBulkDel,
         onDismissRequest = { confirmBulkDel = false },
         title = "删除所选",
-        text = "将删除所选服务商（含其模型）与所选模型，确认？",
+        text = if (libCtx == "vendor") {
+            "将删除所选服务商（含其全部模型），确认？"
+        } else {
+            "将删除所选模型，确认？"
+        },
         confirmText = "删除",
         onConfirm = {
             confirmBulkDel = false
             scope.launch {
-                libSel.vendors.forEach { repo.deleteProvider(it) }
-                libSel.models.forEach { repo.deleteModel(it) }
-                libSel = LibSelection()
+                if (libCtx == "vendor") {
+                    selVendors.forEach { repo.deleteProvider(it) }
+                } else {
+                    selModels.forEach { repo.deleteModel(it) }
+                }
+                clearSel()
                 context.toastOnUi("已删除")
                 reload()
             }
@@ -719,24 +717,23 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 @Composable
 private fun ModelLibraryPage(
     config: AiModelsConfig?,
-    selActive: Boolean,
-    libSel: LibSelection,
+    libActive: Boolean,
+    libCtx: String?,
+    selVendors: Set<String>,
+    selModels: Set<String>,
     expandedVendors: MutableMap<String, Boolean>,
     vendorQueries: MutableMap<String, String>,
-    testStates: MutableMap<String, TestUi>,
+    testInflight: MutableMap<String, Boolean>,
     contentPaddingTop: androidx.compose.ui.unit.Dp,
     contentPaddingBottom: androidx.compose.ui.unit.Dp,
-    onToggleVendorSel: (String) -> Unit,
-    onToggleModelSel: (String) -> Unit,
+    onVendorClick: (AiProvider) -> Unit,
     onVendorLongClick: (AiProvider) -> Unit,
-    onModelLongClick: (AiModelEntry) -> Unit,
     onToggleExpand: (String) -> Unit,
+    onModelClick: (AiModelEntry) -> Unit,
+    onModelLongClick: (AiModelEntry) -> Unit,
     onQueryChange: (String, String) -> Unit,
     onToggleModelEnabled: (AiModelEntry, Boolean) -> Unit,
     onTestModel: (AiModelEntry, AiProvider) -> Unit,
-    onEditVendor: (AiProvider) -> Unit,
-    onDeleteVendor: (AiProvider) -> Unit,
-    onRefetchVendor: (AiProvider) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -763,16 +760,43 @@ private fun ModelLibraryPage(
                 val models = config.models.filter { it.providerId == p.id }
                 val enabledCount = models.count { it.enabled }
                 val expanded = expandedVendors[p.id] == true
-                LevelCardRow(
-                    title = p.name,
-                    subtitle = "共 ${models.size} 个模型 · ${p.protocol}",
-                    arrowExpanded = expanded,
-                    selActive = false,
-                    selected = false,
-                    trailing = { CountTag(enabledCount, models.size) },
-                    onClick = { if (!selActive) onToggleExpand(p.id) },
-                    onLongClick = { onVendorLongClick(p) },
+                val vSelActive = libActive && libCtx == "vendor"
+                val vSelected = p.id in selVendors
+                val rotation by animateFloatAsState(
+                    targetValue = if (expanded) 0f else -90f,
+                    label = "vendorArrow",
                 )
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    cornerRadius = 12.dp,
+                    containerColor = if (vSelected) {
+                        LegadoTheme.colorScheme.secondaryContainer
+                    } else {
+                        LegadoTheme.colorScheme.surfaceContainer
+                    },
+                    onClick = { onVendorClick(p) },
+                    onLongClick = { onVendorLongClick(p) },
+                ) {
+                    SelectionItemCardContent(
+                        title = p.name,
+                        subtitle = "共 ${models.size} 个模型 · ${p.protocol}",
+                        inSelectionMode = vSelActive,
+                        isSelected = vSelected,
+                        trailingAction = {
+                            CountTag(enabledCount, models.size)
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (expanded) "收起" else "展开",
+                                modifier = Modifier
+                                    .rotate(rotation)
+                                    .clickable { onToggleExpand(p.id) }
+                                    .padding(4.dp),
+                            )
+                        },
+                    )
+                }
             }
             if (expandedVendors[p.id] == true) {
                 item(key = "vendor_search_${p.id}") {
@@ -783,6 +807,8 @@ private fun ModelLibraryPage(
                         query = vendorQueries[p.id].orEmpty(),
                         onQueryChange = { q -> onQueryChange(p.id, q) },
                         placeholder = "搜索 ${p.name} 的模型",
+                        shape = RoundedCornerShape(12.dp),
+                        autoFocus = false,
                     )
                 }
                 val all = config.models.filter { it.providerId == p.id }
@@ -796,35 +822,42 @@ private fun ModelLibraryPage(
                     }
                 }
                 items(filtered, key = { "model_${it.id}" }) { m ->
-                    val testState = testStates[m.id] ?: TestUi.Untested
-                    ModelLine(
-                        model = m,
-                        testState = testState,
-                        selActive = selActive,
-                        selected = m.id in libSel.models,
-                        onClick = {
-                            when {
-                                selActive -> onToggleModelSel(m.id)
-                                else -> onTestModel(m, p)
-                            }
+                    val testState = when {
+                        testInflight[m.id] == true -> TestUi.Testing
+                        m.testOk == true -> TestUi.Pass(m.testLatencyMs ?: 0L)
+                        m.testOk == false -> TestUi.Fail(m.testMessage.orEmpty())
+                        else -> TestUi.Untested
+                    }
+                    val mSelActive = libActive && libCtx == "model"
+                    val mSelected = m.id in selModels
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                        cornerRadius = 12.dp,
+                        containerColor = if (mSelected) {
+                            LegadoTheme.colorScheme.secondaryContainer
+                        } else {
+                            LegadoTheme.colorScheme.surfaceContainer
                         },
+                        onClick = { onModelClick(m) },
                         onLongClick = { onModelLongClick(m) },
-                        onToggleEnabled = { v -> onToggleModelEnabled(m, v) },
-                    )
-                }
-                item(key = "vendor_actions_${p.id}") {
-                    Column(modifier = Modifier.padding(top = 2.dp)) {
-                        TinyClickableSettingItem(
-                            title = "重新拉取模型",
-                            onClick = { onRefetchVendor(p) },
-                        )
-                        TinyClickableSettingItem(
-                            title = "编辑服务商",
-                            onClick = { onEditVendor(p) },
-                        )
-                        TinyClickableSettingItem(
-                            title = "删除服务商（含其模型）",
-                            onClick = { onDeleteVendor(p) },
+                    ) {
+                        SelectionItemCardContent(
+                            title = m.name + when (val s = testState) {
+                                is TestUi.Pass -> " · ${s.latencyMs}ms"
+                                else -> ""
+                            },
+                            subtitle = m.modelId,
+                            isEnabled = m.enabled,
+                            onEnabledChange = if (libActive) null else {
+                                { v -> onToggleModelEnabled(m, v) }
+                            },
+                            inSelectionMode = mSelActive,
+                            isSelected = mSelected,
+                            trailingAction = if (libActive) null else {
+                                { TestChip(testState) { onTestModel(m, p) } }
+                            },
                         )
                     }
                 }
@@ -848,7 +881,7 @@ private fun CountTag(enabled: Int, total: Int) {
     }
     Box(
         modifier = Modifier
-            .padding(end = 8.dp)
+            .padding(end = 4.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(bg)
             .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -862,74 +895,24 @@ private fun CountTag(enabled: Int, total: Int) {
 }
 
 @Composable
-private fun ModelLine(
-    model: AiModelEntry,
-    testState: TestUi,
-    selActive: Boolean,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onToggleEnabled: (Boolean) -> Unit,
-) {
-    GlassCard(
+private fun NumberBadge(number: Int) {
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
-        cornerRadius = 10.dp,
-        containerColor = if (selected) {
-            LegadoTheme.colorScheme.secondaryContainer
-        } else {
-            LegadoTheme.colorScheme.surfaceContainer
-        },
-        onClick = onClick,
-        onLongClick = onLongClick,
+            .padding(end = 4.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(LegadoTheme.colorScheme.primary)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selActive) {
-                AppCheckbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    includeStateSemantics = false,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                AppText(
-                    text = model.name + when (val s = testState) {
-                        is TestUi.Pass -> " · ${s.latencyMs}ms"
-                        else -> ""
-                    },
-                    style = LegadoTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                AppText(
-                    text = model.modelId,
-                    style = LegadoTheme.typography.bodySmall,
-                    color = LegadoTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (!selActive) {
-                TestChip(testState)
-                Spacer(modifier = Modifier.width(6.dp))
-                Switch(
-                    checked = model.enabled,
-                    onCheckedChange = { v -> onToggleEnabled(v) },
-                )
-            }
-        }
+        AppText(
+            text = "$number",
+            style = LegadoTheme.typography.labelSmall,
+            color = LegadoTheme.colorScheme.onPrimary,
+        )
     }
 }
 
 @Composable
-private fun TestChip(state: TestUi) {
+private fun TestChip(state: TestUi, onClick: () -> Unit) {
     val (icon, tint, label) = when (state) {
         is TestUi.Untested -> Triple(
             Icons.Default.RadioButtonUnchecked,
@@ -956,12 +939,15 @@ private fun TestChip(state: TestUi) {
         )
     }
     Row(
-        modifier = Modifier.padding(horizontal = 4.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = null,
+            contentDescription = "测试",
             tint = tint,
             modifier = Modifier.size(16.dp),
         )
@@ -975,31 +961,21 @@ private fun TestChip(state: TestUi) {
 }
 
 // ============================================================
-// 文本分析页
+// 模型分配页（文本分析 / 图像生成 / 背景音乐与音效 合页）
 // ============================================================
 
-private val STAGE_CARDS = listOf(
-    "stage1" to "话语分析",
-    "stage2" to "话语归属与人物",
-    "stage4" to "历史人物比对",
-    "emotion" to "情绪分析",
-)
-
-private fun stageTitle(key: String?): String =
-    STAGE_CARDS.firstOrNull { it.first == key }?.second ?: "阶段"
-
 @Composable
-private fun TextAnalysisPage(
+private fun AllocationPage(
     config: AiModelsConfig?,
     expandedStages: Set<String>,
-    selStage: String?,
+    queueCtx: String?,
     selQueue: Set<String>,
     contentPaddingTop: androidx.compose.ui.unit.Dp,
     contentPaddingBottom: androidx.compose.ui.unit.Dp,
     onToggleExpand: (String) -> Unit,
     onOpenAddSheet: (String) -> Unit,
-    onToggleQueueSel: (String, String) -> Unit,
-    onQuotaEdit: (AiModelEntry) -> Unit,
+    onQueueItemClick: (String, String) -> Unit,
+    onQueueItemLongClick: (String, String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1013,6 +989,10 @@ private fun TextAnalysisPage(
             return@LazyColumn
         }
         val byId = config.models.associateBy { it.id }
+
+        item(key = "section_text") {
+            SectionTitle("文本分析")
+        }
         STAGE_CARDS.forEach { (key, title) ->
             val queue = when (key) {
                 "stage1" -> config.stages.stage1
@@ -1021,205 +1001,127 @@ private fun TextAnalysisPage(
                 else -> config.stages.emotion
             }
             item(key = "stage_$key") {
-                LevelCardRow(
-                    title = title,
-                    subtitle = if (queue.isEmpty()) {
-                        "未配置模型（点卡片添加；失败时走兜底策略）"
-                    } else {
-                        queue.map { byId[it]?.name ?: it }.joinToString(" → ")
-                    },
-                    arrowExpanded = key in expandedStages,
-                    selActive = false,
-                    selected = false,
-                    trailing = {
+                val expanded = key in expandedStages
+                val rotation by animateFloatAsState(
+                    targetValue = if (expanded) 0f else -90f,
+                    label = "stageArrow",
+                )
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    cornerRadius = 12.dp,
+                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                    onClick = { onOpenAddSheet(key) },
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            AppText(
+                                text = title,
+                                style = LegadoTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            AppText(
+                                text = if (queue.isEmpty()) {
+                                    "未配置模型（点卡片添加；失败时走兜底策略）"
+                                } else {
+                                    queue.map { byId[it]?.name ?: it }.joinToString(" → ")
+                                },
+                                style = LegadoTheme.typography.bodySmall,
+                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         if (queue.isNotEmpty()) {
                             CountTag(queue.size, queue.size)
                         }
-                    },
-                    onClick = { onOpenAddSheet(key) },
-                    onLongClick = null,
-                    onArrowClick = { onToggleExpand(key) },
-                )
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (expanded) "收起" else "展开",
+                            modifier = Modifier
+                                .rotate(rotation)
+                                .clickable { onToggleExpand(key) }
+                                .padding(4.dp),
+                        )
+                    }
+                }
             }
             if (key in expandedStages) {
                 items(queue, key = { "q_${key}_$it" }) { modelId ->
                     val m = byId[modelId]
-                    val selActiveHere = selStage == key
-                    QueueLine(
-                        index = queue.indexOf(modelId) + 1,
-                        model = m,
-                        modelId = modelId,
-                        selActive = selActiveHere,
-                        selected = selActiveHere && modelId in selQueue,
-                        onClick = {
-                            if (selActiveHere) {
-                                onToggleQueueSel(key, modelId)
-                            } else if (m != null) {
-                                onQuotaEdit(m)
-                            }
+                    val thisCtx = queueCtx == key
+                    val selected = thisCtx && modelId in selQueue
+                    val index = queue.indexOf(modelId) + 1
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 28.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
+                        cornerRadius = 12.dp,
+                        containerColor = if (selected) {
+                            LegadoTheme.colorScheme.secondaryContainer
+                        } else {
+                            LegadoTheme.colorScheme.surfaceContainer
                         },
-                        onLongClick = { onToggleQueueSel(key, modelId) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun QueueLine(
-    index: Int,
-    model: AiModelEntry?,
-    modelId: String,
-    selActive: Boolean,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-) {
-    GlassCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
-        cornerRadius = 10.dp,
-        containerColor = if (selected) {
-            LegadoTheme.colorScheme.secondaryContainer
-        } else {
-            LegadoTheme.colorScheme.surfaceContainer
-        },
-        onClick = onClick,
-        onLongClick = onLongClick,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selActive) {
-                AppCheckbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    includeStateSemantics = false,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                AppText(
-                    text = "$index. ${model?.name ?: modelId}",
-                    style = LegadoTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                model?.let {
-                    AppText(
-                        text = "${it.modelId} · 尝试${it.requestAttempts}/校验${it.validateRetries} · ${it.timeoutMs / 1000}s",
-                        style = LegadoTheme.typography.bodySmall,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlaceholderPage(tab: Int) {
-    val name = if (tab == 2) "图像生成" else "背景音乐与音效"
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        AppText(
-            text = "$name · 敬请期待\n后续版本开放 🐋",
-            style = LegadoTheme.typography.bodyMedium,
-            color = LegadoTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-// ============================================================
-// 通用卡片行（箭头/勾选/长按，复刻配置列表）
-// ============================================================
-
-@Composable
-private fun LevelCardRow(
-    title: String,
-    subtitle: String? = null,
-    arrowExpanded: Boolean? = null,
-    selActive: Boolean,
-    selected: Boolean,
-    trailing: (@Composable () -> Unit)? = null,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
-    onArrowClick: (() -> Unit)? = null,
-) {
-    val rotation by animateFloatAsState(
-        targetValue = if (arrowExpanded == true) 0f else -90f,
-        label = "modelLevelArrow",
-    )
-    GlassCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
-        cornerRadius = 12.dp,
-        containerColor = if (selected) {
-            LegadoTheme.colorScheme.secondaryContainer
-        } else {
-            LegadoTheme.colorScheme.surfaceContainer
-        },
-        onClick = onClick,
-        onLongClick = onLongClick,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selActive) {
-                AppCheckbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    includeStateSemantics = false,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                AppText(
-                    text = title,
-                    style = LegadoTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                subtitle?.let {
-                    AppText(
-                        text = it,
-                        style = LegadoTheme.typography.bodySmall,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            trailing?.invoke()
-            if (arrowExpanded != null) {
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (arrowExpanded) "收起" else "展开",
-                    modifier = Modifier
-                        .rotate(rotation)
-                        .then(
-                            if (onArrowClick != null) {
-                                Modifier.clickable(onClick = onArrowClick)
-                            } else {
-                                Modifier
-                            }
+                        onClick = { onQueueItemClick(key, modelId) },
+                        onLongClick = { onQueueItemLongClick(key, modelId) },
+                    ) {
+                        SelectionItemCardContent(
+                            title = "$index. ${m?.name ?: modelId}",
+                            subtitle = m?.let {
+                                "${it.modelId} · 尝试${it.requestAttempts}/校验${it.validateRetries} · ${it.timeoutMs / 1000}s"
+                            },
+                            inSelectionMode = thisCtx,
+                            isSelected = selected,
                         )
-                        .padding(4.dp),
-                )
+                    }
+                }
             }
+        }
+
+        item(key = "section_image") {
+            SectionTitle("图像生成")
+        }
+        item(key = "image_placeholder") {
+            TinyClickableSettingItem(
+                title = "暂未开放",
+                description = "预留板块，后续版本接入",
+                onClick = {},
+            )
+        }
+
+        item(key = "section_bgm") {
+            SectionTitle("背景音乐与音效")
+        }
+        item(key = "bgm_placeholder") {
+            TinyClickableSettingItem(
+                title = "暂未开放",
+                description = "预留板块，后续版本接入",
+                onClick = {},
+            )
         }
     }
 }
+
+@Composable
+private fun SectionTitle(text: String) {
+    AppText(
+        text = text,
+        style = LegadoTheme.typography.titleSmall,
+        color = LegadoTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp),
+    )
+}
+
+// ============================================================
+// 通用
+// ============================================================
 
 @Composable
 private fun SheetField(label: String, value: String, onChange: (String) -> Unit) {

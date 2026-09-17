@@ -41,6 +41,10 @@ data class AiModelEntry(
     val requestAttempts: Int = 2,
     val validateRetries: Int = 2,
     val timeoutMs: Long = 120_000L,
+    val testOk: Boolean? = null,
+    val testLatencyMs: Long? = null,
+    val testMessage: String? = null,
+    val testAt: Long = 0L,
 )
 
 data class AiStageAssignments(
@@ -100,6 +104,18 @@ class AiModelRepository(private val app: Application) {
                         requestAttempts = m.optInt("requestAttempts", 2).coerceIn(1, 5),
                         validateRetries = m.optInt("validateRetries", 2).coerceIn(0, 5),
                         timeoutMs = m.optLong("timeoutMs", 120_000L).coerceIn(5_000L, 600_000L),
+                        testOk = if (m.has("testOk") && !m.isNull("testOk")) {
+                            m.optBoolean("testOk")
+                        } else {
+                            null
+                        },
+                        testLatencyMs = if (m.has("testLatencyMs") && !m.isNull("testLatencyMs")) {
+                            m.optLong("testLatencyMs")
+                        } else {
+                            null
+                        },
+                        testMessage = m.optString("testMessage").takeIf { it.isNotBlank() },
+                        testAt = m.optLong("testAt", 0L),
                     )
                 )
             }
@@ -145,6 +161,10 @@ class AiModelRepository(private val app: Application) {
                     put("requestAttempts", m.requestAttempts)
                     put("validateRetries", m.validateRetries)
                     put("timeoutMs", m.timeoutMs)
+                    put("testOk", m.testOk ?: JSONObject.NULL)
+                    put("testLatencyMs", m.testLatencyMs ?: JSONObject.NULL)
+                    put("testMessage", m.testMessage ?: JSONObject.NULL)
+                    put("testAt", m.testAt)
                 })
             }
             o.put("models", mArr)
@@ -353,6 +373,7 @@ class AiModelRepository(private val app: Application) {
                 providerId = providerId,
                 name = name,
                 modelId = name,
+                enabled = false,
             )
         }
         save(cfg.copy(models = list))
@@ -397,6 +418,32 @@ class AiModelRepository(private val app: Application) {
             if (lastIdx >= 0) others.add(lastIdx + 1, item) else others.add(item)
         }
         return save(cfg.copy(models = others))
+    }
+
+    /** 持久化单模型测试结果（标签/延迟数据跨界面留存） */
+    suspend fun updateModelTest(
+        id: String,
+        ok: Boolean,
+        latencyMs: Long,
+        message: String,
+    ): Boolean {
+        val cfg = load()
+        return save(
+            cfg.copy(
+                models = cfg.models.map {
+                    if (it.id == id) {
+                        it.copy(
+                            testOk = ok,
+                            testLatencyMs = latencyMs,
+                            testMessage = message,
+                            testAt = System.currentTimeMillis(),
+                        )
+                    } else {
+                        it
+                    }
+                }
+            )
+        )
     }
 
     private fun http(): OkHttpClient = OkHttpClient.Builder()
