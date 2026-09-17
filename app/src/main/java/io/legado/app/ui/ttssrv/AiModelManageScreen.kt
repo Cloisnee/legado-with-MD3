@@ -229,7 +229,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     fun setEnabledForSelected(enabled: Boolean) {
         val c = cfg ?: return
-        val target = selModels.toMutableSet()
+        val target = libSel.models.toMutableSet()
         c.models.filter { it.providerId in libSel.vendors }.forEach { target += it.id }
         if (target.isEmpty()) return
         scope.launch {
@@ -393,7 +393,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                         }
                     }
                 },
-                bottomContent = { _ ->
+                bottomContent = {
                     AppTabRow(
                         tabTitles = listOf("模型库", "文本分析", "图像生成", "背景音乐与音效"),
                         selectedTabIndex = tab,
