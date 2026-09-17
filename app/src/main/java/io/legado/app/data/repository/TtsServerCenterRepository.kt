@@ -869,6 +869,10 @@ class TtsServerCenterRepository(private val app: Application) {
 
     suspend fun deleteEntries(keys: Set<String>): Boolean = withContext(Dispatchers.IO) {
         runCatching {
+            val ids = keys.filter { it.startsWith("id_") }
+                .mapNotNull { it.removePrefix("id_").toLongOrNull() }
+                .toSet()
+            val legacyKeys = keys.filterNot { it.startsWith("id_") }
             val file = TtsConfigStore.voicesFile(ctx)
             val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
             var hit = false
@@ -878,9 +882,11 @@ class TtsServerCenterRepository(private val app: Application) {
                 val kept = JSONArray()
                 for (i in 0 until list.length()) {
                     val e = list.optJSONObject(i) ?: continue
+                    val id = e.optLong("id")
                     val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                    val key = "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                    if (key in keys) hit = true else kept.put(e)
+                    val legacyKey = "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                    val match = (id != 0L && id in ids) || (id == 0L && legacyKey in legacyKeys)
+                    if (match) hit = true else kept.put(e)
                 }
                 grp.put("list", kept)
             }

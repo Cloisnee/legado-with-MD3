@@ -531,14 +531,33 @@ class ReadAloudDataRepository(private val app: Application) {
         }
     }
 
-    /** 标签池 = fayinren.json ∪ 当前声线库标签（fayinren 缺失时也能用） */
+    suspend fun loadActiveVoiceBanks(): List<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val f = File(TtsDirProvider.baseDir(app), "_store/readaloud_ext.json")
+            if (!f.exists()) return@runCatching emptyList()
+            val arr = JSONObject(f.readText().removePrefix("\uFEFF"))
+                .optJSONArray("activeVoiceBanks") ?: return@runCatching emptyList()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val v = arr.optString(i).trim()
+                    if (v.isNotEmpty()) add(v)
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 标签池 = 仅"已选中"声线池（配置列表勾选的分组）内的标签；未选池返回空 */
     suspend fun loadVoiceTagPool(): List<String> = withContext(Dispatchers.IO) {
+        val banks = loadActiveVoiceBanks().toSet()
+        if (banks.isEmpty()) return@withContext emptyList()
         val out = LinkedHashSet<String>()
-        out.addAll(loadFayinrenTags())
         runCatching {
             val voices = TtsConfigStore.loadVoices(app)
             for (g in 0 until voices.length()) {
-                val list = voices.optJSONObject(g)?.optJSONArray("list") ?: continue
+                val grp = voices.optJSONObject(g) ?: continue
+                val gname = grp.optJSONObject("group")?.optString("name").orEmpty()
+                if (gname !in banks) continue
+                val list = grp.optJSONArray("list") ?: continue
                 for (i in 0 until list.length()) {
                     val cfg = list.optJSONObject(i)?.optJSONObject("config") ?: continue
                     val tag = cfg.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
@@ -547,6 +566,26 @@ class ReadAloudDataRepository(private val app: Application) {
             }
         }
         out.toList()
+    }
+
+    // ---------------- UI 状态持久化 ----------------
+
+    private fun uiStateFile(): File = File(dataDir(), "ui_state.json")
+
+    suspend fun loadCharacterFilter(): String = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(readText(uiStateFile())).optString("characterFilter")
+        }.getOrNull().orEmpty().ifBlank { "全部" }
+    }
+
+    suspend fun saveCharacterFilter(value: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = runCatching { JSONObject(readText(uiStateFile())) }
+                .getOrElse { JSONObject() }
+            o.put("characterFilter", value)
+            writeText(uiStateFile(), o.toString())
+        }
+        Unit
     }
 
     /** 章节号列表（从剧本 [chapter:N] 标记读取） */

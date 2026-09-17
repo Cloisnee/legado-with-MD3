@@ -2,6 +2,12 @@ package io.legado.app.ui.ttssrv
 
 import android.app.Application
 import android.media.MediaPlayer
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -84,14 +90,6 @@ fun CharacterManageRouteScreen(onBackClick: () -> Unit) {
     )
 }
 
-private data class VoicePickRequest(
-    val roletype: String,
-    val gender: String,
-    val age: String,
-    val title: String,
-    val onPicked: (String) -> Unit,
-)
-
 private data class JoinLibRequest(
     val words: List<String>,
     val aliasToRemove: String? = null,
@@ -142,9 +140,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
     var aliasRenameInput by remember { mutableStateOf("") }
 
     // 声线选择 / 试听 / 入库
-    var picker by remember { mutableStateOf<VoicePickRequest?>(null) }
-    var voicePool by remember { mutableStateOf<List<String>?>(null) }
-    var vpQuery by remember { mutableStateOf("") }
+    var picker by remember { mutableStateOf<VoiceTagPickRequest?>(null) }
     var auditionIdx by remember { mutableStateOf<Int?>(null) }
     var auditionText by remember { mutableStateOf("你好，这是一段试听语音。") }
     var joinLib by remember { mutableStateOf<JoinLibRequest?>(null) }
@@ -159,7 +155,10 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { reload() }
+    LaunchedEffect(Unit) {
+        reload()
+        roleFilter = repo.loadCharacterFilter()
+    }
     DisposableEffect(Unit) {
         onDispose {
             runCatching { player.release() }
@@ -305,7 +304,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         val idx = editIdx ?: return
         val target = records.getOrNull(idx) ?: return
         val ageStore = if (target.roletype == "特殊") "系统" else target.age.ifBlank { "男青年" }
-        picker = VoicePickRequest(
+        picker = VoiceTagPickRequest(
             roletype = "核心",
             gender = edGender,
             age = ageStore,
@@ -557,6 +556,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                                         showTypeMenu = false
                                         roleFilter = t
                                         sel = emptySet()
+                                        scope.launch { repo.saveCharacterFilter(t) }
                                     },
                                 )
                             }
@@ -565,8 +565,12 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 }
             }
 
-            if (searchMode) {
-                item(key = "search") {
+            item(key = "search") {
+                AnimatedVisibility(
+                    visible = searchMode,
+                    enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+                    exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
+                ) {
                     SearchBar(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -747,7 +751,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 )
                 VoiceChip(edVoice) {
                     val actualAge = if (edRole == "特殊") "系统" else edAge
-                    picker = VoicePickRequest(edRole, edGender, actualAge, "选择声线") {
+                    picker = VoiceTagPickRequest(edRole, edGender, actualAge, "选择声线") {
                         edVoice = it
                     }
                 }
@@ -865,73 +869,13 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { aliasRenameTarget = null },
     )
 
-    // ---------------- 声线选择 ----------------
-    val pickerReq = picker
-    AppModalBottomSheet(
-        show = pickerReq != null,
-        onDismissRequest = { picker = null },
-        title = pickerReq?.title ?: "选择声线",
-    ) {
-        if (pickerReq != null) {
-            LaunchedEffect(pickerReq) {
-                if (voicePool == null) voicePool = repo.loadVoiceTagPool()
-            }
-            val pool = voicePool
-            val expected = repo.expectedVoicePrefix(
-                pickerReq.roletype, pickerReq.gender, pickerReq.age
-            )
-            Column(modifier = Modifier.fillMaxWidth()) {
-                SearchBar(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                    query = vpQuery,
-                    onQueryChange = { vpQuery = it },
-                    placeholder = "搜索声线标签（期望前缀：$expected）",
-                    shape = RoundedCornerShape(12.dp),
-                    autoFocus = false,
-                )
-                if (pool == null) {
-                    TinyClickableSettingItem(title = "加载声线库…", onClick = {})
-                } else {
-                    val matched = pool.filter {
-                        it.startsWith(expected) &&
-                            (vpQuery.isBlank() || it.contains(vpQuery, ignoreCase = true))
-                    }
-                    val fallbackAll = matched.isEmpty()
-                    val showList = if (fallbackAll) {
-                        pool.filter { vpQuery.isBlank() || it.contains(vpQuery, ignoreCase = true) }
-                    } else {
-                        matched
-                    }
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(360.dp),
-                    ) {
-                        if (fallbackAll) {
-                            item(key = "fb") {
-                                TinyClickableSettingItem(
-                                    title = "未匹配到前缀「$expected」的声线，已显示全部",
-                                    onClick = {},
-                                )
-                            }
-                        }
-                        items(showList, key = { "vp_$it" }) { tag ->
-                            TinyClickableSettingItem(
-                                title = tag,
-                                onClick = {
-                                    pickerReq.onPicked(tag)
-                                    picker = null
-                                    vpQuery = ""
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // ---------------- 声线选择（共享组件） ----------------
+    VoiceTagPickerSheet(
+        show = picker != null,
+        request = picker,
+        repo = repo,
+        onDismiss = { picker = null },
+    )
 
     // ---------------- 发音人（试听 / 更换声线） ----------------
     AppModalBottomSheet(
@@ -971,7 +915,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     description = "按 类型/性别/年龄 筛选标签",
                     onClick = {
                         val ageStore = if (r.roletype == "特殊") "系统" else r.age
-                        picker = VoicePickRequest(r.roletype, r.gender, ageStore, "更换声线") { v ->
+                        picker = VoiceTagPickRequest(r.roletype, r.gender, ageStore, "更换声线") { v ->
                             r.voice = v
                             scope.launch {
                                 repo.saveRecords(currentBook, records)
@@ -1045,7 +989,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         onDismiss = {
             mismatchConfirm = false
             val actualAge = if (edRole == "特殊") "系统" else edAge
-            picker = VoicePickRequest(edRole, edGender, actualAge, "选择声线") {
+            picker = VoiceTagPickRequest(edRole, edGender, actualAge, "选择声线") {
                 edVoice = it
             }
         },
@@ -1103,28 +1047,24 @@ private fun CharacterCardRow(
                 Spacer(modifier = Modifier.width(8.dp))
             }
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AppText(
-                        text = record.name,
-                        style = LegadoTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    RoleTag(record.roletype)
-                }
                 AppText(
-                    text = buildString {
-                        val a = record.aliases.split("|").map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                        if (a.isNotEmpty()) append("别名：${a.joinToString("、")} · ")
-                        append("${record.gender} · ${record.age}")
-                    },
-                    style = LegadoTheme.typography.bodySmall,
-                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                    text = record.name,
+                    style = LegadoTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                val aliasLine = record.aliases.split("|").map { it.trim() }
+                    .filter { it.isNotEmpty() && !isNoiseAlias(it, record) }
+                    .joinToString("｜")
+                if (aliasLine.isNotEmpty()) {
+                    AppText(
+                        text = aliasLine,
+                        style = LegadoTheme.typography.bodySmall,
+                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Spacer(modifier = Modifier.width(8.dp))
             VoiceChip(record.voice, onClick = onVoiceClick)
@@ -1132,31 +1072,12 @@ private fun CharacterCardRow(
     }
 }
 
-@Composable
-private fun RoleTag(roletype: String) {
-    val (bg, fg) = when (roletype) {
-        "核心" -> LegadoTheme.colorScheme.primary.copy(alpha = 0.16f) to
-            LegadoTheme.colorScheme.primary
-
-        "特殊" -> LegadoTheme.colorScheme.tertiary.copy(alpha = 0.18f) to
-            LegadoTheme.colorScheme.tertiary
-
-        else -> LegadoTheme.colorScheme.secondary.copy(alpha = 0.18f) to
-            LegadoTheme.colorScheme.secondary
-    }
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(bg)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-    ) {
-        AppText(
-            text = roletype.ifBlank { "核心" },
-            style = LegadoTheme.typography.labelSmall,
-            color = fg,
-        )
-    }
-}
+private fun isNoiseAlias(alias: String, record: CharacterRecord): Boolean =
+    alias == record.gender || alias == record.age || alias in setOf(
+        "男", "女", "系统", "旁白",
+        "男童", "女童", "少年", "少女",
+        "男青年", "女青年", "男中年", "女中年", "男老年", "女老年",
+    )
 
 @Composable
 private fun VoiceChip(voice: String, onClick: () -> Unit) {

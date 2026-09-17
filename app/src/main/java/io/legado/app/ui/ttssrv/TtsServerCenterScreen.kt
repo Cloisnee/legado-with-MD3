@@ -252,7 +252,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    fun entryKeyOf(e: EntryRow): String = "${e.tagRuleId}|${e.tag}"
+    fun entryKeyOf(e: EntryRow): String =
+        if (e.id != 0L) "id_${e.id}" else "k_${e.tagRuleId}|${e.tag}"
 
     fun uniqueEntryList(src: List<EntryRow>): List<EntryRow> {
         val seen = HashSet<String>()
@@ -351,6 +352,17 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         reload()
         activeBanks = repo.getActiveVoiceBanks().toSet()
+    }
+
+    // 已选中池清理：配置列表中被删除的分组不再残留（readaloud_ext.json 同步）
+    LaunchedEffect(groups, activeBanks) {
+        if (groups.isEmpty() || activeBanks.isEmpty()) return@LaunchedEffect
+        val valid = groups.map { it.name }.toSet()
+        val pruned = activeBanks.filter { it in valid }.toSet()
+        if (pruned != activeBanks) {
+            repo.setActiveVoiceBanks(pruned.toList())
+            activeBanks = pruned
+        }
     }
 
     // 组默认收起（只对首次出现的组设置）
@@ -785,12 +797,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             )
                         }
                     } else {
-                        val seen = HashSet<String>()
-                        groups.forEach { g ->
+                        groups.forEachIndexed { gi, g ->
                             val groupKeys = g.entries.map { entryKeyOf(it) }
                             val groupAllSel =
                                 g.entries.isNotEmpty() && groupKeys.all { it in selEntries }
-                            item(key = "g_${g.name}") {
+                            item(key = "g_${gi}_${g.name}") {
                                 val gSel = g.name in selGroupNames
                                 LevelRow(
                                     title = g.name,
@@ -843,11 +854,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }
                                 byCat.forEach { (cat, list) ->
                                     val catKey = "${g.name}|$cat"
-                                    val fresh = list.filter { seen.add(entryKeyOf(it)) }
+                                    val fresh = list
                                     val catKeys = fresh.map { entryKeyOf(it) }
                                     val catAllSel =
                                         fresh.isNotEmpty() && catKeys.all { it in selEntries }
-                                    item(key = "c_$catKey") {
+                                    item(key = "c_${gi}_$catKey") {
                                         val cSel = catKey in selCatKeys
                                         LevelRow(
                                             title = cat,

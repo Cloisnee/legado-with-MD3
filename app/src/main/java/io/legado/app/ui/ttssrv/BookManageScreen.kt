@@ -1,6 +1,12 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -109,6 +116,9 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
     var newCharDialog by remember { mutableStateOf(false) }
     var ncName by remember { mutableStateOf("") }
     var ncRole by remember { mutableStateOf("核心") }
+    var ncGender by remember { mutableStateOf("男") }
+    var ncVoice by remember { mutableStateOf("") }
+    var bmPicker by remember { mutableStateOf<VoiceTagPickRequest?>(null) }
 
     var deleteChapterTarget by remember { mutableStateOf<Int?>(null) }
 
@@ -304,8 +314,12 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                     }
                 }
 
-                if (searchMode) {
-                    item(key = "search") {
+                item(key = "search") {
+                    AnimatedVisibility(
+                        visible = searchMode,
+                        enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+                        exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
+                    ) {
                         SearchBar(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -623,12 +637,21 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                     onClick = {
                         ncName = ""
                         ncRole = "核心"
+                        ncGender = "男"
+                        ncVoice = ""
                         newCharDialog = true
                     },
                 )
             }
         }
     }
+
+    VoiceTagPickerSheet(
+        show = bmPicker != null,
+        request = bmPicker,
+        repo = repo,
+        onDismiss = { bmPicker = null },
+    )
 
     // ---------------- 新增人物 ----------------
     AppModalBottomSheet(
@@ -656,6 +679,34 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                 selected = ncRole,
                 onSelect = { ncRole = it },
             )
+            SmallChoiceRow(
+                label = "性别",
+                options = listOf("男", "女"),
+                selected = ncGender,
+                onSelect = { ncGender = it },
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppText(
+                    text = "声线",
+                    style = LegadoTheme.typography.labelSmall,
+                    modifier = Modifier.width(52.dp),
+                )
+                BmVoiceChip(ncVoice) {
+                    val age = when {
+                        ncRole == "特殊" -> "系统"
+                        ncGender == "女" -> "女青年"
+                        else -> "男青年"
+                    }
+                    bmPicker = VoiceTagPickRequest(ncRole, ncGender, age, "选择声线") {
+                        ncVoice = it
+                    }
+                }
+            }
             TinyClickableSettingItem(
                 title = "创建并标记",
                 onClick = {
@@ -676,8 +727,13 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                         val rec = CharacterRecord(
                             name = finalName,
                             roletype = ncRole,
-                            gender = "男",
-                            age = if (ncRole == "特殊") "系统" else "男青年",
+                            gender = ncGender,
+                            age = when {
+                                ncRole == "特殊" -> "系统"
+                                ncGender == "女" -> "女青年"
+                                else -> "男青年"
+                            },
+                            voice = ncVoice,
                             appearanceChapters = mutableListOf(ch),
                             lastAppearanceChapter = ch,
                             appearanceCount = 1,
@@ -709,7 +765,7 @@ private fun TagChip(text: String, highlighted: Boolean, onClick: () -> Unit) {
     }
     Box(
         modifier = Modifier
-            .width(96.dp)
+            .widthIn(max = 64.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(bg)
             .clickable(onClick = onClick)
@@ -751,6 +807,34 @@ private fun SmallChoiceRow(
             )
             Spacer(modifier = Modifier.width(6.dp))
         }
+    }
+}
+
+@Composable
+private fun BmVoiceChip(voice: String, onClick: () -> Unit) {
+    val active = voice.isNotBlank()
+    val bg = if (active) {
+        LegadoTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        LegadoTheme.colorScheme.surfaceVariant
+    }
+    val fg = if (active) {
+        LegadoTheme.colorScheme.primary
+    } else {
+        LegadoTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        AppText(
+            text = voice.ifBlank { "未设置" },
+            style = LegadoTheme.typography.labelSmall,
+            color = fg,
+        )
     }
 }
 
