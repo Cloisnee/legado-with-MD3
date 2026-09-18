@@ -102,7 +102,7 @@ class SpeechAnalysisPipelineV2(
         }
         val lockedByKey = runCatching {
             existing?.let { chapterSpeechGateway.getSegments(it.id) }
-        }.getOrDefault(emptyList())
+        }.getOrNull().orEmpty()
             .filter { it.userLocked }
             .associateBy { it.paragraphIndex to it.text }
 
