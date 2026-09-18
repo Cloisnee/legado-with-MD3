@@ -71,12 +71,14 @@ import io.legado.app.data.repository.GroupRow
 import io.legado.app.data.repository.LocaleOption
 import io.legado.app.data.repository.PluginRow
 import io.legado.app.data.repository.TtsServerCenterRepository
+import io.legado.app.data.repository.VoiceOption
 import io.legado.app.data.repository.VarField
 import io.legado.app.data.repository.VoiceOption
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppRadioButton
+import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.SectionTitle
@@ -96,7 +98,9 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
@@ -109,14 +113,16 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 
 private sealed interface CenterSheet {
     data class EntryActions(val entry: EntryRow) : CenterSheet
-    data object PickPluginForNew : CenterSheet
+    data object CreateEntries : CenterSheet
     data object ManualImport : CenterSheet
 }
 
 private sealed interface PickerPurpose {
     data object Audition : PickerPurpose
-    data object NewEntry : PickerPurpose
 }
+
+private val NE_MALE_AGES = listOf("男童", "少年", "男青年", "男中年", "男老年")
+private val NE_FENE_MALE_AGES = listOf("女童", "少女", "女青年", "女中年", "女老年")
 
 private data class PickerTarget(
     val pluginId: String,
@@ -124,13 +130,6 @@ private data class PickerTarget(
     val purpose: PickerPurpose,
 )
 
-private data class VoicePrefill(
-    val pluginId: String,
-    val pluginName: String,
-    val locale: String,
-    val voice: String,
-    val voiceName: String,
-)
 
 private class CenterListUiState<T>(
     override val items: List<T>,
@@ -218,13 +217,32 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var pickerLocale by remember { mutableStateOf<LocaleOption?>(null) }
     var pickerBusy by remember { mutableStateOf(false) }
     var newEntryGroupDefault by remember { mutableStateOf<String?>(null) }
-    var newEntryPrefill by remember { mutableStateOf<VoicePrefill?>(null) }
     var neGroup by remember { mutableStateOf("") }
-    var neName by remember { mutableStateOf("") }
-    var neTag by remember { mutableStateOf("") }
-    var neRuleId by remember { mutableStateOf("local") }
-    var neTagName by remember { mutableStateOf("") }
-    var neCategory by remember { mutableStateOf("自建") }
+    var nePluginId by remember { mutableStateOf("") }
+    var nePluginName by remember { mutableStateOf("") }
+    var neRole by remember { mutableStateOf("核心") }
+    var neGender by remember { mutableStateOf("男") }
+    var neAge by remember { mutableStateOf("男青年") }
+    var neSpeed by remember { mutableStateOf(1f) }
+    var neVolume by remember { mutableStateOf(1f) }
+    var nePitch by remember { mutableStateOf(1f) }
+    var neAuditionText by remember { mutableStateOf("你好，这是一段试听语音。") }
+    var neLocale by remember { mutableStateOf("zh-CN") }
+    var neVoiceSel by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
+    val neParams = remember { mutableStateMapOf<String, String>() }
+    var neFields by remember { mutableStateOf<List<VarField>>(emptyList()) }
+    var neLocales by remember { mutableStateOf<List<LocaleOption>>(emptyList()) }
+    var pluginPickerSheet by remember { mutableStateOf(false) }
+    var voicePickerSheet by remember { mutableStateOf(false) }
+    var voiceQuery by remember { mutableStateOf("") }
+    var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
+    var grpDlg by remember { mutableStateOf(false) }
+    var grpInput by remember { mutableStateOf("") }
+    var neTextDlg by remember { mutableStateOf(false) }
+    var neTextInput by remember { mutableStateOf("") }
+    var paramDlgKey by remember { mutableStateOf<String?>(null) }
+    var paramDlgLabel by remember { mutableStateOf("") }
+    var paramDlgInput by remember { mutableStateOf("") }
     var editTarget by remember { mutableStateOf<EntryRow?>(null) }
     var edName by remember { mutableStateOf("") }
     var edTag by remember { mutableStateOf("") }
@@ -370,6 +388,45 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (pruned != activeBanks) {
             repo.setActiveVoiceBanks(pruned.toList())
             activeBanks = pruned
+        }
+    }
+
+    // 新建条目：打开时初始化分组/插件
+    LaunchedEffect(sheet) {
+        if (sheet is CenterSheet.CreateEntries) {
+            if (neGroup.isBlank()) {
+                neGroup = newEntryGroupDefault ?: groups.firstOrNull()?.name ?: "自建"
+            }
+            if (nePluginId.isBlank()) {
+                plugins.firstOrNull { it.enabled }?.let { p ->
+                    nePluginId = p.pluginId
+                    nePluginName = p.name
+                }
+            }
+        }
+    }
+
+    // 新建条目：插件变化 → 参数键/语言
+    LaunchedEffect(nePluginId) {
+        if (nePluginId.isBlank()) return@LaunchedEffect
+        neFields = repo.loadVarFields(nePluginId).ifEmpty { repo.scanPluginDataKeys(nePluginId) }
+        neLocales = repo.loadLocales(nePluginId).ifEmpty {
+            listOf(
+                LocaleOption("zh-CN", "中文(简体)"),
+                LocaleOption("zh-TW", "中文(繁体)"),
+                LocaleOption("en-US", "English"),
+                LocaleOption("ja-JP", "日本語"),
+            )
+        }
+        if (neLocales.none { it.id == neLocale }) {
+            neLocales.firstOrNull()?.let { neLocale = it.id }
+        }
+    }
+
+    // 声音列表加载
+    LaunchedEffect(voicePickerSheet, nePluginId, neLocale) {
+        if (voicePickerSheet && nePluginId.isNotBlank()) {
+            voiceList = repo.loadVoices(nePluginId, neLocale)
         }
     }
 
@@ -570,7 +627,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 } })
                 add(ActionItem("在此组新建条目") {
                     newEntryGroupDefault = groupNameOfKey(g)
-                    sheet = CenterSheet.PickPluginForNew
+                    sheet = CenterSheet.CreateEntries
                 })
             }
         }
@@ -656,7 +713,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onAddClick = if (selectedTab == 1) {
             {
                 newEntryGroupDefault = null
-                sheet = CenterSheet.PickPluginForNew
+                sheet = CenterSheet.CreateEntries
             }
         } else null,
         snackbarHostState = remember { SnackbarHostState() },
@@ -1042,36 +1099,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         TinyClickableSettingItem(title = "取消", onClick = { sheet = null })
     }
 
-    // ---------------- 选择插件（新建条目） ----------------
-    AppModalBottomSheet(
-        show = sheet is CenterSheet.PickPluginForNew,
-        onDismissRequest = { sheet = null },
-        title = "选择插件（新条目）",
-    ) {
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            if (plugins.isEmpty()) {
-                TinyClickableSettingItem(title = "暂无可用插件", onClick = {})
-            }
-            plugins.forEach { p ->
-                TinyClickableSettingItem(
-                    title = p.name,
-                    description = "${p.pluginId}${if (p.enabled) "" else "（未启用）"}",
-                    onClick = {
-                        sheet = null
-                        pickerTarget = PickerTarget(p.pluginId, p.name, PickerPurpose.NewEntry)
-                    },
-                )
-            }
-        }
-    }
-
     // ---------------- 声线选择（试听 / 新建共用） ----------------
     AppModalBottomSheet(
         show = pickerTarget != null,
         onDismissRequest = { pickerTarget = null },
-        title = pickerTarget?.let {
-            (if (it.purpose == PickerPurpose.Audition) "试听" else "新建条目") + "：" + it.pluginName
-        } ?: "",
+        title = pickerTarget?.let { "试听：" + it.pluginName } ?: "",
     ) {
         val t = pickerTarget
         if (t != null) {
@@ -1134,23 +1166,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                         }
                                     }
 
-                                    PickerPurpose.NewEntry -> {
-                                        pickerTarget = null
-                                        neGroup = newEntryGroupDefault
-                                            ?: groups.firstOrNull()?.name ?: "自建"
-                                        neName = v.name.ifBlank { v.id }
-                                        neTag = ""
-                                        neRuleId = "local"
-                                        neTagName = ""
-                                        neCategory = "自建"
-                                        newEntryPrefill = VoicePrefill(
-                                            pluginId = t.pluginId,
-                                            pluginName = t.pluginName,
-                                            locale = loc.id,
-                                            voice = v.id,
-                                            voiceName = v.name.ifBlank { v.id },
-                                        )
-                                    }
                                 }
                             },
                         )
@@ -1160,70 +1175,394 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 新建条目表单 ----------------
+    // ---------------- 新建条目（A–G 一体弹窗） ----------------
     AppModalBottomSheet(
-        show = newEntryPrefill != null,
-        onDismissRequest = { newEntryPrefill = null },
-        title = "新建条目（${newEntryPrefill?.voiceName.orEmpty()}）",
+        show = sheet is CenterSheet.CreateEntries,
+        onDismissRequest = { sheet = null },
+        title = "新建条目",
     ) {
-        val pf = newEntryPrefill
-        if (pf != null) {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                TinyClickableSettingItem(
-                    title = "声线：${pf.voiceName}（${pf.voice}）",
-                    description = "插件：${pf.pluginName} · 语言：${pf.locale} · 点击试听",
-                    imageVector = Icons.Default.PlayArrow,
-                    onClick = {
-                        scope.launch {
-                            context.toastOnUi("正在合成…")
-                            val r = repo.auditionDirect(
-                                pf.pluginId, pf.locale, pf.voice, "你好，这是新建试听。"
-                            )
-                            if (r.ok && r.path != null) {
-                                play(r.path)
-                                context.toastOnUi("播放中")
-                            } else {
-                                detailTitle = "试听失败（诊断报告）"
-                                detailText = r.message
-                            }
-                        }
-                    },
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            TinyClickableSettingItem(
+                title = "分组名",
+                description = neGroup.ifBlank { "点按输入（可自定义）" },
+                onClick = {
+                    grpInput = neGroup
+                    grpDlg = true
+                },
+            )
+            TinyClickableSettingItem(
+                title = "插件",
+                description = if (nePluginName.isBlank()) "未选择（必选）" else nePluginName,
+                onClick = { pluginPickerSheet = true },
+            )
+            TinyDropdownSettingItem(
+                title = "类型",
+                selectedValue = neRole,
+                displayEntries = arrayOf("核心", "特殊", "路人"),
+                entryValues = arrayOf("核心", "特殊", "路人"),
+                onValueChange = {
+                    neRole = it
+                    if (it == "特殊") {
+                        neAge = "系统"
+                    } else if (neAge == "系统") {
+                        neAge = if (neGender == "女") "女青年" else "男青年"
+                    }
+                },
+            )
+            TinyDropdownSettingItem(
+                title = "性别",
+                selectedValue = neGender,
+                displayEntries = arrayOf("男", "女"),
+                entryValues = arrayOf("男", "女"),
+                onValueChange = { g ->
+                    neGender = g
+                    val ages = if (g == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                    if (neRole != "特殊" && neAge !in ages) {
+                        neAge = if (g == "女") "女青年" else "男青年"
+                    }
+                },
+            )
+            TinyDropdownSettingItem(
+                title = "年龄",
+                selectedValue = neAge,
+                displayEntries = (if (neRole == "特殊") listOf("系统") else {
+                    if (neGender == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                }).toTypedArray(),
+                entryValues = (if (neRole == "特殊") listOf("系统") else {
+                    if (neGender == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                }).toTypedArray(),
+                onValueChange = { neAge = it },
+            )
+            TinySliderSettingItem(
+                title = "语速",
+                value = neSpeed,
+                valueRange = 0f..2f,
+                stepSize = 0.05f,
+                showDecimal = true,
+                valueFormat = { "%.2f×".format(it) },
+                description = "1.00 = 原速（插件引擎倍率）",
+                onValueChange = { neSpeed = it },
+            )
+            TinySliderSettingItem(
+                title = "音量",
+                value = neVolume,
+                valueRange = 0f..2f,
+                stepSize = 0.05f,
+                showDecimal = true,
+                valueFormat = { "%.2f×".format(it) },
+                description = "1.00 = 原音量",
+                onValueChange = { neVolume = it },
+            )
+            TinySliderSettingItem(
+                title = "音高",
+                value = nePitch,
+                valueRange = 0.5f..2f,
+                stepSize = 0.05f,
+                showDecimal = true,
+                valueFormat = { "%.2f×".format(it) },
+                description = "1.00 = 原音高",
+                onValueChange = { nePitch = it },
+            )
+            if (neFields.isNotEmpty()) {
+                AppText(
+                    text = "— 插件参数 —",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
-                SheetField("分组", neGroup) { neGroup = it }
-                SheetField("显示名", neName) { neName = it }
-                SheetField("标签（tag，如 女童01）", neTag) { neTag = it }
-                SheetField("标签规则（tagRuleId）", neRuleId) { neRuleId = it }
-                SheetField("标签显示名（tagName，可空）", neTagName) { neTagName = it }
-                SheetField("分类路径（categoryPath）", neCategory) { neCategory = it }
-                TinyClickableSettingItem(
-                    title = "保存新条目",
-                    onClick = {
-                        val p = newEntryPrefill ?: return@TinyClickableSettingItem
-                        if (neTag.isBlank()) {
-                            context.toastOnUi("标签（tag）不能为空")
-                            return@TinyClickableSettingItem
-                        }
-                        newEntryPrefill = null
-                        scope.launch {
-                            val ok = repo.appendVoiceEntry(
-                                groupName = neGroup.ifBlank { "自建" },
-                                displayName = neName.ifBlank { p.voiceName },
-                                tag = neTag.trim(),
-                                tagRuleId = neRuleId.ifBlank { "local" },
-                                tagName = neTagName,
-                                categoryPath = neCategory.ifBlank { "自建" },
-                                pluginId = p.pluginId,
-                                locale = p.locale,
-                                voice = p.voice,
-                            )
-                            context.toastOnUi(if (ok) "已保存新条目" else "保存失败")
+                neFields.forEach { fld ->
+                    val isBool = fld.key.endsWith("Enabled", ignoreCase = true) ||
+                        fld.key.startsWith("enable", ignoreCase = true)
+                    if (isBool) {
+                        TinySwitchSettingItem(
+                            title = fld.label,
+                            checked = neParams[fld.key] == "1" || neParams[fld.key] == "true",
+                            description = fld.key,
+                            onCheckedChange = { neParams[fld.key] = if (it) "1" else "0" },
+                        )
+                    } else {
+                        TinyClickableSettingItem(
+                            title = fld.label,
+                            description = neParams[fld.key]?.takeIf { it.isNotBlank() }
+                                ?: "未设置（点按编辑）",
+                            onClick = {
+                                paramDlgKey = fld.key
+                                paramDlgLabel = fld.label
+                                paramDlgInput = neParams[fld.key].orEmpty()
+                            },
+                        )
+                    }
+                }
+            }
+            TinyClickableSettingItem(
+                title = "试听文本",
+                description = neAuditionText,
+                onClick = {
+                    neTextInput = neAuditionText
+                    neTextDlg = true
+                },
+            )
+            TinyDropdownSettingItem(
+                title = "语言",
+                selectedValue = neLocale,
+                displayEntries = neLocales.map { it.name }.toTypedArray(),
+                entryValues = neLocales.map { it.id }.toTypedArray(),
+                onValueChange = {
+                    neLocale = it
+                    neVoiceSel = emptyList()
+                },
+            )
+            TinyClickableSettingItem(
+                title = "声音",
+                description = if (neVoiceSel.isEmpty()) {
+                    "未选择（点按选择：可多选 + 试听）"
+                } else {
+                    "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
+                },
+                onClick = {
+                    voiceQuery = ""
+                    voicePickerSheet = true
+                },
+            )
+            TinyClickableSettingItem(
+                title = "保存并生成条目",
+                onClick = {
+                    if (neGroup.isBlank()) {
+                        context.toastOnUi("请填写分组名")
+                        return@TinyClickableSettingItem
+                    }
+                    if (nePluginId.isBlank()) {
+                        context.toastOnUi("请选择插件")
+                        return@TinyClickableSettingItem
+                    }
+                    if (neVoiceSel.isEmpty()) {
+                        context.toastOnUi("请选择至少一个声音")
+                        return@TinyClickableSettingItem
+                    }
+                    scope.launch {
+                        val (ok, msg) = repo.createEntriesFromPlugin(
+                            groupName = neGroup.trim(),
+                            roleType = neRole,
+                            gender = neGender,
+                            age = if (neRole == "特殊") "系统" else neAge,
+                            speed = neSpeed,
+                            volume = neVolume,
+                            pitch = nePitch,
+                            sampleRate = 24000,
+                            locale = neLocale,
+                            pluginId = nePluginId,
+                            pluginVoiceIds = neVoiceSel.map { it.id },
+                            pluginVoiceNames = neVoiceSel.map { it.name },
+                            dataParams = neParams.toMap(),
+                        )
+                        context.toastOnUi(msg)
+                        if (ok) {
+                            sheet = null
+                            neVoiceSel = emptyList()
                             reload()
                         }
+                    }
+                },
+            )
+        }
+    }
+
+    // ---------------- 插件选择（新建条目） ----------------
+    AppModalBottomSheet(
+        show = pluginPickerSheet,
+        onDismissRequest = { pluginPickerSheet = false },
+        title = "选择插件",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            plugins.filter { it.enabled }.forEach { p ->
+                TinyClickableSettingItem(
+                    title = p.name,
+                    description = p.pluginId,
+                    onClick = {
+                        nePluginId = p.pluginId
+                        nePluginName = p.name
+                        neParams.clear()
+                        neVoiceSel = emptyList()
+                        pluginPickerSheet = false
                     },
                 )
             }
+            if (plugins.none { it.enabled }) {
+                TinyClickableSettingItem(title = "暂无已启用插件", onClick = {})
+            }
         }
     }
+
+    // ---------------- 声音选择（多选 + 试听） ----------------
+    AppModalBottomSheet(
+        show = voicePickerSheet,
+        onDismissRequest = { voicePickerSheet = false },
+        title = "选择声音 · 已选 ${neVoiceSel.size}",
+        endAction = {
+            MediumTonalButton(
+                onClick = { voicePickerSheet = false },
+                icon = Icons.Default.Check,
+                contentDescription = "完成",
+            )
+        },
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            SearchBar(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                query = voiceQuery,
+                onQueryChange = { voiceQuery = it },
+                placeholder = "搜索声音（名称 / ID）",
+                shape = RoundedCornerShape(12.dp),
+                autoFocus = false,
+            )
+            if (voiceList.isEmpty()) {
+                TinyClickableSettingItem(title = "加载中…（或该语言无声音）", onClick = {})
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(380.dp),
+                ) {
+                    items(
+                        voiceList.filter {
+                            voiceQuery.isBlank() ||
+                                it.name.contains(voiceQuery, ignoreCase = true) ||
+                                it.id.contains(voiceQuery, ignoreCase = true)
+                        },
+                        key = { "nv_${it.id}" },
+                    ) { v ->
+                        val checked = neVoiceSel.any { it.id == v.id }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    neVoiceSel = if (checked) {
+                                        neVoiceSel.filterNot { it.id == v.id }
+                                    } else {
+                                        neVoiceSel + v
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AppCheckbox(
+                                checked = checked,
+                                onCheckedChange = null,
+                                includeStateSemantics = false,
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                AppText(
+                                    text = v.name.ifBlank { v.id },
+                                    style = LegadoTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                AppText(
+                                    text = v.id,
+                                    style = LegadoTheme.typography.bodySmall,
+                                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            SmallPlainButton(
+                                onClick = {
+                                    scope.launch {
+                                        val r = repo.auditionDirect(
+                                            nePluginId, neLocale, v.id, neAuditionText,
+                                            neSpeed, neVolume, nePitch, neParams.toMap(),
+                                        )
+                                        if (r.ok && r.path != null) {
+                                            runCatching {
+                                                player.reset()
+                                                player.setDataSource(r.path)
+                                                player.prepare()
+                                                player.start()
+                                            }
+                                            context.toastOnUi("播放中")
+                                        } else {
+                                            context.toastOnUi("试听失败：${r.message.take(120)}")
+                                        }
+                                    }
+                                },
+                                icon = Icons.Default.PlayArrow,
+                                contentDescription = "试听",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------- 新建条目 · 输入对话框 ----------------
+    AppAlertDialog(
+        show = grpDlg,
+        onDismissRequest = { grpDlg = false },
+        title = "分组名",
+        content = {
+            AppTextField(
+                value = grpInput,
+                onValueChange = { grpInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "自定义分组名",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            grpDlg = false
+            val t = grpInput.trim()
+            if (t.isNotEmpty()) neGroup = t
+        },
+        dismissText = "取消",
+        onDismiss = { grpDlg = false },
+    )
+
+    AppAlertDialog(
+        show = neTextDlg,
+        onDismissRequest = { neTextDlg = false },
+        title = "试听文本",
+        content = {
+            AppTextField(
+                value = neTextInput,
+                onValueChange = { neTextInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "文本",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            neTextDlg = false
+            val t = neTextInput.trim()
+            if (t.isNotEmpty()) neAuditionText = t
+        },
+        dismissText = "取消",
+        onDismiss = { neTextDlg = false },
+    )
+
+    AppAlertDialog(
+        show = paramDlgKey != null,
+        onDismissRequest = { paramDlgKey = null },
+        title = paramDlgLabel,
+        content = {
+            AppTextField(
+                value = paramDlgInput,
+                onValueChange = { paramDlgInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = paramDlgKey.orEmpty(),
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            paramDlgKey?.let { neParams[it] = paramDlgInput }
+            paramDlgKey = null
+        },
+        dismissText = "取消",
+        onDismiss = { paramDlgKey = null },
+    )
 
     // ---------------- 编辑条目表单 ----------------
     AppModalBottomSheet(
