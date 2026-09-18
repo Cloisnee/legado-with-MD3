@@ -73,7 +73,6 @@ import io.legado.app.data.repository.PluginRow
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.data.repository.VoiceOption
 import io.legado.app.data.repository.VarField
-import io.legado.app.data.repository.VoiceOption
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
