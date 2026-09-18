@@ -156,6 +156,7 @@ fun ReadBookRouteScreen(
     onOpenTtsEnginesAndVoices: () -> Unit = {},
     onOpenTtsCache: () -> Unit = {},
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
+    onOpenReadAloudPlayer: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val readPreferences by viewModel.readPreferences.collectAsStateWithLifecycle()
@@ -418,6 +419,7 @@ fun ReadBookRouteScreen(
                             }
                             ReadBookEffect.OpenTtsEnginesAndVoices -> onOpenTtsEnginesAndVoices()
                             ReadBookEffect.OpenTtsCache -> onOpenTtsCache()
+                            ReadBookEffect.OpenReadAloudPlayer -> onOpenReadAloudPlayer()
                             is ReadBookEffect.MenuSettingReplace -> {
                                 replaceLauncher.launch(
                                     ReplaceRuleActivity.startIntent(
@@ -847,31 +849,7 @@ fun ReadBookRouteScreen(
             )
             ReadBookSearchBar(state = state, onIntent = viewModel::onIntent)
             ReadBookFloatingActionBar(state = state, onIntent = viewModel::onIntent)
-            AnimatedVisibility(
-                visible = state.isReadAloudRunning &&
-                    state.showReadAloudCapsule &&
-                        !state.menuVisible,
-                enter = fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.88f),
-                exit = fadeOut(tween(140)) + scaleOut(tween(180), targetScale = 0.88f),
-            ) {
-                ReadAloudCapsule(
-                    book = state.book,
-                    isPaused = state.isReadAloudPaused,
-                    offsetXDp = state.readAloudCapsuleOffsetX,
-                    offsetYDp = state.readAloudCapsuleOffsetY,
-                    progress = state.readAloudChapterPosition.toFloat() /
-                        state.readAloudChapterLength.coerceAtLeast(1),
-                    autoCollapse = state.capsuleAutoCollapse,
-                    onPositionChanged = { x, y ->
-                        viewModel.onIntent(ReadBookIntent.SetReadAloudCapsulePosition(x, y))
-                    },
-                    onTogglePause = {
-                        viewModel.onIntent(ReadBookIntent.ReadAloudTogglePause)
-                    },
-                    onStop = { viewModel.onIntent(ReadBookIntent.ReadAloudStop) },
-                    onOpenPlayer = { viewModel.onIntent(ReadBookIntent.OpenReadAloudPlayer) },
-                )
-            }
+            // 朗读胶囊改由全局叠层（ReadAloudShellHost）承载，本页不再内联渲染，避免双胶囊。
             if (featureOverlaysInitialized) {
                 ReadBookOverlayRoute(
                     viewModel = viewModel,

@@ -11,6 +11,7 @@ import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudSettings
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.config.compatDsInt
 import io.legado.app.help.config.compatDsString
@@ -45,6 +46,16 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
             read = Preferences::toReadAloudSettings,
             toPrefMap = ReadAloudSettings::toPrefMap,
             transform = transform,
+        )
+    }
+
+    /** 悬浮胶囊位置；两个分量同批写入，避免只落一个导致胶囊跳位。 */
+    suspend fun putCapsulePosition(x: Float, y: Float) {
+        AppConfigStore.putAllAndAwait(
+            mapOf(
+                ReadAloudKeys.CapsuleOffsetX.name to x,
+                ReadAloudKeys.CapsuleOffsetY.name to y,
+            )
         )
     }
 
@@ -103,6 +114,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     pauseReadAloudWhilePhoneCalls =
         compatDsValue(ReadAloudKeys.PauseReadAloudWhilePhoneCalls, false),
     readAloudWakeLock = compatDsValue(ReadAloudKeys.ReadAloudWakeLock, false),
+    keepReadAloudOnExit = compatDsValue(ReadAloudKeys.KeepReadAloudOnExit, false),
     showReadAloudCapsule = compatDsValue(ReadAloudKeys.ShowReadAloudCapsule, true),
     capsuleAutoCollapse = compatDsValue(ReadAloudKeys.CapsuleAutoCollapse, true),
     capsuleOffsetX = compatDsValue(ReadAloudKeys.CapsuleOffsetX, 0f),
@@ -118,6 +130,13 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsTimer = PlaybackTimer.normalize(compatDsValue(ReadAloudKeys.TtsTimer, 0)),
     finishCurrentChapterAfterTimer =
         compatDsValue(ReadAloudKeys.FinishCurrentChapterAfterTimer, false),
+    timerMode = compatDsValue(
+        ReadAloudKeys.TimerMode,
+        ReadAloudTimerMode.Minute.storageValue,
+    ),
+    timerChapters = PlaybackTimer.normalizeChapters(
+        compatDsValue(ReadAloudKeys.TimerChapters, 0)
+    ),
     ttsFollowSys = compatDsValue(ReadAloudKeys.TtsFollowSys, true),
     ttsSpeechRate = compatDsValue(ReadAloudKeys.TtsSpeechRate, 5),
     useMultiSpeaker = compatDsValue(ReadAloudKeys.UseMultiSpeaker, true),
@@ -178,6 +197,7 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.readAloudByMediaButton to readAloudByMediaButton,
     PreferKey.pauseReadAloudWhilePhoneCalls to pauseReadAloudWhilePhoneCalls,
     PreferKey.readAloudWakeLock to readAloudWakeLock,
+    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
     PreferKey.showReadAloudCapsule to showReadAloudCapsule,
     PreferKey.capsuleAutoCollapse to capsuleAutoCollapse,
     ReadAloudKeys.CapsuleOffsetX.name to capsuleOffsetX,
@@ -191,6 +211,8 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
     PreferKey.ttsTimer to ttsTimer,
     PreferKey.finishCurrentChapterAfterTimer to finishCurrentChapterAfterTimer,
+    PreferKey.readAloudTimerMode to timerMode,
+    PreferKey.readAloudTimerChapters to timerChapters,
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
@@ -221,6 +243,7 @@ private object ReadAloudKeys {
     val PauseReadAloudWhilePhoneCalls =
         booleanPreferencesKey(PreferKey.pauseReadAloudWhilePhoneCalls)
     val ReadAloudWakeLock = booleanPreferencesKey(PreferKey.readAloudWakeLock)
+    val KeepReadAloudOnExit = booleanPreferencesKey(PreferKey.keepReadAloudOnExit)
     val ShowReadAloudCapsule = booleanPreferencesKey(PreferKey.showReadAloudCapsule)
     val CapsuleAutoCollapse = booleanPreferencesKey(PreferKey.capsuleAutoCollapse)
     val CapsuleOffsetX = floatPreferencesKey("read_aloud_capsule_offset_x")
@@ -242,6 +265,8 @@ private object ReadAloudKeys {
     val TtsTimer = intPreferencesKey(PreferKey.ttsTimer)
     val FinishCurrentChapterAfterTimer =
         booleanPreferencesKey(PreferKey.finishCurrentChapterAfterTimer)
+    val TimerMode = stringPreferencesKey(PreferKey.readAloudTimerMode)
+    val TimerChapters = intPreferencesKey(PreferKey.readAloudTimerChapters)
     val TtsFollowSys = booleanPreferencesKey(PreferKey.ttsFollowSys)
     val TtsSpeechRate = intPreferencesKey(PreferKey.ttsSpeechRate)
     val UseMultiSpeaker = booleanPreferencesKey(PreferKey.useMultiSpeaker)

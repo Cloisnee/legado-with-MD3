@@ -88,6 +88,9 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import io.legado.app.R
 import io.legado.app.constant.ReadAloudBgMode
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
+import io.legado.app.ui.book.readaloud.ReadAloudTimerConfig
+import io.legado.app.ui.book.readaloud.ReadAloudTimerSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.hazeStyle.HazeLegado
 import io.legado.app.ui.util.rememberBlurBackdrop
@@ -107,7 +110,6 @@ import io.legado.app.ui.widget.components.player.PlayerBackground
 import io.legado.app.ui.widget.components.player.PlayerProgressSlider
 import io.legado.app.ui.widget.components.player.PlayerTocPage
 import io.legado.app.ui.widget.components.player.playerBgModeLabel
-import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.text.AppText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -129,6 +131,7 @@ fun ReadAloudPlayerScreenContent(
     onIntent: (ReadAloudPlayerIntent) -> Unit,
     onBack: () -> Unit,
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
+    onOpenConfig: () -> Unit,
 ) {
     val horizontalPagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
     var isTextPageUserScrolling by remember { mutableStateOf(false) }
@@ -210,6 +213,11 @@ fun ReadAloudPlayerScreenContent(
                         onClick = { onIntent(ReadAloudPlayerIntent.OpenReadAloudLogs) },
                         icon = Icons.Default.BugReport,
                         contentDescription = "朗读日志",
+                    )
+                    MediumTonalButton(
+                        onClick = onOpenConfig,
+                        icon = Icons.Default.Settings,
+                        contentDescription = stringResource(R.string.setting),
                     )
                 }
             }
@@ -417,9 +425,21 @@ fun ReadAloudPlayerScreenContent(
     )
     ReadAloudTimerSheet(
         show = state.activeSheet == ReadAloudPlayerSheet.Timer,
-        state = state,
+        config = ReadAloudTimerConfig(
+            mode = ReadAloudTimerMode.fromStorage(state.timerMode),
+            minutes = state.timerMinutes,
+            chapters = state.timerChapters,
+            finishCurrentChapterAfterTimer = state.finishCurrentChapterAfterTimer,
+        ),
         onDismissRequest = { onIntent(ReadAloudPlayerIntent.DismissSheet) },
-        onIntent = onIntent,
+        onSetMode = { mode ->
+            onIntent(ReadAloudPlayerIntent.SetTimerMode(mode.storageValue))
+        },
+        onSetMinutes = { onIntent(ReadAloudPlayerIntent.SetTimer(it)) },
+        onSetChapters = { onIntent(ReadAloudPlayerIntent.SetTimerChapters(it)) },
+        onSetFinishCurrentChapterAfterTimer = {
+            onIntent(ReadAloudPlayerIntent.SetFinishCurrentChapterAfterTimer(it))
+        },
     )
 }
 
@@ -671,51 +691,6 @@ private fun ReadAloudSpeedSheet(
             },
             valueRange = READ_ALOUD_SPEED_MIN.toFloat()..READ_ALOUD_SPEED_MAX.toFloat(),
             steps = READ_ALOUD_SPEED_MAX - READ_ALOUD_SPEED_MIN - 1,
-        )
-    }
-}
-
-@Composable
-private fun ReadAloudTimerSheet(
-    show: Boolean,
-    state: ReadAloudPlayerUiState,
-    onDismissRequest: () -> Unit,
-    onIntent: (ReadAloudPlayerIntent) -> Unit,
-) {
-    var timerPreview by remember(state.timerMinutes) {
-        mutableFloatStateOf(state.timerMinutes.toFloat())
-    }
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismissRequest,
-        title = stringResource(R.string.set_timer),
-    ) {
-        PlayerAdjustmentSlider(
-            title = stringResource(R.string.set_timer),
-            value = timerPreview.coerceIn(0f, 180f),
-            valueLabel = if (timerPreview == 0f) {
-                stringResource(R.string.close)
-            } else {
-                stringResource(R.string.timer_m, timerPreview.roundToInt())
-            },
-            startLabel = stringResource(R.string.close),
-            endLabel = stringResource(R.string.timer_m, 180),
-            onValueChange = { timerPreview = (it / 10f).roundToInt() * 10f },
-            onValueChangeFinished = {
-                onIntent(ReadAloudPlayerIntent.SetTimer(timerPreview.roundToInt()))
-            },
-            valueRange = 0f..180f,
-            steps = 17,
-        )
-        TinySwitchSettingItem(
-            title = stringResource(R.string.finish_current_chapter_after_timer),
-            description = stringResource(R.string.finish_current_chapter_after_timer_summary),
-            checked = state.finishCurrentChapterAfterTimer,
-            modifier = Modifier.padding(vertical = 4.dp),
-            color = LegadoTheme.colorScheme.surfaceContainerHigh,
-            onCheckedChange = {
-                onIntent(ReadAloudPlayerIntent.SetFinishCurrentChapterAfterTimer(it))
-            },
         )
     }
 }

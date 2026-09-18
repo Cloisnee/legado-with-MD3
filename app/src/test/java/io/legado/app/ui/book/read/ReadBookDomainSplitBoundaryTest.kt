@@ -187,6 +187,12 @@ class ReadBookDomainSplitBoundaryTest {
      * 校验全在 `ReadAloudDelegate` 与 `ReadAloudSettingsRepository.setContentSplit` 里，
      * VM 只留意图入口。上游同批把同款线校准到 2733，是其主线开工前已超线 58 行的处置，
      * 本仓实际行数在线上，编号沿用 2674。
+     *
+     * 2674 线保持：朗读定时（`SetReadAloudTimerMode` / `SetReadAloudTimerChapters` 两个
+     * 意图分支）与「退出阅读时继续后台朗读」（`SetReadAloudKeepOnExit` 分支 +
+     * `stopReadAloudForClose()` 读持久设置的短路判定），2560 → 2573（净增 13 行）。
+     * 意图入口与关闭决策点只能在 VM；模式解析、互斥写入、服务重装全在 `ReadAloudDelegate`
+     * 与 `ReadAloudSettingsRepository`，不占本线。
      */
     @Test
     fun `ReadBookViewModel 不超过 R2 验收的 2674 行`() {
