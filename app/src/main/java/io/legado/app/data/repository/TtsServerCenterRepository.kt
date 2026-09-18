@@ -158,7 +158,7 @@ class TtsServerCenterRepository(private val app: Application) {
                                     }
                                 } ?: emptyMap(),
                             )
-                        }
+                        )
                     }
                 }
                 add(GroupRow(name = name, entries = entries, groupId = gid, roleType = roleType))
