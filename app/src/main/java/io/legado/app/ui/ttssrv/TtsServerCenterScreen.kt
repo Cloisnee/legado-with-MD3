@@ -349,6 +349,22 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
+    fun handleAuditionResult(r: AuditionOutcome) {
+        if (r.ok && r.path != null) {
+            play(r.path)
+            context.toastOnUi("播放中")
+        } else {
+            detailTitle = "试听失败（诊断报告）"
+            detailText = r.message
+        }
+    }
+
+    /** 条目 source.data 的统一取值：插件特色UI存在时以插件写入为准，否则用扫描参数 */
+    fun effectiveDataParams(): Map<String, String> {
+        val src = pluginTempSource
+        return if (src != null && !pluginUiEmpty && src.data.isNotEmpty()) src.data else neParams.toMap()
+    }
+
     fun auditionEntry(e: EntryRow) {
         scope.launch {
             context.toastOnUi("正在合成…")

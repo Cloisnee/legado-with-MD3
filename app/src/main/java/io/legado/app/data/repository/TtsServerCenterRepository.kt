@@ -7,6 +7,7 @@ import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.debug.SynthProbe
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
+import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.HttpTTS
