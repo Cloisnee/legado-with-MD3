@@ -623,40 +623,6 @@ class TtsServerCenterRepository(private val app: Application) {
 
     // ---------------- 新建 / 编辑条目 ----------------
 
-    /** 插件声线相关特殊参数键扫描（defVars 为空时回退：从插件代码找 ttsrv.tts.data[...] 键） */
-    suspend fun scanPluginDataKeys(pluginId: String): List<VarField> = withContext(Dispatchers.IO) {
-        runCatching {
-            val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
-            val code = shell.optString("code")
-            if (code.isBlank()) return@runCatching emptyList()
-            val labels = mapOf(
-                "soundEffect" to "音效模式",
-                "emoValue" to "情绪强度",
-                "customVoice" to "自定义声音代码",
-                "moduleEmotionEnabled" to "启用后置情绪模块",
-                "enableLocalEmotion" to "启用本地情绪",
-                "emotionScale" to "情绪强度系数",
-                "clonePresetIndex" to "克隆预设索引",
-                "contextTexts" to "上下文文本",
-                "manualContextTexts" to "手动上下文文本",
-                "sampleRate" to "采样率",
-            )
-            val keys = LinkedHashSet<String>()
-            Regex("ttsrv\\.tts\\.data\\[\\s*['\"]([^'\"]+)['\"]\\s*\\]").findAll(code)
-                .forEach { keys.add(it.groupValues[1]) }
-            Regex("ttsrv\\.tts\\.data\\.([A-Za-z_][A-Za-z0-9_]*)").findAll(code)
-                .forEach { keys.add(it.groupValues[1]) }
-            keys.map { k ->
-                VarField(
-                    key = k,
-                    label = labels[k] ?: k,
-                    description = "插件参数（写入 source.data）",
-                    value = "",
-                )
-            }
-        }.getOrDefault(emptyList())
-    }
-
     /** 新条目批量创建：按所选插件声音生成 标签01..N；写入 source.data / audioParams / audioFormat；组含 roleType */
     suspend fun createEntriesFromPlugin(
         groupName: String,
@@ -829,48 +795,88 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrDefault(false)
     }
 
+    /**
+     * 编辑单条条目：按 (groupId, entryId) 精确定位（entryId=0 时退化为组内 tag 匹配）。
+     * newGroupId 与当前分组不同 → 该条目迁移至目标分组（末尾追加），原分组变空则自动清理。
+     * tagRuleId/tagName 保持原值不动（编辑界面已去掉这两个字段）。
+     */
     suspend fun updateVoiceEntry(
-        oldRuleId: String, oldTag: String,
-        newName: String, newTag: String, newRuleId: String, newTagName: String,
-        newCategoryPath: String, speed: Float, volume: Float, pitch: Float,
+        groupId: Long, entryId: Long, tag: String,
+        newName: String, newTag: String, newCategoryPath: String, newGroupId: Long,
+        speed: Float, volume: Float, pitch: Float,
         newData: Map<String, String>? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val file = TtsConfigStore.voicesFile(ctx)
             val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
-            var hit = false
+            var hitG = -1
+            var hitI = -1
             outer@ for (gi in 0 until arr.length()) {
-                val list = arr.optJSONObject(gi)?.optJSONArray("list") ?: continue
+                val grp = arr.optJSONObject(gi) ?: continue
+                val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
+                if (groupId != 0L && gid != groupId) continue
+                val list = grp.optJSONArray("list") ?: continue
                 for (i in 0 until list.length()) {
                     val e = list.optJSONObject(i) ?: continue
-                    val cfg = e.optJSONObject("config") ?: continue
-                    val sr = cfg.optJSONObject("speechRule") ?: continue
-                    if (sr.optString("tag") == oldTag && sr.optString("tagRuleId") == oldRuleId) {
-                        e.put("displayName", newName)
-                        e.put("categoryPath", newCategoryPath)
-                        sr.put("tag", newTag)
-                        sr.put("tagRuleId", newRuleId)
-                        sr.put("tagName", newTagName)
-                        val ap = cfg.optJSONObject("audioParams")
-                            ?: JSONObject().also { cfg.put("audioParams", it) }
-                        ap.put("speed", speed)
-                        ap.put("volume", volume)
-                        ap.put("pitch", pitch)
-                        if (newData != null) {
-                            val srcObj = cfg.optJSONObject("source")
-                                ?: JSONObject().also { cfg.put("source", it) }
-                            srcObj.put(
-                                "data",
-                                JSONObject().apply { newData.forEach { (k, v) -> put(k, v) } },
-                            )
-                        }
-                        hit = true
+                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
+                    val byId = entryId != 0L && e.optLong("id") == entryId
+                    val byTag = entryId == 0L && sr?.optString("tag") == tag
+                    if (byId || byTag) {
+                        hitG = gi
+                        hitI = i
                         break@outer
                     }
                 }
             }
-            if (hit) file.writeText(arr.toString())
-            hit
+            if (hitG < 0 || hitI < 0) return@runCatching false
+            val entry = arr.optJSONObject(hitG)?.optJSONArray("list")?.optJSONObject(hitI)
+                ?: return@runCatching false
+            val cfg = entry.optJSONObject("config") ?: return@runCatching false
+
+            entry.put("displayName", newName)
+            entry.put("categoryPath", newCategoryPath)
+            val sr = cfg.optJSONObject("speechRule")
+                ?: JSONObject().also { cfg.put("speechRule", it) }
+            sr.put("tag", newTag)
+            val ap = cfg.optJSONObject("audioParams")
+                ?: JSONObject().also { cfg.put("audioParams", it) }
+            ap.put("speed", speed)
+            ap.put("volume", volume)
+            ap.put("pitch", pitch)
+            if (newData != null) {
+                val srcObj = cfg.optJSONObject("source")
+                    ?: JSONObject().also { cfg.put("source", it) }
+                srcObj.put(
+                    "data",
+                    JSONObject().apply { newData.forEach { (k, v) -> put(k, v) } },
+                )
+            }
+
+            if (newGroupId != 0L && newGroupId != groupId) {
+                // 迁移分组：从原组摘除 → 追加到目标组
+                val oldItem = arr.optJSONObject(hitG)
+                val oldList = oldItem?.optJSONArray("list")
+                if (oldList != null) {
+                    oldList.remove(hitI)
+                    var target: JSONObject? = null
+                    for (gi in 0 until arr.length()) {
+                        val item = arr.optJSONObject(gi) ?: continue
+                        if (item.optJSONObject("group")?.optLong("id") == newGroupId) {
+                            target = item
+                            break
+                        }
+                    }
+                    if (target == null) return@runCatching false
+                    entry.put("groupId", newGroupId)
+                    val targetList = target.optJSONArray("list")
+                        ?: JSONArray().also { target.put("list", it) }
+                    targetList.put(entry)
+                    // 原分组变空 → 清理（避免空组残留）
+                    if (oldList.length() == 0) arr.remove(hitG)
+                }
+            }
+            file.writeText(arr.toString())
+            true
         }.getOrDefault(false)
     }
 

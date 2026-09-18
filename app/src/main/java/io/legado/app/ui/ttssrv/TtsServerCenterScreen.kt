@@ -118,7 +118,6 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 
 private sealed interface CenterSheet {
     data class EntryActions(val entry: EntryRow) : CenterSheet
-    data object CreateEntries : CenterSheet
     data object ManualImport : CenterSheet
 }
 
@@ -224,6 +223,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var pickerLocale by remember { mutableStateOf<LocaleOption?>(null) }
     var pickerBusy by remember { mutableStateOf(false) }
     var newEntryGroupDefault by remember { mutableStateOf<String?>(null) }
+    var neStep2 by remember { mutableStateOf(false) }
     var neGroup by remember { mutableStateOf("") }
     var nePluginId by remember { mutableStateOf("") }
     var nePluginName by remember { mutableStateOf("") }
@@ -236,8 +236,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var neAuditionText by remember { mutableStateOf("你好，这是一段试听语音。") }
     var neLocale by remember { mutableStateOf("zh-CN") }
     var neVoiceSel by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
-    val neParams = remember { mutableStateMapOf<String, String>() }
-    var neFields by remember { mutableStateOf<List<VarField>>(emptyList()) }
     var neLocales by remember { mutableStateOf<List<LocaleOption>>(emptyList()) }
     var pluginPickerSheet by remember { mutableStateOf(false) }
     var voicePickerSheet by remember { mutableStateOf(false) }
@@ -254,22 +252,22 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var pluginTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
     var neTextDlg by remember { mutableStateOf(false) }
     var neTextInput by remember { mutableStateOf("") }
-    var paramDlgKey by remember { mutableStateOf<String?>(null) }
-    var paramDlgLabel by remember { mutableStateOf("") }
-    var paramDlgInput by remember { mutableStateOf("") }
     var editTarget by remember { mutableStateOf<EntryRow?>(null) }
     var edName by remember { mutableStateOf("") }
     var edTag by remember { mutableStateOf("") }
-    var edRuleId by remember { mutableStateOf("") }
-    var edTagName by remember { mutableStateOf("") }
     var edCategory by remember { mutableStateOf("") }
-    var edSpeed by remember { mutableStateOf("") }
-    var edVolume by remember { mutableStateOf("") }
-    var edPitch by remember { mutableStateOf("") }
+    var edGroup by remember { mutableStateOf("") }
+    var edSpeed by remember { mutableStateOf(1f) }
+    var edVolume by remember { mutableStateOf(1f) }
+    var edPitch by remember { mutableStateOf(1f) }
+    var edFieldDlg by remember { mutableStateOf<String?>(null) }
+    var edFieldInput by remember { mutableStateOf("") }
     var edUiEngine by remember { mutableStateOf<TtsPluginUiEngineV2?>(null) }
     var edUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
     var edUiEmpty by remember { mutableStateOf(true) }
     var edTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
+    var varDlgKey by remember { mutableStateOf<String?>(null) }
+    var varDlgInput by remember { mutableStateOf("") }
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     var renameGroupText by remember { mutableStateOf("") }
 
@@ -363,10 +361,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    /** 条目 source.data 的统一取值：插件特色UI存在时以插件写入为准，否则用扫描参数 */
+    /** 条目 source.data 的统一取值：插件特色UI存在时以插件写入为准 */
     fun effectiveDataParams(): Map<String, String> {
         val src = pluginTempSource
-        return if (src != null && !pluginUiEmpty && src.data.isNotEmpty()) src.data else neParams.toMap()
+        return if (src != null && !pluginUiEmpty && src.data.isNotEmpty()) src.data else emptyMap()
     }
 
     fun auditionEntry(e: EntryRow) {
@@ -425,25 +423,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 新建条目：打开时初始化分组/插件
-    LaunchedEffect(sheet) {
-        if (sheet is CenterSheet.CreateEntries) {
-            if (neGroup.isBlank()) {
-                neGroup = newEntryGroupDefault ?: groups.firstOrNull()?.name ?: "自建"
-            }
-            if (nePluginId.isBlank()) {
-                plugins.firstOrNull { it.enabled }?.let { p ->
-                    nePluginId = p.pluginId
-                    nePluginName = p.name
-                }
-            }
+    // 新建条目：进入第二步时初始化分组默认值（插件已在第一步选定）
+    LaunchedEffect(neStep2) {
+        if (neStep2 && neGroup.isBlank()) {
+            neGroup = newEntryGroupDefault ?: groups.firstOrNull()?.name ?: "自建"
         }
     }
 
-    // 新建条目：插件变化 → 参数键/语言
+    // 新建条目：插件变化 → 语言列表
     LaunchedEffect(nePluginId) {
         if (nePluginId.isBlank()) return@LaunchedEffect
-        neFields = repo.loadVarFields(nePluginId).ifEmpty { repo.scanPluginDataKeys(nePluginId) }
         neLocales = repo.loadLocales(nePluginId).ifEmpty {
             listOf(
                 LocaleOption("zh-CN", "中文(简体)"),
@@ -724,7 +713,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 } })
                 add(ActionItem("在此组新建条目") {
                     newEntryGroupDefault = groupNameOfKey(g)
-                    sheet = CenterSheet.CreateEntries
+                    neGroup = groupNameOfKey(g)
+                    pluginPickerSheet = true
                 })
             }
         }
@@ -810,7 +800,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onAddClick = if (selectedTab == 1) {
             {
                 newEntryGroupDefault = null
-                sheet = CenterSheet.CreateEntries
+                pluginPickerSheet = true
             }
         } else null,
         snackbarHostState = remember { SnackbarHostState() },
@@ -1266,41 +1256,174 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 新建条目（A–G 一体弹窗） ----------------
+    // ---------------- 新建条目 · 第二步（音色分组 → 基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
-        show = sheet is CenterSheet.CreateEntries,
-        onDismissRequest = { sheet = null },
-        title = "新建条目",
+        show = neStep2,
+        onDismissRequest = { neStep2 = false },
+        title = "新建条目 · ${nePluginName}",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    when {
+                        neGroup.isBlank() -> context.toastOnUi("请填写分组名")
+                        nePluginId.isBlank() -> context.toastOnUi("请选择插件")
+                        neVoiceSel.isEmpty() -> context.toastOnUi("请选择至少一个声音")
+                        else -> scope.launch {
+                            val (ok, msg) = repo.createEntriesFromPlugin(
+                                groupName = neGroup.trim(),
+                                roleType = neRole,
+                                gender = neGender,
+                                age = if (neRole == "特殊") "系统" else neAge,
+                                speed = neSpeed,
+                                volume = neVolume,
+                                pitch = nePitch,
+                                sampleRate = 24000,
+                                locale = neLocale,
+                                categoryPath = neCat2.trim(),
+                                pluginId = nePluginId,
+                                pluginVoiceIds = neVoiceSel.map { it.id },
+                                pluginVoiceNames = neVoiceSel.map { it.name },
+                                dataParams = effectiveDataParams(),
+                            )
+                            context.toastOnUi(msg)
+                            if (ok) {
+                                neStep2 = false
+                                neVoiceSel = emptyList()
+                                neGroup = ""
+                                neCat2 = ""
+                                reload()
+                            }
+                        }
+                    }
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "保存",
+            )
+        },
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            TinyClickableSettingItem(
-                title = "分组名",
-                description = neGroup.ifBlank { "点按输入（可自定义）" },
-                onClick = {
-                    grpInput = neGroup
-                    grpDlg = true
-                },
-            )
-            TinyClickableSettingItem(
-                title = "二级分组名（可选）",
-                description = if (neCat2.isBlank()) "未填 → 直接放一级分组下" else neCat2,
-                onClick = {
-                    grp2Input = neCat2
-                    grp2Dlg = true
-                },
-            )
-            TinyClickableSettingItem(
-                title = "插件",
-                description = if (nePluginName.isBlank()) "未选择（必选）" else nePluginName,
-                onClick = { pluginPickerSheet = true },
-            )
-            if (pluginUiLayout != null && !pluginUiEmpty) {
-                AppText(
-                    text = "— 插件特色界面 —",
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            SectionHint("— 音色分组 —")
+            SplicedColumnGroup {
+                TinyClickableSettingItem(
+                    title = "分组名",
+                    description = neGroup.ifBlank { "点按输入（可自定义）" },
+                    onClick = {
+                        grpInput = neGroup
+                        grpDlg = true
+                    },
                 )
+                TinyClickableSettingItem(
+                    title = "二级分组名（可选）",
+                    description = if (neCat2.isBlank()) "未填 → 直接放一级分组下" else neCat2,
+                    onClick = {
+                        grp2Input = neCat2
+                        grp2Dlg = true
+                    },
+                )
+                TinyDropdownSettingItem(
+                    title = "类型",
+                    selectedValue = neRole,
+                    displayEntries = arrayOf("核心", "特殊", "路人"),
+                    entryValues = arrayOf("核心", "特殊", "路人"),
+                    onValueChange = {
+                        neRole = it
+                        if (it == "特殊") {
+                            neAge = "系统"
+                        } else if (neAge == "系统") {
+                            neAge = if (neGender == "女") "女青年" else "男青年"
+                        }
+                    },
+                )
+                TinyDropdownSettingItem(
+                    title = "性别",
+                    selectedValue = neGender,
+                    displayEntries = arrayOf("男", "女"),
+                    entryValues = arrayOf("男", "女"),
+                    onValueChange = { g ->
+                        neGender = g
+                        val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                        if (neRole != "特殊" && neAge !in ages) {
+                            neAge = if (g == "女") "女青年" else "男青年"
+                        }
+                    },
+                )
+                TinyDropdownSettingItem(
+                    title = "年龄",
+                    selectedValue = neAge,
+                    displayEntries = (if (neRole == "特殊") listOf("系统") else {
+                        if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                    }).toTypedArray(),
+                    entryValues = (if (neRole == "特殊") listOf("系统") else {
+                        if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                    }).toTypedArray(),
+                    onValueChange = { neAge = it },
+                )
+            }
+            SectionHint("— 音色基础信息 —")
+            SplicedColumnGroup {
+                TinyDropdownSettingItem(
+                    title = "语言",
+                    selectedValue = neLocale,
+                    displayEntries = neLocales.map { it.name }.toTypedArray(),
+                    entryValues = neLocales.map { it.id }.toTypedArray(),
+                    onValueChange = {
+                        neLocale = it
+                        neVoiceSel = emptyList()
+                    },
+                )
+                TinyClickableSettingItem(
+                    title = "声音",
+                    description = if (neVoiceSel.isEmpty()) {
+                        "未选择（点按选择：可多选 + 试听）"
+                    } else {
+                        "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
+                    },
+                    onClick = {
+                        voiceQuery = ""
+                        voicePickerSheet = true
+                    },
+                )
+                TinyClickableSettingItem(
+                    title = "试听文本",
+                    description = neAuditionText,
+                    onClick = {
+                        neTextInput = neAuditionText
+                        neTextDlg = true
+                    },
+                )
+                TinySliderSettingItem(
+                    title = "语速",
+                    value = neSpeed,
+                    valueRange = 0f..2f,
+                    stepSize = 0.05f,
+                    showDecimal = true,
+                    valueFormat = { "%.2f×".format(it) },
+                    description = "1.00 = 原速（插件引擎倍率）",
+                    onValueChange = { neSpeed = it },
+                )
+                TinySliderSettingItem(
+                    title = "音量",
+                    value = neVolume,
+                    valueRange = 0f..2f,
+                    stepSize = 0.05f,
+                    showDecimal = true,
+                    valueFormat = { "%.2f×".format(it) },
+                    description = "1.00 = 原音量",
+                    onValueChange = { neVolume = it },
+                )
+                TinySliderSettingItem(
+                    title = "音高",
+                    value = nePitch,
+                    valueRange = 0.5f..2f,
+                    stepSize = 0.05f,
+                    showDecimal = true,
+                    valueFormat = { "%.2f×".format(it) },
+                    description = "1.00 = 原音高",
+                    onValueChange = { nePitch = it },
+                )
+            }
+            if (pluginUiLayout != null && !pluginUiEmpty) {
+                SectionHint("— 插件特色界面 —")
                 key(pluginUiLayout) {
                     AndroidView(
                         factory = { pluginUiLayout!! },
@@ -1310,184 +1433,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     )
                 }
             }
-            TinyDropdownSettingItem(
-                title = "类型",
-                selectedValue = neRole,
-                displayEntries = arrayOf("核心", "特殊", "路人"),
-                entryValues = arrayOf("核心", "特殊", "路人"),
-                onValueChange = {
-                    neRole = it
-                    if (it == "特殊") {
-                        neAge = "系统"
-                    } else if (neAge == "系统") {
-                        neAge = if (neGender == "女") "女青年" else "男青年"
-                    }
-                },
-            )
-            TinyDropdownSettingItem(
-                title = "性别",
-                selectedValue = neGender,
-                displayEntries = arrayOf("男", "女"),
-                entryValues = arrayOf("男", "女"),
-                onValueChange = { g ->
-                    neGender = g
-                    val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                    if (neRole != "特殊" && neAge !in ages) {
-                        neAge = if (g == "女") "女青年" else "男青年"
-                    }
-                },
-            )
-            TinyDropdownSettingItem(
-                title = "年龄",
-                selectedValue = neAge,
-                displayEntries = (if (neRole == "特殊") listOf("系统") else {
-                    if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                }).toTypedArray(),
-                entryValues = (if (neRole == "特殊") listOf("系统") else {
-                    if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                }).toTypedArray(),
-                onValueChange = { neAge = it },
-            )
-            TinySliderSettingItem(
-                title = "语速",
-                value = neSpeed,
-                valueRange = 0f..2f,
-                stepSize = 0.05f,
-                showDecimal = true,
-                valueFormat = { "%.2f×".format(it) },
-                description = "1.00 = 原速（插件引擎倍率）",
-                onValueChange = { neSpeed = it },
-            )
-            TinySliderSettingItem(
-                title = "音量",
-                value = neVolume,
-                valueRange = 0f..2f,
-                stepSize = 0.05f,
-                showDecimal = true,
-                valueFormat = { "%.2f×".format(it) },
-                description = "1.00 = 原音量",
-                onValueChange = { neVolume = it },
-            )
-            TinySliderSettingItem(
-                title = "音高",
-                value = nePitch,
-                valueRange = 0.5f..2f,
-                stepSize = 0.05f,
-                showDecimal = true,
-                valueFormat = { "%.2f×".format(it) },
-                description = "1.00 = 原音高",
-                onValueChange = { nePitch = it },
-            )
-            if (neFields.isNotEmpty() && (pluginUiLayout == null || pluginUiEmpty)) {
-                AppText(
-                    text = "— 插件参数 —",
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                )
-                neFields.forEach { fld ->
-                    val isBool = fld.key.endsWith("Enabled", ignoreCase = true) ||
-                        fld.key.startsWith("enable", ignoreCase = true)
-                    if (isBool) {
-                        TinySwitchSettingItem(
-                            title = fld.label,
-                            checked = neParams[fld.key] == "1" || neParams[fld.key] == "true",
-                            description = fld.key,
-                            onCheckedChange = { neParams[fld.key] = if (it) "1" else "0" },
-                        )
-                    } else {
-                        TinyClickableSettingItem(
-                            title = fld.label,
-                            description = neParams[fld.key]?.takeIf { it.isNotBlank() }
-                                ?: "未设置（点按编辑）",
-                            onClick = {
-                                paramDlgKey = fld.key
-                                paramDlgLabel = fld.label
-                                paramDlgInput = neParams[fld.key].orEmpty()
-                            },
-                        )
-                    }
-                }
-            }
-            TinyClickableSettingItem(
-                title = "试听文本",
-                description = neAuditionText,
-                onClick = {
-                    neTextInput = neAuditionText
-                    neTextDlg = true
-                },
-            )
-            TinyDropdownSettingItem(
-                title = "语言",
-                selectedValue = neLocale,
-                displayEntries = neLocales.map { it.name }.toTypedArray(),
-                entryValues = neLocales.map { it.id }.toTypedArray(),
-                onValueChange = {
-                    neLocale = it
-                    neVoiceSel = emptyList()
-                },
-            )
-            TinyClickableSettingItem(
-                title = "声音",
-                description = if (neVoiceSel.isEmpty()) {
-                    "未选择（点按选择：可多选 + 试听）"
-                } else {
-                    "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
-                },
-                onClick = {
-                    voiceQuery = ""
-                    voicePickerSheet = true
-                },
-            )
-            TinyClickableSettingItem(
-                title = "保存并生成条目",
-                onClick = {
-                    if (neGroup.isBlank()) {
-                        context.toastOnUi("请填写分组名")
-                        return@TinyClickableSettingItem
-                    }
-                    if (nePluginId.isBlank()) {
-                        context.toastOnUi("请选择插件")
-                        return@TinyClickableSettingItem
-                    }
-                    if (neVoiceSel.isEmpty()) {
-                        context.toastOnUi("请选择至少一个声音")
-                        return@TinyClickableSettingItem
-                    }
-                    scope.launch {
-                        val (ok, msg) = repo.createEntriesFromPlugin(
-                            groupName = neGroup.trim(),
-                            roleType = neRole,
-                            gender = neGender,
-                            age = if (neRole == "特殊") "系统" else neAge,
-                            speed = neSpeed,
-                            volume = neVolume,
-                            pitch = nePitch,
-                            sampleRate = 24000,
-                            locale = neLocale,
-                            categoryPath = neCat2.trim(),
-                            pluginId = nePluginId,
-                            pluginVoiceIds = neVoiceSel.map { it.id },
-                            pluginVoiceNames = neVoiceSel.map { it.name },
-                            dataParams = neParams.toMap(),
-                        )
-                        context.toastOnUi(msg)
-                        if (ok) {
-                            sheet = null
-                            neVoiceSel = emptyList()
-                            reload()
-                        }
-                    }
-                },
-            )
         }
     }
 
-    // ---------------- 插件选择（新建条目） ----------------
+    // ---------------- 新建条目 · 第一步：选择音色插件 ----------------
     AppModalBottomSheet(
         show = pluginPickerSheet,
         onDismissRequest = { pluginPickerSheet = false },
-        title = "选择插件",
+        title = "新建条目 · 选择音色插件",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             plugins.filter { it.enabled }.forEach { p ->
@@ -1497,9 +1450,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     onClick = {
                         nePluginId = p.pluginId
                         nePluginName = p.name
-                        neParams.clear()
                         neVoiceSel = emptyList()
                         pluginPickerSheet = false
+                        neStep2 = true
                     },
                 )
             }
@@ -1671,51 +1624,174 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { neTextDlg = false },
     )
 
+    // 编辑条目 · 字段输入弹窗（显示名 / 标签 / 二级分组名）
     AppAlertDialog(
-        show = paramDlgKey != null,
-        onDismissRequest = { paramDlgKey = null },
-        title = paramDlgLabel,
+        show = edFieldDlg != null,
+        onDismissRequest = { edFieldDlg = null },
+        title = edFieldDlg.orEmpty(),
         content = {
             AppTextField(
-                value = paramDlgInput,
-                onValueChange = { paramDlgInput = it },
+                value = edFieldInput,
+                onValueChange = { edFieldInput = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = paramDlgKey.orEmpty(),
+                label = edFieldDlg.orEmpty(),
             )
         },
         confirmText = "保存",
         onConfirm = {
-            paramDlgKey?.let { neParams[it] = paramDlgInput }
-            paramDlgKey = null
+            val dlg = edFieldDlg
+            edFieldDlg = null
+            val v = edFieldInput.trim()
+            when (dlg) {
+                "显示名" -> edName = v
+                "标签" -> edTag = v
+                "二级分组名" -> edCategory = v
+            }
         },
         dismissText = "取消",
-        onDismiss = { paramDlgKey = null },
+        onDismiss = { edFieldDlg = null },
     )
 
-    // ---------------- 编辑条目表单 ----------------
+    // 编辑插件 · 变量输入弹窗
+    AppAlertDialog(
+        show = varDlgKey != null,
+        onDismissRequest = { varDlgKey = null },
+        title = varFields.firstOrNull { it.key == varDlgKey }?.label ?: varDlgKey.orEmpty(),
+        content = {
+            AppTextField(
+                value = varDlgInput,
+                onValueChange = { varDlgInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = varDlgKey.orEmpty(),
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            varDlgKey?.let { varValues[it] = varDlgInput }
+            varDlgKey = null
+        },
+        dismissText = "取消",
+        onDismiss = { varDlgKey = null },
+    )
+
+    // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
         show = editTarget != null,
         onDismissRequest = { editTarget = null },
         title = "编辑条目：${editTarget?.displayName.orEmpty()}",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val t = editTarget ?: return@MediumTonalButton
+                    if (edTag.isBlank()) {
+                        context.toastOnUi("标签不能为空")
+                        return@MediumTonalButton
+                    }
+                    val targetGid = groups.firstOrNull { it.name == edGroup }?.groupId ?: 0L
+                    editTarget = null
+                    scope.launch {
+                        val ok = repo.updateVoiceEntry(
+                            groupId = t.groupId,
+                            entryId = t.id,
+                            tag = t.tag,
+                            newName = edName.trim(),
+                            newTag = edTag.trim(),
+                            newCategoryPath = edCategory.trim(),
+                            newGroupId = targetGid,
+                            speed = edSpeed,
+                            volume = edVolume,
+                            pitch = edPitch,
+                            newData = if (edUiLayout != null && !edUiEmpty) {
+                                edTempSource?.data
+                            } else {
+                                null
+                            },
+                        )
+                        context.toastOnUi(if (ok) "已保存" else "保存失败")
+                        reload()
+                    }
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "保存",
+            )
+        },
     ) {
         val t = editTarget
         if (t != null) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                SheetField("显示名", edName) { edName = it }
-                SheetField("标签（tag）", edTag) { edTag = it }
-                SheetField("标签规则（tagRuleId）", edRuleId) { edRuleId = it }
-                SheetField("标签显示名（tagName）", edTagName) { edTagName = it }
-                SheetField("分类路径（categoryPath）", edCategory) { edCategory = it }
-                SheetField("语速（0=跟随，1.0=原速）", edSpeed) { edSpeed = it }
-                SheetField("音量（0=跟随，1.0=原量）", edVolume) { edVolume = it }
-                SheetField("音高（0=跟随，1.0=原调）", edPitch) { edPitch = it }
-                if (edUiLayout != null && !edUiEmpty) {
-                    AppText(
-                        text = "— 插件特色界面 —",
-                        style = LegadoTheme.typography.labelSmall,
-                        color = LegadoTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                SectionHint("— 音色分组 —")
+                SplicedColumnGroup {
+                    TinyDropdownSettingItem(
+                        title = "分组名",
+                        selectedValue = edGroup,
+                        displayEntries = groups.map { it.name }.toTypedArray(),
+                        entryValues = groups.map { it.name }.toTypedArray(),
+                        onValueChange = { edGroup = it },
                     )
+                    TinyClickableSettingItem(
+                        title = "二级分组名（categoryPath）",
+                        description = if (edCategory.isBlank()) {
+                            "未填 → 直接放一级分组下"
+                        } else {
+                            edCategory
+                        },
+                        onClick = {
+                            edFieldInput = edCategory
+                            edFieldDlg = "二级分组名"
+                        },
+                    )
+                }
+                SectionHint("— 音色基础信息 —")
+                SplicedColumnGroup {
+                    TinyClickableSettingItem(
+                        title = "显示名",
+                        description = edName,
+                        onClick = {
+                            edFieldInput = edName
+                            edFieldDlg = "显示名"
+                        },
+                    )
+                    TinyClickableSettingItem(
+                        title = "标签（tag）",
+                        description = edTag,
+                        onClick = {
+                            edFieldInput = edTag
+                            edFieldDlg = "标签"
+                        },
+                    )
+                    TinySliderSettingItem(
+                        title = "语速",
+                        value = edSpeed,
+                        valueRange = 0f..2f,
+                        stepSize = 0.05f,
+                        showDecimal = true,
+                        valueFormat = { if (it < 0.026f) "跟随（0）" else "%.2f×".format(it) },
+                        description = "0 = 跟随朗读设置；1.00 = 原速",
+                        onValueChange = { edSpeed = it },
+                    )
+                    TinySliderSettingItem(
+                        title = "音量",
+                        value = edVolume,
+                        valueRange = 0f..2f,
+                        stepSize = 0.05f,
+                        showDecimal = true,
+                        valueFormat = { if (it < 0.026f) "跟随（0）" else "%.2f×".format(it) },
+                        description = "0 = 跟随朗读设置；1.00 = 原音量",
+                        onValueChange = { edVolume = it },
+                    )
+                    TinySliderSettingItem(
+                        title = "音高",
+                        value = edPitch,
+                        valueRange = 0f..2f,
+                        stepSize = 0.05f,
+                        showDecimal = true,
+                        valueFormat = { if (it < 0.026f) "跟随（0）" else "%.2f×".format(it) },
+                        description = "0 = 跟随朗读设置；1.00 = 原音高",
+                        onValueChange = { edPitch = it },
+                    )
+                }
+                if (edUiLayout != null && !edUiEmpty) {
+                    SectionHint("— 插件特色界面 —")
                     key(edUiLayout) {
                         AndroidView(
                             factory = { edUiLayout!! },
@@ -1725,105 +1801,88 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         )
                     }
                 }
-                TinyClickableSettingItem(
-                    title = "保存修改",
-                    onClick = {
-                        if (edTag.isBlank() || edRuleId.isBlank()) {
-                            context.toastOnUi("标签 / 标签规则不能为空")
-                            return@TinyClickableSettingItem
-                        }
-                        editTarget = null
-                        scope.launch {
-                            val ok = repo.updateVoiceEntry(
-                                oldRuleId = t.tagRuleId,
-                                oldTag = t.tag,
-                                newName = edName,
-                                newTag = edTag.trim(),
-                                newRuleId = edRuleId.trim(),
-                                newTagName = edTagName,
-                                newCategoryPath = edCategory,
-                                speed = edSpeed.toFloatOrNull() ?: 0f,
-                                volume = edVolume.toFloatOrNull() ?: 0f,
-                                pitch = edPitch.toFloatOrNull() ?: 0f,
-                                newData = if (edUiLayout != null && !edUiEmpty) {
-                                    edTempSource?.data
-                                } else {
-                                    null
-                                },
-                            )
-                            context.toastOnUi(if (ok) "已保存" else "保存失败")
-                            reload()
-                        }
-                    },
-                )
             }
         }
     }
 
-    // ---------------- 编辑插件（元信息 + 变量） ----------------
+    // ---------------- 编辑插件（元信息 + 变量，卡片化） ----------------
     AppModalBottomSheet(
         show = varsEditorPlugin != null,
         onDismissRequest = { varsEditorPlugin = null },
         title = "编辑插件：${varsEditorPlugin?.name.orEmpty()}",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val p = varsEditorPlugin ?: return@MediumTonalButton
+                    val id = vsId.trim().ifBlank { p.pluginId }
+                    varsEditorPlugin = null
+                    scope.launch {
+                        val ok = repo.updatePluginMeta(
+                            oldId = p.pluginId,
+                            newName = vsName,
+                            newId = id,
+                            newAuthor = vsAuthor,
+                            newVersion = vsVersion.toIntOrNull() ?: p.version,
+                        )
+                        val ok2 = repo.savePluginUserVars(id, varValues.toMap())
+                        repo.updatePluginShell(
+                            id,
+                            mapOf("iconUrl" to vsIcon, "description" to vsDesc),
+                        )
+                        context.toastOnUi(
+                            if (ok && ok2) "插件已保存" else "部分保存失败（检查 ID 是否重复）"
+                        )
+                        reload()
+                    }
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "保存",
+            )
+        },
     ) {
         val p = varsEditorPlugin
         if (p != null) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                SheetField("插件名（name）", vsName) { vsName = it }
-                SheetField("插件 ID（pluginId）", vsId) { vsId = it }
-                SheetField("作者（author）", vsAuthor) { vsAuthor = it }
-                SheetField("版本号（version，数字）", vsVersion) { vsVersion = it }
-                SheetField("图标 URL（iconUrl）", vsIcon) { vsIcon = it }
-                SheetField("简介（description）", vsDesc) { vsDesc = it }
+                SectionHint("— 插件信息 —")
+                SplicedColumnGroup {
+                    SheetField("插件名（name）", vsName) { vsName = it }
+                    SheetField("插件 ID（pluginId）", vsId) { vsId = it }
+                    SheetField("作者（author）", vsAuthor) { vsAuthor = it }
+                    SheetField("版本号（version，数字）", vsVersion) { vsVersion = it }
+                    SheetField("图标 URL（iconUrl）", vsIcon) { vsIcon = it }
+                    SheetField("简介（description）", vsDesc) { vsDesc = it }
+                }
+                SectionHint("— 插件变量 —")
                 TinyClickableSettingItem(
-                    title = "—— 插件变量 ——",
-                    description = "来自插件 defVars（补丁版同款：登录/凭据等全局变量；含 loginUrl 的登录类请填登录后取到的值）",
+                    title = "来自插件 defVars",
+                    description = "补丁版同款：登录/凭据等全局变量；含 loginUrl 的登录类请填登录后取到的值",
                     onClick = {},
                 )
                 if (varFields.isEmpty()) {
-                    TinyClickableSettingItem(title = "此插件未定义变量", onClick = {})
-                }
-                varFields.forEach { f ->
-                    AppTextField(
-                        value = varValues[f.key] ?: "",
-                        onValueChange = { varValues[f.key] = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = if (f.description.isNotBlank()) {
-                            "${f.label}（${f.description}）"
-                        } else {
-                            f.label
-                        },
-                        singleLine = true,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                TinyClickableSettingItem(
-                    title = "保存插件与变量",
-                    description = "保存后引擎缓存自动刷新",
-                    onClick = {
-                        val id = vsId.trim().ifBlank { p.pluginId }
-                        varsEditorPlugin = null
-                        scope.launch {
-                            val ok = repo.updatePluginMeta(
-                                oldId = p.pluginId,
-                                newName = vsName,
-                                newId = id,
-                                newAuthor = vsAuthor,
-                                newVersion = vsVersion.toIntOrNull() ?: p.version,
+                    SplicedColumnGroup {
+                        TinyClickableSettingItem(title = "此插件未定义变量", onClick = {})
+                    }
+                } else {
+                    SplicedColumnGroup {
+                        varFields.forEach { f ->
+                            val cur = varValues[f.key].orEmpty()
+                            TinyClickableSettingItem(
+                                title = f.label,
+                                description = buildString {
+                                    append(if (cur.isBlank()) "未设置" else cur)
+                                    if (f.description.isNotBlank()) {
+                                        append(" · ")
+                                        append(f.description)
+                                    }
+                                },
+                                onClick = {
+                                    varDlgInput = cur
+                                    varDlgKey = f.key
+                                },
                             )
-                            val ok2 = repo.savePluginUserVars(id, varValues.toMap())
-                            repo.updatePluginShell(
-                                id,
-                                mapOf("iconUrl" to vsIcon, "description" to vsDesc),
-                            )
-                            context.toastOnUi(
-                                if (ok && ok2) "插件已保存" else "部分保存失败（检查 ID 是否重复）"
-                            )
-                            reload()
                         }
-                    },
-                )
+                    }
+                }
             }
         }
     }
@@ -1848,17 +1907,17 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 },
             )
             TinyClickableSettingItem(
-                title = "编辑条目（名称/标签/分类/音频参数）",
+                title = "编辑条目",
+                description = "音色分组 / 基础信息 / 插件特色界面",
                 onClick = {
                     sheet = null
                     edName = e.displayName
                     edTag = e.tag
-                    edRuleId = e.tagRuleId
-                    edTagName = e.tagName
                     edCategory = e.categoryPath
-                    edSpeed = if (e.speed > 0f) e.speed.toString() else "0"
-                    edVolume = if (e.volume > 0f) e.volume.toString() else "0"
-                    edPitch = if (e.pitch > 0f) e.pitch.toString() else "0"
+                    edGroup = groups.firstOrNull { it.groupId == e.groupId }?.name ?: ""
+                    edSpeed = if (e.speed > 0f) e.speed else 0f
+                    edVolume = if (e.volume > 0f) e.volume else 0f
+                    edPitch = if (e.pitch > 0f) e.pitch else 0f
                     editTarget = e
                 },
             )
@@ -2490,6 +2549,17 @@ private fun BankTag(active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
+/** 分组提醒头（与「插件特色界面」同款样式） */
+@Composable
+private fun SectionHint(text: String) {
+    AppText(
+        text = text,
+        style = LegadoTheme.typography.labelSmall,
+        color = LegadoTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+    )
+}
+
 private fun SheetField(label: String, value: String, onChange: (String) -> Unit) {
     AppTextField(
         value = value,

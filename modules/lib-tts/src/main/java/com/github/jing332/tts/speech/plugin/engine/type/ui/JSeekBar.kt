@@ -1,15 +1,27 @@
+@file:Suppress("unused")
+
 package com.github.jing332.tts.speech.plugin.engine.type.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.SeekBar
-import android.widget.TextView
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
 import java.util.Locale
 
 /**
- * 插件 UI bean（原生版，API 与补丁版 Compose 版同形）：
+ * 插件 UI bean（补丁版 API 同形，Compose + Material3 渲染）：
  * JS: `let sb = JSeekBar(ctx,"情感强度："); sb.max=40; sb.value=new java.lang.Float(20);
  *      sb.setOnChangeListener({ onStartTrackingTouch:.., onProgressChanged:.., onStopTrackingTouch:.. });`
  */
@@ -27,6 +39,20 @@ class JSeekBar(context: Context, val hint: CharSequence) : FrameLayout(context) 
 
     fun setOnChangeListener(listener: OnSeekBarChangeListener?) {
         mListener = listener
+    }
+
+    init {
+        val composeView = ComposeView(context)
+        addView(
+            composeView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        composeView.setContent {
+            TtsPluginUiTheme { Content() }
+        }
     }
 
     @JvmField
@@ -48,58 +74,31 @@ class JSeekBar(context: Context, val hint: CharSequence) : FrameLayout(context) 
         set(value) {
             mValue = value * x
             mListener?.onProgressChanged(this@JSeekBar, value.toInt(), false)
-            syncUi()
         }
 
-    private var mValue = 0f
+    private var mValue by mutableFloatStateOf(0f)
 
-    private val label: TextView = TextView(context).apply { text = hint }
-    private val seekBar: SeekBar = SeekBar(context)
-
-    init {
-        val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        addView(
-            root,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        root.addView(
-            label,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        root.addView(
-            seekBar,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                mValue = progress.toFloat()
-                label.text = hint.toString() + scaleText(value)
-                mListener?.onProgressChanged(this@JSeekBar, value.toInt(), fromUser)
-            }
-
-            override fun onStartTrackingTouch(sb: SeekBar?) {
-                mListener?.onStartTrackingTouch(this@JSeekBar)
-            }
-
-            override fun onStopTrackingTouch(sb: SeekBar?) {
-                mListener?.onStopTrackingTouch(this@JSeekBar)
-            }
-        })
-    }
-
-    private fun syncUi() {
-        seekBar.max = if (max > 0) (max * x).toInt() else 100
-        seekBar.progress = mValue.toInt().coerceIn(0, seekBar.max)
-        label.text = hint.toString() + scaleText(value)
+    @Composable
+    fun Content() {
+        Column(Modifier.fillMaxWidth()) {
+            Text(
+                text = hint.toString() + scaleText(value),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+            )
+            Slider(
+                value = mValue,
+                onValueChange = {
+                    mValue = it
+                    mListener?.onProgressChanged(this@JSeekBar, value.toInt(), true)
+                },
+                onValueChangeFinished = {
+                    mListener?.onStopTrackingTouch(this@JSeekBar)
+                },
+                valueRange = 0f..(max.toFloat() * x).coerceAtLeast(0.0001f),
+            )
+        }
     }
 
     private fun scaleText(v: Float): String =

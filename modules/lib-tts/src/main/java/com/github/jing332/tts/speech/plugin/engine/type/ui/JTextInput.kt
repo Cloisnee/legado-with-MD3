@@ -1,18 +1,34 @@
+@file:Suppress("unused")
+
 package com.github.jing332.tts.speech.plugin.engine.type.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.text.Editable
-import android.text.TextWatcher
-import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.LinearLayout
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
 
 /**
- * 插件 UI bean（原生版，API 与补丁版 Compose 版同形）：
- * JS: `let e = JTextInput(ctx, "自定义声音代号"); e.addTextChangedListener(function(text){...}); e.text.toString()`
+ * 插件 UI bean（补丁版 API 同形，Compose + Material3 渲染）：
+ * JS: `let e = JTextInput(ctx, "自定义声音代号"); e.text.set("x"); e.text.toString();
+ *      e.setOnTextChangedListener(function(text){...}); e.addTextChangedListener(function(text){...});
+ *      e.setSingleLine(true); e.maxLines=1;`
+ *
+ * 注意：`text` 必须是带 set()/append()/clear() 的包装对象（千问等插件按补丁版契约调用
+ * `input.text.set(...)`），而不是裸字符串；`setOnTextChangedListener` 为无 try/catch 保护
+ * 的主流用法（讯飞/千问都直接调用），缺失会导致整个插件特色界面中断。
  */
-@Suppress("unused")
+@Suppress("unused", "MemberVisibilityCanBePrivate")
 @SuppressLint("ViewConstructor")
 class JTextInput(context: Context, val hint: CharSequence? = null) : FrameLayout(context) {
 
@@ -30,38 +46,84 @@ class JTextInput(context: Context, val hint: CharSequence? = null) : FrameLayout
         listeners.remove(listener)
     }
 
-    private val editText = EditText(context).apply {
-        hint = this@JTextInput.hint
-        maxLines = Int.MAX_VALUE
+    fun setOnTextChangedListener(listener: OnTextChangedListener) {
+        listeners.add(listener)
+    }
+
+    private var mText by mutableStateOf("")
+
+    private var mMaxLines by mutableIntStateOf(Int.MAX_VALUE)
+    var maxLines: Int
+        get() = mMaxLines
+        set(value) {
+            mMaxLines = value
+        }
+
+    fun setSingleLine(singleLine: Boolean) {
+        mMaxLines = if (singleLine) 1 else Int.MAX_VALUE
     }
 
     init {
+        val composeView = ComposeView(context)
         addView(
-            editText,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+            composeView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
             ),
         )
-        editText.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                val text = s ?: ""
-                listeners.forEach { runCatching { it.onChanged(text) } }
-            }
-        })
+        composeView.setContent {
+            TtsPluginUiTheme { Content() }
+        }
     }
 
-    var text: CharSequence
-        get() = editText.text?.toString().orEmpty()
-        set(value) {
-            editText.setText(value)
+    @Composable
+    fun Content() {
+        OutlinedTextField(
+            value = mText,
+            onValueChange = {
+                mText = it
+                for (listener in listeners) {
+                    runCatching { listener.onChanged(it) }.onFailure { it.printStackTrace() }
+                }
+            },
+            label = {
+                if (!hint.isNullOrBlank()) {
+                    Text(text = hint.toString(), maxLines = 1)
+                }
+            },
+            maxLines = mMaxLines,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+        )
+    }
+
+    val text: MyEditable by lazy { MyEditable() }
+
+    inner class MyEditable {
+        val length: Int get() = mText.length
+
+        fun get(index: Int): Char = mText[index]
+
+        fun set(text: CharSequence) {
+            mText = text.toString()
         }
 
-    var maxLines: Int
-        get() = editText.maxLines
-        set(value) {
-            editText.maxLines = value
+        fun get(): String = mText
+
+        fun append(text: CharSequence) {
+            mText += text
         }
+
+        fun append(text: Char) {
+            mText += text
+        }
+
+        fun clear() {
+            mText = ""
+        }
+
+        override fun toString(): String = mText
+    }
 }
