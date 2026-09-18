@@ -55,6 +55,13 @@ class ChapterSpeechRepository(
         dao.replaceSegments(analysisId, segments.map(ChapterSpeechSegment::toEntity))
     }
 
+    override suspend fun getLatestAnalysis(
+        bookUrl: String,
+        chapterIndex: Int,
+    ): ChapterSpeechAnalysis? = withContext(Dispatchers.IO) {
+        dao.getLatestAnalysis(bookUrl, chapterIndex)?.toDomain()
+    }
+
     override suspend fun deleteChapter(bookUrl: String, chapterIndex: Int) =
         withContext(Dispatchers.IO) {
             dao.deleteChapter(bookUrl, chapterIndex)

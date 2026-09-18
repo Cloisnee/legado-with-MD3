@@ -10,6 +10,7 @@ import io.legado.app.data.AppDatabase
 import io.legado.app.data.repository.AiArtifactRepository
 import io.legado.app.data.repository.AiChatRepository
 import io.legado.app.data.repository.AiMemoryRepository
+import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiProfileRepository
 import io.legado.app.data.repository.AiPromptPresetRepository
 import io.legado.app.data.repository.AiTextRepositoryImpl
@@ -191,8 +192,10 @@ import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.HomeDashboardUseCase
 import io.legado.app.domain.usecase.IdentifyBookCharactersUseCase
 import io.legado.app.domain.usecase.ImportBookshelfUseCase
+import io.legado.app.help.readaloud.analysis.AiSpeechClient
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV2
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
-import io.legado.app.domain.usecase.RefineSpeechWithAiUseCase
 import io.legado.app.domain.usecase.RefreshTocUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
 import io.legado.app.domain.usecase.RemoveBookGroupAssignmentUseCase
@@ -424,8 +427,11 @@ val appModule = module {
     singleOf(::BuildSpeechPlanUseCase)
     singleOf(::AnalyzeChapterSpeechUseCase)
     singleOf(::ResolveLocalSpeakersUseCase)
+    singleOf(::AiModelRepository)
+    singleOf(::AiSpeechClient)
+    singleOf(::SpeechAnalysisPipelineV2)
+    singleOf(::AnalysisSchedulerV2)
     singleOf(::PrepareChapterSpeechPlanUseCase)
-    singleOf(::RefineSpeechWithAiUseCase)
     singleOf(::SyncReadAloudVoicesUseCase)
     singleOf(::CacheBookChaptersUseCase)
     singleOf(::ChangeBookSourceUseCase)

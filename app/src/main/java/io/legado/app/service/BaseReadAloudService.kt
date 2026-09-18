@@ -47,6 +47,7 @@ import io.legado.app.domain.model.readaloud.SpeechAnalysisMode
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.config.AppConfigStore
@@ -424,6 +425,14 @@ abstract class BaseReadAloudService : BaseService(),
                 chapterIndex = ReadBook.durChapterIndex,
                 paragraphs = preparedChapter.canonicalSpeechParagraphs(),
             )
+            // W3 分析调度：本地先出声，AI 完整链后台补全 当前章+预加载窗口（不阻塞播放）
+            runCatching {
+                ReadBook.book?.bookUrl?.let { bookUrl ->
+                    get(AnalysisSchedulerV2::class.java).enqueueWindow(bookUrl, ReadBook.durChapterIndex)
+                }
+            }.onFailure {
+                AppLog.put("分析调度入队失败: ${it.localizedMessage}", it)
+            }
             if (generation != prepareReadAloudGeneration) return@execute
             var preparedPlaybackQueue = runCatching {
                 ReadAloudPlaybackQueue.from(preparedSpeechPlan)

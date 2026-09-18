@@ -959,7 +959,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 val gSel = groupKeyOf(g) in selGroupNames
                                 LevelRow(
                                     title = g.name,
-                                    subtitle = "共 ${g.entries.size} 条",
+                                    subtitle = buildString {
+                                        append("共 ${g.entries.size} 条")
+                                        if (g.roleType.isNotBlank()) append(" · ${g.roleType}池")
+                                    },
                                     arrowExpanded = collapsedGroups[groupKeyOf(g)] != true,
                                     indent = 0.dp,
                                     selActive = entrySelActive,
@@ -969,13 +972,35 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                             active = g.name in activeBanks,
                                             onClick = {
                                                 scope.launch {
-                                                    val next = if (g.name in activeBanks) {
+                                                    val next: Set<String> = if (g.name in activeBanks) {
                                                         activeBanks - g.name
                                                     } else {
-                                                        activeBanks + g.name
+                                                        // 同类型池仅允许启用一个：核心/路人/特殊 各自互斥
+                                                        val others = if (g.roleType.isNotBlank()) {
+                                                            groups.filter {
+                                                                it.name != g.name && it.roleType == g.roleType
+                                                            }.map { it.name }
+                                                        } else {
+                                                            emptyList()
+                                                        }
+                                                        if (others.isEmpty()) {
+                                                            activeBanks + g.name
+                                                        } else {
+                                                            (activeBanks - others.toSet()) + g.name
+                                                        }
                                                     }
                                                     repo.setActiveVoiceBanks(next.toList())
                                                     activeBanks = next
+                                                    if (g.name in next && g.roleType.isNotBlank()) {
+                                                        val dropped = groups.filter {
+                                                            it.name != g.name && it.roleType == g.roleType
+                                                        }.count { it.name in activeBanks }
+                                                        if (dropped > 0) {
+                                                            context.toastOnUi(
+                                                                "已切换${g.roleType}池：${g.name}（同类型仅启用一个）"
+                                                            )
+                                                        }
+                                                    }
                                                 }
                                             },
                                         )

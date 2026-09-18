@@ -23,6 +23,16 @@ interface ChapterSpeechDao {
         resolverVersion: String,
     ): ChapterSpeechAnalysisEntity?
 
+    @Query(
+        "select * from chapter_speech_analysis where bookUrl = :bookUrl " +
+            "and chapterIndex = :chapterIndex " +
+            "order by updatedAt desc limit 1"
+    )
+    suspend fun getLatestAnalysis(
+        bookUrl: String,
+        chapterIndex: Int,
+    ): ChapterSpeechAnalysisEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAnalysis(analysis: ChapterSpeechAnalysisEntity)
 

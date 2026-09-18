@@ -446,7 +446,7 @@ class AiModelRepository(private val app: Application) {
         )
     }
 
-    private fun http(): OkHttpClient = OkHttpClient.Builder()
+    internal fun http(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)

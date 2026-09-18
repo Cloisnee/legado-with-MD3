@@ -65,6 +65,7 @@ data class GroupRow(
     val name: String,
     val entries: List<EntryRow>,
     val groupId: Long = 0L,
+    val roleType: String = "",
 )
 
 data class EngineOption(val value: String?, val label: String)
@@ -123,6 +124,7 @@ class TtsServerCenterRepository(private val app: Application) {
                 val grp = arr.optJSONObject(g) ?: continue
                 val name = grp.optJSONObject("group")?.optString("name") ?: "未命名分组"
                 val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
+                val roleType = grp.optJSONObject("group")?.optString("roleType").orEmpty()
                 val list = grp.optJSONArray("list") ?: JSONArray()
                 val entries = buildList {
                     for (i in 0 until list.length()) {
@@ -156,10 +158,10 @@ class TtsServerCenterRepository(private val app: Application) {
                                     }
                                 } ?: emptyMap(),
                             )
-                        )
+                        }
                     }
                 }
-                add(GroupRow(name = name, entries = entries, groupId = gid))
+                add(GroupRow(name = name, entries = entries, groupId = gid, roleType = roleType))
             }
         }
     }

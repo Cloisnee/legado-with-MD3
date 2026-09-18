@@ -18,5 +18,6 @@ interface ChapterSpeechGateway {
     )
     suspend fun getSegments(analysisId: String): List<ChapterSpeechSegment>
     suspend fun replaceSegments(analysisId: String, segments: List<ChapterSpeechSegment>)
+    suspend fun getLatestAnalysis(bookUrl: String, chapterIndex: Int): ChapterSpeechAnalysis?
     suspend fun deleteChapter(bookUrl: String, chapterIndex: Int)
 }

@@ -36,12 +36,46 @@ data class ReadAloudPlayerUiState(
     val finishCurrentChapterAfterTimer: Boolean = false,
     val bgMode: Int = 0,
     val activeSheet: ReadAloudPlayerSheet? = null,
+    val scriptReview: ScriptReviewUi? = null,
 )
 
 sealed interface ReadAloudPlayerSheet {
     data object Speed : ReadAloudPlayerSheet
     data object Timer : ReadAloudPlayerSheet
+    data object ScriptReview : ReadAloudPlayerSheet
 }
+
+/** 批次C · 二合一审查页数据 */
+@Stable
+data class ScriptProfileUi(
+    val id: String,
+    val name: String,
+    val aliasLine: String,
+)
+
+@Stable
+data class ScriptRowUi(
+    val id: String,
+    val indexLabel: String,
+    val text: String,
+    val speakerName: String,
+    val roleLabel: String,
+    val isCharacter: Boolean,
+    val emotion: String,
+    val locked: Boolean,
+    val selected: Boolean,
+)
+
+@Stable
+data class ScriptReviewUi(
+    val loading: Boolean = false,
+    val hasData: Boolean = false,
+    val sourceLabel: String = "",
+    val statusLine: String = "",
+    val rows: ImmutableList<ScriptRowUi> = persistentListOf(),
+    val profiles: ImmutableList<ScriptProfileUi> = persistentListOf(),
+    val selectedIds: Set<String> = emptySet(),
+)
 
 sealed interface ReadAloudPlayerIntent {
     data object Refresh : ReadAloudPlayerIntent
@@ -62,6 +96,18 @@ sealed interface ReadAloudPlayerIntent {
     data class OpenSheet(val sheet: ReadAloudPlayerSheet) : ReadAloudPlayerIntent
     data object DismissSheet : ReadAloudPlayerIntent
     data class SeekTo(val chapterPosition: Int) : ReadAloudPlayerIntent
+    // 批次C · 审查页
+    data object LoadScriptReview : ReadAloudPlayerIntent
+    data class ToggleScriptRow(val id: String) : ReadAloudPlayerIntent
+    data object ClearScriptSelection : ReadAloudPlayerIntent
+    data class SetScriptNarration(val ids: Set<String>) : ReadAloudPlayerIntent
+    data class AssignScriptSpeaker(
+        val ids: Set<String>,
+        val profileId: String?,
+        val customName: String,
+    ) : ReadAloudPlayerIntent
+    data class ToggleScriptLock(val id: String) : ReadAloudPlayerIntent
+    data object ReanalyzeScript : ReadAloudPlayerIntent
 }
 
 sealed interface ReadAloudPlayerEffect {
