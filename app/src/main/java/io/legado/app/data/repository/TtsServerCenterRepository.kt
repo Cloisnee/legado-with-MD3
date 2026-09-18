@@ -56,11 +56,13 @@ data class EntryRow(
     val speed: Float,
     val volume: Float,
     val pitch: Float,
+    val groupId: Long = 0L,
 )
 
 data class GroupRow(
     val name: String,
     val entries: List<EntryRow>,
+    val groupId: Long = 0L,
 )
 
 data class EngineOption(val value: String?, val label: String)
@@ -118,6 +120,7 @@ class TtsServerCenterRepository(private val app: Application) {
             for (g in 0 until arr.length()) {
                 val grp = arr.optJSONObject(g) ?: continue
                 val name = grp.optJSONObject("group")?.optString("name") ?: "未命名分组"
+                val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
                 val list = grp.optJSONArray("list") ?: JSONArray()
                 val entries = buildList {
                     for (i in 0 until list.length()) {
@@ -140,11 +143,12 @@ class TtsServerCenterRepository(private val app: Application) {
                                 speed = (ap?.opt("speed") as? Number)?.toFloat() ?: 0f,
                                 volume = (ap?.opt("volume") as? Number)?.toFloat() ?: 0f,
                                 pitch = (ap?.opt("pitch") as? Number)?.toFloat() ?: 0f,
+                                groupId = gid,
                             )
                         )
                     }
                 }
-                add(GroupRow(name = name, entries = entries))
+                add(GroupRow(name = name, entries = entries, groupId = gid))
             }
         }
     }
@@ -699,7 +703,7 @@ class TtsServerCenterRepository(private val app: Application) {
 
     // ---------------- 分组操作 ----------------
 
-    suspend fun renameGroup(oldName: String, newName: String): Boolean =
+    suspend fun renameGroup(groupId: Long, newName: String): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
                 val file = TtsConfigStore.voicesFile(ctx)
@@ -707,8 +711,9 @@ class TtsServerCenterRepository(private val app: Application) {
                 var hit = false
                 for (i in 0 until arr.length()) {
                     val g = arr.optJSONObject(i)?.optJSONObject("group") ?: continue
-                    if (g.optString("name") == oldName) {
-                        g.put("name", newName); hit = true
+                    if (g.optLong("id") == groupId) {
+                        g.put("name", newName)
+                        hit = true
                     }
                 }
                 if (hit) file.writeText(arr.toString())
@@ -735,15 +740,15 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrDefault(false)
     }
 
-    suspend fun exportGroup(name: String): String = withContext(Dispatchers.IO) {
+    suspend fun exportGroup(groupId: Long): String = withContext(Dispatchers.IO) {
         runCatching {
             val arr = TtsConfigStore.loadVoices(ctx)
             val out = JSONArray()
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
-                if (item.optJSONObject("group")?.optString("name") == name) out.put(item)
+                if (item.optJSONObject("group")?.optLong("id") == groupId) out.put(item)
             }
-            if (out.length() == 0) return@runCatching "未找到分组：$name"
+            if (out.length() == 0) return@runCatching "未找到分组"
             val f = File(exportsDir(), "voices_group_${ts()}.json")
             f.writeText(out.toString())
             f.absolutePath
@@ -869,24 +874,26 @@ class TtsServerCenterRepository(private val app: Application) {
 
     suspend fun deleteEntries(keys: Set<String>): Boolean = withContext(Dispatchers.IO) {
         runCatching {
-            val ids = keys.filter { it.startsWith("id_") }
-                .mapNotNull { it.removePrefix("id_").toLongOrNull() }
-                .toSet()
-            val legacyKeys = keys.filterNot { it.startsWith("id_") }
             val file = TtsConfigStore.voicesFile(ctx)
             val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
             var hit = false
             for (gi in 0 until arr.length()) {
                 val grp = arr.optJSONObject(gi) ?: continue
+                val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
                 val list = grp.optJSONArray("list") ?: continue
                 val kept = JSONArray()
                 for (i in 0 until list.length()) {
                     val e = list.optJSONObject(i) ?: continue
-                    val id = e.optLong("id")
-                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                    val legacyKey = "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                    val match = (id != 0L && id in ids) || (id == 0L && legacyKey in legacyKeys)
-                    if (match) hit = true else kept.put(e)
+                    val eid = e.optLong("id")
+                    val key = when {
+                        gid != 0L && eid != 0L -> "g${gid}_e$eid"
+                        eid != 0L -> "e_$eid"
+                        else -> {
+                            val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
+                            "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                        }
+                    }
+                    if (key in keys) hit = true else kept.put(e)
                 }
                 grp.put("list", kept)
             }
@@ -993,11 +1000,19 @@ class TtsServerCenterRepository(private val app: Application) {
                 var hit = false
                 for (gi in 0 until arr.length()) {
                     val grp = arr.optJSONObject(gi) ?: continue
+                    val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
                     val list = grp.optJSONArray("list") ?: continue
                     val entriesAll = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
                     fun keyOf(e: JSONObject): String {
-                        val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                        return "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                        val eid = e.optLong("id")
+                        return when {
+                            gid != 0L && eid != 0L -> "g${gid}_e$eid"
+                            eid != 0L -> "e_$eid"
+                            else -> {
+                                val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
+                                "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                            }
+                        }
                     }
                     fun catOf(e: JSONObject) = e.optString("categoryPath").ifBlank { "未分类" }
                     val changedCats = LinkedHashSet<String>()
@@ -1025,17 +1040,17 @@ class TtsServerCenterRepository(private val app: Application) {
             }.getOrDefault(false)
         }
 
-    /** 一级分组置顶/置底（整组在分组列表中的顺序） */
-    suspend fun moveGroupsToEdge(names: Set<String>, toTop: Boolean): Boolean =
+    /** 一级分组置顶/置底（整组在分组列表中的顺序；ids=group.id 集合） */
+    suspend fun moveGroupsToEdge(ids: Set<Long>, toTop: Boolean): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
                 val file = TtsConfigStore.voicesFile(ctx)
                 val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
                 val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
-                fun gName(g: JSONObject) = g.optJSONObject("group")?.optString("name").orEmpty()
-                val sel = all.filter { gName(it) in names }
+                fun gId(g: JSONObject) = g.optJSONObject("group")?.optLong("id") ?: 0L
+                val sel = all.filter { gId(it) in ids }
                 if (sel.isEmpty()) return@runCatching false
-                val rest = all.filterNot { gName(it) in names }
+                val rest = all.filterNot { gId(it) in ids }
                 val ordered = if (toTop) sel + rest else rest + sel
                 val out = JSONArray()
                 ordered.forEachIndexed { i, g ->
@@ -1047,7 +1062,7 @@ class TtsServerCenterRepository(private val app: Application) {
             }.getOrDefault(false)
         }
 
-    /** 二级分类置顶/置底（整块在所属分组内的顺序），keys = "组名|分类名" */
+    /** 二级分类置顶/置底（整块在所属分组内的顺序），keys = "组ID|分类名" */
     suspend fun moveCategoriesToEdge(catKeys: Set<String>, toTop: Boolean): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -1056,12 +1071,12 @@ class TtsServerCenterRepository(private val app: Application) {
                 var hit = false
                 for (gi in 0 until arr.length()) {
                     val grp = arr.optJSONObject(gi) ?: continue
-                    val gName = grp.optJSONObject("group")?.optString("name").orEmpty()
+                    val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
                     val list = grp.optJSONArray("list") ?: continue
                     val entriesAll = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
                     fun catOf(e: JSONObject) = e.optString("categoryPath").ifBlank { "未分类" }
                     val selCats = entriesAll.map { catOf(it) }.distinct()
-                        .filter { "$gName|$it" in catKeys }
+                        .filter { "$gid|$it" in catKeys }
                     if (selCats.isEmpty()) continue
                     val selBlocks = selCats.map { cat -> entriesAll.filter { catOf(it) == cat } }
                         .sortedBy { block -> entriesAll.indexOfFirst { it === block.first() } }

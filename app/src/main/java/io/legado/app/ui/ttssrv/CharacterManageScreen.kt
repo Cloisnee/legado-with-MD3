@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,13 +28,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -57,13 +59,17 @@ import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SearchBar
+import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.checkBox.AppCheckbox
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.text.AppText
@@ -117,10 +123,12 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
     var query by remember { mutableStateOf("") }
 
     var sel by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    var menuIdx by remember { mutableStateOf<Int?>(null) }
+    var mergeTargetPick by remember { mutableStateOf(false) }
     var showBookMenu by remember { mutableStateOf(false) }
     var showTypeMenu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var auditionTextInput by remember { mutableStateOf("") }
+    var auditionTextDialog by remember { mutableStateOf(false) }
 
     // 编辑弹窗
     var editIdx by remember { mutableStateOf<Int?>(null) }
@@ -262,7 +270,6 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
             repo.saveRecords(currentBook, list)
             context.toastOnUi("已删除 ${sel.size} 个角色")
             confirmDelete = false
-            menuIdx = null
             reload()
         }
     }
@@ -295,7 +302,6 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
             context.toastOnUi(
                 if (synced > 0) "角色合并成功（剧本同步 $synced 行）" else "角色合并成功"
             )
-            menuIdx = null
             reload()
         }
     }
@@ -446,6 +452,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
             )
         },
     ) { padding ->
+        Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = adaptiveContentPadding(
@@ -493,15 +500,15 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                                 )
                             }
                         }
-                        DropdownMenu(
+                        RoundDropdownMenu(
                             expanded = showBookMenu,
                             onDismissRequest = { showBookMenu = false },
-                        ) {
+                        ) { dismiss ->
                             bookList.forEach { b ->
-                                DropdownMenuItem(
-                                    text = { AppText(b) },
+                                RoundDropdownMenuItem(
+                                    text = b,
                                     onClick = {
-                                        showBookMenu = false
+                                        dismiss()
                                         if (b != currentBook) {
                                             scope.launch {
                                                 val (_, msg) = repo.switchBook(b)
@@ -510,6 +517,15 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                                             }
                                         }
                                     },
+                                    trailingIcon = if (b == currentBook) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    } else null,
                                 )
                             }
                         }
@@ -545,19 +561,28 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                                 )
                             }
                         }
-                        DropdownMenu(
+                        RoundDropdownMenu(
                             expanded = showTypeMenu,
                             onDismissRequest = { showTypeMenu = false },
-                        ) {
+                        ) { dismiss ->
                             ROLES.forEach { t ->
-                                DropdownMenuItem(
-                                    text = { AppText(t) },
+                                RoundDropdownMenuItem(
+                                    text = t,
                                     onClick = {
-                                        showTypeMenu = false
+                                        dismiss()
                                         roleFilter = t
                                         sel = emptySet()
                                         scope.launch { repo.saveCharacterFilter(t) }
                                     },
+                                    trailingIcon = if (t == roleFilter) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    } else null,
                                 )
                             }
                         }
@@ -598,49 +623,59 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     record = r,
                     selectionActive = sel.isNotEmpty(),
                     selected = idx in sel,
-                    onClick = {
-                        if (sel.isNotEmpty()) toggleSel(idx)
-                    },
-                    onLongClick = {
-                        if (idx !in sel) sel = sel + idx
-                        menuIdx = idx
-                    },
+                    onClick = { toggleSel(idx) },
+                    onLongClick = null,
                     onVoiceClick = { auditionIdx = idx },
+                )
+            }
+        }
+            if (sel.isNotEmpty()) {
+                SelectionBottomBar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                    onSelectAll = { sel = filtered.map { it.index }.toSet() },
+                    onSelectInvert = {
+                        val all = filtered.map { it.index }.toSet()
+                        sel = all - sel
+                    },
+                    primaryAction = ActionItem("删除", Icons.Default.Delete) {
+                        confirmDelete = true
+                    },
+                    secondaryActions = buildList {
+                        if (sel.size == 1) {
+                            add(ActionItem("修改人物信息", Icons.Default.Edit) {
+                                openEdit(sel.first())
+                            })
+                        } else if (sel.size == 2) {
+                            add(ActionItem("合并与跟随", Icons.Default.Share) {
+                                mergeTargetPick = true
+                            })
+                        }
+                    },
                 )
             }
         }
     }
 
-    // ---------------- 长按菜单 ----------------
+    // ---------------- 合并与跟随（选择跟随角色） ----------------
     AppModalBottomSheet(
-        show = menuIdx != null,
-        onDismissRequest = { menuIdx = null },
-        title = "角色操作",
+        show = mergeTargetPick,
+        onDismissRequest = { mergeTargetPick = false },
+        title = "选择跟随角色",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            if (sel.size >= 2) {
+            sel.sorted().forEach { idx ->
+                val r = records.getOrNull(idx) ?: return@forEach
                 TinyClickableSettingItem(
-                    title = "合并+跟随角色",
-                    description = "其余所选角色并入长按的角色（剧本同步 · 可撤销）",
-                    onClick = { menuIdx?.let { performMerge(it) } },
+                    title = r.name,
+                    description = "其余所选角色并入 ta（剧本同步 · 可撤销）",
+                    onClick = {
+                        mergeTargetPick = false
+                        performMerge(idx)
+                    },
                 )
             }
-            TinyClickableSettingItem(
-                title = "修改角色信息",
-                description = "主名 / 别名 / 类型 / 性别 / 年龄 / 声线",
-                onClick = {
-                    menuIdx?.let { openEdit(it) }
-                    menuIdx = null
-                },
-            )
-            TinyClickableSettingItem(
-                title = "删除角色",
-                description = if (sel.size > 1) "删除所选 ${sel.size} 个角色" else "删除该角色",
-                onClick = {
-                    menuIdx = null
-                    confirmDelete = true
-                },
-            )
         }
     }
 
@@ -783,9 +818,26 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 TinyClickableSettingItem(title = "（暂无别名）", onClick = {})
             }
             aliases.forEach { a ->
-                TinyClickableSettingItem(
-                    title = a,
-                    trailingContent = {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    cornerRadius = 10.dp,
+                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AppText(
+                            text = a,
+                            style = LegadoTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         SmallPlainButton(
                             onClick = {
                                 aliasRenameTarget = a
@@ -794,21 +846,31 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                             icon = Icons.Default.Edit,
                             contentDescription = "修改",
                         )
+                        Spacer(modifier = Modifier.width(2.dp))
                         SmallPlainButton(
                             onClick = {
                                 joinLib = JoinLibRequest(listOf(a), aliasToRemove = a)
                             },
-                            icon = Icons.Default.FileDownload,
+                            icon = Icons.Default.ArrowDownward,
                             contentDescription = "入库",
                         )
+                        Spacer(modifier = Modifier.width(2.dp))
                         SmallPlainButton(
                             onClick = { releaseAlias(a) },
-                            icon = Icons.Default.Share,
+                            icon = Icons.Default.Person,
                             contentDescription = "释放并固定",
                         )
-                    },
-                    onClick = {},
-                )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        SmallPlainButton(
+                            onClick = {
+                                edAliases = parseAliases(edAliases)
+                                    .filterNot { it == a }.joinToString("|")
+                            },
+                            icon = Icons.Default.Delete,
+                            contentDescription = "删除别名",
+                        )
+                    }
+                }
             }
         }
     }
@@ -891,20 +953,14 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     description = "当前声线：${r.voice.ifBlank { "未设置" }}",
                     onClick = {},
                 )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppTextField(
-                        value = auditionText,
-                        onValueChange = { auditionText = it },
-                        label = "试听文本",
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                TinyClickableSettingItem(
+                    title = "试听文本",
+                    description = auditionText,
+                    onClick = {
+                        auditionTextInput = auditionText
+                        auditionTextDialog = true
+                    },
+                )
                 TinyClickableSettingItem(
                     title = "试听",
                     description = "用当前声线合成并播放",
@@ -995,6 +1051,29 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         },
     )
 
+    // ---------------- 试听文本编辑 ----------------
+    AppAlertDialog(
+        show = auditionTextDialog,
+        onDismissRequest = { auditionTextDialog = false },
+        title = "试听文本",
+        content = {
+            AppTextField(
+                value = auditionTextInput,
+                onValueChange = { auditionTextInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "文本",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            auditionTextDialog = false
+            val t = auditionTextInput.trim()
+            if (t.isNotEmpty()) auditionText = t
+        },
+        dismissText = "取消",
+        onDismiss = { auditionTextDialog = false },
+    )
+
     // ---------------- 删除确认 ----------------
     AppAlertDialog(
         show = confirmDelete,
@@ -1016,7 +1095,7 @@ private fun CharacterCardRow(
     selectionActive: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     onVoiceClick: () -> Unit,
 ) {
     GlassCard(
@@ -1061,8 +1140,6 @@ private fun CharacterCardRow(
                         text = aliasLine,
                         style = LegadoTheme.typography.bodySmall,
                         color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

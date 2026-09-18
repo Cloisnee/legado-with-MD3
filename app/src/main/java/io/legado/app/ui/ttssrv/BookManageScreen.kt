@@ -27,6 +27,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -61,9 +62,12 @@ import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SearchBar
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.checkBox.AppCheckbox
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.text.AppText
@@ -107,7 +111,9 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var showBookMenu by remember { mutableStateOf(false) }
+    var showChapterMenu by remember { mutableStateOf(false) }
     var showChapterSheet by remember { mutableStateOf(false) }
+    var tagSearch by remember { mutableStateOf("") }
 
     val pending = remember { mutableStateMapOf<Int, String>() }
     var selLines by remember { mutableStateOf<Set<Int>>(emptySet()) }
@@ -260,15 +266,15 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                     Icon(Icons.Default.ArrowDropDown, contentDescription = "切换书籍")
                                 }
                             }
-                            DropdownMenu(
+                            RoundDropdownMenu(
                                 expanded = showBookMenu,
                                 onDismissRequest = { showBookMenu = false },
-                            ) {
+                            ) { dismiss ->
                                 bookList.forEach { b ->
-                                    DropdownMenuItem(
-                                        text = { AppText(b) },
+                                    RoundDropdownMenuItem(
+                                        text = b,
                                         onClick = {
-                                            showBookMenu = false
+                                            dismiss()
                                             if (b != currentBook) {
                                                 scope.launch {
                                                     val (_, msg) = repo.switchBook(b)
@@ -278,6 +284,15 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                                 }
                                             }
                                         },
+                                        trailingIcon = if (b == currentBook) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
                                     )
                                 }
                             }
@@ -287,7 +302,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                 modifier = Modifier.fillMaxWidth(),
                                 cornerRadius = 12.dp,
                                 containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                                onClick = { showChapterSheet = true },
+                                onClick = { showChapterMenu = true },
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -309,6 +324,37 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                     }
                                     Icon(Icons.Default.ArrowDropDown, contentDescription = "章节列表")
                                 }
+                            }
+                            RoundDropdownMenu(
+                                expanded = showChapterMenu,
+                                onDismissRequest = { showChapterMenu = false },
+                            ) { dismiss ->
+                                chapters.sorted().forEach { ch ->
+                                    RoundDropdownMenuItem(
+                                        text = "第${ch}章",
+                                        onClick = {
+                                            dismiss()
+                                            selectedChapter = ch
+                                            reloadLines()
+                                        },
+                                        trailingIcon = if (ch == selectedChapter) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
+                                RoundDropdownMenuItem(
+                                    text = "管理章节（删除 / 回滚）…",
+                                    onClick = {
+                                        dismiss()
+                                        showChapterSheet = true
+                                    },
+                                )
                             }
                         }
                     }
@@ -402,6 +448,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                     highlighted = changed,
                                     onClick = {
                                         if (row.speaker.isNotEmpty()) {
+                                            tagSearch = ""
                                             tagPanelFor = listOf(row.absIndex)
                                         }
                                     },
@@ -490,7 +537,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                 contentDescription = "反选",
                             )
                             SmallPlainButton(
-                                onClick = { tagPanelFor = selLines.toList() },
+                                onClick = { tagSearch = ""; tagPanelFor = selLines.toList() },
                                 icon = Icons.Default.Edit,
                                 contentDescription = "换角色",
                             )
@@ -585,11 +632,34 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
         show = tagPanelFor != null,
         onDismissRequest = { tagPanelFor = null },
         title = "换角色 · ${tagPanelFor?.size ?: 0} 行",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    ncName = ""
+                    ncRole = "核心"
+                    ncGender = "男"
+                    ncVoice = ""
+                    newCharDialog = true
+                },
+                icon = Icons.Default.Add,
+                contentDescription = "新增人物",
+            )
+        },
     ) {
         val targets = tagPanelFor
         val ch = selectedChapter
         if (targets != null && ch != null) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                SearchBar(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    query = tagSearch,
+                    onQueryChange = { tagSearch = it },
+                    placeholder = "搜索人物（本章 / 历史）",
+                    shape = RoundedCornerShape(12.dp),
+                    autoFocus = false,
+                )
                 TinyClickableSettingItem(
                     title = "旁白",
                     description = "改为旁白发声（只改标记，不动文本）",
@@ -597,10 +667,10 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                 )
                 val thisChapter = records.filter {
                     ch in it.appearanceChapters || it.lastAppearanceChapter == ch
-                }
+                }.filter { tagSearch.isBlank() || it.name.contains(tagSearch, ignoreCase = true) }
                 val history = records.filter {
                     it !in thisChapter && it.roletype in listOf("核心", "特殊")
-                }
+                }.filter { tagSearch.isBlank() || it.name.contains(tagSearch, ignoreCase = true) }
                 if (thisChapter.isNotEmpty()) {
                     AppText(
                         text = "— 本章人物 —",
@@ -631,17 +701,6 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                         )
                     }
                 }
-                TinyClickableSettingItem(
-                    title = "＋ 新增人物",
-                    description = "新建角色并标记（路人自动加【第${ch}章】后缀）",
-                    onClick = {
-                        ncName = ""
-                        ncRole = "核心"
-                        ncGender = "男"
-                        ncVoice = ""
-                        newCharDialog = true
-                    },
-                )
             }
         }
     }
@@ -765,19 +824,22 @@ private fun TagChip(text: String, highlighted: Boolean, onClick: () -> Unit) {
     }
     Box(
         modifier = Modifier
-            .widthIn(max = 64.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .width(52.dp)
+            .padding(top = 2.dp),
     ) {
-        AppText(
-            text = text,
-            style = LegadoTheme.typography.labelSmall,
-            color = fg,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(bg)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        ) {
+            AppText(
+                text = text,
+                style = LegadoTheme.typography.labelSmall,
+                color = fg,
+            )
+        }
     }
 }
 

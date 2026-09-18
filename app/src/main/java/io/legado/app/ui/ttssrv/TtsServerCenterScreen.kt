@@ -252,8 +252,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    fun entryKeyOf(e: EntryRow): String =
-        if (e.id != 0L) "id_${e.id}" else "k_${e.tagRuleId}|${e.tag}"
+    fun groupKeyOf(g: GroupRow): String = g.groupId.toString()
+
+    fun groupNameOfKey(key: String): String =
+        groups.firstOrNull { groupKeyOf(it) == key }?.name ?: key
+
+    fun entryKeyOf(e: EntryRow): String = when {
+        e.groupId != 0L && e.id != 0L -> "g${e.groupId}_e${e.id}"
+        e.id != 0L -> "e_${e.id}"
+        else -> "k_${e.tagRuleId}|${e.tag}"
+    }
 
     fun uniqueEntryList(src: List<EntryRow>): List<EntryRow> {
         val seen = HashSet<String>()
@@ -285,14 +293,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         val gSet = LinkedHashSet<String>()
         groups.forEach { g ->
             val keys = g.entries.map { entryKeyOf(it) }
-            if (keys.isNotEmpty() && keys.all { it in selEntries }) gSet.add(g.name)
+            if (keys.isNotEmpty() && keys.all { it in selEntries }) gSet.add(groupKeyOf(g))
         }
         selGroupNames = gSet
         val cSet = LinkedHashSet<String>()
         groups.forEach { g ->
             g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }.forEach { (cat, list) ->
                 val keys = list.map { entryKeyOf(it) }
-                if (keys.isNotEmpty() && keys.all { it in selEntries }) cSet.add("${g.name}|$cat")
+                if (keys.isNotEmpty() && keys.all { it in selEntries }) cSet.add("${groupKeyOf(g)}|$cat")
             }
         }
         selCatKeys = cSet
@@ -368,8 +376,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     // 组默认收起（只对首次出现的组设置）
     LaunchedEffect(groups) {
         groups.forEach { g ->
-            if (!collapsedGroups.containsKey(g.name)) {
-                collapsedGroups[g.name] = true
+            if (!collapsedGroups.containsKey(groupKeyOf(g))) {
+                collapsedGroups[groupKeyOf(g)] = true
             }
         }
     }
@@ -534,7 +542,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             } })
             add(ActionItem("置顶") { scope.launch {
                 when {
-                    selGroupNames.isNotEmpty() -> repo.moveGroupsToEdge(selGroupNames, true)
+                    selGroupNames.isNotEmpty() ->
+                        repo.moveGroupsToEdge(selGroupNames.mapNotNull { it.toLongOrNull() }.toSet(), true)
                     selCatKeys.isNotEmpty() -> repo.moveCategoriesToEdge(selCatKeys, true)
                     else -> repo.moveEntriesToEdge(selEntries, true)
                 }
@@ -542,7 +551,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             } })
             add(ActionItem("置底") { scope.launch {
                 when {
-                    selGroupNames.isNotEmpty() -> repo.moveGroupsToEdge(selGroupNames, false)
+                    selGroupNames.isNotEmpty() ->
+                        repo.moveGroupsToEdge(selGroupNames.mapNotNull { it.toLongOrNull() }.toSet(), false)
                     selCatKeys.isNotEmpty() -> repo.moveCategoriesToEdge(selCatKeys, false)
                     else -> repo.moveEntriesToEdge(selEntries, false)
                 }
@@ -551,15 +561,15 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             val g = selGroupContext
             if (g != null) {
                 add(ActionItem("重命名分组") {
-                    renameGroupText = g
+                    renameGroupText = groupNameOfKey(g)
                     renameGroupTarget = g
                 })
                 add(ActionItem("导出分组") { scope.launch {
                     detailTitle = "导出完成（分组）"
-                    detailText = repo.exportGroup(g)
+                    detailText = repo.exportGroup(g.toLongOrNull() ?: return@launch)
                 } })
                 add(ActionItem("在此组新建条目") {
-                    newEntryGroupDefault = g
+                    newEntryGroupDefault = groupNameOfKey(g)
                     sheet = CenterSheet.PickPluginForNew
                 })
             }
@@ -802,11 +812,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             val groupAllSel =
                                 g.entries.isNotEmpty() && groupKeys.all { it in selEntries }
                             item(key = "g_${gi}_${g.name}") {
-                                val gSel = g.name in selGroupNames
+                                val gSel = groupKeyOf(g) in selGroupNames
                                 LevelRow(
                                     title = g.name,
                                     subtitle = "共 ${g.entries.size} 条",
-                                    arrowExpanded = collapsedGroups[g.name] != true,
+                                    arrowExpanded = collapsedGroups[groupKeyOf(g)] != true,
                                     indent = 0.dp,
                                     selActive = entrySelActive,
                                     selected = gSel,
@@ -832,18 +842,18 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                                 selEntries = selEntries - groupKeys.toSet()
                                             } else {
                                                 selEntries = selEntries + groupKeys.toSet()
-                                                selGroupContext = g.name
+                                                selGroupContext = groupKeyOf(g)
                                             }
                                             normalizeSelection()
                                         } else {
-                                            collapsedGroups[g.name] =
-                                                !(collapsedGroups[g.name] ?: false)
+                                            collapsedGroups[groupKeyOf(g)] =
+                                                !(collapsedGroups[groupKeyOf(g)] ?: false)
                                         }
                                     },
                                     onLongClick = {
                                         if (!entrySelActive) {
                                             selEntries = groupKeys.toSet()
-                                            selGroupContext = g.name
+                                            selGroupContext = groupKeyOf(g)
                                             normalizeSelection()
                                         }
                                     },
@@ -853,7 +863,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 val byCat =
                                     g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }
                                 byCat.forEach { (cat, list) ->
-                                    val catKey = "${g.name}|$cat"
+                                    val catKey = "${groupKeyOf(g)}|$cat"
                                     val fresh = list
                                     val catKeys = fresh.map { entryKeyOf(it) }
                                     val catAllSel =
@@ -873,7 +883,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                                         selEntries = selEntries - catKeys.toSet()
                                                     } else {
                                                         selEntries = selEntries + catKeys.toSet()
-                                                        selGroupContext = g.name
+                                                        selGroupContext = groupKeyOf(g)
                                                     }
                                                     normalizeSelection()
                                                 } else {
@@ -884,7 +894,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                             onLongClick = {
                                                 if (!entrySelActive) {
                                                     selEntries = catKeys.toSet()
-                                                    selGroupContext = g.name
+                                                    selGroupContext = groupKeyOf(g)
                                                     normalizeSelection()
                                                 }
                                             },
@@ -1598,7 +1608,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppAlertDialog(
         show = renameGroupTarget != null,
         onDismissRequest = { renameGroupTarget = null },
-        title = "重命名分组：${renameGroupTarget.orEmpty()}",
+        title = "重命名分组：${groupNameOfKey(renameGroupTarget.orEmpty())}",
         content = {
             AppTextField(
                 value = renameGroupText,
@@ -1612,7 +1622,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             val old = renameGroupTarget ?: return@AppAlertDialog
             renameGroupTarget = null
             scope.launch {
-                val ok = repo.renameGroup(old, renameGroupText.trim())
+                val ok = repo.renameGroup(old.toLongOrNull() ?: return@launch, renameGroupText.trim())
                 context.toastOnUi(if (ok) "已重命名" else "未找到分组")
                 reload()
             }
