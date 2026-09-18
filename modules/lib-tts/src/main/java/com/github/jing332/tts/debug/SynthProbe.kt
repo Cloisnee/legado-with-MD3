@@ -173,4 +173,22 @@ object SynthProbe {
         return Result(out, sb.toString())
     }
 
+    private fun wrapPcmInWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+        val sr = sampleRate.takeIf { it > 0 } ?: 24000
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray())
+        header.putInt(36 + pcm.size)
+        header.put("WAVE".toByteArray())
+        header.put("fmt ".toByteArray())
+        header.putInt(16)
+        header.putShort(1.toShort())
+        header.putShort(1.toShort())
+        header.putInt(sr)
+        header.putInt(sr * 2)
+        header.putShort(2.toShort())
+        header.putShort(16.toShort())
+        header.put("data".toByteArray())
+        header.putInt(pcm.size)
+        return header.array() + pcm
+    }
 }

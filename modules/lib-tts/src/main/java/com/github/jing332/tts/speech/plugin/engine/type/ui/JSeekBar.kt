@@ -57,15 +57,22 @@ class JSeekBar(context: Context, val hint: CharSequence) : FrameLayout(context) 
     private val seekBar: SeekBar = SeekBar(context)
 
     init {
-        orientation = VERTICAL
+        val root = LinearLayout(context).apply { orientation = VERTICAL }
         addView(
+            root,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        root.addView(
             label,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ),
         )
-        addView(
+        root.addView(
             seekBar,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,

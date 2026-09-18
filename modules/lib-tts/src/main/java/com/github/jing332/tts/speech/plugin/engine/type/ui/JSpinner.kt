@@ -68,15 +68,22 @@ class JSpinner(context: Context, val hint: CharSequence) : FrameLayout(context) 
     private var suppress = false
 
     init {
-        orientation = VERTICAL
+        val root = LinearLayout(context).apply { orientation = VERTICAL }
         addView(
+            root,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        root.addView(
             label,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ),
         )
-        addView(
+        root.addView(
             spinner,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
