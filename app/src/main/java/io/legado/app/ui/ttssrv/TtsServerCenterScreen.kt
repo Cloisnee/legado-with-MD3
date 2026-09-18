@@ -2548,7 +2548,6 @@ private fun BankTag(active: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
 /** 分组提醒头（与「插件特色界面」同款样式） */
 @Composable
 private fun SectionHint(text: String) {
@@ -2560,6 +2559,7 @@ private fun SectionHint(text: String) {
     )
 }
 
+@Composable
 private fun SheetField(label: String, value: String, onChange: (String) -> Unit) {
     AppTextField(
         value = value,
