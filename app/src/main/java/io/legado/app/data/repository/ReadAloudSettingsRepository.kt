@@ -5,9 +5,11 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import io.legado.app.constant.PreferKey
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
+import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.config.compatDsInt
@@ -46,6 +48,23 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
         )
     }
 
+    /**
+     * 应用内容划分方式与配套标点集合。
+     *
+     * 两者在同一次写入里提交：划分方式与标点始终一起选择，
+     * 迁移标记也必须与划分方式同批落盘，否则旧版「按页朗读」开关会在下次读取时
+     * 反过来覆盖用户刚选的划分方式。
+     */
+    suspend fun setContentSplit(mode: ReadAloudContentSplitMode, symbols: Set<String>) {
+        AppConfigStore.putAllAndAwait(
+            mapOf(
+                PreferKey.readAloudContentSplitMode to mode.storageValue,
+                PreferKey.readAloudContentSplitSymbols to symbols,
+                CONTENT_SPLIT_MIGRATION_KEY to true,
+            )
+        )
+    }
+
     companion object {
         const val DEFAULT_INTERFACE_CLASSIC = "classic"
         const val DEFAULT_INTERFACE_PLAYER = "player"
@@ -68,6 +87,8 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
             }
             AppConfigStore.remove(LEGACY_KEY_AL_SFX_DENSITY)
         }
+        /** 一次性迁移标记：把旧的「按页朗读」布尔值搬进「内容划分方式」。 */
+        const val CONTENT_SPLIT_MIGRATION_KEY = "readAloudContentSplitMigrated"
     }
 }
 
@@ -88,6 +109,8 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     capsuleOffsetY = compatDsValue(ReadAloudKeys.CapsuleOffsetY, 0f),
     mediaButtonPerNext = compatDsValue(ReadAloudKeys.MediaButtonPerNext, false),
     readAloudByPage = compatDsValue(ReadAloudKeys.ReadAloudByPage, false),
+    contentSplitMode = compatContentSplitMode(),
+    contentSplitSymbols = compatContentSplitSymbols(),
     androidMediaControlEnabled = compatDsValue(ReadAloudKeys.AndroidMediaControlEnabled, false),
     systemMediaControlCompatibilityChange =
         compatDsValue(ReadAloudKeys.SystemMediaControlCompatibilityChange, false),
@@ -124,6 +147,28 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     alChapterSynthCap = compatDsValue(ReadAloudKeys.AlChapterSynthCap, 10).coerceIn(0, 50),
 )
 
+/**
+ * 读取内容划分方式，并一次性把旧的「按页朗读」开关迁移进来。
+ *
+ * 迁移标记保证只搬一次：否则用户把划分方式显式改回「整段」后，下一次读取又会被旧布尔值覆盖。
+ * 显式选择过划分方式的用户（新 key 已存在）不参与迁移。
+ */
+private fun Preferences.compatContentSplitMode(): String {
+    val stored = compatDsString(PreferKey.readAloudContentSplitMode)
+    if (stored != null) return stored
+    if (compatDsValue(ReadAloudKeys.ReadAloudContentSplitMigrated, false)) {
+        return ReadAloudContentSplitMode.Default.storageValue
+    }
+    return if (compatDsValue(ReadAloudKeys.ReadAloudByPage, false)) {
+        ReadAloudContentSplitMode.Page.storageValue
+    } else {
+        ReadAloudContentSplitMode.Default.storageValue
+    }
+}
+
+private fun Preferences.compatContentSplitSymbols(): Set<String> =
+    compatDsValue(ReadAloudKeys.ReadAloudContentSplitSymbols, emptySet())
+
 internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsEngine to ttsEngine,
     PreferKey.ttsParagraphInterval to ttsParagraphInterval,
@@ -139,6 +184,8 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     ReadAloudKeys.CapsuleOffsetY.name to capsuleOffsetY,
     PreferKey.mediaButtonPerNext to mediaButtonPerNext,
     PreferKey.readAloudByPage to readAloudByPage,
+    PreferKey.readAloudContentSplitMode to contentSplitMode,
+    PreferKey.readAloudContentSplitSymbols to contentSplitSymbols,
     PreferKey.readAloudAndroidMediaControl to androidMediaControlEnabled,
     PreferKey.systemMediaControlCompatibilityChange to systemMediaControlCompatibilityChange,
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
@@ -180,6 +227,13 @@ private object ReadAloudKeys {
     val CapsuleOffsetY = floatPreferencesKey("read_aloud_capsule_offset_y")
     val MediaButtonPerNext = booleanPreferencesKey(PreferKey.mediaButtonPerNext)
     val ReadAloudByPage = booleanPreferencesKey(PreferKey.readAloudByPage)
+    val ReadAloudContentSplitMode = stringPreferencesKey(PreferKey.readAloudContentSplitMode)
+    val ReadAloudContentSplitSymbols =
+        stringSetPreferencesKey(PreferKey.readAloudContentSplitSymbols)
+
+    /** 一次性迁移标记：把旧的「按页朗读」布尔值搬进「内容划分方式」。 */
+    val ReadAloudContentSplitMigrated =
+        booleanPreferencesKey(ReadAloudSettingsRepository.CONTENT_SPLIT_MIGRATION_KEY)
     val AndroidMediaControlEnabled =
         booleanPreferencesKey(PreferKey.readAloudAndroidMediaControl)
     val SystemMediaControlCompatibilityChange =

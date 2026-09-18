@@ -181,6 +181,12 @@ class ReadBookDomainSplitBoundaryTest {
      *   会话快照投影 `readAloudFollow`——与既有朗读分支同款。
      * - `backToSpeakingPosition()` 本体（恢复跟随 + 跳章/跳字符）已下沉到
      *   `ReadAloudDelegate`，未占本线额度。
+     *
+     * 2674 线保持：朗读域新增内容划分方式——`SetReadAloudContentSplitMode` 一个意图分支 +
+     * 一行转发（VM 2559 → 2560，净增 1 行）。方式与标点的合并、迁移标记落盘、标点集合
+     * 校验全在 `ReadAloudDelegate` 与 `ReadAloudSettingsRepository.setContentSplit` 里，
+     * VM 只留意图入口。上游同批把同款线校准到 2733，是其主线开工前已超线 58 行的处置，
+     * 本仓实际行数在线上，编号沿用 2674。
      */
     @Test
     fun `ReadBookViewModel 不超过 R2 验收的 2674 行`() {

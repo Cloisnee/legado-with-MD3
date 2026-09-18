@@ -50,6 +50,7 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.SpeechVoiceRouter
 import io.legado.app.domain.model.readaloud.SystemTtsVoiceConfig
 import io.legado.app.domain.model.settings.OtherSettings
+import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadSettings
 import io.legado.app.exception.NoStackTraceException
@@ -64,6 +65,7 @@ import io.legado.app.help.http.okHttpClient
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
+import io.legado.app.help.readaloud.analysis.ReadAloudAnalysisPolicy
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.audio.AudioChapterPrelude
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
@@ -661,18 +663,25 @@ class HttpReadAloudService : BaseReadAloudService(),
             adaptSpecialStyle = readSettings.adaptSpecialStyle,
             htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
         )
+        // 预合成必须与实时朗读用同一种划分方式解析，否则预合成好的音频与实际朗读单元对不上
+        val contentSplitMode = resolveContentSplitMode(
+            ReadAloudContentSplitMode.fromStorage(readAloudSettings.contentSplitMode)
+        )
         val readAloudChapter = ReaderReadAloudChapter.create(
             chapterIndex = chapter.index,
             title = displayTitle,
             semanticContent = source.semanticContent,
             pageStarts = ReadBook.readerPagination(chapter.index)?.pageStarts.orEmpty(),
+            contentSplitMode = contentSplitMode,
         )
+        val splitPolicy = contentSplitPolicy(contentSplitMode)
+        val splitByPage = contentSplitMode == ReadAloudContentSplitMode.Page
         // 等该章朗读分析就绪再预合成：分析未就绪时会退化成「本地规则 + 默认声线」，
         // 白合成且污染缓存（用户实测：新章立刻用 duihuaA01 合成）
         if (!waitForChapterAnalysis(
                 bookUrl = book.bookUrl,
                 chapterIndex = chapter.index,
-                paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
+                paragraphs = readAloudChapter.canonicalSpeechParagraphs(splitByPage, splitPolicy),
             )
         ) {
             AppLog.putAudio(
@@ -683,7 +692,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         val plan = buildSpeechPlan(
             bookUrl = book.bookUrl,
             chapterIndex = chapter.index,
-            paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
+            paragraphs = readAloudChapter.canonicalSpeechParagraphs(splitByPage, splitPolicy),
         )
         val queue = runCatching {
             ReadAloudPlaybackQueue.from(plan)
@@ -693,7 +702,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             queue.cues.map { it.text }
         } else {
             listOf(displayTitle.trim()).filter { it.isNotEmpty() } +
-                    readAloudChapter.paragraphs(readAloudSettings.readAloudByPage)
+                    readAloudChapter.paragraphs(splitByPage, splitPolicy)
                         .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
         }
         return PreDownloadChapter(book.name, chapter.index, displayTitle, queue, contentList)
@@ -732,7 +741,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     bookUrl = bookUrl,
                     chapterIndex = chapterIndex,
                     contentHash = contentHash,
-                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
+                    resolverVersion = ReadAloudAnalysisPolicy.currentResolverVersion(),
                 ) != null
             }.getOrDefault(false)
             if (ready) return true

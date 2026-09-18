@@ -10,11 +10,13 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
+import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.feature.reader.core.source.ReaderChapterSourceParser
 import io.legado.app.feature.reader.platform.AndroidReaderHtmlSemanticTextResolver
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
+import io.legado.app.model.ReadBook
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -239,12 +241,19 @@ class AnalysisSchedulerV3(
             adaptSpecialStyle = readSettingsGateway.currentSettings.adaptSpecialStyle,
             htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
         )
+        // 与播放侧同一 resolve 口径：分析段落须按当前划分方式构建（默认随多角色开关落地）
+        val policy = ReadAloudAnalysisPolicy.current()
+        val contentSplitMode = policy.mode
         return ReaderReadAloudChapter.create(
             chapterIndex = chapter.index,
             title = "",
             semanticContent = source.semanticContent,
-            pageStarts = emptyList(),
-        ).canonicalSpeechParagraphs()
+            pageStarts = ReadBook.readerPagination(chapter.index)?.pageStarts.orEmpty(),
+            contentSplitMode = contentSplitMode,
+        ).canonicalSpeechParagraphs(
+            splitByPage = contentSplitMode == ReadAloudContentSplitMode.Page,
+            policy = policy,
+        )
     }
 
     fun cancelAll() {

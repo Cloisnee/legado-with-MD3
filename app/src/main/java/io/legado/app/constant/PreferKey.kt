@@ -424,6 +424,8 @@ object PreferKey {
     const val audioPreDownloadNum = "audioPreDownloadNum"
     const val ttsPreSynthesisConcurrency = "ttsPreSynthesisConcurrency"
     const val ttsParagraphInterval = "ttsParagraphInterval"
+    const val readAloudContentSplitMode = "readAloudContentSplitMode"
+    const val readAloudContentSplitSymbols = "readAloudContentSplitSymbols"
     const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
     const val ttsMaxRetry = "ttsMaxRetry"
     // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
