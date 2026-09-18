@@ -579,8 +579,10 @@ class TtsServerCenterRepository(private val app: Application) {
     /** 插件直连试听（不依赖配置条目） */
     suspend fun auditionDirect(
         pluginId: String, locale: String, voice: String, text: String,
+        speed: Float = 1f, volume: Float = 1f, pitch: Float = 1f,
+        data: Map<String, String> = emptyMap(),
     ): AuditionOutcome = withContext(Dispatchers.IO) {
-        val r = runCatching { SynthProbe.runDirect(ctx, pluginId, locale, voice, text) }
+        val r = runCatching { SynthProbe.runDirect(ctx, pluginId, locale, voice, text, speed, volume, pitch, data) }
             .getOrElse {
                 return@withContext AuditionOutcome(
                     false, null, "SynthProbe 异常: ${it.stackTraceToString()}"
@@ -589,7 +591,7 @@ class TtsServerCenterRepository(private val app: Application) {
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
             File(dir, "last_synth_result.txt")
-                .writeText("[${ts()}] plugin=$pluginId locale=$locale voice=$voice\n${r.report}\n")
+                .writeText("[${ts()}] plugin=$pluginId locale=$locale voice=$voice data=$data\n${r.report}\n")
         }
         val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
         runCatching {
@@ -609,6 +611,157 @@ class TtsServerCenterRepository(private val app: Application) {
     }
 
     // ---------------- 新建 / 编辑条目 ----------------
+
+    /** 插件声线相关特殊参数键扫描（defVars 为空时回退：从插件代码找 ttsrv.tts.data[...] 键） */
+    suspend fun scanPluginDataKeys(pluginId: String): List<VarField> = withContext(Dispatchers.IO) {
+        runCatching {
+            val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
+            val code = shell.optString("code")
+            if (code.isBlank()) return@runCatching emptyList()
+            val labels = mapOf(
+                "soundEffect" to "音效模式",
+                "emoValue" to "情绪强度",
+                "customVoice" to "自定义声音代码",
+                "moduleEmotionEnabled" to "启用后置情绪模块",
+                "enableLocalEmotion" to "启用本地情绪",
+                "emotionScale" to "情绪强度系数",
+                "clonePresetIndex" to "克隆预设索引",
+                "contextTexts" to "上下文文本",
+                "manualContextTexts" to "手动上下文文本",
+                "sampleRate" to "采样率",
+            )
+            val keys = LinkedHashSet<String>()
+            Regex("ttsrv\\.tts\\.data\\[\\s*['\"]([^'\"]+)['\"]\\s*\\]").findAll(code)
+                .forEach { keys.add(it.groupValues[1]) }
+            Regex("ttsrv\\.tts\\.data\\.([A-Za-z_][A-Za-z0-9_]*)").findAll(code)
+                .forEach { keys.add(it.groupValues[1]) }
+            keys.map { k ->
+                VarField(
+                    key = k,
+                    label = labels[k] ?: k,
+                    description = "插件参数（写入 source.data）",
+                    value = "",
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 新条目批量创建：按所选插件声音生成 标签01..N；写入 source.data / audioParams / audioFormat；组含 roleType */
+    suspend fun createEntriesFromPlugin(
+        groupName: String,
+        roleType: String,
+        gender: String,
+        age: String,
+        speed: Float,
+        volume: Float,
+        pitch: Float,
+        sampleRate: Int,
+        locale: String,
+        pluginId: String,
+        pluginVoiceIds: List<String>,
+        pluginVoiceNames: List<String>,
+        dataParams: Map<String, String>,
+        categoryPath: String = "",
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (groupName.isBlank()) return@runCatching false to "分组名不能为空"
+            if (pluginId.isBlank() || pluginVoiceIds.isEmpty()) return@runCatching false to "请选择插件与声音"
+            val file = TtsConfigStore.voicesFile(ctx)
+            val arr = if (file.exists()) JSONArray(file.readText().removePrefix("\uFEFF")) else JSONArray()
+            var grp: JSONObject? = null
+            for (i in 0 until arr.length()) {
+                val g = arr.optJSONObject(i) ?: continue
+                if (g.optJSONObject("group")?.optString("name") == groupName) {
+                    grp = g
+                    break
+                }
+            }
+            val gObj: JSONObject
+            if (grp == null) {
+                gObj = JSONObject().apply {
+                    put("id", System.currentTimeMillis())
+                    put("name", groupName)
+                    put("order", arr.length())
+                    put("roleType", roleType)
+                }
+                grp = JSONObject().apply {
+                    put("group", gObj)
+                    put("list", JSONArray())
+                }
+                arr.put(grp)
+            } else {
+                gObj = grp.optJSONObject("group")
+                    ?: JSONObject().apply {
+                        put("id", 0L)
+                        put("name", groupName)
+                    }
+                gObj.put("roleType", roleType)
+            }
+            val gid = gObj.optLong("id")
+            val list = grp.optJSONArray("list") ?: JSONArray().also { grp.put("list", it) }
+            val prefix = voicePrefixOf(roleType, gender, age)
+            val baseId = System.currentTimeMillis()
+            var idx = 0
+            pluginVoiceIds.forEach { vid ->
+                val tag = prefix + String.format("%02d", idx + 1)
+                val display = pluginVoiceNames.getOrNull(idx)
+                    ?.takeIf { it.isNotBlank() } ?: vid
+                val dataJson = JSONObject().apply { dataParams.forEach { (k, v) -> put(k, v) } }
+                list.put(
+                    JSONObject().apply {
+                        put("id", baseId + idx)
+                        put("displayName", display)
+                        put("groupId", gid)
+                        put("categoryPath", categoryPath)
+                        put(
+                            "config",
+                            JSONObject().apply {
+                                put("#type", "tts")
+                                put(
+                                    "speechRule",
+                                    JSONObject().apply {
+                                        put("target", 0)
+                                        put("tag", tag)
+                                        put("tagRuleId", "local")
+                                        put("tagName", "")
+                                    }
+                                )
+                                put("audioFormat", JSONObject().put("sampleRate", sampleRate))
+                                put(
+                                    "audioParams",
+                                    JSONObject().apply {
+                                        put("speed", speed)
+                                        put("volume", volume)
+                                        put("pitch", pitch)
+                                    }
+                                )
+                                put(
+                                    "source",
+                                    JSONObject().apply {
+                                        put("#type", "plugin")
+                                        put("locale", locale)
+                                        put("voice", vid)
+                                        put("pluginId", pluginId)
+                                        put("data", JSONObject(dataJson.toString()))
+                                    }
+                                )
+                            }
+                        )
+                    }
+                )
+                idx++
+            }
+            file.parentFile?.mkdirs()
+            file.writeText(arr.toString())
+            true to "已生成 ${pluginVoiceIds.size} 条：${prefix}01…${String.format("%02d", pluginVoiceIds.size)}"
+        }.getOrElse { false to "创建失败：${it.message ?: it.javaClass.simpleName}" }
+    }
+
+    private fun voicePrefixOf(roleType: String, gender: String, age: String): String = when (roleType) {
+        "特殊" -> if (gender == "女") "特殊女" else "特殊男"
+        "路人" -> "路人$age"
+        else -> age
+    }
 
     suspend fun appendVoiceEntry(
         groupName: String, displayName: String, tag: String, tagRuleId: String,

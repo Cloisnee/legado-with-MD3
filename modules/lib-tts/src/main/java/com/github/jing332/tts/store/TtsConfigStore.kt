@@ -30,8 +30,9 @@ object TtsConfigStore {
         val speed: Float,
         val volume: Float,
         val pitch: Float,
-        val sampleRate: Int,
-    )
+            val sampleRate: Int = 24000,
+            val sourceData: Map<String, String> = emptyMap(),
+        )
 
     fun storeDir(context: Context): File =
         File(TtsDirProvider.baseDir(context), "_store").apply { mkdirs() }
@@ -213,6 +214,15 @@ object TtsConfigStore {
                     volume = (ap?.opt("volume") as? Number)?.toFloat() ?: 0f,
                     pitch = (ap?.opt("pitch") as? Number)?.toFloat() ?: 0f,
                     sampleRate = cfg.optJSONObject("audioFormat")?.optInt("sampleRate", 24000) ?: 24000,
+                    sourceData = src.optJSONObject("data")?.let { d ->
+                        buildMap {
+                            val ks = d.keys()
+                            while (ks.hasNext()) {
+                                val k = ks.next()
+                                put(k, d.optString(k))
+                            }
+                        }
+                    } ?: emptyMap(),
                 )
             }
         }

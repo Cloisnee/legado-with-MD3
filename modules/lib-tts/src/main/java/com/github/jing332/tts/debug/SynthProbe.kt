@@ -1,6 +1,7 @@
 package com.github.jing332.tts.debug
 
 import android.content.Context
+import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.runBlocking
@@ -55,6 +56,17 @@ object SynthProbe {
         }
         sb.appendLine("✓ 引擎加载完成")
 
+        engine.source = PluginTtsSource(
+            locale = found.locale,
+            voice = found.voice,
+            pluginId = found.pluginId,
+            speed = found.speed,
+            volume = found.volume,
+            pitch = found.pitch,
+            data = found.sourceData,
+        )
+        sb.appendLine("✓ 已注入 source.data=${found.sourceData}")
+
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
@@ -98,11 +110,16 @@ object SynthProbe {
         locale: String,
         voice: String,
         text: String,
+        speed: Float = 1f,
+        volume: Float = 1f,
+        pitch: Float = 1f,
+        data: Map<String, String> = emptyMap(),
         timeoutMs: Long = 30_000L,
     ): Result {
         val sb = StringBuilder()
         sb.appendLine("pluginId=$pluginId  locale=$locale  voice=$voice")
         sb.appendLine("text=${text.take(60)}")
+        sb.appendLine("speed=$speed volume=$volume pitch=$pitch data=$data")
 
         val pj = TtsConfigStore.pluginById(context, pluginId)
         if (pj == null) {
@@ -120,10 +137,20 @@ object SynthProbe {
         }
         sb.appendLine("✓ 引擎加载完成")
 
+        engine.source = PluginTtsSource(
+            locale = locale,
+            voice = voice,
+            pluginId = pluginId,
+            speed = speed,
+            volume = volume,
+            pitch = pitch,
+            data = data,
+        )
+
         val bytes = try {
             runBlocking {
                 withTimeout(timeoutMs) {
-                    engine.getAudio(text, locale, voice, 1f, 1f, 1f).readBytes()
+                    engine.getAudio(text, locale, voice, speed, volume, pitch).readBytes()
                 }
             }
         } catch (t: Throwable) {

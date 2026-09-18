@@ -120,6 +120,16 @@ data class TtsEngineContext(
             return null
         }
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
+        // 注入插件特殊参数（source.data）与音频参数，插件侧经 ttsrv.tts.data / .speed 等读取
+        engine.source = PluginTtsSource(
+            locale = found.locale,
+            voice = found.voice,
+            pluginId = found.pluginId,
+            speed = found.speed,
+            volume = found.volume,
+            pitch = found.pitch,
+            data = found.sourceData,
+        )
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
