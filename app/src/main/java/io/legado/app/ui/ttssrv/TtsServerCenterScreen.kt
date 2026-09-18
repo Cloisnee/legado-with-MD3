@@ -266,6 +266,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var edSpeed by remember { mutableStateOf("") }
     var edVolume by remember { mutableStateOf("") }
     var edPitch by remember { mutableStateOf("") }
+    var edUiEngine by remember { mutableStateOf<TtsPluginUiEngineV2?>(null) }
+    var edUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
+    var edUiEmpty by remember { mutableStateOf(true) }
+    var edTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     var renameGroupText by remember { mutableStateOf("") }
 
@@ -368,7 +372,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     fun auditionEntry(e: EntryRow) {
         scope.launch {
             context.toastOnUi("正在合成…")
-            val r = repo.auditionDetailed(e.tagRuleId, e.tag, "你好，这里是移植层试听。")
+            val r = if (e.id != 0L) {
+                repo.auditionByEntry(e.groupId, e.id, "你好，这里是移植层试听。")
+            } else {
+                repo.auditionDetailed(e.tagRuleId, e.tag, "你好，这里是移植层试听。")
+            }
             handleAuditionResult(r)
         }
     }
@@ -462,7 +470,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             val layout = withContext(Dispatchers.Main) {
                 LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
-                    engine.onLoadUI(context, this)
+                    runCatching { engine.onLoadUI(context, this) }
                 }
             }
             pluginUiEngine = engine
@@ -476,6 +484,40 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     LaunchedEffect(neLocale, neVoiceSel) {
         val engine = pluginUiEngine ?: return@LaunchedEffect
         runCatching { engine.onVoiceChanged(neLocale, neVoiceSel.firstOrNull()?.id ?: "") }
+    }
+
+    // 编辑条目：插件 UI 会话（带原 source 种子）
+    LaunchedEffect(editTarget) {
+        edUiEngine = null
+        edUiLayout = null
+        edUiEmpty = true
+        edTempSource = null
+        val t = editTarget ?: return@LaunchedEffect
+        if (t.pluginId.isBlank()) return@LaunchedEffect
+        val seed = PluginTtsSource(
+            locale = t.locale,
+            voice = t.voice,
+            pluginId = t.pluginId,
+            speed = t.speed,
+            volume = t.volume,
+            pitch = t.pitch,
+            data = t.sourceData.toMutableMap(),
+        )
+        val pair = repo.createPluginUiSession(t.pluginId, seed)
+        if (pair != null) {
+            val (engine, source) = pair
+            val layout = withContext(Dispatchers.Main) {
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    runCatching { engine.onLoadUI(context, this) }
+                }
+            }
+            edUiEngine = engine
+            edTempSource = source
+            edUiLayout = layout
+            edUiEmpty = layout.childCount == 0
+            runCatching { engine.onVoiceChanged(t.locale, t.voice) }
+        }
     }
 
     // 声音列表加载
@@ -1667,6 +1709,22 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 SheetField("语速（0=跟随，1.0=原速）", edSpeed) { edSpeed = it }
                 SheetField("音量（0=跟随，1.0=原量）", edVolume) { edVolume = it }
                 SheetField("音高（0=跟随，1.0=原调）", edPitch) { edPitch = it }
+                if (edUiLayout != null && !edUiEmpty) {
+                    AppText(
+                        text = "— 插件特色界面 —",
+                        style = LegadoTheme.typography.labelSmall,
+                        color = LegadoTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                    key(edUiLayout) {
+                        AndroidView(
+                            factory = { edUiLayout!! },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                        )
+                    }
+                }
                 TinyClickableSettingItem(
                     title = "保存修改",
                     onClick = {
@@ -1687,6 +1745,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 speed = edSpeed.toFloatOrNull() ?: 0f,
                                 volume = edVolume.toFloatOrNull() ?: 0f,
                                 pitch = edPitch.toFloatOrNull() ?: 0f,
+                                newData = if (edUiLayout != null && !edUiEmpty) {
+                                    edTempSource?.data
+                                } else {
+                                    null
+                                },
                             )
                             context.toastOnUi(if (ok) "已保存" else "保存失败")
                             reload()

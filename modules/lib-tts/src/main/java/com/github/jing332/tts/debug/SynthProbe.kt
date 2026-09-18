@@ -114,6 +114,7 @@ object SynthProbe {
         volume: Float = 1f,
         pitch: Float = 1f,
         data: Map<String, String> = emptyMap(),
+        sampleRate: Int = 24000,
         timeoutMs: Long = 30_000L,
     ): Result {
         val sb = StringBuilder()
@@ -165,29 +166,11 @@ object SynthProbe {
         sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it) }}")
 
         val out = if (needsWavWrap(bytes)) {
-            val wrapped = wrapPcmInWav(bytes, 24000)
-            sb.appendLine("→ 已包 WAV 头(24000) total=${wrapped.size}")
+            val wrapped = wrapPcmInWav(bytes, sampleRate)
+            sb.appendLine("→ 已包 WAV 头($sampleRate) total=${wrapped.size}")
             wrapped
         } else bytes
         return Result(out, sb.toString())
     }
 
-    private fun wrapPcmInWav(pcm: ByteArray, sampleRate: Int): ByteArray {
-        val sr = sampleRate.takeIf { it > 0 } ?: 24000
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("RIFF".toByteArray())
-        header.putInt(36 + pcm.size)
-        header.put("WAVE".toByteArray())
-        header.put("fmt ".toByteArray())
-        header.putInt(16)
-        header.putShort(1.toShort())
-        header.putShort(1.toShort())
-        header.putInt(sr)
-        header.putInt(sr * 2)
-        header.putShort(2.toShort())
-        header.putShort(16.toShort())
-        header.put("data".toByteArray())
-        header.putInt(pcm.size)
-        return header.array() + pcm
-    }
 }

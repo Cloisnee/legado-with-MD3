@@ -408,7 +408,11 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 context.toastOnUi("当前声线库中没有标签「$tag」")
                 return@launch
             }
-            val out = centerRepo.auditionDetailed(entry.tagRuleId, tag, auditionText)
+            val out = if (entry.id != 0L) {
+                centerRepo.auditionByEntry(entry.groupId, entry.id, auditionText)
+            } else {
+                centerRepo.auditionDetailed(entry.tagRuleId, tag, auditionText)
+            }
             if (out.ok && !out.path.isNullOrBlank()) {
                 runCatching {
                     player.reset()

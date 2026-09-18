@@ -58,6 +58,7 @@ data class EntryRow(
     val volume: Float,
     val pitch: Float,
     val groupId: Long = 0L,
+    val sourceData: Map<String, String> = emptyMap(),
 )
 
 data class GroupRow(
@@ -145,6 +146,15 @@ class TtsServerCenterRepository(private val app: Application) {
                                 volume = (ap?.opt("volume") as? Number)?.toFloat() ?: 0f,
                                 pitch = (ap?.opt("pitch") as? Number)?.toFloat() ?: 0f,
                                 groupId = gid,
+                                sourceData = src?.optJSONObject("data")?.let { d ->
+                                    buildMap {
+                                        val ks = d.keys()
+                                        while (ks.hasNext()) {
+                                            val k = ks.next()
+                                            put(k, d.optString(k))
+                                        }
+                                    }
+                                } ?: emptyMap(),
                             )
                         )
                     }
@@ -823,6 +833,7 @@ class TtsServerCenterRepository(private val app: Application) {
         oldRuleId: String, oldTag: String,
         newName: String, newTag: String, newRuleId: String, newTagName: String,
         newCategoryPath: String, speed: Float, volume: Float, pitch: Float,
+        newData: Map<String, String>? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val file = TtsConfigStore.voicesFile(ctx)
@@ -845,6 +856,14 @@ class TtsServerCenterRepository(private val app: Application) {
                         ap.put("speed", speed)
                         ap.put("volume", volume)
                         ap.put("pitch", pitch)
+                        if (newData != null) {
+                            val srcObj = cfg.optJSONObject("source")
+                                ?: JSONObject().also { cfg.put("source", it) }
+                            srcObj.put(
+                                "data",
+                                JSONObject().apply { newData.forEach { (k, v) -> put(k, v) } },
+                            )
+                        }
                         hit = true
                         break@outer
                     }
@@ -909,6 +928,103 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrDefault("导出失败")
     }
 
+    /** 精确试听：按 (groupId, entryId) 定位条目 → 直连其插件/声音/参数合成（避免同 tag 多条串声） */
+    suspend fun auditionByEntry(groupId: Long, entryId: Long, text: String): AuditionOutcome =
+        withContext(Dispatchers.IO) {
+            val entry: JSONObject? = runCatching {
+                val arr = TtsConfigStore.loadVoices(ctx)
+                var found: JSONObject? = null
+                loop@ for (g in 0 until arr.length()) {
+                    val grp = arr.optJSONObject(g) ?: continue
+                    val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
+                    if (groupId != 0L && gid != groupId) continue
+                    val list = grp.optJSONArray("list") ?: continue
+                    for (i in 0 until list.length()) {
+                        val e = list.optJSONObject(i) ?: continue
+                        if (e.optLong("id") == entryId) {
+                            found = e
+                            break@loop
+                        }
+                    }
+                }
+                found
+            }.getOrNull()
+            if (entry == null) return@withContext AuditionOutcome(false, null, "未找到条目 id=$entryId")
+            val cfg = entry.optJSONObject("config")
+                ?: return@withContext AuditionOutcome(false, null, "条目配置缺失")
+            val src = cfg.optJSONObject("source")
+                ?: return@withContext AuditionOutcome(false, null, "条目 source 缺失")
+            val ap = cfg.optJSONObject("audioParams")
+            val speed = (ap?.opt("speed") as? Number)?.toFloat() ?: 1f
+            val volume = (ap?.opt("volume") as? Number)?.toFloat() ?: 1f
+            val pitch = (ap?.opt("pitch") as? Number)?.toFloat() ?: 1f
+            val sr = cfg.optJSONObject("audioFormat")?.optInt("sampleRate", 24000) ?: 24000
+            val data = src.optJSONObject("data")?.let { d ->
+                buildMap {
+                    val ks = d.keys()
+                    while (ks.hasNext()) {
+                        val k = ks.next()
+                        put(k, d.optString(k))
+                    }
+                }
+            } ?: emptyMap()
+            val r = runCatching {
+                SynthProbe.runDirect(
+                    ctx,
+                    src.optString("pluginId"),
+                    src.optString("locale"),
+                    src.optString("voice"),
+                    text,
+                    speed,
+                    volume,
+                    pitch,
+                    data,
+                    sr,
+                )
+            }.getOrElse {
+                return@withContext AuditionOutcome(false, null, "SynthProbe 异常: ${it.stackTraceToString()}")
+            }
+            runCatching {
+                val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                File(dir, "last_synth_result.txt")
+                    .writeText("[${ts()}] entry=$entryId data=$data\n${r.report}\n")
+            }
+            val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
+            runCatching {
+                val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                val ext = when {
+                    bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
+                    bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
+                    else -> "bin"
+                }
+                val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
+                f.writeBytes(bytes)
+                AuditionOutcome(
+                    true, f.absolutePath,
+                    "合成成功：${f.absolutePath}\n大小=${bytes.size} bytes\n\n${r.report}"
+                )
+            }.getOrElse { AuditionOutcome(false, null, "写文件失败: ${it.stackTraceToString()}") }
+        }
+
+    private fun wrapPcmInWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+        val sr = sampleRate.takeIf { it > 0 } ?: 24000
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray())
+        header.putInt(36 + pcm.size)
+        header.put("WAVE".toByteArray())
+        header.put("fmt ".toByteArray())
+        header.putInt(16)
+        header.putShort(1.toShort())
+        header.putShort(1.toShort())
+        header.putInt(sr)
+        header.putInt(sr * 2)
+        header.putShort(2.toShort())
+        header.putShort(16.toShort())
+        header.put("data".toByteArray())
+        header.putInt(pcm.size)
+        return header.array() + pcm
+    }
+
     // ---------------- 插件：壳字段 / 变量 / UI 会话 ----------------
 
     /** 读取插件壳（原始 JSONObject 副本） */
@@ -939,15 +1055,19 @@ class TtsServerCenterRepository(private val app: Application) {
             }.getOrDefault(false)
         }
 
-    /** 建立插件 UI 会话（补丁版添加插件TTS同款）：eval → source=temp → onLoadData →（主线程调用方）onLoadUI */
-    suspend fun createPluginUiSession(pluginId: String): Pair<TtsPluginUiEngineV2, com.github.jing332.database.entities.systts.source.PluginTtsSource>? =
+    /** 建立插件 UI 会话（补丁版添加插件TTS同款）：eval → source=seed/临时源 → onLoadData →（主线程调用方）onLoadUI */
+    suspend fun createPluginUiSession(
+        pluginId: String,
+        seed: com.github.jing332.database.entities.systts.source.PluginTtsSource? = null,
+    ): Pair<TtsPluginUiEngineV2, com.github.jing332.database.entities.systts.source.PluginTtsSource>? =
         withContext(Dispatchers.IO) {
             runCatching {
                 val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching null
                 val engine = TtsPluginUiEngineV2(ctx, TtsConfigStore.toEnginePlugin(shell)).apply { eval() }
-                val source = com.github.jing332.database.entities.systts.source.PluginTtsSource(
-                    pluginId = pluginId,
-                )
+                val source = seed
+                    ?: com.github.jing332.database.entities.systts.source.PluginTtsSource(
+                        pluginId = pluginId,
+                    )
                 engine.source = source
                 engine.onLoadData()
                 engine to source
