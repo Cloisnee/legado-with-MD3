@@ -427,8 +427,10 @@ abstract class BaseReadAloudService : BaseService(),
             )
             // W3 分析调度：本地先出声，AI 完整链后台补全 当前章+预加载窗口（不阻塞播放）
             runCatching {
-                ReadBook.book?.bookUrl?.let { bookUrl ->
-                    get(AnalysisSchedulerV2::class.java).enqueueWindow(bookUrl, ReadBook.durChapterIndex)
+                val scheduler: AnalysisSchedulerV2 = get(AnalysisSchedulerV2::class.java)
+                val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
+                if (bookUrl.isNotEmpty()) {
+                    scheduler.enqueueWindow(bookUrl, ReadBook.durChapterIndex)
                 }
             }.onFailure {
                 AppLog.put("分析调度入队失败: ${it.localizedMessage}", it)
