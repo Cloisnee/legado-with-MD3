@@ -1,5 +1,6 @@
 package io.legado.app.ui.main
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -9,6 +10,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
@@ -60,6 +62,7 @@ import io.legado.app.ui.welcome.WelcomeActivity
 import io.legado.app.utils.LogUtils
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.startActivity
+import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -248,6 +251,15 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
     private val mangaSettingsGateway by inject<MangaSettingsGateway>()
     private val backupSettingsGateway by inject<BackupSettingsGateway>()
     private val routeEvents = MutableSharedFlow<RouteEvent>(extraBufferCapacity = 1)
+    private val localNetworkPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            WebService.startForeground(this)
+        } else {
+            toastOnUi(R.string.web_service_local_network_permission_denied)
+        }
+    }
     private var shouldApplyDefaultToRead = true
     private var restoredReadBookRoute: MainRouteReadBook? = null
     private var latestBackStack: List<NavKey> = emptyList()
@@ -266,9 +278,12 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
             otherSettingsGateway.currentSettings.autoCheckUpdateOnStart
         )
 
-        // 智能自启：如果上次是手动开启状态（web_service_auto 为 true），则自启
-        if (otherSettingsGateway.currentSettings.webServiceAutoStart) {
-            WebService.startForeground(this)
+        // 智能自启：如果上次是手动开启状态（web_service_auto 为 true），则自启；
+        // 本地网络权限缺失时先申请，磁贴等入口也通过该 extra 转发到这里。
+        val requestWebService = otherSettingsGateway.currentSettings.webServiceAutoStart ||
+                intent?.getBooleanExtra(MainIntent.EXTRA_WEB_SERVICE_LOCAL_NETWORK, false) == true
+        if (requestWebService) {
+            startWebServiceWithLocalNetworkPermission()
         }
 
         lifecycleScope.launch {
@@ -287,9 +302,25 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         }
     }
 
+    /**
+     * Android 17 (API 37) 起 Web 服务需要本地网络权限才能接受局域网入站连接。
+     * 已授予直接启动；未授予先申请，授予后由 launcher 回调补启。
+     */
+    private fun startWebServiceWithLocalNetworkPermission() {
+        if (WebService.hasLocalNetworkPermission(this)) {
+            WebService.startForeground(this)
+        } else {
+            localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(MainIntent.EXTRA_WEB_SERVICE_LOCAL_NETWORK, false)) {
+            startWebServiceWithLocalNetworkPermission()
+            return
+        }
         if (!intent.hasExplicitStartRoute()) return
         routeEvents.tryEmit(
             RouteEvent(
