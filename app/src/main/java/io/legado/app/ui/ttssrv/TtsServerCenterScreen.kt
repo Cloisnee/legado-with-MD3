@@ -122,7 +122,7 @@ private sealed interface PickerPurpose {
 }
 
 private val NE_MALE_AGES = listOf("男童", "少年", "男青年", "男中年", "男老年")
-private val NE_FENE_MALE_AGES = listOf("女童", "少女", "女青年", "女中年", "女老年")
+private val NE_FEMALE_AGES = listOf("女童", "少女", "女青年", "女中年", "女老年")
 
 private data class PickerTarget(
     val pluginId: String,
@@ -1216,7 +1216,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 entryValues = arrayOf("男", "女"),
                 onValueChange = { g ->
                     neGender = g
-                    val ages = if (g == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                    val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
                     if (neRole != "特殊" && neAge !in ages) {
                         neAge = if (g == "女") "女青年" else "男青年"
                     }
@@ -1226,10 +1226,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 title = "年龄",
                 selectedValue = neAge,
                 displayEntries = (if (neRole == "特殊") listOf("系统") else {
-                    if (neGender == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                    if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
                 }).toTypedArray(),
                 entryValues = (if (neRole == "特殊") listOf("系统") else {
-                    if (neGender == "女") NE_FENE_MALE_AGES else NE_MALE_AGES
+                    if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
                 }).toTypedArray(),
                 onValueChange = { neAge = it },
             )
