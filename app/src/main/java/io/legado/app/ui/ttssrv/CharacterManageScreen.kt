@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,9 +58,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import io.legado.app.R
 import io.legado.app.data.repository.CharacterRecord
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
@@ -67,6 +71,7 @@ import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
+import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
@@ -422,6 +427,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
     // ---------------- 界面 ----------------
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
+    val listState = rememberLazyListState()
     val filtered = records.withIndex().filter { (_, r) ->
         (roleFilter == "全部" || r.roletype == roleFilter) && run {
             if (query.isBlank()) {
@@ -441,15 +447,20 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = if (sel.isNotEmpty()) "已选 ${sel.size} 条" else "角色管理",
-                subtitle = if (sel.isNotEmpty()) null else "当前书：$currentBook · ${records.size} 个角色",
+                title = if (sel.isNotEmpty()) {
+                    stringResource(R.string.list_selected_count, sel.size, filtered.size)
+                } else {
+                    "角色管理"
+                },
+                useCharMode = sel.isNotEmpty(),
+                subtitle = "当前书：$currentBook · ${records.size} 个角色",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (sel.isNotEmpty()) {
                         TopBarNavigationButton(
                             onClick = { sel = emptySet() },
                             imageVector = Icons.Default.Close,
-                            contentDescription = "取消选择",
+                            contentDescription = stringResource(R.string.cancel_select),
                         )
                     } else {
                         TopBarNavigationButton(onClick = onBack)
@@ -471,6 +482,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
+            state = listState,
             contentPadding = adaptiveContentPadding(
                 top = padding.calculateTopPadding() + 8.dp,
                 bottom = padding.calculateBottomPadding() + 32.dp,
@@ -676,6 +688,21 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     },
                 )
             }
+            if (sel.isNotEmpty()) {
+                DraggableSelectionHandler(
+                    listState = listState,
+                    items = filtered,
+                    selectedIds = sel.map { "c_$it" }.toSet(),
+                    onSelectionChange = { ids ->
+                        sel = ids.mapNotNull { it.removePrefix("c_").toIntOrNull() }.toSet()
+                    },
+                    idProvider = { "c_${it.index}" },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
+            }
         }
     }
 
@@ -711,14 +738,6 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 title = "主名",
                 description = edName,
                 trailingContent = {
-                    SmallPlainButton(
-                        onClick = {
-                            edNameInput = edName
-                            edNameDialog = true
-                        },
-                        icon = Icons.Default.Edit,
-                        contentDescription = "修改",
-                    )
                     SmallPlainButton(
                         onClick = { joinLib = JoinLibRequest(listOf(edName.trim())) },
                         icon = Icons.Default.FileDownload,
@@ -826,6 +845,10 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                         .padding(horizontal = 12.dp, vertical = 2.dp),
                     cornerRadius = 10.dp,
                     containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                    onClick = {
+                        aliasRenameTarget = a
+                        aliasRenameInput = a
+                    },
                 ) {
                     Row(
                         modifier = Modifier
@@ -840,15 +863,6 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        SmallPlainButton(
-                            onClick = {
-                                aliasRenameTarget = a
-                                aliasRenameInput = a
-                            },
-                            icon = Icons.Default.Edit,
-                            contentDescription = "修改",
-                        )
-                        Spacer(modifier = Modifier.width(2.dp))
                         SmallPlainButton(
                             onClick = {
                                 joinLib = JoinLibRequest(listOf(a), aliasToRemove = a)

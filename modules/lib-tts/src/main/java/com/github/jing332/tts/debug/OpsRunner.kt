@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    - cmd_export_plugins*.json  → out_plugins.json
  *    - cmd_export_voices*.json   → out_voices.json
  *    - cmd_list*.txt             → 概览（插件/配置/标签/缺失插件）
- *    - cmd_synth*.json           {"engineId":"mingwuyan","tag":"女童01","text":"..."} → 按标签合成试听
+ *    - cmd_synth*.json           {"engineId":"local","tag":"女童01","text":"..."} → 按标签合成试听
  *   处理结果写入同目录 out_<原文件名>.txt；原命令移入 _ops/done/。
  */
 object OpsRunner {
@@ -114,7 +114,7 @@ object OpsRunner {
 
             cmd.name.startsWith("cmd_synth") -> {
                 val o = JSONObject(text.trim())
-                val engineId = o.optString("engineId", "mingwuyan")
+                val engineId = o.optString("engineId", "local")
                 val tag = o.optString("tag")
                 val synthText = o.optString("text", "测试文本")
                 runSynth(context, engineId, tag, synthText)

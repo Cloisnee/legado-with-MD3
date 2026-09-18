@@ -222,7 +222,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var neGroup by remember { mutableStateOf("") }
     var neName by remember { mutableStateOf("") }
     var neTag by remember { mutableStateOf("") }
-    var neRuleId by remember { mutableStateOf("mingwuyan") }
+    var neRuleId by remember { mutableStateOf("local") }
     var neTagName by remember { mutableStateOf("") }
     var neCategory by remember { mutableStateOf("自建") }
     var editTarget by remember { mutableStateOf<EntryRow?>(null) }
@@ -1140,7 +1140,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                             ?: groups.firstOrNull()?.name ?: "自建"
                                         neName = v.name.ifBlank { v.id }
                                         neTag = ""
-                                        neRuleId = "mingwuyan"
+                                        neRuleId = "local"
                                         neTagName = ""
                                         neCategory = "自建"
                                         newEntryPrefill = VoicePrefill(
@@ -1209,7 +1209,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 groupName = neGroup.ifBlank { "自建" },
                                 displayName = neName.ifBlank { p.voiceName },
                                 tag = neTag.trim(),
-                                tagRuleId = neRuleId.ifBlank { "mingwuyan" },
+                                tagRuleId = neRuleId.ifBlank { "local" },
                                 tagName = neTagName,
                                 categoryPath = neCategory.ifBlank { "自建" },
                                 pluginId = p.pluginId,

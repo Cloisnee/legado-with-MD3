@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,8 +58,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.legado.app.R
 import io.legado.app.data.repository.CharacterRecord
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.ScriptLineRow
@@ -66,6 +70,7 @@ import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
+import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
@@ -203,20 +208,26 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
     }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
+    val listState = rememberLazyListState()
 
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = if (selLines.isNotEmpty()) "已选 ${selLines.size} 条" else "书籍管理",
-                subtitle = if (selLines.isNotEmpty()) null else "当前书：$currentBook · ${chapters.size} 章剧本",
+                title = if (selLines.isNotEmpty()) {
+                    stringResource(R.string.list_selected_count, selLines.size, shown.size)
+                } else {
+                    "书籍管理"
+                },
+                useCharMode = selLines.isNotEmpty(),
+                subtitle = "当前书：$currentBook · ${chapters.size} 章剧本",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (selLines.isNotEmpty()) {
                         TopBarNavigationButton(
                             onClick = { selLines = emptySet() },
                             imageVector = Icons.Default.Close,
-                            contentDescription = "取消选择",
+                            contentDescription = stringResource(R.string.cancel_select),
                         )
                     } else {
                         TopBarNavigationButton(onClick = onBack)
@@ -238,6 +249,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
         Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
+                state = listState,
                 contentPadding = adaptiveContentPadding(
                     top = padding.calculateTopPadding() + 8.dp,
                     bottom = padding.calculateBottomPadding() + 140.dp,
@@ -536,6 +548,21 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                         secondaryActions = emptyList(),
                     )
                 }
+            }
+            if (selLines.isNotEmpty()) {
+                DraggableSelectionHandler(
+                    listState = listState,
+                    items = shown,
+                    selectedIds = selLines.map { "ln_$it" }.toSet(),
+                    onSelectionChange = { ids ->
+                        selLines = ids.mapNotNull { it.removePrefix("ln_").toIntOrNull() }.toSet()
+                    },
+                    idProvider = { "ln_${it.absIndex}" },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
             }
         }
     }
