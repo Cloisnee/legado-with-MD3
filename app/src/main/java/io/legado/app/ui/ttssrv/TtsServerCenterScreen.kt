@@ -1,6 +1,7 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import android.widget.LinearLayout
 import android.content.ClipData
 import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -51,6 +52,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,8 +66,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import io.legado.app.R
 import io.legado.app.data.entities.HttpTTS
+import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
+import io.legado.app.data.repository.AuditionOutcome
 import io.legado.app.data.repository.EntryRow
 import io.legado.app.data.repository.GroupRow
 import io.legado.app.data.repository.LocaleOption
@@ -209,6 +215,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var vsId by remember { mutableStateOf("") }
     var vsAuthor by remember { mutableStateOf("") }
     var vsVersion by remember { mutableStateOf("") }
+    var vsIcon by remember { mutableStateOf("") }
+    var vsDesc by remember { mutableStateOf("") }
 
     var pickerTarget by remember { mutableStateOf<PickerTarget?>(null) }
     var pickerLocales by remember { mutableStateOf<List<LocaleOption>>(emptyList()) }
@@ -237,6 +245,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
     var grpDlg by remember { mutableStateOf(false) }
     var grpInput by remember { mutableStateOf("") }
+    var neCat2 by remember { mutableStateOf("") }
+    var grp2Dlg by remember { mutableStateOf(false) }
+    var grp2Input by remember { mutableStateOf("") }
+    var pluginUiEngine by remember { mutableStateOf<TtsPluginUiEngineV2?>(null) }
+    var pluginUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
+    var pluginUiEmpty by remember { mutableStateOf(true) }
+    var pluginTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
     var neTextDlg by remember { mutableStateOf(false) }
     var neTextInput by remember { mutableStateOf("") }
     var paramDlgKey by remember { mutableStateOf<String?>(null) }
@@ -338,15 +353,24 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         scope.launch {
             context.toastOnUi("正在合成…")
             val r = repo.auditionDetailed(e.tagRuleId, e.tag, "你好，这里是移植层试听。")
-            if (r.ok && r.path != null) {
-                play(r.path)
-                context.toastOnUi("播放中：${r.path.substringAfterLast('/')}")
-            } else {
-                detailTitle = "试听失败（诊断报告）"
-                detailText = r.message
-                context.toastOnUi("合成失败（详情已弹出）")
-            }
+            handleAuditionResult(r)
         }
+    }
+
+    fun handleAuditionResult(r: AuditionOutcome) {
+        if (r.ok && r.path != null) {
+            play(r.path)
+            context.toastOnUi("播放中")
+        } else {
+            detailTitle = "试听失败（诊断报告）"
+            detailText = r.message
+        }
+    }
+
+    /** 条目 source.data 的统一取值：插件特色UI存在时以插件写入为准，否则用扫描参数 */
+    fun effectiveDataParams(): Map<String, String> {
+        val src = pluginTempSource
+        return if (src != null && !pluginUiEmpty && src.data.isNotEmpty()) src.data else neParams.toMap()
     }
 
     fun openPluginEditor(p: PluginRow) {
@@ -359,6 +383,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             vsId = p.pluginId
             vsAuthor = p.author
             vsVersion = p.version.toString()
+            val shell = repo.loadPluginShell(p.pluginId)
+            vsIcon = shell?.optString("iconUrl").orEmpty()
+            vsDesc = shell?.optString("description").orEmpty()
             varsEditorPlugin = p
         }
     }
@@ -420,6 +447,35 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (neLocales.none { it.id == neLocale }) {
             neLocales.firstOrNull()?.let { neLocale = it.id }
         }
+    }
+
+    // 新建条目：插件 UI 会话（补丁版添加插件TTS同款：onLoadData → onLoadUI 到真实容器）
+    LaunchedEffect(nePluginId) {
+        pluginUiEngine = null
+        pluginUiLayout = null
+        pluginUiEmpty = true
+        pluginTempSource = null
+        if (nePluginId.isBlank()) return@LaunchedEffect
+        val pair = repo.createPluginUiSession(nePluginId)
+        if (pair != null) {
+            val (engine, source) = pair
+            val layout = withContext(Dispatchers.Main) {
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    engine.onLoadUI(context, this)
+                }
+            }
+            pluginUiEngine = engine
+            pluginTempSource = source
+            pluginUiLayout = layout
+            pluginUiEmpty = layout.childCount == 0
+        }
+    }
+
+    // 语言/声音变化 → 通知插件自定义UI
+    LaunchedEffect(neLocale, neVoiceSel) {
+        val engine = pluginUiEngine ?: return@LaunchedEffect
+        runCatching { engine.onVoiceChanged(neLocale, neVoiceSel.firstOrNull()?.id ?: "") }
     }
 
     // 声音列表加载
@@ -915,7 +971,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     },
                                 )
                             }
-                            if (collapsedGroups[g.name] != true) {
+                            if (collapsedGroups[groupKeyOf(g)] != true) {
                                 val byCat =
                                     g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }
                                 byCat.forEach { (cat, list) ->
@@ -1155,13 +1211,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                             val r = repo.auditionDirect(
                                                 t.pluginId, loc.id, v.id, "你好，这是插件试听。"
                                             )
-                                            if (r.ok && r.path != null) {
-                                                play(r.path)
-                                                context.toastOnUi("播放中")
-                                            } else {
-                                                detailTitle = "试听失败（诊断报告）"
-                                                detailText = r.message
-                                            }
+                                            handleAuditionResult(r)
                                         }
                                     }
 
@@ -1190,10 +1240,34 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 },
             )
             TinyClickableSettingItem(
+                title = "二级分组名（可选）",
+                description = if (neCat2.isBlank()) "未填 → 直接放一级分组下" else neCat2,
+                onClick = {
+                    grp2Input = neCat2
+                    grp2Dlg = true
+                },
+            )
+            TinyClickableSettingItem(
                 title = "插件",
                 description = if (nePluginName.isBlank()) "未选择（必选）" else nePluginName,
                 onClick = { pluginPickerSheet = true },
             )
+            if (pluginUiLayout != null && !pluginUiEmpty) {
+                AppText(
+                    text = "— 插件特色界面 —",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                key(pluginUiLayout) {
+                    AndroidView(
+                        factory = { pluginUiLayout!! },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                    )
+                }
+            }
             TinyDropdownSettingItem(
                 title = "类型",
                 selectedValue = neRole,
@@ -1262,7 +1336,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 description = "1.00 = 原音高",
                 onValueChange = { nePitch = it },
             )
-            if (neFields.isNotEmpty()) {
+            if (neFields.isNotEmpty() && (pluginUiLayout == null || pluginUiEmpty)) {
                 AppText(
                     text = "— 插件参数 —",
                     style = LegadoTheme.typography.labelSmall,
@@ -1349,6 +1423,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             pitch = nePitch,
                             sampleRate = 24000,
                             locale = neLocale,
+                            categoryPath = neCat2.trim(),
                             pluginId = nePluginId,
                             pluginVoiceIds = neVoiceSel.map { it.id },
                             pluginVoiceNames = neVoiceSel.map { it.name },
@@ -1470,21 +1545,12 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             SmallPlainButton(
                                 onClick = {
                                     scope.launch {
+                                        context.toastOnUi("正在合成…")
                                         val r = repo.auditionDirect(
                                             nePluginId, neLocale, v.id, neAuditionText,
-                                            neSpeed, neVolume, nePitch, neParams.toMap(),
+                                            neSpeed, neVolume, nePitch, effectiveDataParams(),
                                         )
-                                        if (r.ok && r.path != null) {
-                                            runCatching {
-                                                player.reset()
-                                                player.setDataSource(r.path)
-                                                player.prepare()
-                                                player.start()
-                                            }
-                                            context.toastOnUi("播放中")
-                                        } else {
-                                            context.toastOnUi("试听失败：${r.message.take(120)}")
-                                        }
+                                        handleAuditionResult(r)
                                     }
                                 },
                                 icon = Icons.Default.PlayArrow,
@@ -1518,6 +1584,27 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
         dismissText = "取消",
         onDismiss = { grpDlg = false },
+    )
+
+    AppAlertDialog(
+        show = grp2Dlg,
+        onDismissRequest = { grp2Dlg = false },
+        title = "二级分组名",
+        content = {
+            AppTextField(
+                value = grp2Input,
+                onValueChange = { grp2Input = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "二级分组名（可留空）",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            grp2Dlg = false
+            neCat2 = grp2Input.trim()
+        },
+        dismissText = "取消",
+        onDismiss = { grp2Dlg = false },
     )
 
     AppAlertDialog(
@@ -1623,8 +1710,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 SheetField("插件 ID（pluginId）", vsId) { vsId = it }
                 SheetField("作者（author）", vsAuthor) { vsAuthor = it }
                 SheetField("版本号（version，数字）", vsVersion) { vsVersion = it }
+                SheetField("图标 URL（iconUrl）", vsIcon) { vsIcon = it }
+                SheetField("简介（description）", vsDesc) { vsDesc = it }
                 TinyClickableSettingItem(
                     title = "—— 插件变量 ——",
+                    description = "来自插件 defVars（补丁版同款：登录/凭据等全局变量；含 loginUrl 的登录类请填登录后取到的值）",
                     onClick = {},
                 )
                 if (varFields.isEmpty()) {
@@ -1660,6 +1750,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 newVersion = vsVersion.toIntOrNull() ?: p.version,
                             )
                             val ok2 = repo.savePluginUserVars(id, varValues.toMap())
+                            repo.updatePluginShell(
+                                id,
+                                mapOf("iconUrl" to vsIcon, "description" to vsDesc),
+                            )
                             context.toastOnUi(
                                 if (ok && ok2) "插件已保存" else "部分保存失败（检查 ID 是否重复）"
                             )

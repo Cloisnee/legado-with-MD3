@@ -908,6 +908,51 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrDefault("导出失败")
     }
 
+    // ---------------- 插件：壳字段 / 变量 / UI 会话 ----------------
+
+    /** 读取插件壳（原始 JSONObject 副本） */
+    suspend fun loadPluginShell(pluginId: String): JSONObject? = withContext(Dispatchers.IO) {
+        runCatching {
+            val raw = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching null
+            JSONObject(raw.toString())
+        }.getOrNull()
+    }
+
+    /** 更新插件壳字段（元数据）：name/author/iconUrl/description/pluginGroupName 等 */
+    suspend fun updatePluginShell(pluginId: String, fields: Map<String, String>): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val file = TtsConfigStore.pluginsFile(ctx)
+                val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
+                var hit = false
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("pluginId").ifBlank { o.optString("id") }
+                    if (id != pluginId) continue
+                    fields.forEach { (k, v) -> o.put(k, v) }
+                    hit = true
+                    break
+                }
+                if (hit) file.writeText(arr.toString())
+                hit
+            }.getOrDefault(false)
+        }
+
+    /** 建立插件 UI 会话（补丁版添加插件TTS同款）：eval → source=temp → onLoadData →（主线程调用方）onLoadUI */
+    suspend fun createPluginUiSession(pluginId: String): Pair<TtsPluginUiEngineV2, com.github.jing332.database.entities.systts.source.PluginTtsSource>? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching null
+                val engine = TtsPluginUiEngineV2(ctx, TtsConfigStore.toEnginePlugin(shell)).apply { eval() }
+                val source = com.github.jing332.database.entities.systts.source.PluginTtsSource(
+                    pluginId = pluginId,
+                )
+                engine.source = source
+                engine.onLoadData()
+                engine to source
+            }.getOrNull()
+        }
+
     // ---------------- 插件：排序 / 批量 ----------------
 
     suspend fun movePlugin(pluginId: String, action: String): Boolean =
