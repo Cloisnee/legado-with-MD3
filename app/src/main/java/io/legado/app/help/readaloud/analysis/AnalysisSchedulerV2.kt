@@ -3,6 +3,7 @@ package io.legado.app.help.readaloud.analysis
 import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
+import io.legado.app.data.entities.Book
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.config.AppConfig

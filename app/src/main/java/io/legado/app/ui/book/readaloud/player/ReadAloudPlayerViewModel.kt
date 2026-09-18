@@ -14,6 +14,8 @@ import io.legado.app.help.config.compatDsInt
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV2
 import io.legado.app.ui.widget.components.player.PlayerChapterUi
+import io.legado.app.utils.GSON
+import io.legado.app.utils.fromJsonArray
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -298,8 +300,7 @@ class ReadAloudPlayerViewModel(
                         id = p.id,
                         name = p.name,
                         aliasLine = runCatching {
-                            io.legado.app.utils.GSON.fromJsonArray<String>(p.aliasesJson)
-                                .getOrNull().orEmpty()
+                            GSON.fromJsonArray<String>(p.aliasesJson).getOrNull().orEmpty()
                                 .joinToString("/")
                         }.getOrDefault(""),
                     )

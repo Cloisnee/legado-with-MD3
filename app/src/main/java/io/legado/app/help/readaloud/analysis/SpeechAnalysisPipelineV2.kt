@@ -16,6 +16,8 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.usecase.AnalyzeChapterSpeechUseCase
 import io.legado.app.domain.usecase.ResolveLocalSpeakersUseCase
 import io.legado.app.help.readaloud.segment.RuleBasedSpeechSegmenter
+import io.legado.app.utils.GSON
+import io.legado.app.utils.fromJsonArray
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -65,7 +67,7 @@ class SpeechAnalysisPipelineV2(
 
         private fun gsonAliases(json: String): List<String> =
             runCatching {
-                io.legado.app.utils.GSON.fromJsonArray<String>(json).getOrNull().orEmpty()
+                GSON.fromJsonArray<String>(json).getOrNull().orEmpty()
             }.getOrDefault(emptyList())
     }
 
@@ -105,7 +107,7 @@ class SpeechAnalysisPipelineV2(
             .associateBy { it.paragraphIndex to it.text }
 
         // ---- Stage1：本地规则 + 本地解析（复用既有快速链，永远先出） ----
-        val local = runCatching {
+        val localResult = runCatching {
             val raw = analyzeChapterSpeech(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
@@ -113,10 +115,12 @@ class SpeechAnalysisPipelineV2(
                 resolverVersion = RuleBasedSpeechSegmenter.VERSION,
             )
             resolveLocalSpeakers(raw, paragraphs)
-        }.getOrElse {
-            AppLog.put("分析V2·本地阶段失败: ${it.localizedMessage}", it)
+        }
+        if (localResult.isFailure) {
+            AppLog.put("分析V2·本地阶段失败: ${localResult.exceptionOrNull()?.localizedMessage}", localResult.exceptionOrNull())
             return@withContext null
         }
+        val local = localResult.getOrNull() ?: return@withContext null
         var segments = local.segments
         val chapterText = paragraphs.joinToString("") { it.text }
 
