@@ -4,10 +4,14 @@ import android.app.Application
 import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +32,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -54,6 +57,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import io.legado.app.data.repository.CharacterRecord
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
@@ -72,6 +76,7 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
@@ -138,6 +143,8 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
     var edGender by remember { mutableStateOf("男") }
     var edAge by remember { mutableStateOf("男青年") }
     var edVoice by remember { mutableStateOf("") }
+    var edNameDialog by remember { mutableStateOf(false) }
+    var edNameInput by remember { mutableStateOf("") }
     var mismatchConfirm by remember { mutableStateOf(false) }
 
     // 别名管理
@@ -433,11 +440,19 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = "角色管理",
-                subtitle = "当前书：$currentBook · ${records.size} 个角色",
+                title = if (sel.isNotEmpty()) "已选 ${sel.size} 条" else "角色管理",
+                subtitle = if (sel.isNotEmpty()) null else "当前书：$currentBook · ${records.size} 个角色",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
-                    TopBarNavigationButton(onClick = onBack)
+                    if (sel.isNotEmpty()) {
+                        TopBarNavigationButton(
+                            onClick = { sel = emptySet() },
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "取消选择",
+                        )
+                    } else {
+                        TopBarNavigationButton(onClick = onBack)
+                    }
                 },
                 actions = {
                     TopBarActionButton(
@@ -629,11 +644,16 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                 )
             }
         }
-            if (sel.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = sel.isNotEmpty(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp)
+                    .zIndex(1f),
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+            ) {
                 SelectionBottomBar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp),
                     onSelectAll = { sel = filtered.map { it.index }.toSet() },
                     onSelectInvert = {
                         val all = filtered.map { it.index }.toSet()
@@ -686,62 +706,50 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         title = "角色信息",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            // 主名
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AppTextField(
-                    value = edName,
-                    onValueChange = { edName = it },
-                    label = "主名",
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                SmallPlainButton(
-                    onClick = { joinLib = JoinLibRequest(listOf(edName.trim())) },
-                    icon = Icons.Default.FileDownload,
-                    contentDescription = "入库",
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            // 别名
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    AppText("别名", style = LegadoTheme.typography.labelSmall)
-                    AppText(
-                        text = run {
-                            val a = parseAliases(edAliases)
-                            if (a.isEmpty()) "无" else a.joinToString("、") + "（${a.size}个）"
+            TinyClickableSettingItem(
+                title = "主名",
+                description = edName,
+                trailingContent = {
+                    SmallPlainButton(
+                        onClick = {
+                            edNameInput = edName
+                            edNameDialog = true
                         },
-                        style = LegadoTheme.typography.bodySmall,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                        icon = Icons.Default.Edit,
+                        contentDescription = "修改",
                     )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                SmallPlainButton(
-                    onClick = { aliasSheet = true },
-                    icon = Icons.Default.Edit,
-                    contentDescription = "管理别名",
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            // 类型
-            ChoiceRow(
-                label = "类型",
-                options = listOf("核心", "特殊", "路人"),
-                selected = edRole,
-                onSelect = {
+                    SmallPlainButton(
+                        onClick = { joinLib = JoinLibRequest(listOf(edName.trim())) },
+                        icon = Icons.Default.FileDownload,
+                        contentDescription = "入库",
+                    )
+                },
+                onClick = {
+                    edNameInput = edName
+                    edNameDialog = true
+                },
+            )
+            TinyClickableSettingItem(
+                title = "别名",
+                description = run {
+                    val a = parseAliases(edAliases)
+                    if (a.isEmpty()) "无" else a.joinToString("、") + "（${a.size}个）"
+                },
+                trailingContent = {
+                    SmallPlainButton(
+                        onClick = { aliasSheet = true },
+                        icon = Icons.Default.Edit,
+                        contentDescription = "管理别名",
+                    )
+                },
+                onClick = { aliasSheet = true },
+            )
+            TinyDropdownSettingItem(
+                title = "类型",
+                selectedValue = edRole,
+                displayEntries = arrayOf("核心", "特殊", "路人"),
+                entryValues = arrayOf("核心", "特殊", "路人"),
+                onValueChange = {
                     edRole = it
                     if (it == "特殊") {
                         edAge = "系统"
@@ -750,12 +758,12 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     }
                 },
             )
-            // 性别
-            ChoiceRow(
-                label = "性别",
-                options = listOf("男", "女"),
-                selected = edGender,
-                onSelect = { g ->
+            TinyDropdownSettingItem(
+                title = "性别",
+                selectedValue = edGender,
+                displayEntries = arrayOf("男", "女"),
+                entryValues = arrayOf("男", "女"),
+                onValueChange = { g ->
                     edGender = g
                     val ages = if (g == "女") FEMALE_AGES else MALE_AGES
                     if (edRole != "特殊" && edAge !in ages) {
@@ -763,34 +771,27 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                     }
                 },
             )
-            // 年龄
-            ChoiceRow(
-                label = "年龄",
-                options = if (edRole == "特殊") listOf("系统") else {
+            TinyDropdownSettingItem(
+                title = "年龄",
+                selectedValue = edAge,
+                displayEntries = (if (edRole == "特殊") listOf("系统") else {
                     if (edGender == "女") FEMALE_AGES else MALE_AGES
-                },
-                selected = edAge,
-                onSelect = { edAge = it },
+                }).toTypedArray(),
+                entryValues = (if (edRole == "特殊") listOf("系统") else {
+                    if (edGender == "女") FEMALE_AGES else MALE_AGES
+                }).toTypedArray(),
+                onValueChange = { edAge = it },
             )
-            // 声线
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AppText(
-                    text = "声线",
-                    style = LegadoTheme.typography.labelSmall,
-                    modifier = Modifier.width(52.dp),
-                )
-                VoiceChip(edVoice) {
+            TinyClickableSettingItem(
+                title = "声线",
+                description = edVoice.ifBlank { "未设置（点按选择）" },
+                onClick = {
                     val actualAge = if (edRole == "特殊") "系统" else edAge
                     picker = VoiceTagPickRequest(edRole, edGender, actualAge, "选择声线") {
                         edVoice = it
                     }
-                }
-            }
+                },
+            )
             Spacer(modifier = Modifier.height(6.dp))
             TinyClickableSettingItem(
                 title = "保存",
@@ -851,7 +852,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                             onClick = {
                                 joinLib = JoinLibRequest(listOf(a), aliasToRemove = a)
                             },
-                            icon = Icons.Default.ArrowDownward,
+                            icon = Icons.Default.FileDownload,
                             contentDescription = "入库",
                         )
                         Spacer(modifier = Modifier.width(2.dp))
@@ -876,6 +877,28 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
     }
 
     // 别名 新增/修改 输入
+    AppAlertDialog(
+        show = edNameDialog,
+        onDismissRequest = { edNameDialog = false },
+        title = "修改主名",
+        content = {
+            AppTextField(
+                value = edNameInput,
+                onValueChange = { edNameInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "主名",
+            )
+        },
+        confirmText = "保存",
+        onConfirm = {
+            edNameDialog = false
+            val t = edNameInput.trim()
+            if (t.isNotEmpty()) edName = t
+        },
+        dismissText = "取消",
+        onDismiss = { edNameDialog = false },
+    )
+
     AppAlertDialog(
         show = aliasInputDialog,
         onDismissRequest = { aliasInputDialog = false },
@@ -1117,13 +1140,19 @@ private fun CharacterCardRow(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (selectionActive) {
-                AppCheckbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    includeStateSemantics = false,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+            AnimatedVisibility(
+                visible = selectionActive,
+                enter = fadeIn() + expandHorizontally(),
+                exit = fadeOut() + shrinkHorizontally(),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppCheckbox(
+                        checked = selected,
+                        onCheckedChange = null,
+                        includeStateSemantics = false,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
                 AppText(
@@ -1155,6 +1184,34 @@ private fun isNoiseAlias(alias: String, record: CharacterRecord): Boolean =
         "男童", "女童", "少年", "少女",
         "男青年", "女青年", "男中年", "女中年", "男老年", "女老年",
     )
+
+@Composable
+private fun VoiceChip(voice: String, onClick: () -> Unit) {
+    val active = voice.isNotBlank()
+    val bg = if (active) {
+        LegadoTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        LegadoTheme.colorScheme.surfaceVariant
+    }
+    val fg = if (active) {
+        LegadoTheme.colorScheme.primary
+    } else {
+        LegadoTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        AppText(
+            text = voice.ifBlank { "未设置" },
+            style = LegadoTheme.typography.labelSmall,
+            color = fg,
+        )
+    }
+}
 
 @Composable
 private fun VoiceChip(voice: String, onClick: () -> Unit) {

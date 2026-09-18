@@ -3,10 +3,14 @@ package io.legado.app.ui.ttssrv
 import android.app.Application
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -59,9 +63,11 @@ import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.ScriptLineRow
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SearchBar
+import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
@@ -202,11 +208,19 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = "书籍管理",
-                subtitle = "当前书：$currentBook · ${chapters.size} 章剧本",
+                title = if (selLines.isNotEmpty()) "已选 ${selLines.size} 条" else "书籍管理",
+                subtitle = if (selLines.isNotEmpty()) null else "当前书：$currentBook · ${chapters.size} 章剧本",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
-                    TopBarNavigationButton(onClick = onBack)
+                    if (selLines.isNotEmpty()) {
+                        TopBarNavigationButton(
+                            onClick = { selLines = emptySet() },
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "取消选择",
+                        )
+                    } else {
+                        TopBarNavigationButton(onClick = onBack)
+                    }
                 },
                 actions = {
                     TopBarActionButton(
@@ -410,15 +424,6 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                 LegadoTheme.colorScheme.surfaceContainer
                             },
                             onClick = {
-                                if (selActive) {
-                                    selLines = if (row.absIndex in selLines) {
-                                        selLines - row.absIndex
-                                    } else {
-                                        selLines + row.absIndex
-                                    }
-                                }
-                            },
-                            onLongClick = {
                                 if (row.speaker.isNotEmpty()) {
                                     selLines = if (row.absIndex in selLines) {
                                         selLines - row.absIndex
@@ -427,6 +432,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                     }
                                 }
                             },
+                            onLongClick = null,
                         ) {
                             Row(
                                 modifier = Modifier
@@ -434,14 +440,22 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.Top,
                             ) {
-                                if (selActive) {
-                                    AppCheckbox(
-                                        checked = row.absIndex in selLines,
-                                        onCheckedChange = null,
-                                        includeStateSemantics = false,
+                                AnimatedVisibility(
+                                    visible = selActive,
+                                    enter = fadeIn() + expandHorizontally(),
+                                    exit = fadeOut() + shrinkHorizontally(),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.padding(top = 2.dp),
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    ) {
+                                        AppCheckbox(
+                                            checked = row.absIndex in selLines,
+                                            onCheckedChange = null,
+                                            includeStateSemantics = false,
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
                                 }
                                 TagChip(
                                     text = displayedSpeaker.ifBlank { "—" },
@@ -504,50 +518,23 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                         }
                     }
                 }
-                if (selLines.isNotEmpty()) {
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 12.dp,
-                        containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AppText(
-                                text = "已选 ${selLines.size} 行",
-                                style = LegadoTheme.typography.labelSmall,
-                                modifier = Modifier.weight(1f),
-                            )
-                            SmallPlainButton(
-                                onClick = {
-                                    selLines = shown.map { it.absIndex }.toSet()
-                                },
-                                icon = Icons.Default.Check,
-                                contentDescription = "全选",
-                            )
-                            SmallPlainButton(
-                                onClick = {
-                                    val all = shown.map { it.absIndex }.toSet()
-                                    selLines = all - selLines
-                                },
-                                icon = Icons.Default.SwapHoriz,
-                                contentDescription = "反选",
-                            )
-                            SmallPlainButton(
-                                onClick = { tagSearch = ""; tagPanelFor = selLines.toList() },
-                                icon = Icons.Default.Edit,
-                                contentDescription = "换角色",
-                            )
-                            SmallPlainButton(
-                                onClick = { selLines = emptySet() },
-                                icon = Icons.Default.Close,
-                                contentDescription = "退出多选",
-                            )
-                        }
-                    }
+                AnimatedVisibility(
+                    visible = selLines.isNotEmpty(),
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut(),
+                ) {
+                    SelectionBottomBar(
+                        onSelectAll = { selLines = shown.map { it.absIndex }.toSet() },
+                        onSelectInvert = {
+                            val all = shown.map { it.absIndex }.toSet()
+                            selLines = all - selLines
+                        },
+                        primaryAction = ActionItem("换角色", Icons.Default.Edit) {
+                            tagSearch = ""
+                            tagPanelFor = selLines.toList()
+                        },
+                        secondaryActions = emptyList(),
+                    )
                 }
             }
         }
