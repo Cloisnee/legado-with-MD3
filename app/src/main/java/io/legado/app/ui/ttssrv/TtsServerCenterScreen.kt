@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -99,7 +100,9 @@ import io.legado.app.ui.widget.components.checkBox.AppCheckbox
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.list.ListUiState
 import io.legado.app.ui.widget.components.log.LogDetailSheet
+import io.legado.app.ui.widget.components.card.TextCard
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuLazy
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
@@ -441,10 +444,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 新建条目：进入第二步时初始化分组默认值（插件已在第一步选定）
+    // 新建条目：仅"长按分组 → 在此组新建条目"会预置一级分组；右下角 + 新增条目保持"未选分组"
     LaunchedEffect(neStep2) {
         if (neStep2 && neGroup.isBlank()) {
-            neGroup = newEntryGroupDefault ?: groups.firstOrNull()?.name ?: "自建"
+            neGroup = newEntryGroupDefault.orEmpty()
+            neCat2 = ""
         }
     }
 
@@ -753,8 +757,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     reload()
                 } })
                 add(ActionItem("在此组新建条目") {
+                    // 长按进入：一级分组锁定为该组，分配方式随之固定
                     newEntryGroupDefault = groupNameOfKey(g)
                     neGroup = groupNameOfKey(g)
+                    neCat2 = ""
                     pluginPickerSheet = true
                 })
             }
@@ -840,7 +846,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
         onAddClick = if (selectedTab == 1) {
             {
+                // 右下角 + 新增条目：不预置一级分组（应为"未选分组"态），由用户在下拉里选或新增
                 newEntryGroupDefault = null
+                neGroup = ""
+                neCat2 = ""
                 pluginPickerSheet = true
             }
         } else null,
@@ -1331,7 +1340,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             MediumTonalButton(
                 onClick = {
                     when {
-                        neGroup.isBlank() -> context.toastOnUi("请填写分组名")
+                        neGroup.isBlank() -> context.toastOnUi("请选择或新增一级分组")
                         nePluginId.isBlank() -> context.toastOnUi("请选择插件")
                         neVoiceSel.isEmpty() -> context.toastOnUi("请选择至少一个声音")
                         else -> scope.launch {
@@ -1378,9 +1387,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            SectionHint("— 音色分配 —")
+            // 目标分组已固定池类型 → 分配方式随之确定
             val targetFrozenRole = groups.firstOrNull { it.name == neGroup.trim() }
                 ?.roleType?.takeIf { it.isNotBlank() }
+            SectionHint("— 音色分配 —")
             SplicedColumnGroup {
                 if (targetFrozenRole != null) {
                     // 目标分组已固定池类型 → 分配档位随之确定，不允许再改
@@ -1418,19 +1428,43 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             }
             SectionHint("— 音色分组 —")
             SplicedColumnGroup {
-                TinyClickableSettingItem(
-                    title = "分组名",
-                    description = neGroup.ifBlank { "点按输入（可自定义）" },
-                    onClick = {
-                        grpInput = neGroup
+                NeGroupPickerRow(
+                    title = "一级分组",
+                    value = neGroup,
+                    placeholder = "点按选择（或新增分组）",
+                    options = groups.map { it.name },
+                    description = when {
+                        neGroup.isBlank() -> "选已有分组，或在弹窗底部「新增分组」自定义命名"
+                        targetFrozenRole != null -> "已存在分组「$neGroup」（$targetFrozenRole 池）：分配方式随分组固定"
+                        else -> "新分组：由上方「音色分配」决定池类型"
+                    },
+                    onPick = {
+                        neGroup = it
+                        neCat2 = ""
+                    },
+                    onCreate = {
+                        grpInput = ""
                         grpDlg = true
                     },
                 )
-                TinyClickableSettingItem(
+                val neCat2Options = groups.firstOrNull { it.name == neGroup.trim() }
+                    ?.entries?.map { it.categoryPath.trim() }?.filter { it.isNotEmpty() }
+                    ?.distinct().orEmpty()
+                NeGroupPickerRow(
                     title = "二级分组名（可选）",
-                    description = if (neCat2.isBlank()) "未填 → 直接放一级分组下" else neCat2,
-                    onClick = {
-                        grp2Input = neCat2
+                    value = neCat2,
+                    placeholder = "不设（直接放一级分组下）",
+                    options = neCat2Options,
+                    emptyOption = "不设二级分组",
+                    enabled = neGroup.isNotBlank(),
+                    description = if (neGroup.isBlank()) {
+                        "请先选择一级分组"
+                    } else {
+                        "随一级分组变化（已有 ${neCat2Options.size} 个），也可在底部新增"
+                    },
+                    onPick = { neCat2 = it },
+                    onCreate = {
+                        grp2Input = ""
                         grp2Dlg = true
                     },
                 )
@@ -1702,20 +1736,23 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppAlertDialog(
         show = grpDlg,
         onDismissRequest = { grpDlg = false },
-        title = "分组名",
+        title = "新增一级分组",
         content = {
             AppTextField(
                 value = grpInput,
                 onValueChange = { grpInput = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = "自定义分组名",
+                label = "一级分组名（不与已有分组重名）",
             )
         },
         confirmText = "保存",
         onConfirm = {
             grpDlg = false
             val t = grpInput.trim()
-            if (t.isNotEmpty()) neGroup = t
+            if (t.isNotEmpty()) {
+                neGroup = t
+                neCat2 = ""
+            }
         },
         dismissText = "取消",
         onDismiss = { grpDlg = false },
@@ -1724,7 +1761,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppAlertDialog(
         show = grp2Dlg,
         onDismissRequest = { grp2Dlg = false },
-        title = "二级分组名",
+        title = "新增二级分组",
         content = {
             AppTextField(
                 value = grp2Input,
@@ -2709,4 +2746,94 @@ private fun SheetField(label: String, value: String, onChange: (String) -> Unit)
         singleLine = true,
     )
     Spacer(modifier = Modifier.height(8.dp))
+}
+
+/**
+ * 「下拉 + 底部新增分组卡片」选择器（观感对齐 朗读设置 → 播放器背景 的卡片下拉）。
+ *
+ * 用于新建条目弹窗的一级/二级分组：不用手输完整分组名，直接从已有分组里挑；
+ * 想建新分组时点弹窗**最底部**的「＋ 新增分组…」卡片，再去命名。
+ * [enabled] = false 时整行不可点（例如尚未选一级分组时的二级分组行）。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun NeGroupPickerRow(
+    title: String,
+    value: String,
+    placeholder: String,
+    options: List<String>,
+    description: String? = null,
+    emptyOption: String? = null,
+    enabled: Boolean = true,
+    onPick: (String) -> Unit,
+    onCreate: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val clickHandler: (() -> Unit)? = if (enabled) {
+        { open = true }
+    } else {
+        null
+    }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        TinySettingItem(
+            title = title,
+            description = description,
+            trailingContent = {
+                TextCard(
+                    text = value.ifBlank { placeholder },
+                    backgroundColor = LegadoTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = if (value.isBlank()) {
+                        LegadoTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        LegadoTheme.colorScheme.onSurface
+                    },
+                )
+            },
+            enabled = enabled,
+            onClick = clickHandler,
+        )
+        RoundDropdownMenuLazy(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) { dismiss ->
+            if (emptyOption != null) {
+                item {
+                    RoundDropdownMenuItem(
+                        text = emptyOption,
+                        isSelected = value.isBlank(),
+                        onClick = {
+                            dismiss()
+                            onPick("")
+                        },
+                    )
+                }
+            }
+            items(options, key = { it }) { name ->
+                RoundDropdownMenuItem(
+                    text = name,
+                    isSelected = name == value,
+                    onClick = {
+                        dismiss()
+                        onPick(name)
+                    },
+                )
+            }
+            item {
+                RoundDropdownMenuItem(
+                    text = "＋ 新增分组…",
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    onClick = {
+                        dismiss()
+                        onCreate()
+                    },
+                )
+            }
+        }
+    }
 }
