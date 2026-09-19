@@ -3,12 +3,16 @@ package io.legado.app.ui.book.readaloud.cache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.AppLog
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import splitties.init.appCtx
@@ -36,14 +40,62 @@ class TtsCacheViewModel : ViewModel() {
 
     init {
         loadCache()
-        loadLogs()
+        // 实时日志：AppLog 每次写入都会推送新快照（升序），日志页边播边刷
+        viewModelScope.launch {
+            AppLog.logsFlow.collect { entries ->
+                val mapped = entries.map { entry ->
+                    TtsLogEntryUi(
+                        id = entry.id,
+                        timestamp = entry.timestamp,
+                        message = entry.message,
+                        hasError = entry.throwable != null,
+                        fullContent = entry.throwable
+                            ?.let { t -> "${entry.message}\n${t.stackTraceToString()}" }
+                            ?: entry.message,
+                        category = entry.category,
+                    )
+                }
+                _uiState.update { it.copy(logs = mapped.toImmutableList()) }
+            }
+        }
     }
 
     fun onIntent(intent: TtsCacheIntent) {
         when (intent) {
             TtsCacheIntent.LoadCache -> loadCache()
-            TtsCacheIntent.LoadLogs -> loadLogs()
-            is TtsCacheIntent.SelectTab -> _uiState.update { it.copy(selectedTab = intent.tab) }
+            is TtsCacheIntent.SelectTab -> _uiState.update {
+                it.copy(
+                    activeTab = intent.tab,
+                    selectedIds = persistentSetOf(),
+                    expandedIds = persistentSetOf(),
+                )
+            }
+
+            is TtsCacheIntent.SetSearchMode -> _uiState.update { it.copy(isSearch = intent.isSearch) }
+            is TtsCacheIntent.SetSearchKey -> _uiState.update { it.copy(searchKey = intent.key) }
+            is TtsCacheIntent.ToggleSelection -> _uiState.update { state ->
+                state.copy(
+                    selectedIds = (if (intent.id in state.selectedIds) {
+                        state.selectedIds - intent.id
+                    } else {
+                        state.selectedIds + intent.id
+                    }).toImmutableSet()
+                )
+            }
+
+            is TtsCacheIntent.SetSelection ->
+                _uiState.update { it.copy(selectedIds = intent.ids.toImmutableSet()) }
+
+            is TtsCacheIntent.ToggleExpand -> _uiState.update { state ->
+                state.copy(
+                    expandedIds = (if (intent.id in state.expandedIds) {
+                        state.expandedIds - intent.id
+                    } else {
+                        state.expandedIds + intent.id
+                    }).toImmutableSet()
+                )
+            }
+
             is TtsCacheIntent.DeleteFile -> deleteFile(intent.name)
             TtsCacheIntent.ClearAll -> clearAll()
             TtsCacheIntent.ShowClearAllDialog ->
@@ -54,7 +106,6 @@ class TtsCacheViewModel : ViewModel() {
 
             TtsCacheIntent.ClearLogs -> {
                 AppLog.clear()
-                loadLogs()
                 _effects.tryEmit(TtsCacheEffect.ShowToast("朗读日志已清空"))
             }
 
@@ -70,14 +121,6 @@ class TtsCacheViewModel : ViewModel() {
                         append("创建时间: ${detailDateFormat.format(Date(intent.lastModified))}\n")
                         append("文件名: ${intent.name}.mp3")
                     },
-                    showDetail = true,
-                )
-            }
-
-            is TtsCacheIntent.ShowLogDetail -> _uiState.update {
-                it.copy(
-                    detailTitle = detailTimeFormat.format(Date(intent.timestamp)),
-                    detailContent = intent.fullContent,
                     showDetail = true,
                 )
             }
@@ -113,41 +156,9 @@ class TtsCacheViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     loading = false,
-                    files = persistentListOf<TtsCacheFileUi>().let { list ->
-                        list.builder().apply { addAll(files) }.build()
-                    },
+                    files = files.toImmutableList(),
                     totalSizeBytes = totalSize,
                 )
-            }
-        }
-    }
-
-    private fun loadLogs() {
-        viewModelScope.launch(Dispatchers.Default) {
-            val ttsKeywords =
-                listOf(
-                    "TTS", "预合成", "预下载", "朗读", "听书", "httpTTS", "朗读下载",
-                    // 过渡：V4 分析管线日志（B7 日志改版后由 简/详 切换接管）
-                    "分析V3", "分析调度", "AI调用", "声线分配",
-                )
-            val logs = AppLog.logs
-                .filter { entry ->
-                    ttsKeywords.any { keyword -> entry.message.contains(keyword, ignoreCase = true) }
-                }
-                .map { entry ->
-                    val fullContent = entry.throwable?.let { t -> "${entry.message}\n${t.stackTraceToString()}" }
-                        ?: entry.message
-                    TtsLogEntryUi(
-                        timestamp = entry.timestamp,
-                        message = entry.message,
-                        hasError = entry.throwable != null,
-                        fullContent = fullContent,
-                    )
-                }
-            _uiState.update {
-                it.copy(logs = persistentListOf<TtsLogEntryUi>().let { list ->
-                    list.builder().apply { addAll(logs) }.build()
-                })
             }
         }
     }
@@ -230,7 +241,6 @@ class TtsCacheViewModel : ViewModel() {
 
     companion object {
         private val detailDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-        private val detailTimeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
         fun formatSize(bytes: Long): String {
             return when {
@@ -241,3 +251,9 @@ class TtsCacheViewModel : ViewModel() {
         }
     }
 }
+
+private fun <T> List<T>.toImmutableList(): ImmutableList<T> =
+    persistentListOf<T>().builder().apply { addAll(this@toImmutableList) }.build()
+
+private fun <T> Set<T>.toImmutableSet(): ImmutableSet<T> =
+    persistentSetOf<T>().builder().apply { addAll(this@toImmutableSet) }.build()

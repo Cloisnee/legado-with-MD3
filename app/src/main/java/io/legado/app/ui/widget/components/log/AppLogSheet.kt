@@ -91,7 +91,8 @@ private data class LogEntry(
 }
 
 private fun loadAllLogs(): List<LogEntry> {
-    return AppLog.logs.map { entry ->
+    // AppLog 内部按时间升序存储，全局日志弹层保持「最新在上」
+    return AppLog.logs.asReversed().map { entry ->
         LogEntry(
             time = entry.timestamp,
             message = entry.throwable?.let { t -> "${entry.message}\n${t.stackTraceToString()}" }

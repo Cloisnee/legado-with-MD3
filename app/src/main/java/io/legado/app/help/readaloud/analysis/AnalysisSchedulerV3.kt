@@ -145,7 +145,7 @@ class AnalysisSchedulerV3(
             if (!scope.isActive) break
             val key = "${task.bookUrl}|${task.chapterIndex}"
             runCatching { process(task) }
-                .onFailure { AppLog.put("分析调度·第${task.chapterIndex + 1}章失败: ${it.localizedMessage}", it) }
+                .onFailure { AppLog.putAnalysis("分析调度·第${task.chapterIndex + 1}章失败: ${it.localizedMessage}", it) }
             queueMutex.withLock { queued.remove(key) }
         }
     }

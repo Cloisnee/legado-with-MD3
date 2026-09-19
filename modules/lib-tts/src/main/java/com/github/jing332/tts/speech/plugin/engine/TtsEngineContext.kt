@@ -10,6 +10,8 @@ import com.github.jing332.script.simple.ext.JsExtensions
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.store.TtsConfigStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -38,6 +40,11 @@ data class TtsEngineContext(
         const val AUDITION_TIMEOUT = 30_000L
     }
 
+    /** 合成结果：成功给音频字节，失败给可读原因（供朗读日志「音频缓存」分区展示） */
+    data class SynthOutcome(val bytes: ByteArray?, val reason: String? = null) {
+        val ok: Boolean get() = bytes != null
+    }
+
     // ==================== 管理型 API（插件 UI 桥） ====================
 
     /**
@@ -47,7 +54,11 @@ data class TtsEngineContext(
      */
     fun getAudioByTag(tag: String, text: String): String? = tryImpl("getAudioByTag") {
         if (tag.isBlank()) return@tryImpl null
-        val bytes = synthesizeByTag(tag, text) ?: return@tryImpl null
+        val outcome = synthesizeByTag(tag, text)
+        val bytes = outcome.bytes ?: run {
+            KLog.logger(TAG).debug { "getAudioByTag 失败: ${outcome.reason}" }
+            return@tryImpl null
+        }
         val dir = File(TtsDirProvider.baseDir(context), "_audition").apply { mkdirs() }
         val f = File(dir, "audition_${tag}_${System.currentTimeMillis()}.${sniffExt(bytes)}")
         f.writeBytes(bytes)
@@ -110,15 +121,11 @@ data class TtsEngineContext(
         }
 
     /** 按 tag → 配置 → 插件 合成（音频字节）；internal：供 TtsServerSynthesizer 复用 */
-    internal fun synthesizeByTag(tag: String, text: String): ByteArray? {
-        val found = TtsConfigStore.findConfig(context, engineId, tag) ?: run {
-            KLog.logger(TAG).debug { "未找到配置项: engineId=$engineId, tag=$tag" }
-            return null
-        }
-        val pluginJson = TtsConfigStore.pluginById(context, found.pluginId) ?: run {
-            KLog.logger(TAG).debug { "插件不存在: ${found.pluginId}" }
-            return null
-        }
+    internal fun synthesizeByTag(tag: String, text: String): SynthOutcome {
+        val found = TtsConfigStore.findConfig(context, engineId, tag)
+            ?: return SynthOutcome(null, "标签未找到配置(engineId=$engineId, tag=$tag)")
+        val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
+            ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
         // 注入插件特殊参数（source.data）与音频参数，插件侧经 ttsrv.tts.data / .speed 等读取
         engine.source = PluginTtsSource(
@@ -133,13 +140,21 @@ data class TtsEngineContext(
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
-        val bytes = runBlocking {
-            withTimeout(AUDITION_TIMEOUT) {
-                engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
+        val bytes = try {
+            runBlocking {
+                withTimeout(AUDITION_TIMEOUT) {
+                    engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
+                }
             }
+        } catch (t: TimeoutCancellationException) {
+            return SynthOutcome(null, "合成超时(${AUDITION_TIMEOUT}ms)")
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
         }
-        if (bytes.isEmpty()) return null
-        return if (needsWavWrap(bytes)) wrapPcmInWav(bytes, found.sampleRate) else bytes
+        if (bytes.isEmpty()) return SynthOutcome(null, "合成返回空音频")
+        return SynthOutcome(if (needsWavWrap(bytes)) wrapPcmInWav(bytes, found.sampleRate) else bytes)
     }
 
     private fun sniffExt(b: ByteArray): String = when {

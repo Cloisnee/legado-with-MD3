@@ -224,6 +224,15 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
     }
 
+    override fun onPlaybackStateReplaced() {
+        super.onPlaybackStateReplaced()
+        val chapter = readerReadAloudChapter ?: return
+        AppLog.putAudio(
+            "【音频缓存】第${chapter.chapterIndex + 1}章「${chapter.title}」" +
+                "播放队列就绪：${contentList.size}条"
+        )
+    }
+
     override fun playStop() {
         exoPlayer.stop()
         playIndexJob?.cancel()
@@ -278,13 +287,15 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val fileName =
                         md5SpeakFileName(text, httpTts = itemHttpTts, sourceKey = sourceKey)
                     val speakText = text.replace(AppPattern.notReadAloudRegex, "")
+                    val cueLabel = cueLabel(index, routedVoice)
                     if (speakText.isEmpty()) {
-                        AppLog.put("阅读段落内容为空，使用无声音频代替。\n朗读文本：$text")
+                        AppLog.putAudio("【音频缓存】空文本→静音占位 $cueLabel | ${snippet(text)}")
                         createSilentSound(fileName)
                     } else if (!hasSpeakFile(fileName)) {
-                        runCatching {
+                        val t0 = System.currentTimeMillis()
+                        val failReason = runCatching {
                             when (routedVoice.engineType) {
-                                ReadAloudVoice.ENGINE_SYSTEM -> {
+                                ReadAloudVoice.ENGINE_SYSTEM -> synthesizeWithRetry(cueLabel, speakText) {
                                     val output = getSpeakFileAsMd5(fileName)
                                     val config = runCatching {
                                         GSON.fromJson(
@@ -293,7 +304,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                                         )
                                     }.getOrNull() ?: SystemTtsVoiceConfig()
                                     // 全局语速已改为播放端变速, 系统合成只使用音色自带语速, 避免叠加
-                                    if (!systemTtsFileSynthesizer.synthesize(
+                                    if (systemTtsFileSynthesizer.synthesize(
                                             routedVoice.engineId,
                                             routedVoice.speakerId,
                                             speakText,
@@ -301,27 +312,23 @@ class HttpReadAloudService : BaseReadAloudService(),
                                             config.speechRate ?: 1f,
                                             config.pitch ?: 1f,
                                         )
-                                    ) {
-                                        createSilentSound(fileName)
-                                    }
+                                    ) null else "系统TTS合成失败"
                                 }
 
-                                ReadAloudVoice.ENGINE_TTS_SERVER -> {
+                                ReadAloudVoice.ENGINE_TTS_SERVER -> synthesizeWithRetry(cueLabel, speakText) {
                                     val output = getSpeakFileAsMd5(fileName)
-                                    if (!ttsServerSynthesizer.synthesize(
-                                            routedVoice.engineId,
-                                            routedVoice.speakerId,
-                                            speakText,
-                                            output,
-                                        )
-                                    ) {
-                                        createSilentSound(fileName)
-                                    }
+                                    val outcome = ttsServerSynthesizer.synthesize(
+                                        routedVoice.engineId,
+                                        routedVoice.speakerId,
+                                        speakText,
+                                        output,
+                                    )
+                                    if (outcome.ok) null else (outcome.reason ?: "未知原因")
                                 }
 
-                                ReadAloudVoice.ENGINE_CLOUD -> {
+                                ReadAloudVoice.ENGINE_CLOUD -> synthesizeWithRetry(cueLabel, speakText) {
                                     val output = getSpeakFileAsMd5(fileName)
-                                    if (!cloudTtsAudioSynthesizer.synthesize(
+                                    if (cloudTtsAudioSynthesizer.synthesize(
                                             routedVoice,
                                             speakText,
                                             output,
@@ -329,26 +336,40 @@ class HttpReadAloudService : BaseReadAloudService(),
                                             characterPerformance = characterPerformance,
                                             roleType = cueRoleType,
                                         )
-                                    ) {
-                                        createSilentSound(fileName)
-                                    }
+                                    ) null else "云端合成失败"
                                 }
 
                                 else -> {
                                     val inputStream = getSpeakStream(itemHttpTts, speakText)
                                     if (inputStream != null) {
                                         createSpeakFile(fileName, inputStream)
+                                        null
                                     } else {
-                                        createSilentSound(fileName)
+                                        "TTS下载失败"
                                     }
                                 }
                             }
                         }.onFailure {
                             when (it) {
                                 is CancellationException -> Unit
-                                else -> pauseReadAloud()
+                                else -> {
+                                    AppLog.putAudio("【音频缓存】合成异常，已暂停朗读: ${it.localizedMessage}", it)
+                                    pauseReadAloud()
+                                }
                             }
                             return@execute
+                        }.getOrNull()
+                        if (failReason == null) {
+                            AppLog.putAudio(
+                                "【音频缓存】已缓存 $cueLabel " +
+                                    "${getSpeakFileAsMd5(fileName).length() / 1024}KB " +
+                                    "${System.currentTimeMillis() - t0}ms | ${snippet(speakText)}"
+                            )
+                        } else {
+                            createSilentSound(fileName)
+                            AppLog.putAudio(
+                                "【音频缓存】合成失败→静音占位 $cueLabel: $failReason | ${snippet(speakText)}"
+                            )
                         }
                     }
                     if (speakText.isNotEmpty() && hasSpeakFile(fileName)) {
@@ -385,7 +406,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 }
             }
         }.onError {
-            AppLog.put("朗读下载出错\n${it.localizedMessage}", it, true)
+            AppLog.putAudio("朗读下载出错\n${it.localizedMessage}", it, toast = true)
         }
     }
 
@@ -459,17 +480,25 @@ class HttpReadAloudService : BaseReadAloudService(),
             for (i in 1..limit) {
                 currentCoroutineContext().ensureActive()
                 if (consecutiveFailures >= 3) {
-                    AppLog.put("TTS预合成连续失败${consecutiveFailures}章，已停止预合成")
+                    AppLog.putAudio("TTS预合成连续失败${consecutiveFailures}章，已停止预合成")
                     break
                 }
                 val targetIndex = currentIdx + i
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, targetIndex) ?: break
-                val prepared = getPreDownloadChapter(book, chapter) ?: continue
+                val prepared = getPreDownloadChapter(book, chapter)
+                if (prepared == null) {
+                    AppLog.putAudio("【音频缓存】跳过预合成 第${targetIndex + 1}章（章节内容未缓存）")
+                    continue
+                }
+                AppLog.putAudio(
+                    "【音频缓存】预合成 第${targetIndex + 1}章「${prepared.chapterTitle}」" +
+                        "${prepared.contentList.size}条"
+                )
                 val chapterFailed = synthesizeChapterCues(prepared, httpTts, concurrency)
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
             }
         } catch (e: Exception) {
-            AppLog.put("听书预下载异常: ${e.localizedMessage}", e)
+            AppLog.putAudio("听书预下载异常: ${e.localizedMessage}", e)
         }
     }
 
@@ -514,6 +543,11 @@ class HttpReadAloudService : BaseReadAloudService(),
             }
         }.awaitAll()
 
+        if (failedCount > 0) {
+            AppLog.putAudio(
+                "【音频缓存】预合成「${prepared.chapterTitle}」失败 $failedCount/$totalCues 条"
+            )
+        }
         failedCount > totalCues / 2
     }
 
@@ -551,26 +585,28 @@ class HttpReadAloudService : BaseReadAloudService(),
             createSilentSound(fileName)
             return true
         }
-        val success = runCatching {
+        val failReason = runCatching {
             when (routedVoice.engineType) {
                 ReadAloudVoice.ENGINE_TTS_SERVER -> {
                     val output = getSpeakFileAsMd5(fileName)
-                    ttsServerSynthesizer.synthesize(
+                    val outcome = ttsServerSynthesizer.synthesize(
                         routedVoice.engineId,
                         routedVoice.speakerId,
                         speakText,
                         output,
                     )
+                    if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }
 
                 ReadAloudVoice.ENGINE_CLOUD -> {
                     val output = getSpeakFileAsMd5(fileName)
-                    cloudTtsAudioSynthesizer.synthesize(
-                        routedVoice, speakText, output,
-                        styleOverride = cue?.emotion.orEmpty(),
-                        characterPerformance = cue?.characterPerformance,
-                        roleType = cue?.roleType ?: SpeechRoleType.Unknown,
-                    )
+                    if (cloudTtsAudioSynthesizer.synthesize(
+                            routedVoice, speakText, output,
+                            styleOverride = cue?.emotion.orEmpty(),
+                            characterPerformance = cue?.characterPerformance,
+                            roleType = cue?.roleType ?: SpeechRoleType.Unknown,
+                        )
+                    ) null else "云端合成失败"
                 }
 
                 ReadAloudVoice.ENGINE_HTTP -> {
@@ -579,28 +615,30 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val inputStream = getSpeakStream(itemHttpTts, speakText)
                     if (inputStream != null) {
                         createSpeakFile(fileName, inputStream)
-                        true
+                        null
                     } else {
-                        false
+                        "TTS下载失败"
                     }
                 }
 
-                else -> false
+                else -> "不支持的引擎类型: ${routedVoice.engineType}"
             }
         }.getOrElse {
             when (it) {
                 is CancellationException -> throw it
-                else -> {
-                    AppLog.put("TTS预合成cue失败: ${it.localizedMessage}")
-                    false
-                }
+                else -> "合成异常: ${it.localizedMessage}"
             }
         }
-        if (success && speakText.isNotEmpty()) {
-            writeTextIndexEntry(fileName, speakText)
-            writeCacheMetaEntry(fileName, speakText, chapterTitle)
+        if (failReason != null) {
+            AppLog.putAudio(
+                "【音频缓存】预合成失败 ${routedVoice.speakerId.ifBlank { routedVoice.displayName }}" +
+                    " | $chapterTitle | ${snippet(speakText)} | $failReason"
+            )
+            return false
         }
-        return success
+        writeTextIndexEntry(fileName, speakText)
+        writeCacheMetaEntry(fileName, speakText, chapterTitle)
+        return true
     }
 
     /**
@@ -699,7 +737,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     }
                     val speakText = text.replace(AppPattern.notReadAloudRegex, "")
                     if (speakText.isEmpty()) {
-                        AppLog.put("阅读段落内容为空，使用无声音频代替。\n朗读文本：$speakText")
+                        AppLog.putAudio("【音频缓存】空文本→静音占位 | ${snippet(speakText)}")
                     }
                     val itemHttpTts = httpTtsForCue(index, httpTts)
                     val fileName = md5SpeakFileName(text, httpTts = itemHttpTts)
@@ -737,7 +775,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 }
             }
         }.onError {
-            AppLog.put("朗读下载出错\n${it.localizedMessage}", it, true)
+            AppLog.putAudio("朗读下载出错\n${it.localizedMessage}", it, toast = true)
         }
     }
 
@@ -762,7 +800,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             for (i in 1..limit) {
                 currentCoroutineContext().ensureActive()
                 if (consecutiveFailures >= 3) {
-                    AppLog.put("TTS流式预合成连续失败${consecutiveFailures}章，已停止")
+                    AppLog.putAudio("TTS流式预合成连续失败${consecutiveFailures}章，已停止")
                     break
                 }
                 val targetIndex = currentIdx + i
@@ -774,7 +812,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
             }
         } catch (e: Exception) {
-            AppLog.put("听书流式预下载异常: ${e.localizedMessage}", e)
+            AppLog.putAudio("听书流式预下载异常: ${e.localizedMessage}", e)
         }
     }
 
@@ -920,7 +958,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 when (e) {
                     is CancellationException -> throw e
                     is ScriptException, is WrappedException -> {
-                        AppLog.put("js错误\n${e.localizedMessage}", e, true)
+                        AppLog.putAudio("js错误\n${e.localizedMessage}", e, toast = true)
                         e.printOnDebug()
                         throw e
                     }
@@ -929,7 +967,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         downloadErrorNo++
                         if (downloadErrorNo > 5) {
                             val msg = "tts超时或连接错误超过5次\n${e.localizedMessage}"
-                            AppLog.put(msg, e, true)
+                            AppLog.putAudio(msg, e, toast = true)
                             throw e
                         }
                     }
@@ -937,14 +975,14 @@ class HttpReadAloudService : BaseReadAloudService(),
                     else -> {
                         downloadErrorNo++
                         val msg = "tts下载错误\n${e.localizedMessage}"
-                        AppLog.put(msg, e)
+                        AppLog.putAudio(msg, e)
                         e.printOnDebug()
                         if (downloadErrorNo > 5) {
                             val msg1 = "TTS服务器连续5次错误，已暂停阅读。"
-                            AppLog.put(msg1, e, true)
+                            AppLog.putAudio(msg1, e, toast = true)
                             throw e
                         } else {
-                            AppLog.put("TTS下载音频出错，使用无声音频代替。\n朗读文本：$speakText")
+                            AppLog.putAudio("TTS下载音频出错，使用无声音频代替。 | ${snippet(speakText)}")
                             break
                         }
                     }
@@ -968,6 +1006,32 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     private fun Long?.orZero(): Long = this ?: 0L
+
+    /** 音频日志中的 cue 标识：#序号 + 声线标签 */
+    private fun cueLabel(index: Int, voice: ReadAloudVoice): String =
+        "#$index " + voice.speakerId.ifBlank { voice.displayName }
+
+    /** 音频日志中的文本摘要（单行、截断） */
+    private fun snippet(text: String, max: Int = 24): String {
+        val oneLine = text.replace(Regex("\\s+"), " ").trim()
+        return if (oneLine.length > max) oneLine.take(max) + "…" else oneLine
+    }
+
+    /**
+     * 文件型引擎合成 + 失败重试一次（400ms 后）。
+     * [attempt] 返回失败原因（null = 成功），失败原因会写入音频缓存日志。
+     */
+    private suspend fun synthesizeWithRetry(
+        label: String,
+        text: String,
+        attempt: suspend () -> String?,
+    ): String? {
+        val first = attempt()
+        if (first == null) return null
+        AppLog.putAudio("【音频缓存】合成失败重试 $label: $first | ${snippet(text)}")
+        delay(400)
+        return attempt()
+    }
 
     private fun hasFileSynthesisCue(): Boolean = playbackQueue.cues.indices.any { index ->
         voiceForCue(playbackQueue, index, ReadAloud.httpTTS ?: return@any false).engineType in
@@ -1070,8 +1134,10 @@ class HttpReadAloudService : BaseReadAloudService(),
         file.writeBytes(resources.openRawResource(R.raw.silent_sound).readBytes())
     }
 
+    /** 缓存文件有效判定：存在且非空（0 字节文件视为未缓存，避免播放解码失败被跳过） */
     private fun hasSpeakFile(name: String): Boolean {
-        return FileUtils.exist("${ttsFolderPath}$name.mp3")
+        val file = File("${ttsFolderPath}$name.mp3")
+        return file.exists() && file.length() > 0L
     }
 
     private fun getSpeakFileAsMd5(name: String): File {
@@ -1253,12 +1319,16 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     override fun onPlayerError(error: PlaybackException) {
         super.onPlayerError(error)
-        AppLog.put("朗读错误\n${contentList[nowSpeak]}", error)
+        AppLog.putAudio(
+            "【音频缓存】播放失败已跳过本条 #$nowSpeak: ${error.localizedMessage} | " +
+                snippet(contentList.getOrNull(nowSpeak).orEmpty()),
+            error,
+        )
         deleteCurrentSpeakFile()
         playErrorNo++
         if (playErrorNo >= 5) {
             toastOnUi("朗读连续5次错误, 最后一次错误代码(${error.localizedMessage})")
-            AppLog.put("朗读连续5次错误, 最后一次错误代码(${error.localizedMessage})", error)
+            AppLog.putAudio("朗读连续5次错误, 最后一次错误代码(${error.localizedMessage})", error)
             pauseReadAloud()
         } else {
             if (exoPlayer.hasNextMediaItem()) {

@@ -396,7 +396,7 @@ abstract class BaseReadAloudService : BaseService(),
         prepareReadAloudJob = execute(executeContext = IO) {
             val input = ReadBook.readerChapterInputWindow.current ?: return@execute
             val pagination = ReadBook.readerPagination(input.chapter.index) ?: run {
-                AppLog.put("启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}")
+                AppLog.putAnalysis("启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}")
                 return@execute
             }
             val preparedChapter = ReaderReadAloudChapter.create(
@@ -435,13 +435,13 @@ abstract class BaseReadAloudService : BaseService(),
                     scheduler.startSession(bookUrl, ReadBook.durChapterIndex)
                 }
             }.onFailure {
-                AppLog.put("分析调度会话启动失败: ${it.localizedMessage}", it)
+                AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
             }
             if (generation != prepareReadAloudGeneration) return@execute
             var preparedPlaybackQueue = runCatching {
                 ReadAloudPlaybackQueue.from(preparedSpeechPlan)
             }.onFailure {
-                AppLog.put("创建多角色播放队列失败，使用原朗读方式\n${it.localizedMessage}", it)
+                AppLog.putAnalysis("创建多角色播放队列失败，使用原朗读方式\n${it.localizedMessage}", it)
             }.getOrDefault(ReadAloudPlaybackQueue.Empty)
             var preparedPlaybackCursor = preparedPlaybackQueue.cursorAt(preparedReadAloudNumber)
             var pos = startPos
@@ -524,7 +524,7 @@ abstract class BaseReadAloudService : BaseService(),
                 if (play) play() else pageChanged = true
             }
         }.onError {
-            AppLog.put("启动朗读出错\n${it.localizedMessage}", it, true)
+            AppLog.putAnalysis("启动朗读出错\n${it.localizedMessage}", it, toast = true)
         }
     }
 
@@ -545,7 +545,7 @@ abstract class BaseReadAloudService : BaseService(),
                 bookName = ReadBook.book?.name.orEmpty(),
             )
         }.onFailure {
-            AppLog.put("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
+            AppLog.putAnalysis("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
         }.getOrDefault(emptyList())
     }
 
@@ -1355,7 +1355,7 @@ abstract class BaseReadAloudService : BaseService(),
                 scheduler.onChapterChanged(bookUrl, ReadBook.durChapterIndex)
             }
         }.onFailure {
-            AppLog.put("分析调度换章通知失败: ${it.localizedMessage}", it)
+            AppLog.putAnalysis("分析调度换章通知失败: ${it.localizedMessage}", it)
         }
     }
 

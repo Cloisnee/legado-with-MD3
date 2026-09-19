@@ -47,14 +47,14 @@ class AiSpeechClient(private val aiModels: AiModelRepository) {
             repeat(attempts) { attempt ->
                 val raw = callOnce(ref, system, user, maxTokens)
                 if (raw == null) {
-                    io.legado.app.constant.AppLog.put(
+                    io.legado.app.constant.AppLog.putAnalysis(
                         "分析AI请求失败（${ref.model.name} 第${attempt + 1}次尝试，超时/HTTP错），换下次尝试或下个模型",
                     )
                     return@repeat
                 }
                 val parsed = runCatching { validate(raw) }.getOrNull()
                 if (parsed != null) return@withContext parsed
-                io.legado.app.constant.AppLog.put(
+                io.legado.app.constant.AppLog.putAnalysis(
                     "分析AI内容校验失败（${ref.model.name} 第${attempt + 1}次尝试），重试或换模型",
                 )
             }
@@ -133,7 +133,7 @@ class AiSpeechClient(private val aiModels: AiModelRepository) {
                 extractContent(ref.provider.protocol, body)
             }
         }.getOrElse {
-            io.legado.app.constant.AppLog.put(
+            io.legado.app.constant.AppLog.putAnalysis(
                 "分析AI调用异常（${ref.model.name}）: ${it.localizedMessage ?: it.javaClass.simpleName}",
             )
             null
@@ -194,7 +194,7 @@ class AiSpeechClient(private val aiModels: AiModelRepository) {
                 val raw = callOnce(ref, system, promptFactory(failHint), maxTokens)
                 if (raw == null) {
                     respFails++
-                    io.legado.app.constant.AppLog.putVerbose(
+                    io.legado.app.constant.AppLog.putAnalysis(
                         "【AI调用】模型 ${ref.model.name} 响应失败（$respFails/$respMax）",
                     )
                     if (respFails >= respMax) break
@@ -205,20 +205,20 @@ class AiSpeechClient(private val aiModels: AiModelRepository) {
                     ValidateOutcome(null, "解析异常：${it.localizedMessage ?: it.javaClass.simpleName}")
                 }
                 if (outcome.data != null) {
-                    io.legado.app.constant.AppLog.putVerbose("【AI调用】模型 ${ref.model.name} 校验通过")
+                    io.legado.app.constant.AppLog.putAnalysis("【AI调用】模型 ${ref.model.name} 校验通过")
                     return@withContext outcome.data
                 }
                 validFails++
-                io.legado.app.constant.AppLog.putVerbose(
+                io.legado.app.constant.AppLog.putAnalysis(
                     "【AI调用】模型 ${ref.model.name} 校验失败（$validFails/$validMax）：${outcome.failReason}",
                 )
                 if (validFails >= validMax) break
                 failHint = outcome.failReason
                 delay(1000)
             }
-            io.legado.app.constant.AppLog.putVerbose("【AI调用】模型 ${ref.model.name} 额度耗尽，切换下一模型")
+            io.legado.app.constant.AppLog.putAnalysis("【AI调用】模型 ${ref.model.name} 额度耗尽，切换下一模型")
         }
-        io.legado.app.constant.AppLog.putVerbose("【AI调用】所有模型响应/校验额度均已耗尽")
+        io.legado.app.constant.AppLog.putAnalysis("【AI调用】所有模型响应/校验额度均已耗尽")
         null
     }
 }
