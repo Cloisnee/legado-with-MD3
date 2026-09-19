@@ -2062,8 +2062,6 @@
     <string name="content_process_empty">No content edits for this chapter.</string>
     <string name="content_process_delete_confirm">Delete this content edit?\n\n%1$s</string>
     <string name="content_process_delete_confirm_simple">Delete this content edit?</string>
-    <string name="content_process_ai_clean">AI clean</string>
-    <string name="content_process_ai_rewrite">AI rewrite</string>
     <string name="content_process_user_underline">Underline</string>
     <string name="content_process_user_highlight">Highlight</string>
     <string name="content_process_replace_action">Replace</string>

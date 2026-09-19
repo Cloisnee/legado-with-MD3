@@ -256,8 +256,6 @@ private fun ContentProcessItem(
 @Composable
 private fun contentProcessTitle(item: ContentProcessItemUi): String {
     val kind = when (item.kind) {
-        BookContentProcess.KIND_AI_CLEAN -> stringResource(R.string.content_process_ai_clean)
-        BookContentProcess.KIND_AI_REWRITE -> stringResource(R.string.content_process_ai_rewrite)
         else -> item.kind
     }
     val action = when (item.actionType) {

@@ -1,8 +1,6 @@
 package io.legado.app.data.dao
 
 import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import io.legado.app.data.entities.BookContentProcess
 import kotlinx.coroutines.flow.Flow
@@ -42,12 +40,6 @@ interface BookContentProcessDao {
         """
     )
     fun flowForChapter(bookUrl: String, chapterIndex: Int?): Flow<List<BookContentProcess>>
-
-    @Query("select coalesce(max(sortOrder), 0) from book_content_processes where bookUrl = :bookUrl")
-    suspend fun maxOrder(bookUrl: String): Int
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(process: BookContentProcess)
 
     @Query("update book_content_processes set enabled = :enabled, updatedAt = :updatedAt where id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean, updatedAt: Long = System.currentTimeMillis())

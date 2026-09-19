@@ -144,7 +144,8 @@ class BookContentProcessEngineTest {
             id = "test",
             bookUrl = "book",
             chapterIndex = 0,
-            kind = BookContentProcess.KIND_AI_CLEAN,
+            // 引擎只对 KIND_USER_UNDERLINE/HIGHLIGHT 特判；其余 kind 一律按替换/删除处理
+            kind = "text_replace",
             anchorJson = GSON.toJson(
                 TextProcessAnchor(
                     chapterIndex = 0,

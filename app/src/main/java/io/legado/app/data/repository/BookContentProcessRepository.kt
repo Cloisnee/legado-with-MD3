@@ -26,14 +26,6 @@ class BookContentProcessRepository(
         return dao.flowForChapter(bookUrl, chapterIndex).flowOn(Dispatchers.IO)
     }
 
-    override suspend fun nextOrder(bookUrl: String): Int = withContext(Dispatchers.IO) {
-        dao.maxOrder(bookUrl) + 1
-    }
-
-    override suspend fun upsert(process: BookContentProcess) = withContext(Dispatchers.IO) {
-        dao.upsert(process)
-    }
-
     override suspend fun setEnabled(id: String, enabled: Boolean) = withContext(Dispatchers.IO) {
         dao.setEnabled(id, enabled)
     }

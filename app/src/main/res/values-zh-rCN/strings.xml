@@ -2117,8 +2117,6 @@
     <string name="content_process_empty">当前章节没有正文处理。</string>
     <string name="content_process_delete_confirm">删除这条正文处理？\n\n%1$s</string>
     <string name="content_process_delete_confirm_simple">删除这条正文处理？</string>
-    <string name="content_process_ai_clean">AI 净化</string>
-    <string name="content_process_ai_rewrite">AI 改写</string>
     <string name="content_process_user_underline">划线</string>
     <string name="content_process_user_highlight">高亮</string>
     <string name="content_process_replace_action">替换</string>
