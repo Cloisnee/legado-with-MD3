@@ -27,7 +27,6 @@ import io.legado.app.data.repository.HighlightTagRuleRepository
 import io.legado.app.data.repository.ReadRecordRepository
 import io.legado.app.data.repository.RemoteBookRepository
 import io.legado.app.data.repository.SearchRepository
-import io.legado.app.domain.gateway.BookKnowledgeGateway
 import io.legado.app.domain.gateway.CoverSettingsGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ThemeSettingsGateway
@@ -107,7 +106,6 @@ class BookInfoViewModel(
     private val searchRepository: SearchRepository,
     private val highlightTagRuleRepository: HighlightTagRuleRepository,
     private val imageLoader: ImageLoader,
-    private val bookKnowledgeGateway: BookKnowledgeGateway,
     private val themeSettingsGateway: ThemeSettingsGateway,
     private val coverSettingsGateway: CoverSettingsGateway,
     private val otherSettingsGateway: OtherSettingsGateway,
@@ -177,7 +175,6 @@ class BookInfoViewModel(
     private var tocLoadFailed = false
     private var currentWebFiles: List<BookInfoWebFile> = emptyList()
     private var currentRelatedBooks: List<RelatedBooksUi> = emptyList()
-    private var currentCharacters: List<BookInfoCharacterUi> = emptyList()
     private var currentHighlightedTags: List<HighlightedTag> = emptyList()
     private var currentKindLabels: List<String> = emptyList()
     private var currentGroupNames: String? = null
@@ -195,7 +192,6 @@ class BookInfoViewModel(
     private var changeSourceCoroutine: Coroutine<*>? = null
     private var readRecordObserveJob: Job? = null
     private var relatedBooksLoadJob: Job? = null
-    private var characterLoadJob: Job? = null
 
     fun initData(intent: Intent) {
         initData(
@@ -231,7 +227,6 @@ class BookInfoViewModel(
         }
         clearReadRecordObserve()
         relatedBooksLoadJob?.cancel()
-        characterLoadJob?.cancel()
         syncUiState()
         execute {
             val dbBook = bookRepository.getBook(bookUrl)
@@ -358,12 +353,6 @@ class BookInfoViewModel(
 
             is BookInfoIntent.RelatedBookClick -> onRelatedBookClick(intent.book)
             is BookInfoIntent.RelatedBooksMore -> onRelatedBooksMore(intent.title, intent.url)
-            is BookInfoIntent.CharacterClick -> openCharacterDetail(intent.characterId)
-            BookInfoIntent.AddCharacterClick -> openCharacterDetail(null)
-            BookInfoIntent.CharacterNetworkClick -> openCharacterNetwork()
-            BookInfoIntent.CharacterListClick -> openCharacterList()
-            BookInfoIntent.KnowledgeListClick -> openKnowledgeList()
-            BookInfoIntent.EventListClick -> openEventList()
             is BookInfoIntent.SetDefaultBookTreeUri -> viewModelScope.launch {
                 otherSettingsGateway.update { it.copy(defaultBookTreeUri = intent.value) }
             }
@@ -460,9 +449,6 @@ class BookInfoViewModel(
                 inBookshelf = nextInBookshelf
                 syncUiState()
             }
-            loadBookCharacters(bookUrl)
-            loadBookKnowledge(bookUrl)
-            loadBookEvents(bookUrl)
         }
     }
 
@@ -880,7 +866,6 @@ class BookInfoViewModel(
             }
             currentChapterList = toc
             currentRelatedBooks = emptyList()
-            currentCharacters = emptyList()
             currentGroupNames = null
             currentHasCustomGroup = false
             currentKindLabels = emptyList()
@@ -896,15 +881,11 @@ class BookInfoViewModel(
         tocLoadFailed = false
         currentWebFiles = emptyList()
         currentRelatedBooks = emptyList()
-        currentCharacters = emptyList()
         currentKindLabels = emptyList()
         currentGroupNames = null
         currentHasCustomGroup = false
         bookSource = source
         syncUiState(isTocLoading = false)
-        loadBookCharacters(book.bookUrl)
-        loadBookKnowledge(book.bookUrl)
-        loadBookEvents(book.bookUrl)
         refreshMeta(book)
         upCoverByRule(book)
         if (book.tocUrl.isEmpty() && !book.isLocal) {
@@ -1445,7 +1426,6 @@ class BookInfoViewModel(
                 tocLoadFailed = tocLoadFailed,
                 webFiles = currentWebFiles,
                 relatedBooks = currentRelatedBooks.toImmutableList(),
-                characters = currentCharacters.toImmutableList(),
                 highlightedTags = currentHighlightedTags,
                 kindLabels = currentKindLabels,
                 groupNames = currentGroupNames,
@@ -1485,137 +1465,6 @@ class BookInfoViewModel(
         )
     }
 
-    private fun openCharacterDetail(characterId: String?) {
-        val bookUrl = currentBook?.bookUrl ?: return
-        emitEffect(BookInfoEffect.OpenCharacterDetail(bookUrl, characterId))
-    }
-
-    private fun openCharacterNetwork() {
-        val bookUrl = currentBook?.bookUrl ?: return
-        emitEffect(BookInfoEffect.OpenCharacterNetwork(bookUrl))
-    }
-
-    private fun openKnowledgeList() {
-        val bookUrl = currentBook?.bookUrl ?: return
-        emitEffect(BookInfoEffect.OpenKnowledgeList(bookUrl))
-    }
-
-    private fun openCharacterList() {
-        val bookUrl = currentBook?.bookUrl ?: return
-        emitEffect(BookInfoEffect.OpenCharacterList(bookUrl))
-    }
-
-    private fun openEventList() {
-        val bookUrl = currentBook?.bookUrl ?: return
-        emitEffect(BookInfoEffect.OpenEventList(bookUrl))
-    }
-
-    private var knowledgeLoadJob: Job? = null
-    private var eventLoadJob: Job? = null
-    private var currentKnowledgeEntries: List<BookInfoKnowledgeUi> = emptyList()
-    private var currentRecentEvents: List<BookInfoEventUi> = emptyList()
-
-    private fun loadBookCharacters(bookUrl: String) {
-        characterLoadJob?.cancel()
-        characterLoadJob = viewModelScope.launch {
-            val roleOrder = mapOf(
-                io.legado.app.data.entities.BookCharacterProfile.ROLE_MALE_LEAD to 0,
-                io.legado.app.data.entities.BookCharacterProfile.ROLE_FEMALE_LEAD to 1,
-                io.legado.app.data.entities.BookCharacterProfile.ROLE_MALE_SUPPORTING to 2,
-                io.legado.app.data.entities.BookCharacterProfile.ROLE_FEMALE_SUPPORTING to 3,
-            )
-            val characters = try {
-                withContext(IO) {
-                    bookKnowledgeGateway.getCharacterProfiles(bookUrl, limit = 50)
-                }.sortedBy { roleOrder[it.role] ?: 99 }
-                    .map {
-                        val tags = GSON.fromJsonArray<String>(it.tagsJson).getOrNull().orEmpty()
-                        BookInfoCharacterUi(
-                            id = it.id,
-                            name = it.name,
-                            avatarUri = it.avatarUri,
-                            role = it.role,
-                            tags = tags.joinToString(" | "),
-                            summary = it.summary,
-                        )
-                    }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                emptyList()
-            }
-            if (currentBook?.bookUrl != bookUrl) return@launch
-            currentCharacters = characters
-            _screenState.update {
-                it.copy(characters = currentCharacters.toImmutableList())
-            }
-        }
-    }
-
-    private fun loadBookKnowledge(bookUrl: String) {
-        knowledgeLoadJob?.cancel()
-        knowledgeLoadJob = viewModelScope.launch {
-            val entries = try {
-                withContext(IO) {
-                    bookKnowledgeGateway.searchKnowledgeEntries(bookUrl, "", null, null, 10)
-                }.map {
-                    BookInfoKnowledgeUi(
-                        id = it.id,
-                        type = it.type,
-                        title = it.title,
-                        summary = it.content.take(80),
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                emptyList()
-            }
-            if (currentBook?.bookUrl != bookUrl) return@launch
-            currentKnowledgeEntries = entries
-            _screenState.update {
-                it.copy(knowledgeEntries = currentKnowledgeEntries.toImmutableList())
-            }
-        }
-    }
-
-    private fun loadBookEvents(bookUrl: String) {
-        eventLoadJob?.cancel()
-        eventLoadJob = viewModelScope.launch {
-            val events = try {
-                withContext(IO) {
-                    bookKnowledgeGateway.getCharacterEvents(bookUrl, null, null, 10)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                emptyList()
-            }
-            if (currentBook?.bookUrl != bookUrl) return@launch
-            val profiles = try {
-                withContext(IO) {
-                    bookKnowledgeGateway.getCharacterProfiles(bookUrl, 200)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                emptyList()
-            }
-            val nameMap = profiles.associate { it.id to it.name }
-            currentRecentEvents = events.map { event ->
-                BookInfoEventUi(
-                    id = event.id,
-                    chapterTitle = event.chapterTitle,
-                    eventTimeText = event.eventTimeText,
-                    content = event.content.take(80),
-                    characterName = nameMap[event.characterId].orEmpty(),
-                )
-            }
-            _screenState.update {
-                it.copy(recentEvents = currentRecentEvents.toImmutableList())
-            }
-        }
-    }
 
     private fun scheduleRelatedBooksLoad(
         book: Book,

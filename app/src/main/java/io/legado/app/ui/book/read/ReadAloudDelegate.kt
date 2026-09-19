@@ -264,13 +264,6 @@ class ReadAloudDelegate(
         host.emitEffect(ReadBookEffect.OpenTtsCache)
     }
 
-    fun openBookVoiceCasting() {
-        ReadBook.book?.bookUrl?.let { bookUrl ->
-            host.updateState { it.copy(activeSheet = null) }
-            host.emitEffect(ReadBookEffect.OpenBookVoiceCasting(bookUrl))
-        }
-    }
-
     fun openSystemTtsSettings() {
         host.emitEffect(ReadBookEffect.OpenSystemTtsSettings)
     }

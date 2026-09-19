@@ -70,7 +70,6 @@ import org.koin.androidx.compose.koinViewModel
 fun MyRouteScreen(
     viewModel: MyViewModel = koinViewModel(),
     onOpenSettings: () -> Unit,
-    onNavigateToChat: () -> Unit,
     onNavigate: (PrefClickEvent) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -78,7 +77,6 @@ fun MyRouteScreen(
         state = uiState,
         onIntent = viewModel::onIntent,
         onOpenSettings = onOpenSettings,
-        onNavigateToChat = onNavigateToChat,
         onNavigate = onNavigate,
     )
 }
@@ -89,7 +87,6 @@ fun MyScreen(
     state: MyUiState,
     onIntent: (MyIntent) -> Unit,
     onOpenSettings: () -> Unit,
-    onNavigateToChat: () -> Unit,
     onNavigate: (PrefClickEvent) -> Unit,
 ) {
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()

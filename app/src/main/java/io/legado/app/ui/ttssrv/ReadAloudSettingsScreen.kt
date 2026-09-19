@@ -23,8 +23,6 @@ import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
-import io.legado.app.domain.gateway.AiProfileGateway
-import io.legado.app.domain.model.AiTaskType
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.model.ReadBook
@@ -63,7 +61,6 @@ fun ReadAloudSettingsScreen(
     val scope = rememberCoroutineScope()
     val repo = remember { GlobalContext.get().get<ReadAloudSettingsRepository>() }
     val readRepo = remember { GlobalContext.get().get<ReadSettingsRepository>() }
-    val aiGateway = remember { GlobalContext.get().get<AiProfileGateway>() }
     val extRepo = remember {
         TtsServerCenterRepository(context.applicationContext as Application)
     }

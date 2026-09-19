@@ -4,8 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
-import io.legado.app.data.entities.BookCharacterProfile
-import io.legado.app.domain.gateway.BookKnowledgeGateway
 import io.legado.app.domain.gateway.ChapterSpeechGateway
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
@@ -14,8 +12,6 @@ import io.legado.app.help.config.compatDsInt
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.ui.widget.components.player.PlayerChapterUi
-import io.legado.app.utils.GSON
-import io.legado.app.utils.fromJsonArray
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -30,7 +26,6 @@ import kotlinx.coroutines.launch
 class ReadAloudPlayerViewModel(
     private val coordinator: ReadAloudPlayerCoordinator,
     private val chapterSpeechGateway: ChapterSpeechGateway,
-    private val bookKnowledgeGateway: BookKnowledgeGateway,
     private val scheduler: AnalysisSchedulerV3,
 ) : ViewModel() {
 

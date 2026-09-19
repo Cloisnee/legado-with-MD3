@@ -1994,7 +1994,6 @@ class ReadBookController(
             is ReadBookEffect.OpenSystemTtsSettings,
             ReadBookEffect.OpenTtsEnginesAndVoices,
             ReadBookEffect.OpenTtsCache,
-            is ReadBookEffect.OpenBookVoiceCasting,
             is ReadBookEffect.OpenHighlightRuleImportPicker,
             is ReadBookEffect.OpenHighlightRuleExportPicker,
             is ReadBookEffect.TtsCacheCleared,

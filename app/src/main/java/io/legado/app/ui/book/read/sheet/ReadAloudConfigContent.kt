@@ -194,11 +194,6 @@ fun ReadAloudConfigContent(
                         description = stringResource(R.string.tts_cache_manage_summary),
                         onClick = { onIntent(ReadBookIntent.OpenTtsCache) },
                     )
-                    TinyClickableSettingItem(
-                        title = stringResource(R.string.read_aloud_character_casting),
-                        description = stringResource(R.string.book_voice_casting_entry_summary),
-                        onClick = { onIntent(ReadBookIntent.OpenBookVoiceCasting) },
-                    )
                     TinySwitchSettingItem(
                         title = stringResource(R.string.use_multi_speaker),
                         description = stringResource(R.string.use_multi_speaker_summary),

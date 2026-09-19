@@ -754,7 +754,6 @@ sealed interface ReadBookIntent {
     data object ClearTtsCache : ReadBookIntent
     data object OpenTtsEnginesAndVoices : ReadBookIntent
     data object OpenTtsCache : ReadBookIntent
-    data object OpenBookVoiceCasting : ReadBookIntent
     data object OpenReadAloudPlayer : ReadBookIntent
     data object OpenClassicReadAloudControls : ReadBookIntent
     data class SelectFont(val path: String) : ReadBookIntent
@@ -893,7 +892,6 @@ sealed interface ReadBookEffect {
     data object OpenSystemTtsSettings : ReadBookEffect
     data object OpenTtsEnginesAndVoices : ReadBookEffect
     data object OpenTtsCache : ReadBookEffect
-    data class OpenBookVoiceCasting(val bookUrl: String) : ReadBookEffect
     data object OpenHighlightRuleImportPicker : ReadBookEffect
     data object OpenHighlightRuleExportPicker : ReadBookEffect
 
