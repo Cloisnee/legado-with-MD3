@@ -990,4 +990,13 @@ class ReadAloudDataRepository(private val app: Application) {
             true
         }.getOrDefault(false)
     }
+
+    /** 剧本文件是否已含该章（[chapter:N] 标记）——存量补写判断用 */
+    suspend fun hasChapterScript(book: String, chapter: Int): Boolean = withContext(Dispatchers.IO) {
+        val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
+        if (txt.isEmpty()) return@withContext false
+        txt.split("\n").any { l ->
+            CHAPTER_MARKER.find(l)?.groupValues?.get(1)?.toIntOrNull() == chapter
+        }
+    }
 }

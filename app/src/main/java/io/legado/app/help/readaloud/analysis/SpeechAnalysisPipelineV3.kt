@@ -283,6 +283,11 @@ class SpeechAnalysisPipelineV3(
         ) {
             val cached = runCatching { chapterSpeechGateway.getSegments(existing.id) }.getOrDefault(emptyList())
             if (cached.isNotEmpty()) {
+                // 存量补写：早期批次未落文件产物；此处幂等补写（已有则跳过）
+                if (bookName.isNotBlank() && !dataRepository.hasChapterScript(bookName, chapterIndex)) {
+                    writeFileArtifacts(bookName, chapterIndex, bookUrl, cached)
+                    AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】缓存命中，已补写剧本文件")
+                }
                 return@withContext ChapterSpeechAnalysisResult(existing, cached, true)
             }
         }
@@ -389,10 +394,7 @@ class SpeechAnalysisPipelineV3(
             .onFailure { AppLog.put("分析V3·落库失败: ${it.localizedMessage}", it) }
         AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
         // ===== 文件产物：all_clean_text / chapter_cache / book_rev（供角色管理/书籍管理读取） =====
-        val fileOk = runCatching {
-            dataRepository.ensureBookInList(bookName)
-            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(bound))
-        }.onFailure { AppLog.put("分析V3·剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
+        val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound)
         AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】剧本文件写入=$fileOk")
         ChapterSpeechAnalysisResult(analysis, bound, false)
     }
@@ -1272,6 +1274,20 @@ class SpeechAnalysisPipelineV3(
             }
         }
         return sb.toString().trimEnd('\n')
+    }
+
+    /** 文件产物写入（幂等）：all_clean_text/chapter_cache/book_rev + 书架索引 */
+    private suspend fun writeFileArtifacts(
+        bookName: String,
+        chapterIndex: Int,
+        bookUrl: String,
+        segments: List<ChapterSpeechSegment>,
+    ): Boolean {
+        if (bookName.isBlank()) return false
+        return runCatching {
+            dataRepository.ensureBookInList(bookName)
+            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(segments))
+        }.onFailure { AppLog.put("分析V3·剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
     }
 
     /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] 前缀（与脚本文件格式一致） */
