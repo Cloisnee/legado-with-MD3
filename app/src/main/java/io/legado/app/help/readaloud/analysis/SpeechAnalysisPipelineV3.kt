@@ -294,7 +294,7 @@ class SpeechAnalysisPipelineV3(
         val cfg = configStore.load()
         val records0 = dataRepository.loadBookRecords(bookName)
         val lastCh = dataRepository.lastAnalyzedChapter(bookName)
-        val isContinuous = lastCh == chapterIndex - 1
+        val isContinuous = lastCh >= 0 && lastCh == chapterIndex - 1
         AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】开始：连续=$isContinuous 段数=${paragraphs.size}")
 
         // ===== A 话语分析 =====
@@ -388,6 +388,12 @@ class SpeechAnalysisPipelineV3(
         runCatching { chapterSpeechGateway.saveAnalysis(analysis, bound) }
             .onFailure { AppLog.put("分析V3·落库失败: ${it.localizedMessage}", it) }
         AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
+        // ===== 文件产物：all_clean_text / chapter_cache / book_rev（供角色管理/书籍管理读取） =====
+        val fileOk = runCatching {
+            dataRepository.ensureBookInList(bookName)
+            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(bound))
+        }.onFailure { AppLog.put("分析V3·剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
+        AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】剧本文件写入=$fileOk")
         ChapterSpeechAnalysisResult(analysis, bound, false)
     }
 
@@ -1263,6 +1269,22 @@ class SpeechAnalysisPipelineV3(
             } else {
                 val nm = rename[s.characterName] ?: s.characterName.ifBlank { "旁白" }
                 sb.append("〖").append(nm).append("〗").append(s.text).append("\n")
+            }
+        }
+        return sb.toString().trimEnd('\n')
+    }
+
+    /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] 前缀（与脚本文件格式一致） */
+    private fun renderScriptForStore(segments: List<ChapterSpeechSegment>): String {
+        val sb = StringBuilder()
+        segments.forEach { s ->
+            if (s.roleType == SpeechRoleType.Narrator) {
+                sb.append("〖旁白〗").append(s.text).append("\n")
+            } else {
+                val nm = s.characterName.ifBlank { "旁白" }
+                sb.append("〖").append(nm).append("〗")
+                if (s.emotion.isNotBlank()) sb.append("[[emo:").append(s.emotion).append("]]")
+                sb.append(s.text).append("\n")
             }
         }
         return sb.toString().trimEnd('\n')

@@ -920,4 +920,74 @@ class ReadAloudDataRepository(private val app: Application) {
         out
     }
 
+
+    // ---------------- 分析管线（V3）文件产物 ----------------
+
+    /** 写入/替换 某章剧本（[chapter:N] 标记+行内容；重析=原地替换旧段）；同步 chapter_cache 与 book_rev */
+    suspend fun saveChapterScript(
+        book: String,
+        chapter: Int,
+        bookUrl: String,
+        scriptText: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (book.isBlank() || scriptText.isBlank()) return@withContext false
+        runCatching {
+            val f = bookFile(book, "all_clean_text_$book.txt")
+            val lines = if (f.exists()) readText(f).split("\n").toMutableList() else mutableListOf()
+            while (lines.isNotEmpty() && lines.last().isBlank()) lines.removeAt(lines.size - 1)
+            val section = mutableListOf("[chapter:$chapter]")
+            scriptText.split("\n").filter { it.isNotEmpty() }.forEach { section.add(it) }
+            var start = -1
+            var end = lines.size
+            for (i in lines.indices) {
+                val m = CHAPTER_MARKER.find(lines[i]) ?: continue
+                val ch = m.groupValues[1].toIntOrNull() ?: continue
+                if (ch == chapter) {
+                    start = i
+                } else if (start >= 0) {
+                    end = i
+                    break
+                }
+            }
+            if (start >= 0) {
+                lines.subList(start, end).clear()
+                lines.addAll(start, section)
+            } else {
+                if (lines.isNotEmpty()) lines.add("")
+                lines.addAll(section)
+            }
+            writeText(f, lines.joinToString("\n"))
+            // 章节缓存（键=bookUrl|chapter；与既有同步逻辑同构）
+            val cacheFile = bookFile(book, "chapter_cache.$book.json")
+            val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
+            val key = "$bookUrl|$chapter"
+            val old = cache.optJSONObject(key)
+            cache.put(
+                key,
+                JSONObject().apply {
+                    put("state", "success")
+                    put("scriptText", scriptText)
+                    put("currentLogicOffset", old?.optInt("currentLogicOffset", 0) ?: 0)
+                    put("saveTime", System.currentTimeMillis())
+                },
+            )
+            writeText(cacheFile, cache.toString())
+            writeBookRev(book, chapter)
+            true
+        }.getOrDefault(false)
+    }
+
+    /** 确保书籍在书架索引（liebiao.json；仅追加，不改变当前书） */
+    suspend fun ensureBookInList(book: String): Boolean = withContext(Dispatchers.IO) {
+        val name = book.trim()
+        if (name.isEmpty()) return@withContext false
+        runCatching {
+            val f = rootFile("liebiao.json")
+            val arr = runCatching { JSONArray(readText(f)) }.getOrDefault(JSONArray())
+            for (i in 0 until arr.length()) if (arr.optString(i).trim() == name) return@withContext false
+            arr.put(name)
+            writeText(f, arr.toString())
+            true
+        }.getOrDefault(false)
+    }
 }
