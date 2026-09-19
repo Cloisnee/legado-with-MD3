@@ -26,9 +26,6 @@ import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.data.repository.ReplaceRuleRepository
 import io.legado.app.data.repository.SettingsRepository
 import io.legado.app.data.repository.UploadRepository
-import io.legado.app.domain.gateway.AiArtifactGateway
-import io.legado.app.domain.gateway.AiProfileGateway
-import io.legado.app.domain.gateway.AiPromptPresetGateway
 import io.legado.app.domain.gateway.AppShellSettingsGateway
 import io.legado.app.domain.gateway.AppUiConfigurationGateway
 import io.legado.app.domain.gateway.BackupSettingsGateway
@@ -39,10 +36,7 @@ import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadStyleGateway
 import io.legado.app.domain.gateway.ThemeSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
-import io.legado.app.domain.usecase.AiTextFactoryUseCase
 import io.legado.app.domain.usecase.ChangeBookSourceUseCase
-import io.legado.app.domain.usecase.CleanSelectedTextUseCase
-import io.legado.app.domain.usecase.GenerateChapterSummaryUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
 import io.legado.app.domain.usecase.SaveBookContentProcessUseCase
@@ -74,9 +68,6 @@ import io.legado.app.model.activeReadAloudProgress
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
-import io.legado.app.model.translation.TranslationChapterKey
-import io.legado.app.model.translation.TranslationChapterStatus
-import io.legado.app.model.translation.TranslationManager
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetTab
 import io.legado.app.ui.book.searchContent.SearchResult
@@ -118,7 +109,6 @@ class ReadBookViewModel(
     application: Application,
     private val getReadingProgressUseCase: GetReadingProgressUseCase,
     private val uploadReadingProgressUseCase: UploadReadingProgressUseCase,
-    val translateChapterUseCase: io.legado.app.domain.usecase.TranslateChapterUseCase,
     private val readSettingsRepository: ReadSettingsRepository,
     private val readBookStyleConfigRepository: ReadStyleGateway,
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
@@ -126,17 +116,11 @@ class ReadBookViewModel(
     private val highlightRuleRepository: HighlightRuleRepository,
     private val uploadRepository: UploadRepository,
     private val changeBookSourceUseCase: ChangeBookSourceUseCase,
-    private val generateChapterSummaryUseCase: GenerateChapterSummaryUseCase,
-    private val cleanSelectedTextUseCase: CleanSelectedTextUseCase,
-    private val aiTextFactoryUseCase: AiTextFactoryUseCase,
     private val saveBookContentProcessUseCase: SaveBookContentProcessUseCase,
     private val saveMarkingUseCase: SaveMarkingUseCase,
     private val verifyBookmarkTargetUseCase: VerifyBookmarkTargetUseCase,
     private val relocateMarkingTargetUseCase: RelocateMarkingTargetUseCase,
     private val bookContentProcessGateway: BookContentProcessGateway,
-    private val aiArtifactGateway: AiArtifactGateway,
-    private val aiPromptPresetGateway: AiPromptPresetGateway,
-    private val aiProfileGateway: AiProfileGateway,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val replaceRuleRepository: ReplaceRuleRepository,
@@ -274,52 +258,6 @@ class ReadBookViewModel(
         },
     ) }
 
-    // --- AI 域（摘要 / 净化 / 重写 / 预设）---
-
-    private val aiHost = object : ReadAiDelegate.Host {
-        override val activeSheet: ReadBookSheet? get() = _uiState.value.activeSheet
-
-        override val chapterName: String get() = _uiState.value.chapterName
-
-        override fun setActiveSheet(sheet: ReadBookSheet?) {
-            _uiState.update { it.copy(activeSheet = sheet) }
-        }
-
-        override fun closeReadMenu() {
-            this@ReadBookViewModel.closeReadMenu()
-        }
-
-        override fun showToast(message: String) {
-            _effects.tryEmit(ReadBookEffect.ShowToast(message))
-        }
-
-        override fun reloadChapterAfterContentProcessChanged(
-            bookUrl: String,
-            chapterIndex: Int,
-        ) {
-            contentProcessDelegate.reloadCurrentChapter(bookUrl, chapterIndex)
-        }
-
-        override suspend fun findChapter(bookUrl: String, chapterIndex: Int): BookChapter? =
-            bookRepository.getChapter(bookUrl, chapterIndex)
-
-        override suspend fun listChapters(bookUrl: String): List<BookChapter> =
-            bookRepository.getChapters(bookUrl)
-    }
-
-    private val aiDelegate by lazy { ReadAiDelegate(
-        context = context,
-        scope = viewModelScope,
-        host = aiHost,
-        generateChapterSummaryUseCase = generateChapterSummaryUseCase,
-        cleanSelectedTextUseCase = cleanSelectedTextUseCase,
-        aiTextFactoryUseCase = aiTextFactoryUseCase,
-        saveBookContentProcessUseCase = saveBookContentProcessUseCase,
-        aiArtifactGateway = aiArtifactGateway,
-        aiPromptPresetGateway = aiPromptPresetGateway,
-    ) }
-
-    val aiState get() = aiDelegate.uiState
     // --- 高亮规则域 ---
 
     private val highlightRuleDelegate by lazy { ReadHighlightRuleDelegate(
@@ -547,7 +485,6 @@ class ReadBookViewModel(
         readAloudSettingsRepository = readAloudSettingsRepository,
         readAloudSessionStore = readAloudSessionStore,
         httpTtsRepository = httpTtsRepository,
-        aiProfileGateway = aiProfileGateway,
         syncReadAloudVoicesUseCase = syncReadAloudVoicesUseCase,
     ) }
 
@@ -597,8 +534,6 @@ class ReadBookViewModel(
     val readPreferences = _readPreferences.asStateFlow()
 
     private var pendingBooksDirReloadChapterList: Boolean = false
-    private var translationStatusJob: Job? = null
-    private var observedTranslationKey: TranslationChapterKey? = null
     private var deferredReaderFeaturesStarted = false
 
     val isInitFinish: Boolean get() = _uiState.value.isInitFinish
@@ -896,12 +831,6 @@ class ReadBookViewModel(
                 ReadBook.loadContent(false)
                 _uiState.update { it.copy(reSegment = false) }
             }
-            is ReadBookIntent.ToggleTranslation -> toggleTranslation()
-            is ReadBookIntent.OpenChapterSummary -> aiDelegate.openChapterSummary()
-            is ReadBookIntent.OpenAiCurrentChapterRewrite -> aiDelegate.openAiCurrentChapterRewrite()
-            is ReadBookIntent.RetryChapterSummary -> aiDelegate.retryChapterSummary()
-            is ReadBookIntent.SetChapterSummaryReasoningLevel ->
-                aiDelegate.setChapterSummaryReasoningLevel(intent.level)
             is ReadBookIntent.LoadContentProcesses -> contentProcessDelegate.load()
             is ReadBookIntent.ToggleContentProcess ->
                 contentProcessDelegate.toggle(intent.id, intent.enabled)
@@ -909,20 +838,6 @@ class ReadBookViewModel(
                 contentProcessDelegate.requestDelete(intent.item)
             is ReadBookIntent.ConfirmDeleteContentProcess -> contentProcessDelegate.confirmDelete()
             is ReadBookIntent.DismissDeleteContentProcess -> contentProcessDelegate.dismissDelete()
-            is ReadBookIntent.SelectAiRewritePreset -> aiDelegate.selectAiRewritePreset(intent.presetId)
-            is ReadBookIntent.SetAiRewriteTemporaryInstruction ->
-                aiDelegate.setAiRewriteTemporaryInstruction(intent.instruction)
-            is ReadBookIntent.SelectAiRewriteHistory ->
-                aiDelegate.selectAiRewriteHistory(intent.artifactId)
-            is ReadBookIntent.GenerateAiTextRewrite -> aiDelegate.generateSelectedAiTextRewrite()
-            is ReadBookIntent.RetryAiTextRewrite -> aiDelegate.retryAiTextRewrite()
-            is ReadBookIntent.SetAiTextRewriteReasoningLevel ->
-                aiDelegate.setAiTextRewriteReasoningLevel(intent.level)
-            is ReadBookIntent.ConfirmAiTextRewrite -> aiDelegate.confirmAiTextRewrite()
-            is ReadBookIntent.OpenAiRewritePresetConfig -> aiDelegate.openAiRewritePresetConfig()
-            is ReadBookIntent.CloseAiRewritePresetConfig -> aiDelegate.closeAiRewritePresetConfig()
-            is ReadBookIntent.AddAiRewritePreset -> aiDelegate.startAddAiRewritePreset()
-            is ReadBookIntent.EditAiRewritePreset -> aiDelegate.startEditAiRewritePreset(intent.preset)
             is ReadBookIntent.SetAiRewritePresetName ->
                 aiDelegate.setAiRewritePresetName(intent.name)
             is ReadBookIntent.SetAiRewritePresetInstruction ->
@@ -1064,7 +979,6 @@ class ReadBookViewModel(
             is ReadBookIntent.SaveImage -> saveImage(intent.src)
             is ReadBookIntent.ReverseContent -> reverseContent()
             is ReadBookIntent.ReverseRemoveSameTitle -> reverseRemoveSameTitle()
-            is ReadBookIntent.RetranslateCurrentChapter -> retranslateCurrentChapter()
             // Menu actions
             is ReadBookIntent.MenuUpdateToc -> {
                 ReadBook.book?.let { book ->
@@ -1356,8 +1270,6 @@ class ReadBookViewModel(
                 readAloudDelegate.setTtsFollowSys(intent.value)
             is ReadBookIntent.SetReadAloudTtsSpeechRate ->
                 readAloudDelegate.setTtsSpeechRate(intent.value)
-            is ReadBookIntent.SetSpeechAnalysisMode -> readAloudDelegate.setSpeechAnalysisMode(intent.value)
-            is ReadBookIntent.SetSpeechAnalysisReasoningLevel -> readAloudDelegate.setSpeechAnalysisReasoningLevel(intent.value)
             is ReadBookIntent.SetUseMultiSpeaker ->
                 readAloudDelegate.setUseMultiSpeaker(intent.value)
             is ReadBookIntent.SetDefaultReadAloudInterface ->
@@ -1522,29 +1434,6 @@ class ReadBookViewModel(
 
             is ReadBookIntent.TextActionDict -> {
                 _uiState.update { it.copy(activeSheet = ReadBookSheet.Dict(intent.text)) }
-            }
-
-            is ReadBookIntent.OpenAiTextClean -> {
-                aiDelegate.openAiTextClean(
-                    text = intent.text,
-                    chapterIndex = intent.chapterIndex,
-                    chapterPosition = intent.chapterPosition,
-                )
-            }
-
-            is ReadBookIntent.RetryAiTextClean -> aiDelegate.retryAiTextClean()
-            is ReadBookIntent.SetAiTextCleanReasoningLevel ->
-                aiDelegate.setAiTextCleanReasoningLevel(intent.level)
-            is ReadBookIntent.ConfirmAiTextClean -> aiDelegate.confirmAiTextClean()
-
-            is ReadBookIntent.OpenAiTextRewrite -> {
-                viewModelScope.launch {
-                    aiDelegate.openAiTextRewrite(
-                        text = intent.text,
-                        chapterIndex = intent.chapterIndex,
-                        chapterPosition = intent.chapterPosition,
-                    )
-                }
             }
 
             is ReadBookIntent.ApplySimulatedReading -> {
@@ -2021,7 +1910,6 @@ class ReadBookViewModel(
         val chapterInput = ReadBook.readerChapterInputWindow.current
         val canvasPage = composePagePosition
             ?.takeIf { it.chapterIndex == ReadBook.durChapterIndex }
-        val translationStatus = observeCurrentTranslation(book, ReadBook.durChapterIndex)
         return current.copy(
             book = book,
             bookSource = ReadBook.bookSource,
@@ -2045,8 +1933,6 @@ class ReadBookViewModel(
             effectiveContentProcessCount = chapterInput?.content?.effectiveContentProcesses?.size ?: 0,
             effectiveReplaceRules = chapterInput?.content?.effectiveReplaceRules.orEmpty().toImmutableList(),
             chineseConverterActive = readSettingsRepository.currentSettings.chineseConverterType > 0,
-            translationMode = book?.getTranslationMode() ?: false,
-            translationStatus = translationStatus,
             isLocalTxt = book?.isLocalTxt == true,
             isEpub = book?.isEpub == true,
             useReplaceRule = book?.getUseReplaceRule(
@@ -2103,42 +1989,6 @@ class ReadBookViewModel(
                 titleBarCompact = ReadBookConfig.titleBarCompact,
             ),
         )
-    }
-
-    private fun observeCurrentTranslation(
-        book: Book?,
-        chapterIndex: Int,
-    ): TranslationChapterStatus {
-        val key = book
-            ?.takeIf { it.getTranslationMode() }
-            ?.let { TranslationChapterKey(it.bookUrl, chapterIndex) }
-        if (key == observedTranslationKey && translationStatusJob?.isActive == true) {
-            return _uiState.value.translationStatus
-        }
-
-        translationStatusJob?.cancel()
-        val taskFlow = key?.let {
-            TranslationManager.getChapterTaskStateFlow(it.bookUrl, it.chapterIndex)
-        }
-        if (taskFlow == null) {
-            observedTranslationKey = null
-            return TranslationChapterStatus.Idle
-        }
-
-        observedTranslationKey = key
-        translationStatusJob = viewModelScope.launch {
-            taskFlow.takeWhile { taskState ->
-                if (observedTranslationKey == taskState.key) {
-                    _uiState.update { state ->
-                        state.copy(translationStatus = taskState.status)
-                    }
-                }
-                taskState.status == TranslationChapterStatus.Translating ||
-                    taskState.status == TranslationChapterStatus.Thinking
-            }.collect {}
-            if (observedTranslationKey == key) observedTranslationKey = null
-        }
-        return taskFlow.value.status
     }
 
     private fun calculateSeekProgress(): Int {
@@ -2455,27 +2305,6 @@ class ReadBookViewModel(
         }
     }
 
-    @Suppress("LongMethod")
-    private fun toggleTranslation() {
-        val book = ReadBook.book ?: return
-        val enabled = !book.getTranslationMode()
-        book.setTranslationMode(enabled)
-        book.save()
-        _uiState.update { it.copy(translationMode = enabled) }
-        ReadBook.loadContent(false)
-    }
-
-    private fun retranslateCurrentChapter() {
-        val book = ReadBook.book ?: return
-        viewModelScope.launch {
-            val chapter = currentChapter() ?: return@launch
-            io.legado.app.model.translation.TranslationManager.deleteTranslationCache(book, chapter)
-            book.setTranslationMode(true)
-            book.save()
-            ReadBook.loadContent(false)
-        }
-    }
-
     fun disableSource() {
         execute {
             ReadBook.bookSource?.let {
@@ -2682,7 +2511,6 @@ class ReadBookViewModel(
     }
 
     override fun onCleared() {
-        translationStatusJob?.cancel()
         super.onCleared()
         if (BaseReadAloudService.isRun && BaseReadAloudService.pause) {
             ReadAloud.stop(context)

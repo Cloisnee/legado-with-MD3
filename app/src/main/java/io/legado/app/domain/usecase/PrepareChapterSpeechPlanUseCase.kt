@@ -4,11 +4,9 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ChapterSpeechGateway
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.readaloud.BookVoiceBinding
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
-import io.legado.app.domain.model.readaloud.SpeechAnalysisMode
 import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
@@ -36,8 +34,6 @@ class PrepareChapterSpeechPlanUseCase(
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
         preferredDefaultVoiceId: String? = null,
-        @Suppress("UNUSED_PARAMETER") analysisMode: SpeechAnalysisMode = SpeechAnalysisMode.Rule,
-        @Suppress("UNUSED_PARAMETER") analysisReasoningLevel: AiReasoningLevel = AiReasoningLevel.OFF,
         useMultiSpeaker: Boolean = true,
         bookName: String = "",
     ): List<SpeechPlanItem> {

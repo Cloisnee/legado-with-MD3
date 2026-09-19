@@ -76,7 +76,6 @@ import io.legado.app.feature.reader.core.transition.ReaderTransitionMode
 import io.legado.app.help.IntentHelp
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
-import io.legado.app.model.translation.TranslationChapterStatus
 import io.legado.app.ui.book.info.BookInfoActivity
 import io.legado.app.ui.book.read.page.entities.PageDirection
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetRoute
@@ -821,13 +820,6 @@ fun ReadBookRouteScreen(
             )
             ReadBookSearchBar(state = state, onIntent = viewModel::onIntent)
             ReadBookFloatingActionBar(state = state, onIntent = viewModel::onIntent)
-            AnimatedVisibility(
-                visible = state.translationStatus == TranslationChapterStatus.Thinking,
-                enter = fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.88f),
-                exit = fadeOut(tween(140)) + scaleOut(tween(180), targetScale = 0.88f),
-            ) {
-                TranslationThinkingCapsule()
-            }
             AnimatedVisibility(
                 visible = state.isReadAloudRunning &&
                     state.showReadAloudCapsule &&

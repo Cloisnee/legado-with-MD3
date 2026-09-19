@@ -500,17 +500,8 @@ internal fun loadToolButtons(
                 onIntent(ReadBookIntent.HideMenu)
             }
         },
-        infoMap.getValue("translate").toButton(isActive = state.translationMode) {
-            onIntent(ReadBookIntent.ToggleTranslation)
-        },
         infoMap.getValue("refresh_current").toButton {
             onIntent(ReadBookIntent.RefreshCurrentChapter)
-        },
-        infoMap.getValue("ai_summary").toButton {
-            onIntent(ReadBookIntent.OpenChapterSummary)
-        },
-        infoMap.getValue("ai_rewrite").toButton {
-            onIntent(ReadBookIntent.OpenAiCurrentChapterRewrite)
         },
         infoMap.getValue("more_actions").toButton {
             onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.MoreActions))

@@ -1,7 +1,6 @@
 package io.legado.app.data.repository
 
 import io.legado.app.constant.PreferKey
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -65,7 +64,6 @@ class ReadAloudSettingsMappingTest {
     fun `朗读分析推理级别默认关闭`() {
         val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
 
-        assertEquals(AiReasoningLevel.OFF.storageValue, settings.speechAnalysisReasoningLevel)
     }
 }
 
@@ -82,8 +80,6 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         capsuleOffsetY = -4.5f,
         ttsTimer = 33,
         ttsSpeechRate = 44,
-        speechAnalysisMode = "ai",
-        speechAnalysisReasoningLevel = "medium",
         defaultInterface = "player",
         contentSelectSpeakMode = 55,
         audioPreDownloadNum = 66,
@@ -131,8 +127,6 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.finishCurrentChapterAfterTimer to finishCurrentChapterAfterTimer,
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
-    PreferKey.speechAnalysisMode to speechAnalysisMode,
-    PreferKey.speechAnalysisReasoningLevel to speechAnalysisReasoningLevel,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
     PreferKey.defaultReadAloudInterface to defaultInterface,
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,

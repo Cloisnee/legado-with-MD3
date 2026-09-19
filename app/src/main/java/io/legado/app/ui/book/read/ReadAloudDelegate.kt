@@ -8,9 +8,6 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadSettingsRepository
-import io.legado.app.domain.gateway.AiProfileGateway
-import io.legado.app.domain.model.AiReasoningLevel
-import io.legado.app.domain.model.AiTaskType
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
@@ -47,7 +44,6 @@ class ReadAloudDelegate(
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val httpTtsRepository: HttpTtsRepository,
-    private val aiProfileGateway: AiProfileGateway,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
 ) {
 
@@ -438,36 +434,6 @@ class ReadAloudDelegate(
             )
         }
         host.updateState { it.copy(defaultReadAloudInterface = value) }
-    }
-
-    /** 非规则模式要求已配置 AI 模型，否则拒绝切换并提示。 */
-    fun setSpeechAnalysisMode(value: String) {
-        scope.launch {
-            if (value != "rule") {
-                val configured = aiProfileGateway.getTaskPreset(AiTaskType.ANALYZE_SPEECH)
-                    ?: aiProfileGateway.getTaskPreset(AiTaskType.CHAT)
-                if (configured == null) {
-                    host.emitEffectAwait(
-                        ReadBookEffect.ShowToast(
-                            context.getString(R.string.speech_analysis_ai_model_required)
-                        )
-                    )
-                    return@launch
-                }
-            }
-            readAloudSettingsRepository.update { it.copy(speechAnalysisMode = value) }
-            host.updateState { it.copy(speechAnalysisMode = value) }
-        }
-    }
-
-    /**
-     * 朗读分析的推理级别。关闭思考模式是 AI 朗读分析的默认值：默认思考的模型（智谱 GLM 等）
-     * 只把内容放在 reasoning_content 里，分析会直接失败。
-     */
-    fun setSpeechAnalysisReasoningLevel(value: String) {
-        val level = AiReasoningLevel.fromStorage(value, AiReasoningLevel.OFF)
-        updateSettings { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
-        host.updateState { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
     }
 
     /**

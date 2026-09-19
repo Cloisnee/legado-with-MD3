@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.update
 /**
  * 阅读页正文编辑域：打开编辑弹层、载入当前章正文、保存、还原。
  *
- * 自持 [ContentEditUiState]；章节读取走 [Host]（理由同 [ReadAiDelegate]——
+ * 自持 [ContentEditUiState]；章节读取走 [Host]（理由同其它阅读域 delegate——
  * 不让 DAO 直连从 `legacyDaoInjectionBaseline` 洗进宽松的 `legacyUiDaoAccessBaseline`）。
  *
  * `execute {}` 是 `BaseViewModel` 的成员，这里换成它的实现体

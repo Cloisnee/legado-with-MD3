@@ -45,9 +45,6 @@ import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.localBook.TextFile
 import io.legado.app.model.reader.ReaderChapterInput
 import io.legado.app.model.reader.ReaderChapterInputWindow
-import io.legado.app.model.translation.TranslationChapterState
-import io.legado.app.model.translation.TranslationChapterStatus
-import io.legado.app.model.translation.TranslationManager
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.CacheBookService
@@ -79,7 +76,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -87,7 +83,6 @@ import kotlinx.coroutines.withContext
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import splitties.init.appCtx
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
 
@@ -170,7 +165,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         AppLog.put("Reader chapter load ERROR", error)
         appCtx.toastOnUi("Reader chapter load ERROR:\n${error.stackTraceStr}")
     }
-    private val translationObserverJobs = ConcurrentHashMap<Int, Job>()
     var readStartTime: Long = System.currentTimeMillis()
     var isUiActive = false
     val isAutoSaveSessionRunning: Boolean
@@ -405,7 +399,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             contentKey = buildString {
                 append(book.config.useReplaceRule)
                 append('|').append(book.config.delTag)
-                append('|').append(book.config.translationMode)
                 append('|').append(readSettingsGateway.currentSettings.chineseConverterType)
                 append('|').append(otherSettingsGateway.currentSettings.replaceEnableDefault)
                 append('|').append(processor.getTitleReplaceRules())
@@ -740,7 +733,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     @Synchronized
     fun clearTextChapter() {
         clearExpiredChapterLoadingJob(true)
-        clearTranslationObserverJobs()
         readerChapterInputWindow = ReaderChapterInputWindow()
         clearReaderPagination()
     }
@@ -769,14 +761,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         readerChapterInputWindow = readerChapterInputWindow.let {
             ReaderChapterInputWindow(current = it.previous, next = it.current)
         }
-    }
-
-    private fun clearTranslationObserverJobs() {
-        translationObserverJobs.entries.filter { it.key !in durChapterIndex - 1..durChapterIndex + 1 }
-            .forEach { (index, job) ->
-                job.cancel()
-                translationObserverJobs.remove(index)
-            }
     }
 
     fun uploadProgress(toast: Boolean = false, successAction: (() -> Unit)? = null) {
@@ -1360,17 +1344,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 return@async
             }
             if (addLoading(index)) {
-                val content = if (book.getTranslationMode()) {
-                    TranslationManager.getCachedTranslation(book, chapter)
-                        ?: run {
-                            TranslationManager.startTranslation(book, chapter)?.let { taskFlow ->
-                                startTranslationObserver(taskFlow, book, chapter)
-                            }
-                            BookHelp.getContent(book, chapter)
-                        }
-                } else {
-                    BookHelp.getContent(book, chapter)
-                }
+                val content = BookHelp.getContent(book, chapter)
                 content?.let {
                     contentLoadFinish(
                         book,
@@ -1407,17 +1381,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             try {
                 val book = book!!
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index)!!
-                val content = if (book.getTranslationMode()) {
-                    TranslationManager.getCachedTranslation(book, chapter)
-                        ?: run {
-                            TranslationManager.startTranslation(book, chapter)?.let { taskFlow ->
-                                startTranslationObserver(taskFlow, book, chapter)
-                            }
-                            BookHelp.getContent(book, chapter) ?: downloadAwait(chapter)
-                        }
-                } else {
-                    BookHelp.getContent(book, chapter) ?: downloadAwait(chapter)
-                }
+                val content = BookHelp.getContent(book, chapter) ?: downloadAwait(chapter)
                 contentLoadFinishAwait(book, chapter, content, upContent, resetPageOffset)
                 success?.invoke()
             } catch (e: Exception) {
@@ -1501,45 +1465,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             val msg = if (book.isLocal) "无内容" else "没有书源"
             return "加载正文失败\n$msg"
         }
-    }
-
-    /**
-     * Start observing a translation task for real-time UI updates.
-     * Collects mixedContent updates and calls contentLoadFinish to refresh the page.
-     * The observer stops automatically when translation completes or fails.
-     */
-    private fun startTranslationObserver(taskFlow: MutableStateFlow<TranslationChapterState>, book: Book, chapter: BookChapter) {
-        val chapterIndex = chapter.index
-        translationObserverJobs[chapterIndex]?.cancel()
-
-        val job = launch {
-            try {
-                taskFlow.takeWhile { state ->
-                    when (state.status) {
-                        TranslationChapterStatus.Translating,
-                        TranslationChapterStatus.Thinking -> {
-                            state.mixedContent?.let { mixed ->
-                                contentLoadFinish(
-                                    book,
-                                    chapter,
-                                    mixed,
-                                    upContent = true,
-                                    resetPageOffset = false,
-                                )
-                            }
-                        }
-                        else -> Unit
-                    }
-                    state.status == TranslationChapterStatus.Translating ||
-                        state.status == TranslationChapterStatus.Thinking
-                }.collect {}
-            } finally {
-                coroutineContext[Job]?.let { job ->
-                    translationObserverJobs.remove(chapterIndex, job)
-                }
-            }
-        }
-        translationObserverJobs[chapterIndex] = job
     }
 
     @Synchronized

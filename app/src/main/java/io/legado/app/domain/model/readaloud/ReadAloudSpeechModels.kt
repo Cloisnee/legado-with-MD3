@@ -146,17 +146,6 @@ data class CharacterPerformanceProfile(
     val updatedAt: Long = 0L,
 )
 
-enum class SpeechAnalysisMode(val storageValue: String) {
-    Rule("rule"),
-    RuleWithAi("rule_with_ai"),
-    AiUnderstanding("ai_understanding");
-
-    companion object {
-        fun fromStorage(value: String): SpeechAnalysisMode =
-            entries.firstOrNull { it.storageValue == value } ?: Rule
-    }
-}
-
 data class SpeakerCharacter(
     val id: String,
     val name: String,

@@ -211,7 +211,6 @@ internal fun MenuBottomBar(
             state.menuConfig.readMenuCustomIcons,
             state.isReadAloudRunning,
             state.isAutoPage,
-            state.translationMode,
             state.useReplaceRule,
             eyeProtectionEnabled,
         ) {

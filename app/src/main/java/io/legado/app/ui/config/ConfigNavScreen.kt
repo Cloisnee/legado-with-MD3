@@ -26,9 +26,7 @@ fun ConfigNavScreen(
     onNavigateToCover: () -> Unit,
     onNavigateToTheme: () -> Unit,
     onNavigateToBackup: () -> Unit,
-    onNavigateToAi: () -> Unit,
     onNavigateToDownloadCache: () -> Unit,
-    onNavigateToTranslation: () -> Unit,
     onNavigateToLab: () -> Unit
 ) {
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()

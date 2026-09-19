@@ -14,12 +14,10 @@ import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.HighlightRule
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.repository.ReadAloudSettingsRepository
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.TextProcessStyle
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.settings.ReadStyleItem
 import io.legado.app.domain.usecase.BookmarkTargetVerdict
-import io.legado.app.model.translation.TranslationChapterStatus
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetTab
 import io.legado.app.ui.book.searchContent.SearchResult
 import kotlinx.collections.immutable.ImmutableList
@@ -247,9 +245,6 @@ data class ReadBookUiState(
     val effectiveReplaceRules: ImmutableList<ReplaceRule> = persistentListOf(),
     val allReplaceRules: ImmutableList<ReplaceRuleItemUi> = persistentListOf(),
     val chineseConverterActive: Boolean = false,
-    // Translation
-    val translationMode: Boolean = false,
-    val translationStatus: TranslationChapterStatus = TranslationChapterStatus.Idle,
     // Time / battery (from EventBus)
     val time: String = "",
     val battery: Int = 0,
@@ -290,8 +285,6 @@ data class ReadBookUiState(
     val readAloudTtsSpeechRate: Int = 10,
     val readAloudTtsTimer: Int = 0,
     val readAloudFinishCurrentChapterAfterTimer: Boolean = false,
-    val speechAnalysisMode: String = "rule",
-    val speechAnalysisReasoningLevel: String = AiReasoningLevel.OFF.storageValue,
     val useMultiSpeaker: Boolean = true,
     val defaultReadAloudInterface: String = ReadAloudSettingsRepository.DEFAULT_INTERFACE_CLASSIC,
     val readAloudParagraphInterval: Int = 0,
@@ -300,7 +293,6 @@ data class ReadBookUiState(
     val sheetConfig: ReadSheetConfigUiState = ReadSheetConfigUiState(),
     // Menu config (from ReadBookConfig via repository)
     val menuConfig: ReadMenuConfig = ReadMenuConfig(),
-    // AI 域状态见 ReadAiUiState —— 由 ReadAiDelegate 独立持有
     val eyeProtection: EyeProtectionUiState = EyeProtectionUiState(),
 ) {
     val menuVisible: Boolean
@@ -403,8 +395,6 @@ data class ReadBookButtonConfigItem(
 )
 
 internal val ReadBookButtonIds = listOf(
-    "ai_summary",
-    "ai_rewrite",
     "more_actions",
     "search",
     "auto_page",
@@ -418,7 +408,6 @@ internal val ReadBookButtonIds = listOf(
     "next_chapter",
     "replace",
     "replace_badge",
-    "translate",
     "refresh_current",
 )
 
@@ -492,11 +481,6 @@ sealed interface ReadBookIntent {
     data class SetReplaceRuleEnabled(val id: Long, val enabled: Boolean) : ReadBookIntent
     data class MoveReplaceRule(val draggedId: Long, val anchorId: Long, val afterAnchor: Boolean) :
         ReadBookIntent
-    data object ToggleTranslation : ReadBookIntent
-    data object OpenChapterSummary : ReadBookIntent
-    data object OpenAiCurrentChapterRewrite : ReadBookIntent
-    data object RetryChapterSummary : ReadBookIntent
-    data class SetChapterSummaryReasoningLevel(val level: AiReasoningLevel) : ReadBookIntent
     data object LoadContentProcesses : ReadBookIntent
     data class ToggleContentProcess(val id: String, val enabled: Boolean) : ReadBookIntent
     data class RequestDeleteContentProcess(val item: ContentProcessItemUi) : ReadBookIntent
@@ -578,7 +562,6 @@ sealed interface ReadBookIntent {
     data class SaveImage(val src: String) : ReadBookIntent
     data object ReverseContent : ReadBookIntent
     data object ReverseRemoveSameTitle : ReadBookIntent
-    data object RetranslateCurrentChapter : ReadBookIntent
 
     // Menu actions (moved from Activity)
     data object MenuUpdateToc : ReadBookIntent
@@ -715,40 +698,6 @@ sealed interface ReadBookIntent {
     data class TextActionReplace(val text: String) : ReadBookIntent
     data class TextActionSearchContent(val text: String) : ReadBookIntent
     data class TextActionDict(val text: String) : ReadBookIntent
-    data class OpenAiTextClean(
-        val text: String,
-        val chapterIndex: Int,
-        val chapterPosition: Int,
-    ) : ReadBookIntent
-
-    data object RetryAiTextClean : ReadBookIntent
-    data class SetAiTextCleanReasoningLevel(val level: AiReasoningLevel) : ReadBookIntent
-    data object ConfirmAiTextClean : ReadBookIntent
-    data class OpenAiTextRewrite(
-        val text: String,
-        val chapterIndex: Int,
-        val chapterPosition: Int,
-    ) : ReadBookIntent
-
-    data class SelectAiRewritePreset(val presetId: String) : ReadBookIntent
-    data class SetAiRewriteTemporaryInstruction(val instruction: String) : ReadBookIntent
-    data class SelectAiRewriteHistory(val artifactId: String) : ReadBookIntent
-    data object GenerateAiTextRewrite : ReadBookIntent
-    data object RetryAiTextRewrite : ReadBookIntent
-    data class SetAiTextRewriteReasoningLevel(val level: AiReasoningLevel) : ReadBookIntent
-    data object ConfirmAiTextRewrite : ReadBookIntent
-    data object OpenAiRewritePresetConfig : ReadBookIntent
-    data object CloseAiRewritePresetConfig : ReadBookIntent
-    data object AddAiRewritePreset : ReadBookIntent
-    data class EditAiRewritePreset(val preset: AiRewritePresetUi) : ReadBookIntent
-    data class SetAiRewritePresetName(val name: String) : ReadBookIntent
-    data class SetAiRewritePresetInstruction(val instruction: String) : ReadBookIntent
-    data object SaveAiRewritePreset : ReadBookIntent
-    data object CancelAiRewritePresetEdit : ReadBookIntent
-    data class RequestDeleteAiRewritePreset(val preset: AiRewritePresetUi) : ReadBookIntent
-    data object ConfirmDeleteAiRewritePreset : ReadBookIntent
-    data object DismissDeleteAiRewritePreset : ReadBookIntent
-
     // Screen / selection config
     data class KeepLightChanged(val value: String) : ReadBookIntent
     data class SetOrientation(val value: String) : ReadBookIntent
@@ -799,8 +748,6 @@ sealed interface ReadBookIntent {
     data class SetFinishCurrentChapterAfterTimer(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsFollowSys(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsSpeechRate(val value: Int) : ReadBookIntent
-    data class SetSpeechAnalysisMode(val value: String) : ReadBookIntent
-    data class SetSpeechAnalysisReasoningLevel(val value: String) : ReadBookIntent
     data class SetUseMultiSpeaker(val value: Boolean) : ReadBookIntent
     data class SetDefaultReadAloudInterface(val value: String) : ReadBookIntent
     data object OpenSystemTtsSettings : ReadBookIntent
@@ -989,10 +936,6 @@ sealed interface ReadBookSheet {
     data object ContentProcesses : ReadBookSheet
     data object TextProcessing : ReadBookSheet
     data object ContentEdit : ReadBookSheet
-    data object ChapterSummary : ReadBookSheet
-    data object AiTextClean : ReadBookSheet
-    data object AiTextRewrite : ReadBookSheet
-    data object AiRewritePresetConfig : ReadBookSheet
     data object AppLog : ReadBookSheet
     data class ChangeChapterSource(val chapterIndex: Int, val chapterTitle: String) : ReadBookSheet
     data object ChangeBookSource : ReadBookSheet

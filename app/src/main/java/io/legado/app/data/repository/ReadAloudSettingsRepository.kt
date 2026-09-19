@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.legado.app.constant.PreferKey
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
@@ -67,11 +66,6 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
         compatDsValue(ReadAloudKeys.FinishCurrentChapterAfterTimer, false),
     ttsFollowSys = compatDsValue(ReadAloudKeys.TtsFollowSys, true),
     ttsSpeechRate = compatDsValue(ReadAloudKeys.TtsSpeechRate, 5),
-    speechAnalysisMode = compatDsValue(ReadAloudKeys.SpeechAnalysisMode, "rule"),
-    speechAnalysisReasoningLevel = compatDsValue(
-        ReadAloudKeys.SpeechAnalysisReasoningLevel,
-        AiReasoningLevel.OFF.storageValue,
-    ),
     useMultiSpeaker = compatDsValue(ReadAloudKeys.UseMultiSpeaker, true),
     defaultInterface = compatDsValue(
         ReadAloudKeys.DefaultInterface,
@@ -138,9 +132,6 @@ private object ReadAloudKeys {
         booleanPreferencesKey(PreferKey.finishCurrentChapterAfterTimer)
     val TtsFollowSys = booleanPreferencesKey(PreferKey.ttsFollowSys)
     val TtsSpeechRate = intPreferencesKey(PreferKey.ttsSpeechRate)
-    val SpeechAnalysisMode = stringPreferencesKey(PreferKey.speechAnalysisMode)
-    val SpeechAnalysisReasoningLevel =
-        stringPreferencesKey(PreferKey.speechAnalysisReasoningLevel)
     val UseMultiSpeaker = booleanPreferencesKey(PreferKey.useMultiSpeaker)
     val DefaultInterface = stringPreferencesKey(PreferKey.defaultReadAloudInterface)
     val ContentSelectSpeakMode = intPreferencesKey(PreferKey.contentSelectSpeakMod)

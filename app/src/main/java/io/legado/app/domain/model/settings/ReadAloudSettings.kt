@@ -1,6 +1,5 @@
 package io.legado.app.domain.model.settings
 
-import io.legado.app.domain.model.AiReasoningLevel
 
 data class ReadAloudSettings(
     val ttsEngine: String? = null,
@@ -24,13 +23,6 @@ data class ReadAloudSettings(
     val finishCurrentChapterAfterTimer: Boolean = false,
     val ttsFollowSys: Boolean = true,
     val ttsSpeechRate: Int = 5,
-    val speechAnalysisMode: String = "rule",
-    /**
-     * Reasoning level for AI speech analysis (dialogue attribution / AI understanding).
-     * OFF by default: models that think by default (Zhipu GLM, …) return the JSON only in
-     * `reasoning_content` and the analysis fails, so thinking must be opted into explicitly.
-     */
-    val speechAnalysisReasoningLevel: String = AiReasoningLevel.OFF.storageValue,
     val useMultiSpeaker: Boolean = true,
     val defaultInterface: String = "classic",
     val contentSelectSpeakMode: Int = 0,
