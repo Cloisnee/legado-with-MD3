@@ -125,7 +125,11 @@ class TtsCacheViewModel : ViewModel() {
     private fun loadLogs() {
         viewModelScope.launch(Dispatchers.Default) {
             val ttsKeywords =
-                listOf("TTS", "预合成", "预下载", "朗读", "听书", "httpTTS", "朗读下载")
+                listOf(
+                    "TTS", "预合成", "预下载", "朗读", "听书", "httpTTS", "朗读下载",
+                    // 过渡：V4 分析管线日志（B7 日志改版后由 简/详 切换接管）
+                    "分析V3", "分析调度", "AI调用", "声线分配",
+                )
             val logs = AppLog.logs
                 .filter { entry ->
                     ttsKeywords.any { keyword -> entry.message.contains(keyword, ignoreCase = true) }

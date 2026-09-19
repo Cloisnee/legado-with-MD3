@@ -155,7 +155,7 @@ class ReadAloudPlayerViewModel(
                 val index = uiState.value.chapterIndex
                 if (bookUrl.isBlank() || index < 0) return@launch
                 scriptState.value = scriptState.value.copy(
-                    statusLine = "后台重新分析中（AI 管线）…",
+                    statusLine = "后台重新分析中（脚本管线）…",
                 )
                 scheduler.enqueueChapter(bookUrl, index, force = true)
             }
