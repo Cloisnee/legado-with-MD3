@@ -128,6 +128,7 @@ fun ReadAloudPlayerScreenContent(
     state: ReadAloudPlayerUiState,
     onIntent: (ReadAloudPlayerIntent) -> Unit,
     onBack: () -> Unit,
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     val horizontalPagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
     var isTextPageUserScrolling by remember { mutableStateOf(false) }
@@ -357,7 +358,7 @@ fun ReadAloudPlayerScreenContent(
                             text = "剧本审查",
                             contentDescription = "剧本审查",
                             onCheckedChange = {
-                                onIntent(ReadAloudPlayerIntent.OpenSheet(ReadAloudPlayerSheet.ScriptReview))
+                                onOpenScriptReview(state.bookName, state.bookUrl, state.chapterIndex)
                             },
                         )
                     }
@@ -416,12 +417,6 @@ fun ReadAloudPlayerScreenContent(
     )
     ReadAloudTimerSheet(
         show = state.activeSheet == ReadAloudPlayerSheet.Timer,
-        state = state,
-        onDismissRequest = { onIntent(ReadAloudPlayerIntent.DismissSheet) },
-        onIntent = onIntent,
-    )
-    ReadAloudScriptReviewSheet(
-        show = state.activeSheet == ReadAloudPlayerSheet.ScriptReview,
         state = state,
         onDismissRequest = { onIntent(ReadAloudPlayerIntent.DismissSheet) },
         onIntent = onIntent,
@@ -751,256 +746,5 @@ private fun flowingTextBlend(): List<BlendColorEntry> {
                 BlendColorEntry(Color(0xff1af200), BlurBlendMode.Lab),
             )
         }
-    }
-}
-
-
-
-
-
-/**
- * 批次C · 二合一审查页（听书播放器第 5 按钮）：
- * 本章剧本逐行列表（旁白/台词/独白 + 归属 + 情绪 + 锁定），
- * 支持逐行/批量改归属、设为旁白、锁定/解锁、AI 重析本章。
- * 修改立即落库（userLocked=true），重新进入本章后由 V2 计划消费。
- */
-@Composable
-private fun ReadAloudScriptReviewSheet(
-    show: Boolean,
-    state: ReadAloudPlayerUiState,
-    onDismissRequest: () -> Unit,
-    onIntent: (ReadAloudPlayerIntent) -> Unit,
-) {
-    val script = state.scriptReview ?: ScriptReviewUi()
-    var assignDlg by remember { mutableStateOf(false) }
-    var customName by remember { mutableStateOf("") }
-
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismissRequest,
-        title = "剧本审查 · ${state.chapterTitle}",
-        endAction = {
-            MediumTonalButton(
-                onClick = { onIntent(ReadAloudPlayerIntent.ReanalyzeScript) },
-                icon = Icons.Default.Refresh,
-                contentDescription = "重析本章",
-            )
-        },
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            AppText(
-                text = script.statusLine,
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            if (script.loading) {
-                TextCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    text = "加载中…",
-                )
-            } else if (!script.hasData) {
-                TextCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    text = "本章还没有分析数据：开始朗读一次，或点右上角「重析本章」（需在模型管理里配置归属队列）",
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(420.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 12.dp,
-                        vertical = 4.dp,
-                    ),
-                ) {
-                    items(script.rows, key = { it.id }) { row ->
-                        ScriptReviewRow(
-                            row = row,
-                            onClick = {
-                                onIntent(ReadAloudPlayerIntent.ToggleScriptRow(row.id))
-                            },
-                            onToggleLock = {
-                                onIntent(ReadAloudPlayerIntent.ToggleScriptLock(row.id))
-                            },
-                        )
-                    }
-                }
-            }
-            androidx.compose.animation.AnimatedVisibility(visible = script.selectedIds.isNotEmpty()) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    TextCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
-                        text = "已选择 ${script.selectedIds.size} 段",
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        MediumTonalButton(
-                            onClick = {
-                                onIntent(
-                                    ReadAloudPlayerIntent.SetScriptNarration(script.selectedIds),
-                                )
-                            },
-                            text = "设为旁白",
-                        )
-                        MediumTonalButton(
-                            onClick = {
-                                customName = ""
-                                assignDlg = true
-                            },
-                            text = "指定说话人",
-                        )
-                        MediumPlainButton(
-                            onClick = { onIntent(ReadAloudPlayerIntent.ClearScriptSelection) },
-                            text = "取消",
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // 指定说话人弹窗（人物档案 或 自定义名字）
-    AppAlertDialog(
-        show = assignDlg,
-        onDismissRequest = { assignDlg = false },
-        title = "指定说话人（${script.selectedIds.size} 段）",
-        content = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(280.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                TextCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    text = "点人物档案指定；或用下方输入框填新名字（需出现在正文中）",
-                )
-                script.profiles.forEach { p ->
-                    TextCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        text = if (p.aliasLine.isBlank()) p.name else "${p.name}（${p.aliasLine}）",
-                        onClick = {
-                            assignDlg = false
-                            onIntent(
-                                ReadAloudPlayerIntent.AssignScriptSpeaker(
-                                    ids = script.selectedIds,
-                                    profileId = p.id,
-                                    customName = "",
-                                ),
-                            )
-                        },
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                AppTextField(
-                    value = customName,
-                    onValueChange = { customName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "自定义说话人名（原文称呼）",
-                    singleLine = true,
-                )
-            }
-        },
-        confirmText = "用此名字",
-        onConfirm = {
-            assignDlg = false
-            if (customName.isNotBlank()) {
-                onIntent(
-                    ReadAloudPlayerIntent.AssignScriptSpeaker(
-                        ids = script.selectedIds,
-                        profileId = null,
-                        customName = customName.trim(),
-                    ),
-                )
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { assignDlg = false },
-    )
-}
-
-@Composable
-private fun ScriptReviewRow(
-    row: ScriptRowUi,
-    onClick: () -> Unit,
-    onToggleLock: () -> Unit,
-) {
-    GlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
-        containerColor = if (row.selected) {
-            LegadoTheme.colorScheme.primaryContainer
-        } else {
-            null
-        },
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AppText(
-                text = row.indexLabel,
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            AppText(
-                text = row.roleLabel,
-                style = LegadoTheme.typography.labelSmall,
-                color = if (row.isCharacter) {
-                    LegadoTheme.colorScheme.primary
-                } else {
-                    LegadoTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            if (row.speakerName.isNotBlank()) {
-                Spacer(modifier = Modifier.width(6.dp))
-                AppText(
-                    text = "【${row.speakerName}】",
-                    style = LegadoTheme.typography.labelSmallEmphasized,
-                    color = LegadoTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (row.emotion.isNotBlank()) {
-                Spacer(modifier = Modifier.width(6.dp))
-                AppText(
-                    text = row.emotion,
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.tertiary,
-                )
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            MediumPlainButton(
-                onClick = onToggleLock,
-                icon = if (row.locked) Icons.Default.Lock else Icons.Default.LockOpen,
-                contentDescription = if (row.locked) "已锁定（重析不覆盖）" else "未锁定",
-            )
-        }
-        AppText(
-            text = row.text,
-            style = LegadoTheme.typography.bodySmall,
-            color = LegadoTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
-        )
     }
 }

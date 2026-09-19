@@ -78,6 +78,7 @@ fun ReadBookOverlayRoute(
     onOpenTextSelectMenuConfig: () -> Unit,
     onPickBookmarkBadgeImage: () -> Unit,
     onResetBookmarkBadge: () -> Unit,
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     val aiActive = rememberFeatureActivated(
         state.activeSheet is ReadBookSheet.ChapterSummary ||
@@ -120,6 +121,7 @@ fun ReadBookOverlayRoute(
         onOpenTextSelectMenuConfig = onOpenTextSelectMenuConfig,
         onPickBookmarkBadgeImage = onPickBookmarkBadgeImage,
         onResetBookmarkBadge = onResetBookmarkBadge,
+        onOpenScriptReview = onOpenScriptReview,
     )
 }
 
@@ -145,6 +147,7 @@ fun ReadBookScreen(
     onOpenTextSelectMenuConfig: () -> Unit,
     onPickBookmarkBadgeImage: () -> Unit,
     onResetBookmarkBadge: () -> Unit,
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     // Dialogs driven by activeDialog state
     val restoreDialog = state.activeDialog as? ReadBookDialog.ConfirmRestoreProgress
@@ -559,6 +562,7 @@ fun ReadBookScreen(
         onIntent = onIntent,
         onPlayerIntent = aloudPlayerViewModel::onIntent,
         onDismissRequest = dismissSheet,
+        onOpenScriptReview = onOpenScriptReview,
     )
     LaunchedEffect(state.activeSheet) {
         if (state.activeSheet is ReadBookSheet.ReadAloudPlayer) {

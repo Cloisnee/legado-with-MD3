@@ -212,6 +212,13 @@ data object MainRouteCharacterManage : MainRoute
 data object MainRouteBookManage : MainRoute
 
 @Serializable
+data class MainRouteScriptReview(
+    val bookName: String,
+    val bookUrl: String,
+    val chapterIndex: Int,
+) : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute

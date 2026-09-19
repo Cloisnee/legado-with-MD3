@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.DropdownMenu
@@ -107,7 +108,14 @@ fun BookManageRouteScreen(onBackClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookManageScreen(app: Application, onBack: () -> Unit) {
+fun BookManageScreen(
+    app: Application,
+    onBack: () -> Unit,
+    embedded: Boolean = false,
+    initialChapter: Int? = null,
+    onReanalyze: (() -> Unit)? = null,
+    refreshKey: Int = 0,
+) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
     val scope = rememberCoroutineScope()
@@ -155,7 +163,9 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
             currentBook = st.currentBook
             records = st.records
             chapters = repo.loadChapters(currentBook)
-            if (selectedChapter == null || selectedChapter !in chapters) {
+            if (embedded && initialChapter != null) {
+                selectedChapter = initialChapter
+            } else if (selectedChapter == null || selectedChapter !in chapters) {
                 selectedChapter = chapters.lastOrNull()
             }
             reloadLines()
@@ -168,7 +178,7 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { reload() }
+    LaunchedEffect(refreshKey) { reload() }
 
     fun applySpeakerTo(targets: List<Int>, speaker: String) {
         targets.forEach { pending[it] = speaker }
@@ -217,10 +227,14 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                 title = if (selLines.isNotEmpty()) {
                     stringResource(R.string.list_selected_count, selLines.size, shown.size)
                 } else {
-                    "书籍管理"
+                    if (embedded) "剧本" else "书籍管理"
                 },
                 useCharMode = selLines.isNotEmpty(),
-                subtitle = "当前书：$currentBook · ${chapters.size} 章剧本",
+                subtitle = if (embedded) {
+                    "当前书：$currentBook · 第${selectedChapter ?: "-"}章"
+                } else {
+                    "当前书：$currentBook · ${chapters.size} 章剧本"
+                },
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (selLines.isNotEmpty()) {
@@ -242,6 +256,13 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
+                    if (onReanalyze != null) {
+                        TopBarActionButton(
+                            onClick = onReanalyze,
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "重新分析本章",
+                        )
+                    }
                 },
             )
         },
@@ -256,136 +277,138 @@ fun BookManageScreen(app: Application, onBack: () -> Unit) {
                 ),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                item(key = "cards") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Box(modifier = Modifier.weight(2f)) {
-                            GlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                cornerRadius = 12.dp,
-                                containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                                onClick = { showBookMenu = true },
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
+                if (!embedded) {
+                    item(key = "cards") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(modifier = Modifier.weight(2f)) {
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 12.dp,
+                                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                                    onClick = { showBookMenu = true },
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        AppText(
-                                            text = currentBook,
-                                            style = LegadoTheme.typography.titleSmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        AppText(
-                                            text = "当前书籍（点按切换）",
-                                            style = LegadoTheme.typography.bodySmall,
-                                            color = LegadoTheme.colorScheme.onSurfaceVariant,
-                                        )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            AppText(
+                                                text = currentBook,
+                                                style = LegadoTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            AppText(
+                                                text = "当前书籍（点按切换）",
+                                                style = LegadoTheme.typography.bodySmall,
+                                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "切换书籍")
                                     }
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "切换书籍")
                                 }
-                            }
-                            RoundDropdownMenu(
-                                expanded = showBookMenu,
-                                onDismissRequest = { showBookMenu = false },
-                            ) { dismiss ->
-                                bookList.forEach { b ->
-                                    RoundDropdownMenuItem(
-                                        text = b,
-                                        onClick = {
-                                            dismiss()
-                                            if (b != currentBook) {
-                                                scope.launch {
-                                                    val (_, msg) = repo.switchBook(b)
-                                                    context.toastOnUi(msg)
-                                                    selectedChapter = null
-                                                    reload()
+                                RoundDropdownMenu(
+                                    expanded = showBookMenu,
+                                    onDismissRequest = { showBookMenu = false },
+                                ) { dismiss ->
+                                    bookList.forEach { b ->
+                                        RoundDropdownMenuItem(
+                                            text = b,
+                                            onClick = {
+                                                dismiss()
+                                                if (b != currentBook) {
+                                                    scope.launch {
+                                                        val (_, msg) = repo.switchBook(b)
+                                                        context.toastOnUi(msg)
+                                                        selectedChapter = null
+                                                        reload()
+                                                    }
                                                 }
-                                            }
-                                        },
-                                        trailingIcon = if (b == currentBook) {
-                                            {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(18.dp),
-                                                )
-                                            }
-                                        } else null,
-                                    )
-                                }
-                            }
-                        }
-                        Box(modifier = Modifier.weight(1f)) {
-                            GlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                cornerRadius = 12.dp,
-                                containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                                onClick = { showChapterMenu = true },
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        AppText(
-                                            text = selectedChapter?.let { "第${it}章" } ?: "未选择",
-                                            style = LegadoTheme.typography.titleSmall,
-                                            maxLines = 1,
-                                        )
-                                        AppText(
-                                            text = "章节",
-                                            style = LegadoTheme.typography.bodySmall,
-                                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                            },
+                                            trailingIcon = if (b == currentBook) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                            } else null,
                                         )
                                     }
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "章节列表")
                                 }
                             }
-                            RoundDropdownMenu(
-                                expanded = showChapterMenu,
-                                onDismissRequest = { showChapterMenu = false },
-                            ) { dismiss ->
-                                chapters.sorted().forEach { ch ->
+                            Box(modifier = Modifier.weight(1f)) {
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 12.dp,
+                                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                                    onClick = { showChapterMenu = true },
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            AppText(
+                                                text = selectedChapter?.let { "第${it}章" } ?: "未选择",
+                                                style = LegadoTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                            )
+                                            AppText(
+                                                text = "章节",
+                                                style = LegadoTheme.typography.bodySmall,
+                                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "章节列表")
+                                    }
+                                }
+                                RoundDropdownMenu(
+                                    expanded = showChapterMenu,
+                                    onDismissRequest = { showChapterMenu = false },
+                                ) { dismiss ->
+                                    chapters.sorted().forEach { ch ->
+                                        RoundDropdownMenuItem(
+                                            text = "第${ch}章",
+                                            onClick = {
+                                                dismiss()
+                                                selectedChapter = ch
+                                                reloadLines()
+                                            },
+                                            trailingIcon = if (ch == selectedChapter) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                            } else null,
+                                        )
+                                    }
                                     RoundDropdownMenuItem(
-                                        text = "第${ch}章",
+                                        text = "管理章节（删除 / 回滚）…",
                                         onClick = {
                                             dismiss()
-                                            selectedChapter = ch
-                                            reloadLines()
+                                            showChapterSheet = true
                                         },
-                                        trailingIcon = if (ch == selectedChapter) {
-                                            {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(18.dp),
-                                                )
-                                            }
-                                        } else null,
                                     )
                                 }
-                                RoundDropdownMenuItem(
-                                    text = "管理章节（删除 / 回滚）…",
-                                    onClick = {
-                                        dismiss()
-                                        showChapterSheet = true
-                                    },
-                                )
                             }
                         }
                     }
-                }
 
+                }
                 item(key = "search") {
                     AnimatedVisibility(
                         visible = searchMode,

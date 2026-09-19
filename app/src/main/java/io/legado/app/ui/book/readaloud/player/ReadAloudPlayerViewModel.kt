@@ -35,38 +35,21 @@ class ReadAloudPlayerViewModel(
 ) : ViewModel() {
 
     private val activeSheet = MutableStateFlow<ReadAloudPlayerSheet?>(null)
-    private val scriptState = MutableStateFlow(ScriptReviewUi())
 
     val uiState = combine(
         coordinator.state,
         AppConfigStore.observeInt(PreferKey.readAloudPlayerBgMode),
         activeSheet,
-        scriptState,
-    ) { source, bgMode, sheet, script ->
-        toUiState(source, bgMode ?: ReadAloudBgMode.Blur, sheet, script)
+    ) { source, bgMode, sheet ->
+        toUiState(source, bgMode ?: ReadAloudBgMode.Blur, sheet)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = toUiState(coordinator.snapshot(), readBgMode(), null, null),
+        initialValue = toUiState(coordinator.snapshot(), readBgMode(), null),
     )
 
     private val _effects = MutableSharedFlow<ReadAloudPlayerEffect>(extraBufferCapacity = 8)
     val effects = _effects.asSharedFlow()
-
-    init {
-        // 分析调度完成 → 审查页打开中且章节匹配时自动刷新
-        viewModelScope.launch {
-            scheduler.events.collect { ev ->
-                val cur = uiState.value
-                if (ev.bookUrl == cur.bookUrl &&
-                    ev.chapterIndex == cur.chapterIndex &&
-                    cur.activeSheet == ReadAloudPlayerSheet.ScriptReview
-                ) {
-                    loadScriptReview()
-                }
-            }
-        }
-    }
 
     fun onIntent(intent: ReadAloudPlayerIntent) {
         when (intent) {
@@ -97,68 +80,12 @@ class ReadAloudPlayerViewModel(
                 }
             is ReadAloudPlayerIntent.OpenSheet -> {
                 activeSheet.value = intent.sheet
-                if (intent.sheet == ReadAloudPlayerSheet.ScriptReview) loadScriptReview()
             }
             ReadAloudPlayerIntent.DismissSheet -> activeSheet.value = null
             is ReadAloudPlayerIntent.SeekTo -> coordinator.seekTo(
                 chapterPosition = intent.chapterPosition,
                 chapterLength = uiState.value.chapterLength,
             )
-            // 批次C · 审查页
-            ReadAloudPlayerIntent.LoadScriptReview -> loadScriptReview()
-            is ReadAloudPlayerIntent.ToggleScriptRow -> {
-                val cur = scriptState.value
-                val next = if (intent.id in cur.selectedIds) {
-                    cur.selectedIds - intent.id
-                } else {
-                    cur.selectedIds + intent.id
-                }
-                scriptState.value = updateScriptSelection(cur, next)
-            }
-            ReadAloudPlayerIntent.ClearScriptSelection ->
-                scriptState.value = updateScriptSelection(scriptState.value, emptySet())
-            is ReadAloudPlayerIntent.SetScriptNarration -> viewModelScope.launch {
-                applyScriptEdit(intent.ids) {
-                    it.copy(
-                        roleType = SpeechRoleType.Narrator,
-                        characterId = null,
-                        characterName = "",
-                        source = SpeechResolutionSource.User,
-                        userLocked = true,
-                    )
-                }
-            }
-            is ReadAloudPlayerIntent.AssignScriptSpeaker -> viewModelScope.launch {
-                val profile = intent.profileId?.let { pid ->
-                    bookKnowledgeGateway.getCharacterProfiles(currentBookUrl(), 200)
-                        .firstOrNull { it.id == pid }
-                }
-                val name = profile?.name ?: intent.customName.trim()
-                if (name.isBlank()) return@launch
-                applyScriptEdit(intent.ids) {
-                    it.copy(
-                        roleType = SpeechRoleType.Character,
-                        characterId = profile?.id,
-                        characterName = name,
-                        source = SpeechResolutionSource.User,
-                        userLocked = true,
-                    )
-                }
-            }
-            is ReadAloudPlayerIntent.ToggleScriptLock -> viewModelScope.launch {
-                applyScriptEdit(setOf(intent.id)) {
-                    it.copy(userLocked = !it.userLocked)
-                }
-            }
-            ReadAloudPlayerIntent.ReanalyzeScript -> viewModelScope.launch {
-                val bookUrl = currentBookUrl()
-                val index = uiState.value.chapterIndex
-                if (bookUrl.isBlank() || index < 0) return@launch
-                scriptState.value = scriptState.value.copy(
-                    statusLine = "后台重新分析中（脚本管线）…",
-                )
-                scheduler.enqueueChapter(bookUrl, index, force = true)
-            }
         }
     }
 
@@ -176,7 +103,6 @@ class ReadAloudPlayerViewModel(
         source: ReadAloudPlayerSourceState,
         bgMode: Int,
         sheet: ReadAloudPlayerSheet?,
-        script: ScriptReviewUi?,
     ): ReadAloudPlayerUiState {
         val activeIndex = source.textLines.indexOfLast {
             it.chapterPosition <= source.chapterPosition
@@ -213,7 +139,6 @@ class ReadAloudPlayerViewModel(
             finishCurrentChapterAfterTimer = source.finishCurrentChapterAfterTimer,
             bgMode = bgMode,
             activeSheet = sheet,
-            scriptReview = script,
         )
     }
 
@@ -226,115 +151,5 @@ class ReadAloudPlayerViewModel(
             ?: ReadAloudBgMode.Blur
     }
 
-    // ---------------- 批次C · 审查页 ----------------
 
-    private companion object {
-        const val RULE_VERSION_PREFIX = "rule-segmenter"
-    }
-
-    private fun currentBookUrl(): String = uiState.value.bookUrl.ifBlank {
-        coordinator.snapshot().bookUrl
-    }
-
-    private fun roleLabelOf(role: SpeechRoleType): String = when (role) {
-        SpeechRoleType.Narrator -> "旁白"
-        SpeechRoleType.Character -> "台词"
-        SpeechRoleType.Thought -> "独白"
-        SpeechRoleType.Unknown -> "未知"
-    }
-
-    private fun sourceLabelOf(version: String): String = when {
-        version.startsWith(SpeechAnalysisPipelineV3.RESOLVER_VERSION) -> "脚本管线"
-        version.startsWith(RULE_VERSION_PREFIX) -> "本地规则"
-        else -> version
-    }
-
-    private fun updateScriptSelection(
-        cur: ScriptReviewUi,
-        selected: Set<String>,
-    ): ScriptReviewUi = cur.copy(
-        selectedIds = selected,
-        rows = cur.rows.map { it.copy(selected = it.id in selected) }.toImmutableList(),
-    )
-
-    private fun loadScriptReview() {
-        viewModelScope.launch {
-            val bookUrl = currentBookUrl()
-            val chapterIndex = uiState.value.chapterIndex
-            if (bookUrl.isBlank() || chapterIndex < 0) return@launch
-            scriptState.value = ScriptReviewUi(loading = true)
-            val analysis = runCatching {
-                chapterSpeechGateway.getLatestAnalysis(bookUrl, chapterIndex)
-            }.getOrNull()
-            val segments = analysis?.let {
-                runCatching { chapterSpeechGateway.getSegments(it.id) }.getOrDefault(emptyList())
-            }.orEmpty()
-            val profiles = runCatching {
-                bookKnowledgeGateway.getCharacterProfiles(bookUrl, 200)
-                    .filter { it.status == BookCharacterProfile.STATUS_ACTIVE }
-            }.getOrDefault(emptyList())
-            scriptState.value = ScriptReviewUi(
-                loading = false,
-                hasData = segments.isNotEmpty(),
-                sourceLabel = analysis?.let { sourceLabelOf(it.resolverVersion) } ?: "未分析",
-                statusLine = if (analysis == null) {
-                    "本章还没有分析数据，开始朗读或点右上角重析"
-                } else {
-                    "${analysis.status.storageValue} · ${segments.size} 段 · ${sourceLabelOf(analysis.resolverVersion)}"
-                },
-                rows = segments.mapIndexed { i, seg ->
-                    ScriptRowUi(
-                        id = seg.id,
-                        indexLabel = (i + 1).toString(),
-                        text = seg.text,
-                        speakerName = seg.characterName,
-                        roleLabel = roleLabelOf(seg.roleType),
-                        isCharacter = seg.roleType != SpeechRoleType.Narrator,
-                        emotion = seg.emotion,
-                        locked = seg.userLocked,
-                        selected = false,
-                    )
-                }.toImmutableList(),
-                profiles = profiles.map { p ->
-                    ScriptProfileUi(
-                        id = p.id,
-                        name = p.name,
-                        aliasLine = runCatching {
-                            GSON.fromJsonArray<String>(p.aliasesJson).getOrNull().orEmpty()
-                                .joinToString("/")
-                        }.getOrDefault(""),
-                    )
-                }.toImmutableList(),
-                selectedIds = emptySet(),
-            )
-        }
-    }
-
-    /** 批量应用剧本编辑并落库（userLocked=true，重析不覆盖） */
-    private suspend fun applyScriptEdit(
-        ids: Set<String>,
-        transform: (io.legado.app.domain.model.readaloud.ChapterSpeechSegment)
-            -> io.legado.app.domain.model.readaloud.ChapterSpeechSegment,
-    ) {
-        val bookUrl = currentBookUrl()
-        val chapterIndex = uiState.value.chapterIndex
-        if (bookUrl.isBlank() || chapterIndex < 0) return
-        val analysis = runCatching {
-            chapterSpeechGateway.getLatestAnalysis(bookUrl, chapterIndex)
-        }.getOrNull() ?: return
-        val segments = runCatching {
-            chapterSpeechGateway.getSegments(analysis.id)
-        }.getOrDefault(emptyList())
-        if (segments.isEmpty()) return
-        val updated = segments.map { seg -> if (seg.id in ids) transform(seg) else seg }
-        val ok = runCatching {
-            chapterSpeechGateway.replaceSegments(analysis.id, updated)
-            true
-        }.getOrDefault(false)
-        if (ok) {
-            loadScriptReview()
-        } else {
-            scriptState.value = scriptState.value.copy(statusLine = "保存失败")
-        }
-    }
 }

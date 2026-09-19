@@ -199,6 +199,7 @@ object MainNavigator {
             is MainRouteBookVoiceCasting,
             is MainRouteCloudTtsEngines,
             MainRouteTtsCache,
+            is MainRouteScriptReview,
             is MainRouteBookKnowledgeList,
             is MainRouteBookKnowledgeDetail,
             is MainRouteBookEventList,

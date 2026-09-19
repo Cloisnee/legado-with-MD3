@@ -757,6 +757,9 @@ fun MainActivity.mainEntryProvider(
             onOpenTtsCache = {
                 onNavigateToRoute(MainRouteTtsCache)
             },
+            onOpenScriptReview = { bookName, bookUrl, chapterIndex ->
+                onNavigateToRoute(MainRouteScriptReview(bookName, bookUrl, chapterIndex))
+            },
         )
 
         DisposableEffect(controller, lifecycleOwner, route.readAloud) {
@@ -1410,6 +1413,15 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteBookManage> {
         io.legado.app.ui.ttssrv.BookManageRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteScriptReview> { route ->
+        io.legado.app.ui.ttssrv.ScriptReviewRouteScreen(
+            bookName = route.bookName,
+            bookUrl = route.bookUrl,
+            chapterIndex = route.chapterIndex,
             onBackClick = { onNavigateBack() },
         )
     }

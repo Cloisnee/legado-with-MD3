@@ -153,6 +153,7 @@ fun ReadBookRouteScreen(
     onOpenVoiceCasting: (bookUrl: String) -> Unit = {},
     onOpenTtsEnginesAndVoices: () -> Unit = {},
     onOpenTtsCache: () -> Unit = {},
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val readPreferences by viewModel.readPreferences.collectAsStateWithLifecycle()
@@ -865,6 +866,7 @@ fun ReadBookRouteScreen(
                     onResetBookmarkBadge = {
                         viewModel.onIntent(ReadBookIntent.ClearBookmarkBadgeImage)
                     },
+                    onOpenScriptReview = onOpenScriptReview,
                 )
             }
             val bookNavigationSheet = state.activeSheet as? ReadBookSheet.BookNavigation

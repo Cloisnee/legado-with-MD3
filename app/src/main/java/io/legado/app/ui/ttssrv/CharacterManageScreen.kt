@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -118,7 +119,12 @@ private val FEMALE_AGES = listOf("女童", "少女", "女青年", "女中年", "
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
+fun CharacterManageScreen(
+    app: Application,
+    onBack: () -> Unit,
+    embedded: Boolean = false,
+    refreshKey: Int = 0,
+) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
     val centerRepo = remember(app) { TtsServerCenterRepository(app) }
@@ -176,7 +182,7 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(refreshKey) {
         reload()
         roleFilter = repo.loadCharacterFilter()
     }
@@ -479,6 +485,40 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
+                    if (embedded) {
+                        Box {
+                            TopBarActionButton(
+                                onClick = { showTypeMenu = true },
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "筛选：全部/特殊/路人/核心",
+                            )
+                            RoundDropdownMenu(
+                                expanded = showTypeMenu,
+                                onDismissRequest = { showTypeMenu = false },
+                            ) { dismiss ->
+                                ROLES.forEach { t ->
+                                    RoundDropdownMenuItem(
+                                        text = t,
+                                        onClick = {
+                                            dismiss()
+                                            roleFilter = t
+                                            sel = emptySet()
+                                            scope.launch { repo.saveCharacterFilter(t) }
+                                        },
+                                        trailingIcon = if (t == roleFilter) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 },
             )
         },
@@ -493,135 +533,137 @@ fun CharacterManageScreen(app: Application, onBack: () -> Unit) {
             ),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            item(key = "cards") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Box(modifier = Modifier.weight(2f)) {
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 12.dp,
-                            containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                            onClick = { showBookMenu = true },
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+            if (!embedded) {
+                item(key = "cards") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(modifier = Modifier.weight(2f)) {
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 12.dp,
+                                containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                                onClick = { showBookMenu = true },
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    AppText(
-                                        text = currentBook,
-                                        style = LegadoTheme.typography.titleSmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    AppText(
-                                        text = "当前书籍（点按切换）",
-                                        style = LegadoTheme.typography.bodySmall,
-                                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        AppText(
+                                            text = currentBook,
+                                            style = LegadoTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        AppText(
+                                            text = "当前书籍（点按切换）",
+                                            style = LegadoTheme.typography.bodySmall,
+                                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "切换书籍",
                                     )
                                 }
-                                Icon(
-                                    imageVector = Icons.Default.ArrowDropDown,
-                                    contentDescription = "切换书籍",
-                                )
                             }
-                        }
-                        RoundDropdownMenu(
-                            expanded = showBookMenu,
-                            onDismissRequest = { showBookMenu = false },
-                        ) { dismiss ->
-                            bookList.forEach { b ->
-                                RoundDropdownMenuItem(
-                                    text = b,
-                                    onClick = {
-                                        dismiss()
-                                        if (b != currentBook) {
-                                            scope.launch {
-                                                val (_, msg) = repo.switchBook(b)
-                                                context.toastOnUi(msg)
-                                                reload()
+                            RoundDropdownMenu(
+                                expanded = showBookMenu,
+                                onDismissRequest = { showBookMenu = false },
+                            ) { dismiss ->
+                                bookList.forEach { b ->
+                                    RoundDropdownMenuItem(
+                                        text = b,
+                                        onClick = {
+                                            dismiss()
+                                            if (b != currentBook) {
+                                                scope.launch {
+                                                    val (_, msg) = repo.switchBook(b)
+                                                    context.toastOnUi(msg)
+                                                    reload()
+                                                }
                                             }
-                                        }
-                                    },
-                                    trailingIcon = if (b == currentBook) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                        }
-                                    } else null,
-                                )
-                            }
-                        }
-                    }
-                    Box(modifier = Modifier.weight(1f)) {
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 12.dp,
-                            containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                            onClick = { showTypeMenu = true },
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    AppText(
-                                        text = roleFilter,
-                                        style = LegadoTheme.typography.titleSmall,
-                                        maxLines = 1,
-                                    )
-                                    AppText(
-                                        text = "类型",
-                                        style = LegadoTheme.typography.bodySmall,
-                                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                        },
+                                        trailingIcon = if (b == currentBook) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
                                     )
                                 }
-                                Icon(
-                                    imageVector = Icons.Default.ArrowDropDown,
-                                    contentDescription = "类型筛选",
-                                )
                             }
                         }
-                        RoundDropdownMenu(
-                            expanded = showTypeMenu,
-                            onDismissRequest = { showTypeMenu = false },
-                        ) { dismiss ->
-                            ROLES.forEach { t ->
-                                RoundDropdownMenuItem(
-                                    text = t,
-                                    onClick = {
-                                        dismiss()
-                                        roleFilter = t
-                                        sel = emptySet()
-                                        scope.launch { repo.saveCharacterFilter(t) }
-                                    },
-                                    trailingIcon = if (t == roleFilter) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                        }
-                                    } else null,
-                                )
+                        Box(modifier = Modifier.weight(1f)) {
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 12.dp,
+                                containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                                onClick = { showTypeMenu = true },
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        AppText(
+                                            text = roleFilter,
+                                            style = LegadoTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                        )
+                                        AppText(
+                                            text = "类型",
+                                            style = LegadoTheme.typography.bodySmall,
+                                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "类型筛选",
+                                    )
+                                }
+                            }
+                            RoundDropdownMenu(
+                                expanded = showTypeMenu,
+                                onDismissRequest = { showTypeMenu = false },
+                            ) { dismiss ->
+                                ROLES.forEach { t ->
+                                    RoundDropdownMenuItem(
+                                        text = t,
+                                        onClick = {
+                                            dismiss()
+                                            roleFilter = t
+                                            sel = emptySet()
+                                            scope.launch { repo.saveCharacterFilter(t) }
+                                        },
+                                        trailingIcon = if (t == roleFilter) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
+            }
             item(key = "search") {
                 AnimatedVisibility(
                     visible = searchMode,

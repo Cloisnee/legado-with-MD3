@@ -85,6 +85,7 @@ fun ReadAloudScreen(
     onIntent: (ReadBookIntent) -> Unit,
     onPlayerIntent: (ReadAloudPlayerIntent) -> Unit,
     onDismissRequest: () -> Unit,
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     val sheetState = rememberBottomSheetState(
         initialValue = Hidden,
@@ -186,6 +187,7 @@ fun ReadAloudScreen(
                                 state = playerState,
                                 onIntent = onPlayerIntent,
                                 onBack = onDismissRequest,
+                                onOpenScriptReview = onOpenScriptReview,
                             )
                         }
                     }
