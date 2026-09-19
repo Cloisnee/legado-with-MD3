@@ -698,6 +698,7 @@ class TtsServerCenterRepository(private val app: Application) {
                 }
             }
             val gObj: JSONObject
+            var inherited = false
             if (grp == null) {
                 gObj = JSONObject().apply {
                     put("id", System.currentTimeMillis())
@@ -716,11 +717,37 @@ class TtsServerCenterRepository(private val app: Application) {
                         put("id", 0L)
                         put("name", groupName)
                     }
-                gObj.put("roleType", roleType)
+                // 池类型冻结（v4-B5）：分组已有合法类型 → 绝不覆盖，新条目沿用分组类型
+                val frozen = VoiceBankRoleType.normalize(gObj.optString("roleType"))
+                if (frozen.isBlank()) {
+                    // 尚未冻结：按组内已有条目的标签推断（=「第一个加入的声线」）；组内无条目才用弹窗所选
+                    val existingTags = ArrayList<String>()
+                    grp.optJSONArray("list")?.let { l ->
+                        for (k in 0 until l.length()) {
+                            val t = l.optJSONObject(k)?.optJSONObject("config")
+                                ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
+                            if (t.isNotEmpty()) existingTags.add(t)
+                        }
+                    }
+                    gObj.put(
+                        "roleType",
+                        if (existingTags.isEmpty()) roleType
+                        else VoiceBankRoleType.infer(groupName, existingTags),
+                    )
+                } else {
+                    inherited = frozen != VoiceBankRoleType.normalize(roleType)
+                }
             }
             val gid = gObj.optLong("id")
             val list = grp.optJSONArray("list") ?: JSONArray().also { grp.put("list", it) }
-            val prefix = voicePrefixOf(roleType, gender, age)
+            // 生效类型/年龄一律按分组冻结值归一（防止"特殊↔非特殊"混用时生成 `系统01` 之类错标签）
+            val effRole = VoiceBankRoleType.normalize(gObj.optString("roleType")).ifBlank { roleType }
+            val effAge = when {
+                effRole == VoiceBankRoleType.SPECIAL -> "系统"
+                age.isBlank() || age == "系统" -> if (gender == "女") "女青年" else "男青年"
+                else -> age
+            }
+            val prefix = voicePrefixOf(effRole, gender, effAge)
             val baseId = System.currentTimeMillis()
             var idx = 0
             pluginVoiceIds.forEach { vid ->
@@ -774,7 +801,8 @@ class TtsServerCenterRepository(private val app: Application) {
             }
             file.parentFile?.mkdirs()
             file.writeText(arr.toString())
-            true to "已生成 ${pluginVoiceIds.size} 条：${prefix}01…${String.format("%02d", pluginVoiceIds.size)}"
+            val note = if (inherited) "（沿用分组固定类型「$effRole」）" else ""
+            true to "已生成 ${pluginVoiceIds.size} 条：${prefix}01…${String.format("%02d", pluginVoiceIds.size)}$note"
         }.getOrElse { false to "创建失败：${it.message ?: it.javaClass.simpleName}" }
     }
 
@@ -867,6 +895,29 @@ class TtsServerCenterRepository(private val app: Application) {
     }
 
     // ---------------- 分组操作 ----------------
+
+    /**
+     * 重置分组池类型：清掉已冻结的 roleType，再按同一口径（组名 → 首个标签前缀 → 核心）重新推断。
+     * 仅供「误固定」后的人工纠正；正常流程不会改已冻结的类型。
+     */
+    suspend fun resetGroupRoleType(groupId: Long): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = TtsConfigStore.voicesFile(ctx)
+            if (!file.exists()) return@runCatching false
+            val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
+            var hit = false
+            for (i in 0 until arr.length()) {
+                val g = arr.optJSONObject(i)?.optJSONObject("group") ?: continue
+                if (g.optLong("id") == groupId) {
+                    g.remove("roleType")
+                    hit = true
+                }
+            }
+            if (hit) file.writeText(arr.toString())
+            if (hit) ensureRoleTypesFrozen()
+            hit
+        }.getOrDefault(false)
+    }
 
     suspend fun renameGroup(groupId: Long, newName: String): Boolean =
         withContext(Dispatchers.IO) {

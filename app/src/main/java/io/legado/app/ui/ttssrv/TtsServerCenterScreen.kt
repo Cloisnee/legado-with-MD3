@@ -77,6 +77,7 @@ import io.legado.app.data.repository.GroupRow
 import io.legado.app.data.repository.LocaleOption
 import io.legado.app.data.repository.PluginRow
 import io.legado.app.data.repository.TtsServerCenterRepository
+import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.data.repository.VoiceOption
 import io.legado.app.data.repository.VarField
 import io.legado.app.ui.theme.LegadoTheme
@@ -104,6 +105,7 @@ import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
@@ -445,6 +447,19 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
+    // 池类型冻结（v4-B5）：目标分组已有固定类型时，弹窗类型**跟随分组**，避免"不慎"选成别的类型
+    LaunchedEffect(neStep2, neGroup, groups) {
+        if (!neStep2) return@LaunchedEffect
+        val frozen = groups.firstOrNull { it.name == neGroup.trim() }
+            ?.roleType?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        if (neRole != frozen) neRole = frozen
+        if (frozen == VoiceBankRoleType.SPECIAL) {
+            neAge = "系统"
+        } else if (neAge == "系统") {
+            neAge = if (neGender == "女") "女青年" else "男青年"
+        }
+    }
+
     // 新建条目：插件变化 → 语言列表
     LaunchedEffect(nePluginId) {
         if (nePluginId.isBlank()) return@LaunchedEffect
@@ -725,6 +740,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 add(ActionItem("导出分组") { scope.launch {
                     detailTitle = "导出完成（分组）"
                     detailText = repo.exportGroup(g.toLongOrNull() ?: return@launch)
+                } })
+                add(ActionItem("重置池类型") { scope.launch {
+                    val ok = repo.resetGroupRoleType(g.toLongOrNull() ?: return@launch)
+                    context.toastOnUi(
+                        if (ok) "已按组内首个声线重新推断池类型" else "重置失败"
+                    )
+                    reload()
                 } })
                 add(ActionItem("在此组新建条目") {
                     newEntryGroupDefault = groupNameOfKey(g)
@@ -1360,20 +1382,32 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         grp2Dlg = true
                     },
                 )
-                TinyDropdownSettingItem(
-                    title = "类型",
-                    selectedValue = neRole,
-                    displayEntries = arrayOf("核心", "特殊", "路人"),
-                    entryValues = arrayOf("核心", "特殊", "路人"),
-                    onValueChange = {
-                        neRole = it
-                        if (it == "特殊") {
-                            neAge = "系统"
-                        } else if (neAge == "系统") {
-                            neAge = if (neGender == "女") "女青年" else "男青年"
-                        }
-                    },
-                )
+                val frozenRole = groups.firstOrNull { it.name == neGroup.trim() }
+                    ?.roleType?.takeIf { it.isNotBlank() }
+                if (frozenRole != null) {
+                    // 池类型冻结：本分组已固定类型 → 类型不可改，新增条目沿用（避免"不慎"改池类型）
+                    TinySettingItem(
+                        title = "类型",
+                        description = "本分组已固定为「$frozenRole」池，新增条目沿用该类型",
+                        trailingContent = { AppText(frozenRole) },
+                        enabled = false,
+                    )
+                } else {
+                    TinyDropdownSettingItem(
+                        title = "类型",
+                        selectedValue = neRole,
+                        displayEntries = arrayOf("核心", "特殊", "路人"),
+                        entryValues = arrayOf("核心", "特殊", "路人"),
+                        onValueChange = {
+                            neRole = it
+                            if (it == VoiceBankRoleType.SPECIAL) {
+                                neAge = "系统"
+                            } else if (neAge == "系统") {
+                                neAge = if (neGender == "女") "女青年" else "男青年"
+                            }
+                        },
+                    )
+                }
                 TinyDropdownSettingItem(
                     title = "性别",
                     selectedValue = neGender,
