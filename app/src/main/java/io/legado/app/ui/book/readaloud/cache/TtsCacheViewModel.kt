@@ -127,19 +127,16 @@ class TtsCacheViewModel : ViewModel() {
             val ttsKeywords =
                 listOf("TTS", "预合成", "预下载", "朗读", "听书", "httpTTS", "朗读下载")
             val logs = AppLog.logs
-                .filter { (_, message, _) ->
-                    ttsKeywords.any { keyword -> message.contains(keyword, ignoreCase = true) }
+                .filter { entry ->
+                    ttsKeywords.any { keyword -> entry.message.contains(keyword, ignoreCase = true) }
                 }
-                .map { (timestamp, message, throwable) ->
-                    val fullContent = if (throwable != null) {
-                        "$message\n${throwable.stackTraceToString()}"
-                    } else {
-                        message
-                    }
+                .map { entry ->
+                    val fullContent = entry.throwable?.let { t -> "${entry.message}\n${t.stackTraceToString()}" }
+                        ?: entry.message
                     TtsLogEntryUi(
-                        timestamp = timestamp,
-                        message = message,
-                        hasError = throwable != null,
+                        timestamp = entry.timestamp,
+                        message = entry.message,
+                        hasError = entry.throwable != null,
                         fullContent = fullContent,
                     )
                 }

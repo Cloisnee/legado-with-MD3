@@ -10,19 +10,37 @@ import splitties.init.appCtx
 
 object AppLog {
 
+    data class LogEntry(
+        val timestamp: Long,
+        val message: String,
+        val throwable: Throwable?,
+        val verbose: Boolean,
+    )
+
     private val otherGateway by lazy { GlobalContext.get().get<OtherSettingsGateway>() }
 
-    private val mLogs = arrayListOf<Triple<Long, String, Throwable?>>()
+    private val mLogs = arrayListOf<LogEntry>()
 
     val logs get() = mLogs.toList()
 
     @Synchronized
     fun put(message: String?, throwable: Throwable? = null, toast: Boolean = false) {
+        putInternal(message, throwable, toast = toast, verbose = false)
+    }
+
+    /** 详细日志（文本分析各阶段流程/结果等）：日志页「简」模式隐藏，「详」模式可见 */
+    @Synchronized
+    fun putVerbose(message: String?, throwable: Throwable? = null) {
+        putInternal(message, throwable, toast = false, verbose = true)
+    }
+
+    @Synchronized
+    private fun putInternal(message: String?, throwable: Throwable?, toast: Boolean, verbose: Boolean) {
         message ?: return
         if (toast) {
             appCtx.toastOnUi(message)
         }
-        if (mLogs.size > 100) {
+        if (mLogs.size > 400) {
             mLogs.removeLastOrNull()
         }
         if (throwable == null) {
@@ -30,7 +48,7 @@ object AppLog {
         } else {
             LogUtils.d("AppLog", "$message\n${throwable.stackTraceToString()}")
         }
-        mLogs.add(0, Triple(System.currentTimeMillis(), message, throwable))
+        mLogs.add(0, LogEntry(System.currentTimeMillis(), message, throwable, verbose))
         if (BuildConfig.DEBUG) {
             val stackTrace = Thread.currentThread().stackTrace
             Log.e(stackTrace[3].className, message, throwable)
@@ -43,10 +61,10 @@ object AppLog {
         if (toast) {
             appCtx.toastOnUi(message)
         }
-        if (mLogs.size > 100) {
+        if (mLogs.size > 400) {
             mLogs.removeLastOrNull()
         }
-        mLogs.add(0, Triple(System.currentTimeMillis(), message, throwable))
+        mLogs.add(0, LogEntry(System.currentTimeMillis(), message, throwable, verbose = false))
         if (BuildConfig.DEBUG) {
             val stackTrace = Thread.currentThread().stackTrace
             Log.e(stackTrace[3].className, message, throwable)
@@ -60,8 +78,7 @@ object AppLog {
 
     fun putDebug(message: String?, throwable: Throwable? = null) {
         if (otherGateway.currentSettings.recordLog) {
-            put(message, throwable)
+            putVerbose(message, throwable)
         }
     }
-
 }

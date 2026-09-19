@@ -852,4 +852,38 @@ class ReadAloudDataRepository(private val app: Application) {
         val m = Regex("^(路人)?(男童|女童|少年|少女|男青年|女青年|男中年|女中年|男老年|女老年|特殊男|特殊女)").find(voice)
         return m?.value.orEmpty()
     }
+
+    // ---------------- 分析管线（V3）数据接口 ----------------
+
+    /** 读取指定书籍的角色记录（优先 books/<书名>/shuming.<书名>.json；当前书缺文件时回退根镜像） */
+    suspend fun loadBookRecords(book: String): List<CharacterRecord> = withContext(Dispatchers.IO) {
+        val perBook = parseRecords(readText(bookFile(book, "shuming.$book.json")))
+        if (perBook.isNotEmpty()) return@withContext perBook
+        val current = readText(rootFile("cunfang.txt"))
+        if (current == book) parseRecords(readText(rootFile("characterRecords.json"))) else emptyList()
+    }
+
+    /** 保存指定书籍的角色记录（只写本书文件；当前书时同步根镜像+备份，避免踩“当前书”语义） */
+    suspend fun saveBookRecords(book: String, records: List<CharacterRecord>): Boolean =
+        withContext(Dispatchers.IO) {
+            val json = recordsJson(records)
+            var ok = writeText(bookFile(book, "shuming.$book.json"), json)
+            if (ok && readText(rootFile("cunfang.txt")) == book) {
+                ok = writeText(rootFile("characterRecords.json"), json)
+                writeText(rootFile("characterRecords_backup.json"), json)
+            }
+            ok
+        }
+
+    /** 最近已分析章节（以剧本文件里的 [chapter:N] 标记为准；无则 -1）——连续性判定用 */
+    suspend fun lastAnalyzedChapter(book: String): Int = withContext(Dispatchers.IO) {
+        val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
+        if (txt.isEmpty()) return@withContext -1
+        var max = -1
+        for (line in txt.split("\n")) {
+            val n = CHAPTER_MARKER.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            if (n > max) max = n
+        }
+        max
+    }
 }

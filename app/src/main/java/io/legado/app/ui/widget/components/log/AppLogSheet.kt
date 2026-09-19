@@ -91,14 +91,11 @@ private data class LogEntry(
 }
 
 private fun loadAllLogs(): List<LogEntry> {
-    return AppLog.logs.map { (time, message, throwable) ->
+    return AppLog.logs.map { entry ->
         LogEntry(
-            time = time,
-            message = if (throwable == null) {
-                message
-            } else {
-                "$message\n${throwable.stackTraceToString()}"
-            }
+            time = entry.timestamp,
+            message = entry.throwable?.let { t -> "${entry.message}\n${t.stackTraceToString()}" }
+                ?: entry.message,
         )
     }
 }
