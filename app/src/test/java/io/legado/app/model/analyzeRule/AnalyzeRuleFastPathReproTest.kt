@@ -34,7 +34,7 @@ import org.robolectric.annotation.Config
  * 校验时 `BookSourceCheckRepository.checkSource` 判定 “搜索失效/发现失效” -> 书源被判为失效。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(application = android.app.Application::class, sdk = [34])
 class AnalyzeRuleFastPathReproTest {
 
     /** 模拟 `ruleBookList: @js:xxx` 返回的 JS 对象数组中的单个条目（NativeObject） */

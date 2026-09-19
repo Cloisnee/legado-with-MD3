@@ -211,12 +211,13 @@ class AnalyzeRule(
                 val sourceRule = ruleList.first()
                 putRule(sourceRule.putMap)
                 sourceRule.makeUpRule(result)
-                result = if (sourceRule.getParamSize() > 1) {
-                    // get {{}}
-                    sourceRule.rule
-                } else {
-                    // 键值直接访问
-                    result[sourceRule.rule]
+                // 对齐上游：JS/JSON 规则必须先按各自模式求值，再退化为键值直接访问。
+                // 少了前两个分支时，"$.name" / "@js:xxx" 会被当成字面量键名 → 返回空。
+                result = when {
+                    sourceRule.mode == Mode.Js -> evalJS(sourceRule.rule, result)
+                    sourceRule.mode == Mode.Json -> getAnalyzeByJSonPath(result).getStringList(sourceRule.rule)
+                    sourceRule.getParamSize() > 1 -> sourceRule.rule
+                    else -> result[sourceRule.rule]
                 }
                 result?.let {
                     if (sourceRule.replaceRegex.isNotEmpty() && it is List<*>) {
@@ -310,12 +311,13 @@ class AnalyzeRule(
                 val sourceRule = ruleList.first()
                 putRule(sourceRule.putMap)
                 sourceRule.makeUpRule(result)
-                result = if (sourceRule.getParamSize() > 1) {
-                    // get {{}}
-                    sourceRule.rule
-                } else {
-                    // 键值直接访问
-                    result[sourceRule.rule]?.toString()
+                // 对齐上游：JS/JSON 规则必须先按各自模式求值，再退化为键值直接访问。
+                // 少了前两个分支时，"$.name" / "@js:xxx" 会被当成字面量键名 → 返回空。
+                result = when {
+                    sourceRule.mode == Mode.Js -> evalJS(sourceRule.rule, result)?.toString()
+                    sourceRule.mode == Mode.Json -> getAnalyzeByJSonPath(result).getString(sourceRule.rule)
+                    sourceRule.getParamSize() > 1 -> sourceRule.rule
+                    else -> result[sourceRule.rule]?.toString()
                 }?.let {
                     replaceRegex(it, sourceRule)
                 }

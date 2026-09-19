@@ -14,11 +14,13 @@ import kotlin.reflect.full.primaryConstructor
 class ReadSettingsMappingTest {
 
     @Test
-    fun `gateway 持久化映射覆盖 ReadSettings 全部 111 个字段`() {
+    fun `gateway 持久化映射覆盖 ReadSettings 全部字段`() {
         val actualKeys = ReadSettings().toGatewayPrefMap().keys
         val expectedKeys = ReadSettings().expectedGatewayPrefMap().keys
+        // 字段数由反射得出，不写死：新增字段时这里跟着自动收紧
+        val fieldCount = ReadSettings::class.primaryConstructor!!.parameters.size
 
-        assertEquals(111, actualKeys.size)
+        assertEquals(fieldCount, actualKeys.size)
         assertEquals(expectedKeys, actualKeys)
     }
 

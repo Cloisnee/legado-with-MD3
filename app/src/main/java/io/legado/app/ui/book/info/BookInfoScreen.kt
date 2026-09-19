@@ -263,11 +263,14 @@ private fun BookInfoScreenContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // 资源串走 stringResource（配置感知），不要用 LocalContext.current.getString
+    val jumpToAnotherAppMessage = stringResource(R.string.jump_to_another_app)
+    val confirmActionLabel = stringResource(R.string.confirm)
     val jumpToAnotherApp: (Uri) -> Unit = { uri ->
         scope.launch {
             val result = snackbarHostState.showSnackbar(
-                message = context.getString(R.string.jump_to_another_app),
-                actionLabel = context.getString(R.string.confirm),
+                message = jumpToAnotherAppMessage,
+                actionLabel = confirmActionLabel,
             )
             if (result == SnackbarResult.ActionPerformed) {
                 context.openUrl(uri)
