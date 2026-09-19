@@ -7,16 +7,10 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
-import io.legado.app.data.dao.AiArtifactDao
-import io.legado.app.data.dao.AiChatDao
-import io.legado.app.data.dao.AiMemoryDao
-import io.legado.app.data.dao.AiProfileDao
-import io.legado.app.data.dao.AiPromptPresetDao
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookContentProcessDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.BookGroupDao
-import io.legado.app.data.dao.BookKnowledgeDao
 import io.legado.app.data.dao.BookMarkingDao
 import io.legado.app.data.dao.BookSourceDao
 import io.legado.app.data.dao.BookmarkDao
@@ -46,24 +40,11 @@ import io.legado.app.data.dao.SearchKeywordDao
 import io.legado.app.data.dao.ServerDao
 import io.legado.app.data.dao.TagGroupRuleDao
 import io.legado.app.data.dao.TxtTocRuleDao
-import io.legado.app.data.entities.AiArtifact
-import io.legado.app.data.entities.AiChatConversation
-import io.legado.app.data.entities.AiChatMessage
-import io.legado.app.data.entities.AiMemory
-import io.legado.app.data.entities.AiModelProfile
-import io.legado.app.data.entities.AiPromptPreset
-import io.legado.app.data.entities.AiProviderProfile
-import io.legado.app.data.entities.AiTaskPreset
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
-import io.legado.app.data.entities.BookCharacterEvent
-import io.legado.app.data.entities.BookCharacterProfile
-import io.legado.app.data.entities.BookCharacterRelation
 import io.legado.app.data.entities.BookContentProcess
 import io.legado.app.data.entities.BookGroup
-import io.legado.app.data.entities.BookKnowledgeEntry
 import io.legado.app.data.entities.BookMarking
-import io.legado.app.data.entities.BookOutlineNode
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.BookVoiceBindingEntity
@@ -112,7 +93,7 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 105,
+    version = 106,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -121,12 +102,8 @@ val appDb by lazy {
         RssStar::class, TxtTocRule::class, ReadRecord::class, HttpTTS::class, Cache::class,
         RuleSub::class, DictRule::class, KeyboardAssist::class, Server::class,
         SearchContentHistory::class, HomepageModule::class, HomepageCustomSet::class,
-        HighlightRule::class, AiProviderProfile::class, AiModelProfile::class,
-        AiTaskPreset::class, AiArtifact::class, AiChatConversation::class,
-        AiChatMessage::class, AiMemory::class, HighlightTagRule::class, TagGroupRule::class,
-        BookContentProcess::class, AiPromptPreset::class, BookCharacterProfile::class,
-        BookCharacterEvent::class, BookCharacterRelation::class, BookKnowledgeEntry::class,
-        BookOutlineNode::class, ReadAloudVoiceEntity::class, BookVoiceBindingEntity::class,
+        HighlightRule::class, HighlightTagRule::class, TagGroupRule::class,
+        BookContentProcess::class, ReadAloudVoiceEntity::class, BookVoiceBindingEntity::class,
         ChapterSpeechAnalysisEntity::class, ChapterSpeechSegmentEntity::class,
         CloudTtsEngineEntity::class, ExactChapterPageCountEntity::class,
         BookMarking::class],
@@ -192,7 +169,9 @@ val appDb by lazy {
         AutoMigration(from = 101, to = 102),
         // httpTTS 新增可空列 speed（源级语速）
         AutoMigration(from = 103, to = 104),
-        AutoMigration(from = 104, to = 105)
+        AutoMigration(from = 104, to = 105),
+        // v4-B4：AI/翻译/上游人物链 全量拔除 —— 删除 13 张遗留表
+        AutoMigration(from = 105, to = 106, spec = DatabaseMigrations.Migration_105_106::class)
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -202,7 +181,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val bookSourceDao: BookSourceDao
     abstract val bookChapterDao: BookChapterDao
     abstract val bookContentProcessDao: BookContentProcessDao
-    abstract val bookKnowledgeDao: BookKnowledgeDao
     abstract val readAloudVoiceDao: ReadAloudVoiceDao
     abstract val chapterSpeechDao: ChapterSpeechDao
     abstract val cloudTtsEngineDao: CloudTtsEngineDao
@@ -231,11 +209,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val highlightRuleDao: HighlightRuleDao
     abstract val highlightTagRuleDao: HighlightTagRuleDao
     abstract val tagGroupRuleDao: TagGroupRuleDao
-    abstract val aiProfileDao: AiProfileDao
-    abstract val aiArtifactDao: AiArtifactDao
-    abstract val aiChatDao: AiChatDao
-    abstract val aiMemoryDao: AiMemoryDao
-    abstract val aiPromptPresetDao: AiPromptPresetDao
 
     companion object {
 

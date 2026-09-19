@@ -1,6 +1,7 @@
 package io.legado.app.data
 
 import androidx.room.DeleteColumn
+import androidx.room.DeleteTable
 import androidx.room.migration.AutoMigrationSpec
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -497,6 +498,22 @@ object DatabaseMigrations {
         columnName = "enabledReview"
     )
     class Migration_64_65 : AutoMigrationSpec
+
+    @Suppress("ClassName")
+    @DeleteTable(tableName = "ai_provider_profiles")
+    @DeleteTable(tableName = "ai_model_profiles")
+    @DeleteTable(tableName = "ai_task_presets")
+    @DeleteTable(tableName = "ai_artifacts")
+    @DeleteTable(tableName = "ai_chat_conversations")
+    @DeleteTable(tableName = "ai_chat_messages")
+    @DeleteTable(tableName = "ai_memory")
+    @DeleteTable(tableName = "ai_prompt_presets")
+    @DeleteTable(tableName = "book_character_profiles")
+    @DeleteTable(tableName = "book_character_events")
+    @DeleteTable(tableName = "book_character_relations")
+    @DeleteTable(tableName = "book_knowledge_entries")
+    @DeleteTable(tableName = "book_outline_nodes")
+    class Migration_105_106 : AutoMigrationSpec
 
     //已在书架的书没有 listIntro, 搜索缓存里还留着的就补回去(缓存只保留一天, 补不到的回落到 intro)
     @Suppress("ClassName")

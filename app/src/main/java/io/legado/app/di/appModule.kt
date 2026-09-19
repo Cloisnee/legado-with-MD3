@@ -8,7 +8,6 @@ import coil3.request.crossfade
 import coil3.svg.SvgDecoder
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.repository.AiModelRepository
-import io.legado.app.data.repository.AiTextRepositoryImpl
 import io.legado.app.data.repository.AppLocaleRepository
 import io.legado.app.data.repository.AppShellSettingsRepository
 import io.legado.app.data.repository.AppStartupRepository
@@ -41,7 +40,6 @@ import io.legado.app.data.repository.CoverAlbumRepository
 import io.legado.app.data.repository.CoverSettingsRepository
 import io.legado.app.data.repository.DatabaseMaintenanceRepository
 import io.legado.app.data.repository.DictRuleRepository
-import io.legado.app.data.repository.DictionaryRepositoryImpl
 import io.legado.app.data.repository.DirectLinkSettingsRepository
 import io.legado.app.data.repository.DirectLinkUploadRepository
 import io.legado.app.data.repository.DownloadCacheSettingsRepository
@@ -83,8 +81,6 @@ import io.legado.app.data.repository.SettingsRepository
 import io.legado.app.data.repository.TagGroupRuleApplier
 import io.legado.app.data.repository.ThemePackageSettingsRepository
 import io.legado.app.data.repository.ThemeSettingsRepository
-import io.legado.app.data.repository.TranslationCacheRepositoryImpl
-import io.legado.app.data.repository.TranslationSettingsRepository
 import io.legado.app.data.repository.TxtTocRuleRepository
 import io.legado.app.data.repository.UploadRepository
 import io.legado.app.data.repository.WebDavBackupRepository
@@ -93,7 +89,6 @@ import io.legado.app.data.repository.manga.DefaultMangaReaderSession
 import io.legado.app.data.repository.manga.MangaReaderActionRepository
 import io.legado.app.data.repository.manga.MangaReaderDataRepository
 import io.legado.app.data.security.CloudTtsCredentialCipher
-import io.legado.app.domain.gateway.AiTextGateway
 import io.legado.app.domain.gateway.AppLocaleGateway
 import io.legado.app.domain.gateway.AppShellSettingsGateway
 import io.legado.app.domain.gateway.AppStartupGateway
@@ -117,7 +112,6 @@ import io.legado.app.domain.gateway.CloudTtsEngineGateway
 import io.legado.app.domain.gateway.CoverAlbumGateway
 import io.legado.app.domain.gateway.CoverSettingsGateway
 import io.legado.app.domain.gateway.DatabaseMaintenanceGateway
-import io.legado.app.domain.gateway.DictionaryGateway
 import io.legado.app.domain.gateway.DirectLinkSettingsGateway
 import io.legado.app.domain.gateway.DownloadCacheSettingsGateway
 import io.legado.app.domain.gateway.ExploreBooksGateway
@@ -141,8 +135,6 @@ import io.legado.app.domain.gateway.ReadStyleGateway
 import io.legado.app.domain.gateway.ReadingProgressGateway
 import io.legado.app.domain.gateway.ThemePackageSettingsGateway
 import io.legado.app.domain.gateway.ThemeSettingsGateway
-import io.legado.app.domain.gateway.TranslationCacheGateway
-import io.legado.app.domain.gateway.TranslationSettingsGateway
 import io.legado.app.domain.gateway.WebDavBackupGateway
 import io.legado.app.domain.repository.BookDomainRepository
 import io.legado.app.domain.usecase.AddBookUseCase
@@ -340,7 +332,6 @@ val appModule = module {
     single<MangaSettingsGateway> { MangaSettingsRepository() }
     single<ChangeSourceSettingsGateway> { ChangeSourceSettingsRepository() }
     single<ImportBookSettingsGateway> { ImportBookSettingsRepository() }
-    single<TranslationSettingsGateway> { TranslationSettingsRepository() }
     single<BookshelfSettingsGateway> { BookshelfSettingsRepository() }
     single { ReadSettingsRepository(settingsRepository = get()) }
     single<ReadSettingsGateway> { get<ReadSettingsRepository>() }
@@ -410,8 +401,6 @@ val appModule = module {
     singleOf(::ThemePackageManager)
 
     single<UploadRepository> { DirectLinkUploadRepository() }
-    single<TranslationCacheGateway> { TranslationCacheRepositoryImpl() }
-    single<AiTextGateway> { AiTextRepositoryImpl() }
     single<AppStartupGateway> { AppStartupRepository(get()) }
     single<BackupRestoreGateway> { BackupRestoreRepository() }
     single<BookCacheDownloadGateway> { CacheBookDownloadRepository(get()) }
@@ -455,7 +444,6 @@ val appModule = module {
     singleOf(::VerifyBookmarkTargetUseCase)
     singleOf(::RelocateMarkingTargetUseCase)
     singleOf(::ReplaceRuleRepository)
-    single<DictionaryGateway> { DictionaryRepositoryImpl() }
 
     single<ImageLoader> {
         ImageLoader.Builder(get())
