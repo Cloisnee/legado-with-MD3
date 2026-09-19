@@ -1,33 +1,34 @@
 package io.legado.app.domain.usecase
 
 import io.legado.app.constant.AppLog
-import io.legado.app.data.entities.BookCharacterProfile
-import io.legado.app.domain.gateway.BookKnowledgeGateway
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ChapterSpeechGateway
+import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.AiReasoningLevel
+import io.legado.app.domain.model.readaloud.BookVoiceBinding
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
-import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
+import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechAnalysisMode
 import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV2
-import io.legado.app.help.readaloud.segment.RuleBasedSpeechSegmenter
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import kotlin.random.Random
 
 /**
  * Builds the persisted speech plan used by a read-aloud session.
  *
- * W3 V2 链路：
- *  1) 分析管线 V2 产物（AI 完整链，由调度器/审查页后台产出）存在 → 直接消费（即时出声）；
- *  2) 否则走本地规则快速链（先出声不等 AI），AI 由 AnalysisSchedulerV2 后台补全，
- *     完成后重新进入本章（或审查页刷新）即切换到 V2 剧本。
+ * V4（脚本复刻）链路：
+ *  1) 分析管线 V3 产物（调度器后台产出）存在 → 直接消费；声线按 角色记录库（三池分配结果）挂载；
+ *  2) 否则本地规则 v2 快速链先出声（引号包裹判定），AI 由调度器后台补全，
+ *     完成后重新进入本章（或审查页刷新）即切换到 V3 剧本。
  */
 class PrepareChapterSpeechPlanUseCase(
-    private val analyzeChapterSpeech: AnalyzeChapterSpeechUseCase,
-    private val resolveLocalSpeakers: ResolveLocalSpeakersUseCase,
     private val buildSpeechPlan: BuildSpeechPlanUseCase,
     private val chapterSpeechGateway: ChapterSpeechGateway,
-    private val bookKnowledgeGateway: BookKnowledgeGateway,
+    private val voiceGateway: ReadAloudVoiceGateway,
+    private val recordsStore: ReadAloudDataRepository,
+    private val pipeline: SpeechAnalysisPipelineV3,
 ) {
 
     suspend operator fun invoke(
@@ -38,69 +39,81 @@ class PrepareChapterSpeechPlanUseCase(
         @Suppress("UNUSED_PARAMETER") analysisMode: SpeechAnalysisMode = SpeechAnalysisMode.Rule,
         @Suppress("UNUSED_PARAMETER") analysisReasoningLevel: AiReasoningLevel = AiReasoningLevel.OFF,
         useMultiSpeaker: Boolean = true,
+        bookName: String = "",
     ): List<SpeechPlanItem> {
         if (paragraphs.isEmpty()) return emptyList()
+        val overrides = voiceOverrides(bookName, bookUrl, chapterIndex)
 
-        // ---- V2 优先：AI 完整链剧本直接消费 ----
+        // ---- V3 优先：脚本复刻管线产物直接消费（即时出声） ----
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        val v2 = runCatching {
+        val v3 = runCatching {
             chapterSpeechGateway.getAnalysis(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
                 contentHash = contentHash,
-                resolverVersion = SpeechAnalysisPipelineV2.RESOLVER_VERSION,
+                resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
             )
         }.onFailure {
-            AppLog.put("读取 V2 剧本失败，走本地快速链: ${it.localizedMessage}", it)
+            AppLog.put("读取 V3 剧本失败，走本地快速链: ${it.localizedMessage}", it)
         }.getOrNull()
-        if (v2 != null && v2.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
-            val segments = runCatching { chapterSpeechGateway.getSegments(v2.id) }.getOrDefault(emptyList())
+        if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
+            val segments = runCatching { chapterSpeechGateway.getSegments(v3.id) }.getOrDefault(emptyList())
             if (segments.isNotEmpty()) {
-                AppLog.put("多角色计划：消费 V2 剧本（${v2.status.storageValue}，${segments.size} 段）")
+                AppLog.put("多角色计划：消费 V3 剧本（${v3.status.storageValue}，${segments.size} 段）")
                 return buildSpeechPlan(
                     bookUrl = bookUrl,
                     segments = segments,
                     preferredDefaultVoiceId = preferredDefaultVoiceId,
-                    characterPerformances = characterPerformanceMap(bookUrl),
                     useMultiSpeaker = useMultiSpeaker,
+                    voiceOverrides = overrides,
                 )
             }
         }
 
-        // ---- 快速链：本地规则先行（先出声） ----
-        val analysis = analyzeChapterSpeech(
-            bookUrl = bookUrl,
-            chapterIndex = chapterIndex,
-            paragraphs = paragraphs,
-            resolverVersion = RuleBasedSpeechSegmenter.VERSION,
-        )
-        val locallyResolved = resolveLocalSpeakers(
-            analysisResult = analysis,
-            paragraphs = paragraphs,
-        )
+        // ---- 快速链：本地规则 v2 先行（先出声不等 AI） ----
+        val local = pipeline.quickLocalSegments(paragraphs)
         return buildSpeechPlan(
             bookUrl = bookUrl,
-            segments = locallyResolved.segments,
+            segments = local,
             preferredDefaultVoiceId = preferredDefaultVoiceId,
-            characterPerformances = locallyResolved.characterPerformances.associateBy { it.characterId },
             useMultiSpeaker = useMultiSpeaker,
+            voiceOverrides = overrides,
         )
     }
 
-    private suspend fun characterPerformanceMap(
+    /** 角色记录库 + 声线库分组 → 声线覆盖表：narrator / duihuaA / duihuaB + 角色名→标签 */
+    private suspend fun voiceOverrides(
+        bookName: String,
         bookUrl: String,
-    ): Map<String, CharacterPerformanceProfile> = runCatching {
-        bookKnowledgeGateway.getCharacterProfiles(bookUrl, 200)
-            .filter { it.status == BookCharacterProfile.STATUS_ACTIVE }
-            .map { profile ->
-                CharacterPerformanceProfile(
-                    characterId = profile.id,
-                    role = profile.role,
-                    voiceGender = profile.voiceGender,
-                    voiceAgeBand = profile.voiceAgeBand,
-                    personality = profile.personality,
-                    updatedAt = profile.updatedAt,
-                )
-            }.associateBy { it.characterId }
-    }.getOrDefault(emptyMap())
+        chapterIndex: Int,
+    ): Map<String, ReadAloudVoice> {
+        if (bookName.isBlank()) return emptyMap()
+        return runCatching {
+            val catalog = voiceGateway.getEnabledVoices()
+                .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
+            fun byTag(tag: String): ReadAloudVoice? = tag.takeIf { it.isNotBlank() }
+                ?.let { t -> catalog.firstOrNull { v -> v.speakerId == t } }
+            val groups = recordsStore.loadActiveVoiceGroups()
+            val narratorGroup = groups.firstOrNull { it.effectiveRoleType() == "旁白" && it.tags.isNotEmpty() }
+            val duihuaGroup = groups.firstOrNull { it.effectiveRoleType() == "默认对话" && it.tags.isNotEmpty() }
+            // 默认对话：章内稳定随机取一（同一章多次进入结果一致；跨章自然变化）
+            val rnd = Random(bookUrl.hashCode() * 31 + chapterIndex)
+            val duihuaA = duihuaGroup?.tags?.filter { it.startsWith("duihuaA") }
+                ?.takeIf { it.isNotEmpty() }?.random(rnd)
+            val duihuaB = duihuaGroup?.tags?.filter { it.startsWith("duihuaB") }
+                ?.takeIf { it.isNotEmpty() }?.random(rnd)
+            buildMap {
+                // 旁白：组内置顶者（列表首个）作为发音人
+                byTag(narratorGroup?.tags?.firstOrNull().orEmpty())
+                    ?.let { put(BookVoiceBinding.SUBJECT_NARRATOR, it) }
+                byTag(duihuaA.orEmpty())?.let { put(BookVoiceBinding.SUBJECT_UNKNOWN_MALE, it) }
+                byTag(duihuaB.orEmpty())?.let { put(BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE, it) }
+                recordsStore.loadBookRecords(bookName).forEach { r ->
+                    byTag(r.voice)?.let { put(r.name, it) }
+                }
+            }
+        }.onFailure {
+            AppLog.put("声线覆盖表构建失败: ${it.localizedMessage}", it)
+        }.getOrDefault(emptyMap())
+    }
 }

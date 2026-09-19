@@ -18,6 +18,7 @@ class BuildSpeechPlanUseCase(
         preferredDefaultVoiceId: String? = null,
         characterPerformances: Map<String, CharacterPerformanceProfile> = emptyMap(),
         useMultiSpeaker: Boolean = true,
+        voiceOverrides: Map<String, ReadAloudVoice> = emptyMap(),
     ): List<SpeechPlanItem> {
         val voices = voiceGateway.getEnabledVoices()
         val voicesById = voices.associateBy(ReadAloudVoice::id)
@@ -67,12 +68,16 @@ class BuildSpeechPlanUseCase(
                     )
                     else -> null
                 }
+                val overrideVoice = voiceOverrides[segment.characterName]
                 when (segment.roleType) {
                     SpeechRoleType.Character,
-                    SpeechRoleType.Thought -> characterVoice ?: roleVoice ?: genderFallback
+                    SpeechRoleType.Thought -> overrideVoice ?: characterVoice ?: roleVoice ?: genderFallback
+                        ?: voiceOverrides[BookVoiceBinding.SUBJECT_UNKNOWN_MALE]
+                        ?: voiceOverrides[BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE]
                         ?: unknown ?: narrator ?: defaultVoice
                     SpeechRoleType.Unknown -> unknown ?: narrator ?: defaultVoice
-                    SpeechRoleType.Narrator -> narrator ?: defaultVoice
+                    SpeechRoleType.Narrator -> voiceOverrides[BookVoiceBinding.SUBJECT_NARRATOR]
+                        ?: narrator ?: defaultVoice
                 }
             }
             val fallbackVoices = if (!useMultiSpeaker) {

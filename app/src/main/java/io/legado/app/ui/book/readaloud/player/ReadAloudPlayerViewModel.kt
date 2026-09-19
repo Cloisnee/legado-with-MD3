@@ -11,8 +11,8 @@ import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.config.compatDsInt
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV2
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.ui.widget.components.player.PlayerChapterUi
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonArray
@@ -31,7 +31,7 @@ class ReadAloudPlayerViewModel(
     private val coordinator: ReadAloudPlayerCoordinator,
     private val chapterSpeechGateway: ChapterSpeechGateway,
     private val bookKnowledgeGateway: BookKnowledgeGateway,
-    private val scheduler: AnalysisSchedulerV2,
+    private val scheduler: AnalysisSchedulerV3,
 ) : ViewModel() {
 
     private val activeSheet = MutableStateFlow<ReadAloudPlayerSheet?>(null)
@@ -244,7 +244,7 @@ class ReadAloudPlayerViewModel(
     }
 
     private fun sourceLabelOf(version: String): String = when {
-        version.startsWith(SpeechAnalysisPipelineV2.RESOLVER_VERSION) -> "AI 管线"
+        version.startsWith(SpeechAnalysisPipelineV3.RESOLVER_VERSION) -> "脚本管线"
         version.startsWith(RULE_VERSION_PREFIX) -> "本地规则"
         else -> version
     }

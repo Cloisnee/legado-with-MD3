@@ -3,6 +3,7 @@ package io.legado.app.data.repository
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.tts.store.TtsConfigStore
+import io.legado.app.domain.model.readaloud.VoiceGroupInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -886,4 +887,37 @@ class ReadAloudDataRepository(private val app: Application) {
         }
         max
     }
+
+    /** 读取「已选中」声线库分组（activeVoiceBanks ↔ voices.json；tags 保持列表顺序=配置列表显示顺序，首=置顶） */
+    suspend fun loadActiveVoiceGroups(): List<VoiceGroupInfo> = withContext(Dispatchers.IO) {
+        val banks = loadActiveVoiceBanks().toSet()
+        if (banks.isEmpty()) return@withContext emptyList()
+        val out = ArrayList<VoiceGroupInfo>()
+        runCatching {
+            val voices = TtsConfigStore.loadVoices(app)
+            for (g in 0 until voices.length()) {
+                val grp = voices.optJSONObject(g) ?: continue
+                val info = grp.optJSONObject("group") ?: continue
+                val name = info.optString("name")
+                if (name.isBlank() || name !in banks) continue
+                val tags = ArrayList<String>()
+                val list = grp.optJSONArray("list") ?: continue
+                for (i in 0 until list.length()) {
+                    val tag = list.optJSONObject(i)?.optJSONObject("config")
+                        ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
+                    if (tag.isNotEmpty()) tags.add(tag)
+                }
+                if (tags.isEmpty()) continue
+                out.add(
+                    VoiceGroupInfo(
+                        name = name,
+                        roleType = info.optString("roleType").trim(),
+                        tags = tags,
+                    ),
+                )
+            }
+        }
+        out
+    }
+
 }

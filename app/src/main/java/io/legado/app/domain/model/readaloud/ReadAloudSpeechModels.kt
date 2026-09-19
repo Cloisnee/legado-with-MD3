@@ -204,3 +204,26 @@ enum class SpeechAnalysisStatus(val storageValue: String) {
             entries.firstOrNull { it.storageValue == value } ?: Failed
     }
 }
+
+/**
+ * 声线库分组（配置列表一级分组 → 「已选中」声线库）：tags 保持列表顺序（首=置顶）。
+ */
+data class VoiceGroupInfo(
+    val name: String,
+    val roleType: String = "",
+    val tags: List<String> = emptyList(),
+) {
+    /** 生效类型：显式 roleType 优先；空则按标签前缀推断（旁白→旁白，duihua→默认对话，特殊/路人→同类，兜底核心） */
+    fun effectiveRoleType(): String {
+        if (roleType.isNotBlank()) return roleType
+        for (t in tags) {
+            when {
+                t.startsWith("旁白") -> return "旁白"
+                t.startsWith("duihuaA") || t.startsWith("duihuaB") -> return "默认对话"
+                t.startsWith("特殊") -> return "特殊"
+                t.startsWith("路人") -> return "路人"
+            }
+        }
+        return "核心"
+    }
+}

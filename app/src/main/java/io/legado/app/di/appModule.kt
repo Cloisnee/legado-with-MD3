@@ -43,6 +43,7 @@ import io.legado.app.data.repository.BookshelfSettingsRepository
 import io.legado.app.data.repository.CacheBookDownloadRepository
 import io.legado.app.data.repository.ChangeSourceSettingsRepository
 import io.legado.app.data.repository.ChapterSpeechRepository
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.CheckSourceSettingsRepository
 import io.legado.app.data.repository.CloudTtsEngineRepository
 import io.legado.app.data.repository.CoverAlbumRepository
@@ -168,7 +169,6 @@ import io.legado.app.domain.usecase.AiChatGenerationUseCase
 import io.legado.app.domain.usecase.AiTaskManager
 import io.legado.app.domain.usecase.AiTextFactoryUseCase
 import io.legado.app.domain.usecase.AiToolAwareGenerationUseCase
-import io.legado.app.domain.usecase.AnalyzeChapterSpeechUseCase
 import io.legado.app.domain.usecase.AppStartupMaintenanceUseCase
 import io.legado.app.domain.usecase.ApplyBookshelfAutoGroupPlanUseCase
 import io.legado.app.domain.usecase.BackupRestoreUseCase
@@ -193,14 +193,14 @@ import io.legado.app.domain.usecase.HomeDashboardUseCase
 import io.legado.app.domain.usecase.IdentifyBookCharactersUseCase
 import io.legado.app.domain.usecase.ImportBookshelfUseCase
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV2
+import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.domain.usecase.RefreshTocUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
 import io.legado.app.domain.usecase.RemoveBookGroupAssignmentUseCase
 import io.legado.app.domain.usecase.ResolveBookShelfStateUseCase
-import io.legado.app.domain.usecase.ResolveLocalSpeakersUseCase
 import io.legado.app.domain.usecase.SaveBookContentProcessUseCase
 import io.legado.app.domain.usecase.SaveMarkingUseCase
 import io.legado.app.domain.usecase.SaveSearchBooksUseCase
@@ -425,12 +425,12 @@ val appModule = module {
     singleOf(::BackupRestoreUseCase)
     singleOf(::BatchCacheDownloadUseCase)
     singleOf(::BuildSpeechPlanUseCase)
-    singleOf(::AnalyzeChapterSpeechUseCase)
-    singleOf(::ResolveLocalSpeakersUseCase)
     singleOf(::AiModelRepository)
+    singleOf(::ReadAloudDataRepository)
     singleOf(::AiSpeechClient)
-    singleOf(::SpeechAnalysisPipelineV2)
-    singleOf(::AnalysisSchedulerV2)
+    singleOf(::AnalysisConfigStore)
+    singleOf(::SpeechAnalysisPipelineV3)
+    singleOf(::AnalysisSchedulerV3)
     singleOf(::PrepareChapterSpeechPlanUseCase)
     singleOf(::SyncReadAloudVoicesUseCase)
     singleOf(::CacheBookChaptersUseCase)

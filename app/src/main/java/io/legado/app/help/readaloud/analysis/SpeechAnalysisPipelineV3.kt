@@ -1,7 +1,5 @@
 package io.legado.app.help.readaloud.analysis
 
-import android.app.Application
-import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.CharacterRecord
@@ -42,7 +40,6 @@ import kotlin.math.abs
  *  声线分配：三池（核心/路人/特殊）按 性别/年龄类键 未用优先随机 + 耗尽清锁重来再随机；只吃“已选中”声线库。
  */
 class SpeechAnalysisPipelineV3(
-    private val app: Application,
     private val chapterSpeechGateway: ChapterSpeechGateway,
     private val aiModels: AiModelRepository,
     private val ai: AiSpeechClient,
@@ -250,7 +247,6 @@ class SpeechAnalysisPipelineV3(
     private data class ParaUnits(val paraIndex: Int, val units: List<TextUnit>)
     private data class SpRange(val para: Int, val start: Int, val end: Int)
     private data class Stage2Payload(val seqMap: Map<Int, String>, val chars: List<Calibrated>)
-    private data class VoiceGroupInfo(val name: String, val roleType: String, val tags: List<String>)
 
     private class Calibrated(
         var name: String,
@@ -393,6 +389,18 @@ class SpeechAnalysisPipelineV3(
             .onFailure { AppLog.put("分析V3·落库失败: ${it.localizedMessage}", it) }
         AppLog.putVerbose("【分析V3·第${chapterIndex + 1}章】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
         ChapterSpeechAnalysisResult(analysis, bound, false)
+    }
+
+
+    /** 本地快速分段（点击朗读 → 先出声；与 A 阶段本地路径同源）：引号规则 v2 → 段落装配 */
+    fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<ChapterSpeechSegment> {
+        val ranges = ArrayList<SpRange>()
+        paragraphs.forEach { p ->
+            QuoteSpeechRules.quoteSpans(p.text).forEach { s ->
+                ranges.add(SpRange(p.index, s.first, s.last + 1))
+            }
+        }
+        return assemble(paragraphs, ranges)
     }
 
     // ---------------- A 话语分析 ----------------
@@ -1329,34 +1337,14 @@ class SpeechAnalysisPipelineV3(
     // ---------------- 声线分配（三池） ----------------
 
     private suspend fun assignVoices(records: List<CharacterRecord>): List<CharacterRecord> {
-        val active = runCatching { dataRepository.loadActiveVoiceBanks() }.getOrDefault(emptyList())
-        if (active.isEmpty()) return records
-        val arr = runCatching { TtsConfigStore.loadVoices(app) }.getOrNull() ?: return records
-        val groups = ArrayList<VoiceGroupInfo>()
-        for (i in 0 until arr.length()) {
-            val g = arr.optJSONObject(i) ?: continue
-            val info = g.optJSONObject("group") ?: continue
-            val name = info.optString("name")
-            if (name.isBlank() || name !in active) continue
-            val tags = ArrayList<String>()
-            val list = g.optJSONArray("list") ?: continue
-            for (j in 0 until list.length()) {
-                val tag = list.optJSONObject(j)?.optJSONObject("config")
-                    ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
-                if (tag.isNotEmpty()) tags.add(tag)
-            }
-            if (tags.isEmpty()) continue
-            var roleType = info.optString("roleType").trim()
-            if (roleType.isBlank()) roleType = inferGroupRoleType(tags)
-            groups.add(VoiceGroupInfo(name, roleType, tags))
-        }
+        val groups = runCatching { dataRepository.loadActiveVoiceGroups() }.getOrDefault(emptyList())
         if (groups.isEmpty()) return records
         val used = records.mapNotNull { it.voice.takeIf { v -> v.isNotBlank() } }.toMutableSet()
         var assigned = 0
         records.forEach { r ->
             if (r.voice.isNotBlank()) return@forEach
             if (r.roletype != "核心" && r.roletype != "路人" && r.roletype != "特殊") return@forEach
-            val pool = groups.firstOrNull { it.roleType == r.roletype && it.tags.isNotEmpty() } ?: return@forEach
+            val pool = groups.firstOrNull { it.effectiveRoleType() == r.roletype && it.tags.isNotEmpty() } ?: return@forEach
             val prefix = dataRepository.expectedVoicePrefix(r.roletype, r.gender, r.age)
             val candidates = pool.tags.filter { it.startsWith(prefix) }
             if (candidates.isEmpty()) return@forEach
@@ -1373,18 +1361,6 @@ class SpeechAnalysisPipelineV3(
         }
         if (assigned > 0) AppLog.putVerbose("【分析V3·声线分配】本次新分配 $assigned 条")
         return records
-    }
-
-    private fun inferGroupRoleType(tags: List<String>): String {
-        for (t in tags) {
-            when {
-                t.startsWith("旁白") -> return "旁白"
-                t.startsWith("duihuaA") || t.startsWith("duihuaB") -> return "默认对话"
-                t.startsWith("特殊") -> return "特殊"
-                t.startsWith("路人") -> return "路人"
-            }
-        }
-        return "核心"
     }
 
     // ---------------- 工具 ----------------

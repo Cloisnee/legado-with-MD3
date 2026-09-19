@@ -47,7 +47,7 @@ import io.legado.app.domain.model.readaloud.SpeechAnalysisMode
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV2
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.config.AppConfigStore
@@ -329,6 +329,10 @@ abstract class BaseReadAloudService : BaseService(),
         isRun = false
         pause = true
         sessionStore.stop()
+        runCatching {
+            val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
+            scheduler.stopSession()
+        }
         currentChapterIndex = -1
         currentProgress = 0
         abandonFocus()
@@ -425,15 +429,15 @@ abstract class BaseReadAloudService : BaseService(),
                 chapterIndex = ReadBook.durChapterIndex,
                 paragraphs = preparedChapter.canonicalSpeechParagraphs(),
             )
-            // W3 分析调度：本地先出声，AI 完整链后台补全 当前章+预加载窗口（不阻塞播放）
+            // V4 分析调度：本地快速链先出声，脚本复刻管线后台补全 当前章+预加载窗口（不阻塞播放）
             runCatching {
-                val scheduler: AnalysisSchedulerV2 = get(AnalysisSchedulerV2::class.java)
+                val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
                 val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
                 if (bookUrl.isNotEmpty()) {
-                    scheduler.enqueueWindow(bookUrl, ReadBook.durChapterIndex)
+                    scheduler.startSession(bookUrl, ReadBook.durChapterIndex)
                 }
             }.onFailure {
-                AppLog.put("分析调度入队失败: ${it.localizedMessage}", it)
+                AppLog.put("分析调度会话启动失败: ${it.localizedMessage}", it)
             }
             if (generation != prepareReadAloudGeneration) return@execute
             var preparedPlaybackQueue = runCatching {
@@ -545,6 +549,7 @@ abstract class BaseReadAloudService : BaseService(),
                     AiReasoningLevel.OFF,
                 ),
                 useMultiSpeaker = ReadConfig.useMultiSpeaker,
+                bookName = ReadBook.book?.name.orEmpty(),
             )
         }.onFailure {
             AppLog.put("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
@@ -1348,12 +1353,26 @@ abstract class BaseReadAloudService : BaseService(),
 
     abstract fun aloudServicePendingIntent(actionStr: String): PendingIntent?
 
+    /** 通知分析调度：朗读跨章（触点2） */
+    private fun notifyAnalysisChapterChanged() {
+        runCatching {
+            val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
+            val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
+            if (bookUrl.isNotEmpty()) {
+                scheduler.onChapterChanged(bookUrl, ReadBook.durChapterIndex)
+            }
+        }.onFailure {
+            AppLog.put("分析调度换章通知失败: ${it.localizedMessage}", it)
+        }
+    }
+
     open fun prevChapter() {
         clearFinishChapterTimer()
         ReadBook.upReadTime()
         toLast = false
         resumeReadAloudInternal()
         withSpeechNavigation { ReadBook.moveToPrevChapter(true, toLast = false) }
+        notifyAnalysisChapterChanged()
     }
 
     open fun nextChapter() {
@@ -1363,6 +1382,8 @@ abstract class BaseReadAloudService : BaseService(),
         resumeReadAloudInternal()
         if (!withSpeechNavigation { ReadBook.moveToNextChapter(true) }) {
             stopReadAloudService()
+        } else {
+            notifyAnalysisChapterChanged()
         }
     }
 
