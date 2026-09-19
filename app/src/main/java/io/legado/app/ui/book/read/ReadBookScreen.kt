@@ -98,7 +98,6 @@ fun ReadBookOverlayRoute(
     } else ContentProcessConfigUiState()
     ReadBookScreen(
         state = state,
-        aiState = aiState,
         highlightRuleState = highlightRuleState,
         markingState = markingState,
         contentEditState = contentEditState,

@@ -838,17 +838,6 @@ class ReadBookViewModel(
                 contentProcessDelegate.requestDelete(intent.item)
             is ReadBookIntent.ConfirmDeleteContentProcess -> contentProcessDelegate.confirmDelete()
             is ReadBookIntent.DismissDeleteContentProcess -> contentProcessDelegate.dismissDelete()
-            is ReadBookIntent.SetAiRewritePresetName ->
-                aiDelegate.setAiRewritePresetName(intent.name)
-            is ReadBookIntent.SetAiRewritePresetInstruction ->
-                aiDelegate.setAiRewritePresetInstruction(intent.instruction)
-            is ReadBookIntent.SaveAiRewritePreset -> aiDelegate.saveAiRewritePreset()
-            is ReadBookIntent.CancelAiRewritePresetEdit -> aiDelegate.clearAiRewritePresetDraft()
-            is ReadBookIntent.RequestDeleteAiRewritePreset ->
-                aiDelegate.requestDeleteAiRewritePreset(intent.preset)
-            is ReadBookIntent.ConfirmDeleteAiRewritePreset -> aiDelegate.deleteAiRewritePreset()
-            is ReadBookIntent.DismissDeleteAiRewritePreset ->
-                aiDelegate.dismissDeleteAiRewritePreset()
             is ReadBookIntent.ChangeSourceBook -> changeTo(intent.book)
             is ReadBookIntent.ChangeSource -> changeTo(intent.book, intent.toc)
             is ReadBookIntent.AddSourceAsNewBook -> addToBookshelf(intent.book, intent.toc)
@@ -914,14 +903,11 @@ class ReadBookViewModel(
                 ) {
                     _uiState.update { it.copy(activeSheet = intent.sheet) }
                     contentProcessDelegate.load()
-                } else if (intent.sheet is ReadBookSheet.AiRewritePresetConfig) {
-                    aiDelegate.openAiRewritePresetConfig()
                 } else {
                     _uiState.update { it.copy(activeSheet = intent.sheet) }
                 }
             }
             is ReadBookIntent.DismissSheet -> {
-                aiDelegate.onSheetDismissed(_uiState.value.activeSheet)
                 when (_uiState.value.activeSheet) {
                     is ReadBookSheet.HighlightRuleConfig -> highlightRuleDelegate.onSheetDismissed()
                     is ReadBookSheet.Marking -> markingDelegate.onSheetDismissed()

@@ -162,8 +162,6 @@ class ReadBookDomainSplitBoundaryTest {
      *   SaveMarking / BookmarkBadgeImageSelected / ClearBookmarkBadgeImage / Marking），
      *   以及 `markingReturnSheet` 返回原 sheet 的瞬态字段——activeSheet 在 UiState 里，
      *   只有 VM 能管，摘不成 delegate。意图入口与 Host 实现与书签域同款，只能在 VM。
-     * - `caafbfdde`（优化一些AI功能）：AI 域三个 reasoning level 意图分支转发给
-     *   `aiDelegate`——意图入口只能在 VM，每档两行（分支 + 转发）。
      *
      * 2664 → 2668：朗读域新增两个意图分支（安卓媒体控制 / 定时到点后读完本章），
      * 合并自 PR #2024。朗读域早已是 `ReadAloudDelegate`——留在 VM 的只有两条 `when`
