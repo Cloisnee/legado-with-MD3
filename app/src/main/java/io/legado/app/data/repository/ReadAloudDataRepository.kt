@@ -3,6 +3,7 @@ package io.legado.app.data.repository
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.tts.store.TtsConfigStore
+import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.domain.model.readaloud.VoiceGroupInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -842,11 +843,8 @@ class ReadAloudDataRepository(private val app: Application) {
 
     // ---------------- 配音前缀工具 ----------------
 
-    fun expectedVoicePrefix(roletype: String, gender: String, age: String): String = when (roletype) {
-        "特殊" -> if (gender == "女") "特殊女" else "特殊男"
-        "路人" -> "路人$age"
-        else -> age
-    }
+    fun expectedVoicePrefix(roletype: String, gender: String, age: String): String =
+        VoiceBankRoleType.tagPrefix(roletype, gender, age)
 
     /** 从标签提取前缀（用于"音色与性别/年龄不符"判断） */
     fun voiceAgePrefix(voice: String): String {

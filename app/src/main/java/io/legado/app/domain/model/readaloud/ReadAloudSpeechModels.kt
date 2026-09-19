@@ -202,17 +202,11 @@ data class VoiceGroupInfo(
     val roleType: String = "",
     val tags: List<String> = emptyList(),
 ) {
-    /** 生效类型：显式 roleType 优先；空则按标签前缀推断（旁白→旁白，duihua→默认对话，特殊/路人→同类，兜底核心） */
-    fun effectiveRoleType(): String {
-        if (roleType.isNotBlank()) return roleType
-        for (t in tags) {
-            when {
-                t.startsWith("旁白") -> return "旁白"
-                t.startsWith("duihuaA") || t.startsWith("duihuaB") -> return "默认对话"
-                t.startsWith("特殊") -> return "特殊"
-                t.startsWith("路人") -> return "路人"
-            }
-        }
-        return "核心"
-    }
+    /**
+     * 生效类型：显式 roleType 优先（**冻结值**，见 [VoiceBankRoleType]）；
+     * 为空（尚未冻结）才按组名/标签前缀推断，兜底核心。
+     */
+    fun effectiveRoleType(): String =
+        VoiceBankRoleType.normalize(roleType)
+            .ifEmpty { VoiceBankRoleType.infer(name, tags) }
 }

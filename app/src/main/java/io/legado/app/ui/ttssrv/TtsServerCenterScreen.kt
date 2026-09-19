@@ -412,14 +412,29 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         activeBanks = repo.getActiveVoiceBanks().toSet()
     }
 
-    // 已选中池清理：配置列表中被删除的分组不再残留（readaloud_ext.json 同步）
+    // 已选中池清理 + 同类型池单启用：
+    //  · 被删除的分组不残留（readaloud_ext.json 同步）
+    //  · 同类型（核心/路人/特殊/旁白/默认对话）只允许启用一个 —— 加载/导入后自动纠正为「保留第一个」
     LaunchedEffect(groups, activeBanks) {
         if (groups.isEmpty() || activeBanks.isEmpty()) return@LaunchedEffect
-        val valid = groups.map { it.name }.toSet()
-        val pruned = activeBanks.filter { it in valid }.toSet()
-        if (pruned != activeBanks) {
-            repo.setActiveVoiceBanks(pruned.toList())
-            activeBanks = pruned
+        val byName = groups.associateBy { it.name }
+        val kept = mutableSetOf<String>()
+        val dropped = ArrayList<String>()
+        activeBanks.forEach { name ->
+            val g = byName[name] ?: return@forEach
+            val type = g.roleType
+            if (type.isNotBlank() && kept.any { byName[it]?.roleType == type }) {
+                dropped += name
+            } else {
+                kept += name
+            }
+        }
+        if (kept != activeBanks) {
+            repo.setActiveVoiceBanks(kept.toList())
+            activeBanks = kept
+            if (dropped.isNotEmpty()) {
+                context.toastOnUi("同类型池仅启用一个，已停用：${dropped.joinToString()}")
+            }
         }
     }
 

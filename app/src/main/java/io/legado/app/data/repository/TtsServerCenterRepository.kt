@@ -13,6 +13,7 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
+import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
@@ -118,13 +119,14 @@ class TtsServerCenterRepository(private val app: Application) {
     }
 
     suspend fun loadGroups(): List<GroupRow> = withContext(Dispatchers.IO) {
+        // 池类型冻结：首次加载把还没有 roleType 的分组推断并落盘（幂等；此后不再随标签漂移）
+        ensureRoleTypesFrozen()
         val arr = TtsConfigStore.loadVoices(ctx)
         buildList {
             for (g in 0 until arr.length()) {
                 val grp = arr.optJSONObject(g) ?: continue
                 val name = grp.optJSONObject("group")?.optString("name") ?: "未命名分组"
                 val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
-                val roleType = grp.optJSONObject("group")?.optString("roleType").orEmpty()
                 val list = grp.optJSONArray("list") ?: JSONArray()
                 val entries = buildList {
                     for (i in 0 until list.length()) {
@@ -161,9 +163,47 @@ class TtsServerCenterRepository(private val app: Application) {
                         )
                     }
                 }
+                // 冻结值优先；写盘失败（只读等）时仍按同一口径展示，保证类型不漂移
+                val roleType = VoiceBankRoleType.normalize(grp.optJSONObject("group")?.optString("roleType"))
+                    .ifEmpty {
+                        if (entries.isEmpty()) "" else VoiceBankRoleType.infer(name, entries.map { it.tag })
+                    }
                 add(GroupRow(name = name, entries = entries, groupId = gid, roleType = roleType))
             }
         }
+    }
+
+    /**
+     * 池类型冻结（v4-B5）：把还没有 roleType 的分组，按「组名 → 标签前缀 → 核心」推断一次并**落盘**。
+     *
+     * 幂等且只写一次：已有合法 roleType 的分组绝不改写 —— 即「第一次加入声线的类型固定下来，
+     * 后续不慎加入其它类型的声线不影响初始 type」。空分组（无条目）不冻结。
+     * 返回本次新冻结的分组数。
+     */
+    suspend fun ensureRoleTypesFrozen(): Int = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = TtsConfigStore.voicesFile(ctx)
+            if (!file.exists()) return@runCatching 0
+            val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
+            var frozen = 0
+            for (i in 0 until arr.length()) {
+                val grp = arr.optJSONObject(i) ?: continue
+                val gObj = grp.optJSONObject("group") ?: continue
+                if (VoiceBankRoleType.normalize(gObj.optString("roleType")).isNotBlank()) continue
+                val tags = ArrayList<String>()
+                val list = grp.optJSONArray("list") ?: continue
+                for (j in 0 until list.length()) {
+                    val tag = list.optJSONObject(j)?.optJSONObject("config")
+                        ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
+                    if (tag.isNotEmpty()) tags.add(tag)
+                }
+                if (tags.isEmpty()) continue
+                gObj.put("roleType", VoiceBankRoleType.infer(gObj.optString("name"), tags))
+                frozen++
+            }
+            if (frozen > 0) file.writeText(arr.toString())
+            frozen
+        }.getOrDefault(0)
     }
 
     // ---------------- 引擎选择 ----------------
@@ -564,7 +604,9 @@ class TtsServerCenterRepository(private val app: Application) {
                 return@runCatching "导入失败：这不是配置列表 JSON（缺少 group/list 结构）"
             }
             val (ae, re, ag) = TtsConfigStore.importVoices(ctx, arr)
-            "导入配置列表完成：新增条目=$ae 覆盖条目=$re 新增分组=$ag"
+            // 导入的列表同样「按类型固定」：新增/既有但缺 roleType 的分组按组名→标签前缀推断并落盘
+            val frozen = ensureRoleTypesFrozen()
+            "导入配置列表完成：新增条目=$ae 覆盖条目=$re 新增分组=$ag 池类型冻结=$frozen"
         }.getOrElse { "导入失败：${it.message ?: it.javaClass.simpleName}" }
     }
 
@@ -736,66 +778,8 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrElse { false to "创建失败：${it.message ?: it.javaClass.simpleName}" }
     }
 
-    private fun voicePrefixOf(roleType: String, gender: String, age: String): String = when (roleType) {
-        "特殊" -> if (gender == "女") "特殊女" else "特殊男"
-        "路人" -> "路人$age"
-        else -> age
-    }
-
-    suspend fun appendVoiceEntry(
-        groupName: String, displayName: String, tag: String, tagRuleId: String,
-        tagName: String, categoryPath: String, pluginId: String, locale: String, voice: String,
-    ): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            val file = TtsConfigStore.voicesFile(ctx)
-            val arr = if (file.exists()) JSONArray(file.readText().removePrefix("\uFEFF")) else JSONArray()
-            var found: JSONObject? = null
-            for (i in 0 until arr.length()) {
-                val g = arr.optJSONObject(i) ?: continue
-                if (g.optJSONObject("group")?.optString("name") == groupName) { found = g; break }
-            }
-            if (found == null) {
-                val g = JSONObject().apply {
-                    put("group", JSONObject().apply {
-                        put("id", System.currentTimeMillis())
-                        put("name", groupName)
-                        put("order", arr.length())
-                    })
-                    put("list", JSONArray())
-                }
-                arr.put(g)
-                found = g
-            }
-            val grp = found!!
-            val list = grp.optJSONArray("list") ?: JSONArray().also { grp.put("list", it) }
-            list.put(JSONObject().apply {
-                put("id", System.currentTimeMillis())
-                put("displayName", displayName)
-                put("groupId", grp.optJSONObject("group")?.optLong("id") ?: 0L)
-                put("categoryPath", categoryPath)
-                put("config", JSONObject().apply {
-                    put("#type", "tts")
-                    put("speechRule", JSONObject().apply {
-                        put("target", 4)
-                        put("tag", tag)
-                        put("tagRuleId", tagRuleId)
-                        put("tagName", tagName)
-                    })
-                    put("audioFormat", JSONObject().put("sampleRate", 24000))
-                    put("source", JSONObject().apply {
-                        put("#type", "plugin")
-                        put("locale", locale)
-                        put("voice", voice)
-                        put("pluginId", pluginId)
-                        put("data", JSONObject())
-                    })
-                })
-            })
-            file.parentFile?.mkdirs()
-            file.writeText(arr.toString())
-            true
-        }.getOrDefault(false)
-    }
+    private fun voicePrefixOf(roleType: String, gender: String, age: String): String =
+        VoiceBankRoleType.tagPrefix(roleType, gender, age)
 
     /**
      * 编辑单条条目：按 (groupId, entryId) 精确定位（entryId=0 时退化为组内 tag 匹配）。

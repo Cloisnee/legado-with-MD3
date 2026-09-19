@@ -10,6 +10,7 @@ import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
+import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import kotlin.random.Random
 
@@ -90,8 +91,12 @@ class PrepareChapterSpeechPlanUseCase(
             fun byTag(tag: String): ReadAloudVoice? = tag.takeIf { it.isNotBlank() }
                 ?.let { t -> catalog.firstOrNull { v -> v.speakerId == t } }
             val groups = recordsStore.loadActiveVoiceGroups()
-            val narratorGroup = groups.firstOrNull { it.effectiveRoleType() == "旁白" && it.tags.isNotEmpty() }
-            val duihuaGroup = groups.firstOrNull { it.effectiveRoleType() == "默认对话" && it.tags.isNotEmpty() }
+            val narratorGroup = groups.firstOrNull {
+                it.effectiveRoleType() == VoiceBankRoleType.NARRATOR && it.tags.isNotEmpty()
+            }
+            val duihuaGroup = groups.firstOrNull {
+                it.effectiveRoleType() == VoiceBankRoleType.DEFAULT_DIALOG && it.tags.isNotEmpty()
+            }
             // 默认对话：章内稳定随机取一（同一章多次进入结果一致；跨章自然变化）
             val rnd = Random(bookUrl.hashCode() * 31 + chapterIndex)
             val duihuaA = duihuaGroup?.tags?.filter { it.startsWith("duihuaA") }
