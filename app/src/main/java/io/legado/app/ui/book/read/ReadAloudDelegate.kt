@@ -92,8 +92,6 @@ class ReadAloudDelegate(
                         readAloudTtsTimer = prefs.ttsTimer,
                         readAloudFinishCurrentChapterAfterTimer =
                             prefs.finishCurrentChapterAfterTimer,
-                        speechAnalysisMode = prefs.speechAnalysisMode,
-                        speechAnalysisReasoningLevel = prefs.speechAnalysisReasoningLevel,
                         useMultiSpeaker = prefs.useMultiSpeaker,
                         defaultReadAloudInterface = prefs.defaultInterface,
                         preDownloadNum = host.preDownloadNum,

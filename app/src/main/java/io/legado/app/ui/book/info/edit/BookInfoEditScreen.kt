@@ -132,10 +132,6 @@ fun BookInfoEditContent(
     modifier: Modifier = Modifier,
     uiState: BookInfoEditUiState,
     viewModel: BookInfoEditViewModel,
-    onOpenCharacterList: (String) -> Unit,
-    onOpenCharacterNetwork: (String) -> Unit,
-    onOpenKnowledgeList: (String) -> Unit,
-    onOpenEventList: (String) -> Unit,
 ) {
     val context = LocalContext.current
     var showChangeCoverSheet by remember { mutableStateOf(false) }

@@ -98,8 +98,6 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.finishCurrentChapterAfterTimer to finishCurrentChapterAfterTimer,
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
-    PreferKey.speechAnalysisMode to speechAnalysisMode,
-    PreferKey.speechAnalysisReasoningLevel to speechAnalysisReasoningLevel,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
     PreferKey.defaultReadAloudInterface to defaultInterface,
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,

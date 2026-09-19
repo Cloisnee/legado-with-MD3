@@ -83,7 +83,6 @@ data object MainRouteSettingsLabConfig : MainRoute
 data object MainRouteSettingsDownloadCache : MainRoute
 
 @Serializable
-@Serializable
 data object MainRouteImportLocal : MainRoute
 
 @Serializable
