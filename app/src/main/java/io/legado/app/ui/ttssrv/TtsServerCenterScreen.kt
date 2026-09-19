@@ -102,7 +102,6 @@ import io.legado.app.ui.widget.components.list.ListUiState
 import io.legado.app.ui.widget.components.log.LogDetailSheet
 import io.legado.app.ui.widget.components.card.TextCard
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
-import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuLazy
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
@@ -2792,23 +2791,21 @@ private fun NeGroupPickerRow(
             enabled = enabled,
             onClick = clickHandler,
         )
-        RoundDropdownMenuLazy(
+        RoundDropdownMenu(
             expanded = open,
             onDismissRequest = { open = false },
         ) { dismiss ->
             if (emptyOption != null) {
-                item {
-                    RoundDropdownMenuItem(
-                        text = emptyOption,
-                        isSelected = value.isBlank(),
-                        onClick = {
-                            dismiss()
-                            onPick("")
-                        },
-                    )
-                }
+                RoundDropdownMenuItem(
+                    text = emptyOption,
+                    isSelected = value.isBlank(),
+                    onClick = {
+                        dismiss()
+                        onPick("")
+                    },
+                )
             }
-            items(options, key = { it }) { name ->
+            options.forEach { name ->
                 RoundDropdownMenuItem(
                     text = name,
                     isSelected = name == value,
@@ -2818,22 +2815,20 @@ private fun NeGroupPickerRow(
                     },
                 )
             }
-            item {
-                RoundDropdownMenuItem(
-                    text = "＋ 新增分组…",
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                    onClick = {
-                        dismiss()
-                        onCreate()
-                    },
-                )
-            }
+            RoundDropdownMenuItem(
+                text = "＋ 新增分组…",
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+                onClick = {
+                    dismiss()
+                    onCreate()
+                },
+            )
         }
     }
 }
