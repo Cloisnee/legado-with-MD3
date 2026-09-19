@@ -229,6 +229,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var neGroup by remember { mutableStateOf("") }
     var nePluginId by remember { mutableStateOf("") }
     var nePluginName by remember { mutableStateOf("") }
+    var neAssign by remember { mutableStateOf(VoiceBankRoleType.ASSIGN_DIALOG) }
     var neRole by remember { mutableStateOf("核心") }
     var neGender by remember { mutableStateOf("男") }
     var neAge by remember { mutableStateOf("男青年") }
@@ -447,11 +448,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 池类型冻结（v4-B5）：目标分组已有固定类型时，弹窗类型**跟随分组**，避免"不慎"选成别的类型
+    // 池类型冻结（v4-B5/B6）：目标分组已有固定类型时，弹窗「音色分配 + 类型」**完全跟随分组**，
+    // 从源头杜绝"不慎"把某个池改成别的类型（旁白/默认对话分组也由此自动回到对应档位）
     LaunchedEffect(neStep2, neGroup, groups) {
         if (!neStep2) return@LaunchedEffect
         val frozen = groups.firstOrNull { it.name == neGroup.trim() }
             ?.roleType?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val slot = VoiceBankRoleType.assignSlotOf(frozen)
+        if (neAssign != slot) neAssign = slot
         if (neRole != frozen) neRole = frozen
         if (frozen == VoiceBankRoleType.SPECIAL) {
             neAge = "系统"
@@ -1331,11 +1335,21 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         nePluginId.isBlank() -> context.toastOnUi("请选择插件")
                         neVoiceSel.isEmpty() -> context.toastOnUi("请选择至少一个声音")
                         else -> scope.launch {
+                            val effRole = VoiceBankRoleType.resolveAssignedRoleType(neAssign, neRole)
+                            // 一个分组只能是一种池类型：与已固定类型冲突时拦截
+                            val frozen = groups.firstOrNull { it.name == neGroup.trim() }
+                                ?.roleType?.takeIf { it.isNotBlank() }
+                            if (frozen != null && frozen != effRole) {
+                                context.toastOnUi(
+                                    "该分组已固定为「$frozen」池，不能作为「$effRole」池；请换个分组名，或长按分组「重置池类型」"
+                                )
+                                return@launch
+                            }
                             val (ok, msg) = repo.createEntriesFromPlugin(
                                 groupName = neGroup.trim(),
-                                roleType = neRole,
+                                roleType = effRole,
                                 gender = neGender,
-                                age = if (neRole == "特殊") "系统" else neAge,
+                                age = if (effRole == VoiceBankRoleType.SPECIAL) "系统" else neAge,
                                 speed = neSpeed,
                                 volume = neVolume,
                                 pitch = nePitch,
@@ -1364,6 +1378,44 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SectionHint("— 音色分配 —")
+            val targetFrozenRole = groups.firstOrNull { it.name == neGroup.trim() }
+                ?.roleType?.takeIf { it.isNotBlank() }
+            SplicedColumnGroup {
+                if (targetFrozenRole != null) {
+                    // 目标分组已固定池类型 → 分配档位随之确定，不允许再改
+                    TinySettingItem(
+                        title = "音色分配",
+                        description = "本分组已固定为「$targetFrozenRole」池，分配方式随之确定",
+                        trailingContent = { AppText(VoiceBankRoleType.assignSlotOf(targetFrozenRole)) },
+                        enabled = false,
+                    )
+                } else {
+                    TinyDropdownSettingItem(
+                        title = "音色分配",
+                        selectedValue = neAssign,
+                        displayEntries = VoiceBankRoleType.ASSIGN_OPTIONS.toTypedArray(),
+                        entryValues = VoiceBankRoleType.ASSIGN_OPTIONS.toTypedArray(),
+                        description = when (neAssign) {
+                            VoiceBankRoleType.NARRATOR ->
+                                "旁白：只能启用一个旁白分组；组内多个旁白只用置顶那个"
+                            VoiceBankRoleType.DEFAULT_DIALOG ->
+                                "默认对话：只能启用一个；组内多个 duihuaA/B 章内随机"
+                            else ->
+                                "对话：只能启用一个同类型分组；类型按第一个加入的声线固定"
+                        },
+                        onValueChange = { v ->
+                            neAssign = v
+                            // 切回「对话」档时，类型必须回到 核心/路人/特殊
+                            if (v == VoiceBankRoleType.ASSIGN_DIALOG &&
+                                neRole !in VoiceBankRoleType.DIALOG_ROLE_TYPES
+                            ) {
+                                neRole = VoiceBankRoleType.CORE
+                            }
+                        },
+                    )
+                }
+            }
             SectionHint("— 音色分组 —")
             SplicedColumnGroup {
                 TinyClickableSettingItem(
@@ -1382,9 +1434,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         grp2Dlg = true
                     },
                 )
-                val frozenRole = groups.firstOrNull { it.name == neGroup.trim() }
-                    ?.roleType?.takeIf { it.isNotBlank() }
-                if (frozenRole != null) {
+                // 「对话」档位才需要选池类型；旁白/默认对话的池类型由「音色分配」决定
+                val frozenRole = targetFrozenRole
+                if (neAssign != VoiceBankRoleType.ASSIGN_DIALOG) {
+                    TinySettingItem(
+                        title = "类型",
+                        description = "由「音色分配」决定：$neAssign",
+                        trailingContent = { AppText(neAssign) },
+                        enabled = false,
+                    )
+                } else if (frozenRole != null) {
                     // 池类型冻结：本分组已固定类型 → 类型不可改，新增条目沿用（避免"不慎"改池类型）
                     TinySettingItem(
                         title = "类型",
@@ -1396,8 +1455,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     TinyDropdownSettingItem(
                         title = "类型",
                         selectedValue = neRole,
-                        displayEntries = arrayOf("核心", "特殊", "路人"),
-                        entryValues = arrayOf("核心", "特殊", "路人"),
+                        displayEntries = VoiceBankRoleType.DIALOG_ROLE_TYPES.toTypedArray(),
+                        entryValues = VoiceBankRoleType.DIALOG_ROLE_TYPES.toTypedArray(),
                         onValueChange = {
                             neRole = it
                             if (it == VoiceBankRoleType.SPECIAL) {
@@ -1408,30 +1467,34 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         },
                     )
                 }
-                TinyDropdownSettingItem(
-                    title = "性别",
-                    selectedValue = neGender,
-                    displayEntries = arrayOf("男", "女"),
-                    entryValues = arrayOf("男", "女"),
-                    onValueChange = { g ->
-                        neGender = g
-                        val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                        if (neRole != "特殊" && neAge !in ages) {
-                            neAge = if (g == "女") "女青年" else "男青年"
-                        }
-                    },
-                )
-                TinyDropdownSettingItem(
-                    title = "年龄",
-                    selectedValue = neAge,
-                    displayEntries = (if (neRole == "特殊") listOf("系统") else {
-                        if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                    }).toTypedArray(),
-                    entryValues = (if (neRole == "特殊") listOf("系统") else {
-                        if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
-                    }).toTypedArray(),
-                    onValueChange = { neAge = it },
-                )
+                if (neAssign != VoiceBankRoleType.NARRATOR) {
+                    TinyDropdownSettingItem(
+                        title = "性别",
+                        selectedValue = neGender,
+                        displayEntries = arrayOf("男", "女"),
+                        entryValues = arrayOf("男", "女"),
+                        onValueChange = { g ->
+                            neGender = g
+                            val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                            if (neRole != VoiceBankRoleType.SPECIAL && neAge !in ages) {
+                                neAge = if (g == "女") "女青年" else "男青年"
+                            }
+                        },
+                    )
+                }
+                if (neAssign == VoiceBankRoleType.ASSIGN_DIALOG) {
+                    TinyDropdownSettingItem(
+                        title = "年龄",
+                        selectedValue = neAge,
+                        displayEntries = (if (neRole == VoiceBankRoleType.SPECIAL) listOf("系统") else {
+                            if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                        }).toTypedArray(),
+                        entryValues = (if (neRole == VoiceBankRoleType.SPECIAL) listOf("系统") else {
+                            if (neGender == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                        }).toTypedArray(),
+                        onValueChange = { neAge = it },
+                    )
+                }
             }
             SectionHint("— 音色基础信息 —")
             SplicedColumnGroup {
@@ -1525,6 +1588,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         nePluginId = p.pluginId
                         nePluginName = p.name
                         neVoiceSel = emptyList()
+                        // 默认从「对话」档开始；若目标分组已固定类型，下方同步效应会自动跟随并锁定
+                        neAssign = VoiceBankRoleType.ASSIGN_DIALOG
+                        neRole = VoiceBankRoleType.CORE
                         pluginPickerSheet = false
                         neStep2 = true
                     },

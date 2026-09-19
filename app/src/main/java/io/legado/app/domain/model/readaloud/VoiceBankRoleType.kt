@@ -58,13 +58,41 @@ object VoiceBankRoleType {
             ?: tags.firstNotNullOfOrNull { fromTag(it) }
             ?: CORE
 
+    /** 「音色分配」档位（新建条目 UI 用）：对话档 = 由「类型」卡片再选 核心/路人/特殊 */
+    const val ASSIGN_DIALOG = "对话"
+
+    /** 分配档位可选项（顺序即 UI 显示顺序） */
+    val ASSIGN_OPTIONS = listOf(ASSIGN_DIALOG, NARRATOR, DEFAULT_DIALOG)
+
     /**
      * 池类型 + 性别/年龄 → 标签前缀（新建条目生成 `前缀01…` 用）。
-     * 旁白/默认对话的前缀由 v4-B6 补齐（旁白 / duihuaA|duihuaB）。
+     * 旁白=`旁白`；默认对话=`duihuaA`(男)/`duihuaB`(女)；特殊=`特殊男|特殊女`；路人=`路人{年龄}`；核心=`{年龄}`。
      */
     fun tagPrefix(roleType: String, gender: String, age: String): String = when (normalize(roleType)) {
+        NARRATOR -> NARRATOR
+        DEFAULT_DIALOG -> if (gender == "女") "duihuaB" else "duihuaA"
         SPECIAL -> if (gender == "女") "特殊女" else "特殊男"
         SIDE -> "路人$age"
         else -> age
+    }
+
+    /** 「对话」档可选的池类型（旁白/默认对话由分配档位直接决定，不走这里） */
+    val DIALOG_ROLE_TYPES = listOf(CORE, SIDE, SPECIAL)
+
+    /**
+     * 分配档位 → 池类型。
+     * 对话档需传入「类型」卡片所选，且只接受 [DIALOG_ROLE_TYPES]，其余（含误传的旁白/默认对话）兜底核心。
+     */
+    fun resolveAssignedRoleType(assign: String, pickedRoleType: String): String = when (normalize(assign)) {
+        NARRATOR -> NARRATOR
+        DEFAULT_DIALOG -> DEFAULT_DIALOG
+        else -> normalize(pickedRoleType).takeIf { it in DIALOG_ROLE_TYPES } ?: CORE
+    }
+
+    /** 池类型 → 分配档位（弹窗跟随「已固定类型的分组」时用） */
+    fun assignSlotOf(roleType: String): String = when (normalize(roleType)) {
+        NARRATOR -> NARRATOR
+        DEFAULT_DIALOG -> DEFAULT_DIALOG
+        else -> ASSIGN_DIALOG
     }
 }
