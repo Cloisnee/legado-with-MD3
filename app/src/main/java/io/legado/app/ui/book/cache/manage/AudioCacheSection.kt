@@ -68,9 +68,7 @@ fun LazyListScope.audioCacheSection(
         item(key = "audio-empty") {
             TextCard(
                 text = stringResource(R.string.tts_audio_books_empty),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalPadding = 12.dp,
                 horizontalPadding = 12.dp,
             )
@@ -144,7 +142,6 @@ private fun AudioCacheBookCard(
     NormalCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
             .semantics {
                 contentDescription = bookDescription
                 stateDescription = expandedState
@@ -252,7 +249,7 @@ private fun AudioCacheChapterRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 24.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
             .semantics(mergeDescendants = true) {
                 contentDescription = chapterDescription
             },

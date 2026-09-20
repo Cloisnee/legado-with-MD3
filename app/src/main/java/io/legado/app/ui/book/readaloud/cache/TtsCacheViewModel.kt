@@ -45,6 +45,9 @@ class TtsCacheViewModel : ViewModel() {
     private var current: QueueItem? = null
     private var worker: Job? = null
 
+    /** 代际：停止时自增以作废旧 worker 的状态写入（否则会出现「暂停后又变回缓存中」） */
+    private var workerGeneration = 0
+
     init {
         loadAudioCache()
         // 实时日志：AppLog 每次写入都会推送新快照（升序），日志页边播边刷
@@ -86,7 +89,8 @@ class TtsCacheViewModel : ViewModel() {
             is TtsCacheIntent.StopChapter -> {
                 val item = QueueItem(intent.book, intent.chapterIndex)
                 if (current == item) {
-                    worker?.cancel()
+                    stopWorker()
+                    setChapterState(item, AudioChapterState.Paused, null)
                 } else if (chapterState(item) == AudioChapterState.Waiting) {
                     setChapterState(item, AudioChapterState.Paused, null)
                 }
@@ -108,7 +112,8 @@ class TtsCacheViewModel : ViewModel() {
 
             is TtsCacheIntent.StopBook -> {
                 if (current?.book == intent.book) {
-                    worker?.cancel()
+                    stopWorker()
+                    current?.let { setChapterState(it, AudioChapterState.Paused, null) }
                 }
                 _uiState.value.books.firstOrNull { it.book == intent.book }
                     ?.chapters
@@ -220,7 +225,26 @@ class TtsCacheViewModel : ViewModel() {
                     chapters = chapters.toImmutableList(),
                 )
             }
-            _uiState.update { it.copy(loading = false, books = books.toImmutableList()) }
+            // 保留进行中的任务状态：返回本页会重新扫描，若不保留会把「等待/缓存中/暂停」清成空闲
+            val previous = _uiState.value.books.associateBy { it.book }
+            val merged = books.map { book ->
+                val old = previous[book.book] ?: return@map book
+                book.copy(
+                    chapters = book.chapters.map { ch ->
+                        val oldCh = old.chapters.firstOrNull { it.chapterIndex == ch.chapterIndex }
+                        if (oldCh == null || oldCh.state == AudioChapterState.Idle) {
+                            ch
+                        } else {
+                            ch.copy(
+                                state = oldCh.state,
+                                progressLabel = oldCh.progressLabel,
+                                progress = oldCh.progress,
+                            )
+                        }
+                    }.toImmutableList(),
+                ).recalc()
+            }
+            _uiState.update { it.copy(loading = false, books = merged.toImmutableList()) }
         }
     }
 
@@ -320,13 +344,20 @@ class TtsCacheViewModel : ViewModel() {
         return if (index < 0) null else queue.removeAt(index)
     }
 
+    private fun stopWorker() {
+        workerGeneration++
+        worker?.cancel()
+        worker = null
+    }
+
     private fun startWorker() {
         if (worker?.isActive == true) return
+        val generation = ++workerGeneration
         worker = viewModelScope.launch {
             var done = 0
             var failed = 0
             var skipped = 0
-            while (isActive) {
+            while (isActive && generation == workerGeneration) {
                 val item = nextReady() ?: break
                 current = item
                 setChapterState(item, AudioChapterState.Downloading, "0/0")
@@ -335,7 +366,9 @@ class TtsCacheViewModel : ViewModel() {
                         book = item.book,
                         chapterIndex = item.chapterIndex,
                         onProgress = { processed, total ->
-                            updateChapterProgress(item, processed, total)
+                            if (generation == workerGeneration) {
+                                updateChapterProgress(item, processed, total)
+                            }
                         },
                     )
                     done += result.done
@@ -352,7 +385,6 @@ class TtsCacheViewModel : ViewModel() {
                         label = if (result.failed > 0) "失败 ${result.failed} 条" else null,
                     )
                 } catch (e: CancellationException) {
-                    setChapterState(item, AudioChapterState.Paused, null)
                     current = null
                     throw e
                 } catch (e: Exception) {
@@ -360,12 +392,16 @@ class TtsCacheViewModel : ViewModel() {
                         "【音频缓存】批量合成异常 第${item.chapterIndex + 1}章: ${e.localizedMessage}",
                         e,
                     )
-                    setChapterState(item, AudioChapterState.Error, "异常")
+                    if (generation == workerGeneration) {
+                        setChapterState(item, AudioChapterState.Error, "异常")
+                    }
                 }
                 current = null
             }
-            worker = null
-            updateSummary()
+            if (generation == workerGeneration) {
+                worker = null
+                updateSummary()
+            }
             if (done + failed + skipped > 0) {
                 _effects.tryEmit(
                     TtsCacheEffect.ShowToast(

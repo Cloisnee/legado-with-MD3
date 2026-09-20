@@ -32,6 +32,7 @@ class SynthesizeChapterAudioUseCase(
     private val audioCache: ReadAloudAudioCacheRepository,
     private val voiceGateway: ReadAloudVoiceGateway,
     private val settingsGateway: ReadAloudSettingsGateway,
+    private val syncTtsServerVoices: SyncTtsServerVoicesUseCase,
 ) {
 
     data class Result(val done: Int, val failed: Int, val skipped: Int)
@@ -42,7 +43,15 @@ class SynthesizeChapterAudioUseCase(
         onProgress: suspend (processed: Int, total: Int) -> Unit = { _, _ -> },
     ): Result = withContext(Dispatchers.IO) {
         val lines = dataRepository.loadChapterScript(book, chapterIndex)
-        if (lines.isEmpty()) return@withContext Result(0, 0, 0)
+        if (lines.isEmpty()) {
+            AppLog.putAudio("【音频缓存】批量合成 第${chapterIndex + 1}章 跳过：本章暂无本地剧本")
+            return@withContext Result(0, 0, 0)
+        }
+        // 声线目录（Room 镜像表）可能尚未同步（典型：刚清过应用数据）→ 先补写，否则会全部跳过
+        runCatching { syncTtsServerVoices() }
+        AppLog.putAudio(
+            "【音频缓存】批量合成 第${chapterIndex + 1}章 开始（剧本 ${lines.size} 条）"
+        )
         val settings = settingsGateway.currentSettings
         val speechRate = ReadAloudAudioCacheKeys.speechRateScale(
             followSys = settings.ttsFollowSys,
@@ -81,6 +90,8 @@ class SynthesizeChapterAudioUseCase(
         var done = 0
         var failed = 0
         var skipped = 0
+        var skippedNoVoice = 0
+        var skippedOtherEngine = 0
         val total = lines.size
         lines.forEachIndexed { index, row ->
             currentCoroutineContext().ensureActive()
@@ -90,14 +101,22 @@ class SynthesizeChapterAudioUseCase(
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed
             }
+            
             val isNarrator = row.speaker.isBlank() || row.speaker == NARRATOR_TAG
             val voice = if (isNarrator) {
                 narrator
             } else {
                 characterVoices[row.speaker] ?: duihuaA ?: duihuaB
             }
-            if (voice == null || voice.engineType != ReadAloudVoice.ENGINE_TTS_SERVER) {
+            if (voice == null) {
                 skipped++
+                skippedNoVoice++
+                onProgress(done + failed + skipped, total)
+                return@forEachIndexed
+            }
+            if (voice.engineType != ReadAloudVoice.ENGINE_TTS_SERVER) {
+                skipped++
+                skippedOtherEngine++
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed
             }
@@ -115,9 +134,14 @@ class SynthesizeChapterAudioUseCase(
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed
             }
+            val t0 = System.currentTimeMillis()
             val outcome = synthesizer.synthesize(voice.engineId, voice.speakerId, text, file)
             if (outcome.ok) {
                 done++
+                AppLog.putAudio(
+                    "【音频缓存】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
+                        " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}"
+                )
             } else {
                 failed++
                 runCatching { file.delete() }
@@ -129,7 +153,8 @@ class SynthesizeChapterAudioUseCase(
             onProgress(done + failed + skipped, total)
         }
         AppLog.putAudio(
-            "【音频缓存】批量合成 第${chapterIndex + 1}章 完成：新增/命中 $done，失败 $failed，跳过 $skipped"
+            "【音频缓存】批量合成 第${chapterIndex + 1}章 完成：新增/命中 $done，失败 $failed，" +
+                "跳过 $skipped（无声线 $skippedNoVoice / 非内置引擎 $skippedOtherEngine）"
         )
         Result(done, failed, skipped)
     }
