@@ -291,6 +291,12 @@ class SpeechAnalysisPipelineV3(
                 return@withContext ChapterSpeechAnalysisResult(existing, cached, true)
             }
         }
+        // ---- B8.3：DB 未命中 → 本地剧本文件回填（与播放侧同构）；命中即免重析 ----
+        if (!force) {
+            restoreFromScriptFiles(bookUrl, bookName, chapterIndex, paragraphs)?.let {
+                return@withContext it
+            }
+        }
         val lockedOld = runCatching {
             existing?.let { chapterSpeechGateway.getSegments(it.id) }
         }.getOrNull().orEmpty().filter { it.userLocked }
@@ -437,7 +443,7 @@ class SpeechAnalysisPipelineV3(
         }
         val rows = dataRepository.loadChapterScriptForUrl(name, bookUrl, chapterIndex)
         if (rows.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行（走快速链）")
+            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行")
             return@withContext null
         }
         val aligned = ScriptFileBackfill.align(paragraphs, rows)

@@ -4,8 +4,14 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
+import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
+import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
+import io.legado.app.feature.reader.core.source.ReaderChapterSourceParser
+import io.legado.app.feature.reader.platform.AndroidReaderHtmlSemanticTextResolver
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.config.AppConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,12 +35,14 @@ import kotlinx.coroutines.sync.withLock
  *   2) 换章/推进（onChapterChanged）→ 更新锚点 + 补入窗口；
  *   3) 缓存追赶扫掠：会话期间每 30s 重扫窗口，新落盘章节自动入队（仅处理已缓存正文；本地书即时可析）；
  *   4) 手动（审查页「重析本章」→ enqueueChapter(force=true)）。
- *  - 串行 worker（省 token、防限流）；换书清队；完成/失败 → events（审查页监听刷新；播放线不打断）。
+ *  - 串行 worker（省 token、防限流）；换书清队；完成/失败 → events（审查页监听刷新；播放线不打断）；
+ *  - 分析前先尝试本地剧本回填（B8.3.1）：剧本能对上正文 → 复用、不再重析。
  */
 class AnalysisSchedulerV3(
     private val pipeline: SpeechAnalysisPipelineV3,
     private val bookChapterDao: BookChapterDao,
     private val bookDao: BookDao,
+    private val readSettingsGateway: ReadSettingsGateway,
 ) {
 
     data class ReadyEvent(
@@ -155,7 +163,7 @@ class AnalysisSchedulerV3(
         val index = task.chapterIndex
         val chapter = bookChapterDao.getChapterList(book.bookUrl, index, index).firstOrNull() ?: return
         val content = runCatching { BookHelp.getContent(book, chapter) }.getOrNull() ?: return // 未缓存章节跳过
-        val paragraphs = buildParagraphs(content)
+        val paragraphs = buildReaderParagraphs(book, chapter, content)
         if (paragraphs.isEmpty()) return
         val prevText = loadChapterText(book, index - 1)
         val nextText = loadChapterText(book, index + 1)
@@ -185,17 +193,34 @@ class AnalysisSchedulerV3(
         return runCatching { BookHelp.getContent(book, chapter) }.getOrNull().orEmpty()
     }
 
-    private fun buildParagraphs(content: String): List<CanonicalSpeechParagraph> {
-        val out = ArrayList<CanonicalSpeechParagraph>()
-        var position = 0
-        content.split('\n').forEach { rawLine ->
-            val line = rawLine.replace(Regex("[袮祢꧁\\uFFFC]"), " ")
-            if (line.isNotBlank()) {
-                out.add(CanonicalSpeechParagraph(index = out.size, text = line, chapterPosition = position))
-            }
-            position += rawLine.length + 1
-        }
-        return out
+    /**
+     * 正文 → 朗读段落：与阅读器（ReadBook）/预下载（HttpReadAloudService.getPreDownloadChapter）
+     * 同一条构建链（ContentProcessor → ReaderChapterSourceParser → ReaderReadAloudChapter）。
+     *
+     * B8.3.1 修正：此前用原始正文自行按行切分，与播放侧（阅读器加工后正文）得到两套 contentHash，
+     * 导致「回填成功仍被重析」与「播放侧读不到新分析」。三处构建任一改动需同步。
+     */
+    private fun buildReaderParagraphs(
+        book: Book,
+        chapter: BookChapter,
+        content: String,
+    ): List<CanonicalSpeechParagraph> {
+        val processed = ContentProcessor.get(book)
+            .getContent(book, chapter, content, includeTitle = false)
+        val source = ReaderChapterSourceParser.parse(
+            chapterIndex = chapter.index,
+            title = "",
+            paragraphs = processed.textList,
+            includeTitle = false,
+            adaptSpecialStyle = readSettingsGateway.currentSettings.adaptSpecialStyle,
+            htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
+        )
+        return ReaderReadAloudChapter.create(
+            chapterIndex = chapter.index,
+            title = "",
+            semanticContent = source.semanticContent,
+            pageStarts = emptyList(),
+        ).canonicalSpeechParagraphs()
     }
 
     fun cancelAll() {
