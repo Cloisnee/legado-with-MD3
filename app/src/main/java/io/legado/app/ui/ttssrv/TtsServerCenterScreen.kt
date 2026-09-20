@@ -135,6 +135,9 @@ private sealed interface PickerPurpose {
 private val NE_MALE_AGES = listOf("男童", "少年", "男青年", "男中年", "男老年")
 private val NE_FEMALE_AGES = listOf("女童", "少女", "女青年", "女中年", "女老年")
 
+/** 条目选择 key 的严格形态：g{digits}_e{digits} / e_{digits} / k_{ruleId}|{tag} */
+private val ENTRY_SEL_KEY = Regex("^(?:g\\d+_e\\d+|e_\\d+|k_.+)$")
+
 private data class PickerTarget(
     val pluginId: String,
     val pluginName: String,
@@ -312,9 +315,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         else -> "k_${e.tagRuleId}|${e.tag}"
     }
 
-    /** 拖选回调过滤：仅保留条目 key（g*_e* / e_* / k_*），剔除组头（纯数字）与二级分组（c_*）等行 key */
-    fun isEntrySelKey(k: String): Boolean =
-        k.startsWith("g") || k.startsWith("e_") || k.startsWith("k_")
+    /** 拖选回调过滤：仅接受严格条目 key（g{digits}_e{digits} / e_{digits} / k_*），杜绝组/分类行 key 混入 */
+    fun isEntrySelKey(k: String): Boolean = ENTRY_SEL_KEY.matches(k)
 
     // ---- 编辑条目：从现有标签反推 音色分配/类型/性别/年龄（编辑弹窗初始化与保存重命名用） ----
     fun deriveEditAssign(tag: String): String =
@@ -388,6 +390,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 }
         }
         selCatKeys = cSet
+        // 选择集清空时同步清掉组级上下文（防陈旧上下文残留）
+        if (selEntries.isEmpty()) selGroupContext = null
     }
 
     fun play(path: String) {
@@ -1250,6 +1254,34 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         normalizeSelection()
                     },
                     idProvider = { entryKeyOf(it) },
+                    // 组行/二级分组行 → 整块切换（拖过头部=选中/取消该组全部条目），条目行 → 单条
+                    resolveIds = { raw ->
+                        val s = raw as? String
+                        when {
+                            s == null -> emptySet()
+                            ENTRY_SEL_KEY.matches(s) -> setOf(s)
+                            s.startsWith("g_") -> {
+                                val gi = s.removePrefix("g_").substringBefore('_').toIntOrNull()
+                                (gi?.let { groups.getOrNull(it) }
+                                    ?.entries?.map { entryKeyOf(it) }
+                                    ?.toSet()).orEmpty()
+                            }
+                            s.startsWith("c_") -> {
+                                val rest = s.removePrefix("c_")
+                                val gi = rest.substringBefore('_').toIntOrNull()
+                                val catKey = rest.substringAfter('_', "")
+                                val g = gi?.let { groups.getOrNull(it) }
+                                (g?.entries
+                                    ?.filter {
+                                        it.categoryPath.isNotBlank() &&
+                                            "${groupKeyOf(g)}|${it.categoryPath.trim()}" == catKey
+                                    }
+                                    ?.map { entryKeyOf(it) }
+                                    ?.toSet()).orEmpty()
+                            }
+                            else -> emptySet()
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxHeight()
                         .width(60.dp)
@@ -3042,7 +3074,7 @@ private fun SheetField(label: String, value: String, onChange: (String) -> Unit)
  * 「下拉 + 底部新增分组卡片」选择器（观感对齐 朗读设置 → 播放器背景 的卡片下拉）。
  *
  * 用于新建条目弹窗的一级/二级分组：不用手输完整分组名，直接从已有分组里挑；
- * 想建新分组时点弹窗**最底部**的「＋ 新增分组…」卡片，再去命名。
+ * 想建新分组时点弹窗**最底部**的「新增分组…」卡片，再去命名。
  * [enabled] = false 时整行不可点（例如尚未选一级分组时的二级分组行）。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -3107,14 +3139,7 @@ private fun NeGroupPickerRow(
                 )
             }
             RoundDropdownMenuItem(
-                text = "＋ 新增分组…",
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                },
+                text = "新增分组…",
                 onClick = {
                     dismiss()
                     onCreate()

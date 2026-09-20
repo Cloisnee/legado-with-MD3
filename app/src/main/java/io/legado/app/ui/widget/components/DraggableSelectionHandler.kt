@@ -26,6 +26,9 @@ fun <T, ID> DraggableSelectionHandler(
     selectedIds: Set<ID>,
     onSelectionChange: (Set<ID>) -> Unit,
     idProvider: (T) -> ID,
+    /** 行 key → 选择 ID 集合（多 ID = 整块切换，如“组行→组内全部条目”；返回空集 = 该行不参与选择）。
+     *  为 null 时行为与旧版一致：直接以行 key 作为单个 ID。 */
+    resolveIds: ((Any) -> Set<ID>)? = null,
     haptic: HapticFeedback = LocalHapticFeedback.current,
 ) {
     val latestSelectedIds by rememberUpdatedState(selectedIds)
@@ -36,7 +39,7 @@ fun <T, ID> DraggableSelectionHandler(
     var isAddingMode by remember { mutableStateOf(true) }
     var lastProcessedIndex by remember { mutableIntStateOf(-1) }
 
-    fun findItemAtOffset(offsetY: Float): Pair<Int, ID>? {
+    fun findItemAtOffset(offsetY: Float): Pair<Int, Set<ID>>? {
         val layoutInfo = listState.layoutInfo
         val itemsInfo = layoutInfo.visibleItemsInfo
         if (itemsInfo.isEmpty()) return null
@@ -52,27 +55,26 @@ fun <T, ID> DraggableSelectionHandler(
             adjustedY >= item.offset && adjustedY <= (item.offset + item.size)
         } ?: return null
 
-        @Suppress("UNCHECKED_CAST")
-        val id = try {
-            itemInfo.key as ID
-        } catch (e: Exception) {
-            latestItems.getOrNull(itemInfo.index)?.let { latestIdProvider(it) } ?: return null
+        val ids: Set<ID> = if (resolveIds != null) {
+            resolveIds.invoke(itemInfo.key)
+        } else {
+            @Suppress("UNCHECKED_CAST")
+            val id = try {
+                itemInfo.key as ID
+            } catch (e: Exception) {
+                latestItems.getOrNull(itemInfo.index)?.let { latestIdProvider(it) } ?: return null
+            }
+            setOf(id)
         }
-        
-        return itemInfo.index to id
+        if (ids.isEmpty()) return null
+        return itemInfo.index to ids
     }
 
-    fun applySelection(id: ID, add: Boolean) {
+    fun applySelection(ids: Set<ID>, add: Boolean) {
+        if (ids.isEmpty()) return
         val current = latestSelectedIds
-        if (add) {
-            if (!current.contains(id)) {
-                latestOnSelectionChange(current + id)
-            }
-        } else {
-            if (current.contains(id)) {
-                latestOnSelectionChange(current - id)
-            }
-        }
+        val next = if (add) current + ids else current - ids
+        if (next != current) latestOnSelectionChange(next)
     }
 
     Box(
@@ -80,8 +82,9 @@ fun <T, ID> DraggableSelectionHandler(
             .pointerInput(listState) {
                 detectTapGestures(
                     onTap = { offset ->
-                        findItemAtOffset(offset.y)?.let { (_, id) ->
-                            applySelection(id, !latestSelectedIds.contains(id))
+                        findItemAtOffset(offset.y)?.let { (_, ids) ->
+                            val allSelected = ids.all { it in latestSelectedIds }
+                            applySelection(ids, !allSelected)
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         }
                     }
@@ -90,18 +93,18 @@ fun <T, ID> DraggableSelectionHandler(
             .pointerInput(listState) {
                 detectDragGestures(
                     onDragStart = { offset ->
-                        findItemAtOffset(offset.y)?.let { (index, id) ->
+                        findItemAtOffset(offset.y)?.let { (index, ids) ->
                             lastProcessedIndex = index
-                            isAddingMode = !latestSelectedIds.contains(id)
-                            applySelection(id, isAddingMode)
+                            isAddingMode = !ids.all { it in latestSelectedIds }
+                            applySelection(ids, isAddingMode)
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
                     },
                     onDrag = { change, _ ->
-                        findItemAtOffset(change.position.y)?.let { (index, id) ->
+                        findItemAtOffset(change.position.y)?.let { (index, ids) ->
                             if (index != lastProcessedIndex) {
                                 lastProcessedIndex = index
-                                applySelection(id, isAddingMode)
+                                applySelection(ids, isAddingMode)
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
                         }
