@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FindReplace
@@ -33,8 +34,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sell
-import androidx.compose.material.icons.filled.MenuBook
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.TheaterComedy
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Source
@@ -199,21 +199,15 @@ fun MyScreen(
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudSettings) }
                 )
                 ClickableSettingItem(
-                    title = "角色管理",
-                    description = "书籍角色 · 声线 · 合并 / 别名",
-                    imageVector = Icons.Default.Person,
-                    onClick = { onNavigate(PrefClickEvent.OpenCharacterManage) }
-                )
-                ClickableSettingItem(
-                    title = "书籍管理",
-                    description = "剧本查看 · 改标签 / 章节管理",
-                    imageVector = Icons.Default.MenuBook,
-                    onClick = { onNavigate(PrefClickEvent.OpenBookManage) }
+                    title = "角色与剧本",
+                    description = "角色 · 剧本 · 声线 / 改标签 / 章节管理",
+                    imageVector = Icons.Default.TheaterComedy,
+                    onClick = { onNavigate(PrefClickEvent.OpenRoleScriptManage) }
                 )
                 ClickableSettingItem(
                     title = stringResource(R.string.tts_cache_manage),
                     description = "查看朗读 / 合成操作日志",
-                    imageVector = Icons.Default.History,
+                    imageVector = Icons.Default.BugReport,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
                 )
             }

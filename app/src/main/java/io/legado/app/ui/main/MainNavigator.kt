@@ -100,8 +100,7 @@ object MainNavigator {
             MainRouteTtsServerCenter,
             MainRouteReadAloudSettings,
             MainRouteAiModelManage,
-            MainRouteCharacterManage,
-            MainRouteBookManage,
+            MainRouteRoleScriptManage,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (

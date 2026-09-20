@@ -37,9 +37,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -61,7 +58,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -914,25 +910,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         } else null,
         snackbarHostState = remember { SnackbarHostState() },
     ) { padding ->
-        val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
-        var swipeAccum by remember { mutableStateOf(0f) }
-        val swipeState = rememberDraggableState { delta -> swipeAccum += delta }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .draggable(
-                    orientation = Orientation.Horizontal,
-                    state = swipeState,
-                    onDragStarted = { swipeAccum = 0f },
-                    onDragStopped = {
-                        when {
-                            swipeAccum <= -swipeThresholdPx && selectedTab == 0 -> switchTab(1)
-                            swipeAccum >= swipeThresholdPx && selectedTab == 1 -> switchTab(0)
-                        }
-                        swipeAccum = 0f
-                    },
-                ),
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),

@@ -34,12 +34,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -92,22 +92,6 @@ import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
 
-/**
- * 角色管理（对照「角色管理」v36 插件、MD3 真身元素复刻）：
- *  - 搜索（书源式展开）· 书籍卡 · 类型卡（全部/路人/核心/特殊）
- *  - 角色卡：点声线标签=试听+更换；点选+长按=修改/删除/合并+跟随
- *  - 编辑：主名/别名(管理)/类型(自动【第N章】)/性别/年龄/声线
- *  - 别名管理：修改 / 入库（裸属/特殊词库）/ 释放并固定（含剧本回放）
- */
-@Composable
-fun CharacterManageRouteScreen(onBackClick: () -> Unit) {
-    val context = LocalContext.current
-    CharacterManageScreen(
-        app = context.applicationContext as Application,
-        onBack = onBackClick,
-    )
-}
-
 private data class JoinLibRequest(
     val words: List<String>,
     val aliasToRemove: String? = null,
@@ -117,6 +101,13 @@ private val ROLES = listOf("全部", "路人", "核心", "特殊")
 private val MALE_AGES = listOf("男童", "少年", "男青年", "男中年", "男老年")
 private val FEMALE_AGES = listOf("女童", "少女", "女青年", "女中年", "女老年")
 
+/**
+ * 角色管理（对照「角色管理」v36 插件、MD3 真身元素复刻）：
+ *  - 搜索（书源式展开）· 书籍卡 · 类型卡（全部/路人/核心/特殊）
+ *  - 角色卡：点声线标签=试听+更换；点选+长按=修改/删除/合并+跟随
+ *  - 编辑：主名/别名(管理)/类型(自动【第N章】)/性别/年龄/声线
+ *  - 别名管理：修改 / 入库（裸属/特殊词库）/ 释放并固定（含剧本回放）
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CharacterManageScreen(
@@ -124,6 +115,8 @@ fun CharacterManageScreen(
     onBack: () -> Unit,
     embedded: Boolean = false,
     refreshKey: Int = 0,
+    hostTab: Int = 0,
+    onHostTabSelected: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
@@ -485,40 +478,44 @@ fun CharacterManageScreen(
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
-                    if (embedded) {
-                        Box {
-                            TopBarActionButton(
-                                onClick = { showTypeMenu = true },
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "筛选：全部/特殊/路人/核心",
-                            )
-                            RoundDropdownMenu(
-                                expanded = showTypeMenu,
-                                onDismissRequest = { showTypeMenu = false },
-                            ) { dismiss ->
-                                ROLES.forEach { t ->
-                                    RoundDropdownMenuItem(
-                                        text = t,
-                                        onClick = {
-                                            dismiss()
-                                            roleFilter = t
-                                            sel = emptySet()
-                                            scope.launch { repo.saveCharacterFilter(t) }
-                                        },
-                                        trailingIcon = if (t == roleFilter) {
-                                            {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(18.dp),
-                                                )
-                                            }
-                                        } else null,
-                                    )
-                                }
+                    Box {
+                        TopBarActionButton(
+                            onClick = { showTypeMenu = true },
+                            imageVector = Icons.Default.FindReplace,
+                            contentDescription = "筛选：全部/特殊/路人/核心",
+                        )
+                        RoundDropdownMenu(
+                            expanded = showTypeMenu,
+                            onDismissRequest = { showTypeMenu = false },
+                        ) { dismiss ->
+                            ROLES.forEach { t ->
+                                RoundDropdownMenuItem(
+                                    text = t,
+                                    onClick = {
+                                        dismiss()
+                                        roleFilter = t
+                                        sel = emptySet()
+                                        scope.launch { repo.saveCharacterFilter(t) }
+                                    },
+                                    trailingIcon = if (t == roleFilter) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    } else null,
+                                )
                             }
                         }
                     }
+                },
+                bottomContent = {
+                    RoleScriptTabRow(
+                        selectedTabIndex = hostTab,
+                        onTabSelected = onHostTabSelected,
+                    )
                 },
             )
         },

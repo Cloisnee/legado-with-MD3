@@ -39,7 +39,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.DropdownMenu
@@ -63,9 +63,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
+import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.CharacterRecord
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.ScriptLineRow
+import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
@@ -89,6 +91,7 @@ import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
+import org.koin.core.context.GlobalContext
 
 /**
  * 书籍管理（对照「角色管理」v36 插件书籍管理 + MD3 真身元素复刻）：
@@ -97,15 +100,6 @@ import kotlinx.coroutines.launch
  *  - 多选换角色（长按进入多选）· 保存=重写剧本+缓存同步+剔除本章合并凭据
  *  - 章节删除：仅删剧本+状态 / 尾部连续章可选【回滚】（人物与合并账本逆向）
  */
-@Composable
-fun BookManageRouteScreen(onBackClick: () -> Unit) {
-    val context = LocalContext.current
-    BookManageScreen(
-        app = context.applicationContext as Application,
-        onBack = onBackClick,
-    )
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookManageScreen(
@@ -113,8 +107,11 @@ fun BookManageScreen(
     onBack: () -> Unit,
     embedded: Boolean = false,
     initialChapter: Int? = null,
-    onReanalyze: (() -> Unit)? = null,
+    // 宿主（剧本审查）提供的 bookUrl；null = 按当前书解析（二合一面）
+    externalBookUrl: String? = null,
     refreshKey: Int = 0,
+    hostTab: Int = 0,
+    onHostTabSelected: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
@@ -178,6 +175,23 @@ fun BookManageScreen(
         }
     }
 
+    /** 重析当前章：优先宿主提供的 bookUrl（剧本审查），否则按当前书解析（二合一面） */
+    fun enqueueReanalyze() {
+        val ch = selectedChapter ?: return
+        scope.launch {
+            val url = externalBookUrl ?: repo.loadBookUrl(currentBook)
+            if (url.isBlank()) {
+                context.toastOnUi("无法定位该书数据（先朗读一次以建立章节缓存）")
+                return@launch
+            }
+            runCatching {
+                val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
+                scheduler.enqueueChapter(url, ch, force = true)
+            }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }
+            context.toastOnUi("已提交重新分析（第${ch + 1}章）")
+        }
+    }
+
     LaunchedEffect(refreshKey) { reload() }
 
     fun applySpeakerTo(targets: List<Int>, speaker: String) {
@@ -227,7 +241,7 @@ fun BookManageScreen(
                 title = if (selLines.isNotEmpty()) {
                     stringResource(R.string.list_selected_count, selLines.size, shown.size)
                 } else {
-                    if (embedded) "剧本" else "书籍管理"
+                    "剧本"
                 },
                 useCharMode = selLines.isNotEmpty(),
                 subtitle = if (embedded) {
@@ -256,13 +270,17 @@ fun BookManageScreen(
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
-                    if (onReanalyze != null) {
-                        TopBarActionButton(
-                            onClick = onReanalyze,
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "重新分析本章",
-                        )
-                    }
+                    TopBarActionButton(
+                        onClick = { enqueueReanalyze() },
+                        imageVector = Icons.Default.FindReplace,
+                        contentDescription = "重新分析本章",
+                    )
+                },
+                bottomContent = {
+                    RoleScriptTabRow(
+                        selectedTabIndex = hostTab,
+                        onTabSelected = onHostTabSelected,
+                    )
                 },
             )
         },

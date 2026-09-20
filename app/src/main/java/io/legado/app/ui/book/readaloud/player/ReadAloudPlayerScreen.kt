@@ -42,7 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
@@ -208,7 +208,7 @@ fun ReadAloudPlayerScreenContent(
                     }
                     MediumTonalButton(
                         onClick = { onIntent(ReadAloudPlayerIntent.OpenReadAloudLogs) },
-                        icon = Icons.Default.History,
+                        icon = Icons.Default.BugReport,
                         contentDescription = "朗读日志",
                     )
                 }

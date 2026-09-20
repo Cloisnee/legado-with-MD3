@@ -131,8 +131,7 @@ fun MainScreen(
     onNavigateToReadAloudLogs: () -> Unit,
     onNavigateToReadAloudSettings: () -> Unit,
     onNavigateToAiModelManage: () -> Unit,
-    onNavigateToCharacterManage: () -> Unit,
-    onNavigateToBookManage: () -> Unit,
+    onNavigateToRoleScriptManage: () -> Unit,
     onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
     onNavigateToBookInfo: (name: String, author: String, bookUrl: String, origin: String?, coverPath: String?, sharedCoverKey: String?) -> Unit,
@@ -599,8 +598,7 @@ fun MainScreen(
                                         PrefClickEvent.OpenReadAloudLogs -> onNavigateToReadAloudLogs()
                                         PrefClickEvent.OpenReadAloudSettings -> onNavigateToReadAloudSettings()
                                         PrefClickEvent.OpenAiModelManage -> onNavigateToAiModelManage()
-                                        PrefClickEvent.OpenCharacterManage -> onNavigateToCharacterManage()
-                                        PrefClickEvent.OpenBookManage -> onNavigateToBookManage()
+                                        PrefClickEvent.OpenRoleScriptManage -> onNavigateToRoleScriptManage()
                                         PrefClickEvent.OpenBookSourceManage -> onNavigateToBookSourceManage()
                                         PrefClickEvent.OpenReadRecord -> onNavigateToReadRecord()
                                         else -> onIntent(MainUiIntent.HandlePreferenceClick(event))

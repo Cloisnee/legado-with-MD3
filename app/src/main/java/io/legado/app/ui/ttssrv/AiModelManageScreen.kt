@@ -4,9 +4,6 @@ import android.app.Application
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,7 +50,6 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.legado.app.data.repository.AiModelEntry
@@ -378,9 +374,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     // ---------------- 界面 ----------------
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
-    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
-    var swipeAccum by remember { mutableStateOf(0f) }
-    val swipeState = rememberDraggableState { delta -> swipeAccum += delta }
 
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -412,22 +405,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             }
         },
     ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .draggable(
-                    orientation = Orientation.Horizontal,
-                    state = swipeState,
-                    onDragStarted = { swipeAccum = 0f },
-                    onDragStopped = {
-                        when {
-                            swipeAccum <= -swipeThresholdPx && tab < 1 -> switchTab(tab + 1)
-                            swipeAccum >= swipeThresholdPx && tab > 0 -> switchTab(tab - 1)
-                        }
-                        swipeAccum = 0f
-                    },
-                ),
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             when (tab) {
                 0 -> ModelLibraryPage(
                     config = cfg,

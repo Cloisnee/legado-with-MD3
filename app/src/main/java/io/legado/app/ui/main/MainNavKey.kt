@@ -156,10 +156,7 @@ data object MainRouteReadAloudSettings : MainRoute
 data object MainRouteAiModelManage : MainRoute
 
 @Serializable
-data object MainRouteCharacterManage : MainRoute
-
-@Serializable
-data object MainRouteBookManage : MainRoute
+data object MainRouteRoleScriptManage : MainRoute
 
 @Serializable
 data class MainRouteScriptReview(

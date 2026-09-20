@@ -15,7 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -214,7 +214,7 @@ private fun BookCacheManageScreen(
                     }
                     TopBarActionButton(
                         onClick = onOpenReadAloudLogs,
-                        imageVector = Icons.Default.History,
+                        imageVector = Icons.Default.BugReport,
                         contentDescription = stringResource(R.string.tts_cache_manage)
                     )
                 },
