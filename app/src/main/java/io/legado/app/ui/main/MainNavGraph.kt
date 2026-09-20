@@ -368,6 +368,9 @@ fun MainActivity.mainEntryProvider(
             onNavigateToAiModelManage = {
                 onNavigateToRoute(MainRouteAiModelManage)
             },
+            onNavigateToAiAnalysisSettings = {
+                onNavigateToRoute(MainRouteAiAnalysisSettings)
+            },
             onNavigateToRoleScriptManage = {
                 onNavigateToRoute(MainRouteRoleScriptManage)
             },
@@ -1182,6 +1185,12 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteAiModelManage> {
         io.legado.app.ui.ttssrv.AiModelManageRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteAiAnalysisSettings> {
+        io.legado.app.ui.ttssrv.AiAnalysisSettingsRouteScreen(
             onBackClick = { onNavigateBack() },
         )
     }

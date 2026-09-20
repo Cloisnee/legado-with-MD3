@@ -199,6 +199,12 @@ fun MyScreen(
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudSettings) }
                 )
                 ClickableSettingItem(
+                    title = "AI 分析设置",
+                    description = "统一超时 · 提示词 · 取文与输出",
+                    imageVector = Icons.Default.AutoAwesome,
+                    onClick = { onNavigate(PrefClickEvent.OpenAiAnalysisSettings) }
+                )
+                ClickableSettingItem(
                     title = "角色与剧本",
                     description = "角色 · 剧本 · 声线 / 改标签 / 章节管理",
                     imageVector = Icons.Default.TheaterComedy,

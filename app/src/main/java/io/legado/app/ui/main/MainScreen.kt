@@ -131,6 +131,7 @@ fun MainScreen(
     onNavigateToReadAloudLogs: () -> Unit,
     onNavigateToReadAloudSettings: () -> Unit,
     onNavigateToAiModelManage: () -> Unit,
+    onNavigateToAiAnalysisSettings: () -> Unit,
     onNavigateToRoleScriptManage: () -> Unit,
     onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
@@ -598,6 +599,7 @@ fun MainScreen(
                                         PrefClickEvent.OpenReadAloudLogs -> onNavigateToReadAloudLogs()
                                         PrefClickEvent.OpenReadAloudSettings -> onNavigateToReadAloudSettings()
                                         PrefClickEvent.OpenAiModelManage -> onNavigateToAiModelManage()
+                                        PrefClickEvent.OpenAiAnalysisSettings -> onNavigateToAiAnalysisSettings()
                                         PrefClickEvent.OpenRoleScriptManage -> onNavigateToRoleScriptManage()
                                         PrefClickEvent.OpenBookSourceManage -> onNavigateToBookSourceManage()
                                         PrefClickEvent.OpenReadRecord -> onNavigateToReadRecord()

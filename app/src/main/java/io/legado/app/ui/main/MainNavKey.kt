@@ -153,6 +153,9 @@ data object MainRouteTtsServerCenter : MainRoute
 data object MainRouteReadAloudSettings : MainRoute
 
 @Serializable
+data object MainRouteAiAnalysisSettings : MainRoute
+
+@Serializable
 data object MainRouteAiModelManage : MainRoute
 
 @Serializable

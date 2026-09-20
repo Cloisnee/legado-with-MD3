@@ -10,6 +10,8 @@ import java.io.File
 /**
  * 分析配置（提示词/上下文参数）· 暴露给用户随时修改：`_store/analysis_config.json`。
  *  - stage1Prompt/stage2Prompt/stage4Prompt/emotionPrompt：四阶段提示词（留空 = 用内置默认，即朗读脚本同款）；
+ *  - timeoutSec：AI 分析统一超时（B10.4·A3，30..600s，默认 120；覆盖模型级 timeoutMs）；
+ *  - waitAnalysisSec：等分析就绪最长等待（B10.4·A4，30..600s，默认 180）；
  *  - prevLimit/nextLimit：前情提要/后续剧情取文上限（0..3000 字；按完整段落取，不截断段落）；
  *  - emotionJoinTimeoutMs：第4阶段完成后最多再等情绪结果多久（默认 120000，超时先落库）；
  *  - maxOutputTokens：单次 AI 输出上限（默认 8192）。
@@ -25,6 +27,8 @@ class AnalysisConfigStore(private val app: Application) {
         val nextLimit: Int = 400,
         val emotionJoinTimeoutMs: Long = 120_000L,
         val maxOutputTokens: Int = 8192,
+        val timeoutSec: Int = 120,
+        val waitAnalysisSec: Int = 180,
     )
 
     private fun file(): File = File(TtsDirProvider.baseDir(app), "_store/analysis_config.json")
@@ -43,6 +47,8 @@ class AnalysisConfigStore(private val app: Application) {
                 nextLimit = o.optInt("nextLimit", 400).coerceIn(0, 3000),
                 emotionJoinTimeoutMs = o.optLong("emotionJoinTimeoutMs", 120_000L).coerceIn(5_000L, 1_800_000L),
                 maxOutputTokens = o.optInt("maxOutputTokens", 8192).coerceIn(256, 32768),
+                timeoutSec = o.optInt("timeoutSec", 120).coerceIn(30, 600),
+                waitAnalysisSec = o.optInt("waitAnalysisSec", 180).coerceIn(30, 600),
             )
         }.getOrDefault(Config())
     }
@@ -61,6 +67,8 @@ class AnalysisConfigStore(private val app: Application) {
                     put("nextLimit", cfg.nextLimit)
                     put("emotionJoinTimeoutMs", cfg.emotionJoinTimeoutMs)
                     put("maxOutputTokens", cfg.maxOutputTokens)
+                    put("timeoutSec", cfg.timeoutSec)
+                    put("waitAnalysisSec", cfg.waitAnalysisSec)
                 }.toString(),
             )
             true

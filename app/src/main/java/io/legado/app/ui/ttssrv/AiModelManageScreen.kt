@@ -71,6 +71,7 @@ import io.legado.app.ui.widget.components.card.SelectionItemCardContent
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
@@ -146,6 +147,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var qAttempts by remember { mutableStateOf("2") }
     var qValidate by remember { mutableStateOf("2") }
     var qTimeoutSec by remember { mutableStateOf("120") }
+    var qDisableThinking by remember { mutableStateOf(true) }
     var queueCtx by remember { mutableStateOf<String?>(null) }
     var selQueue by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -502,6 +504,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 qAttempts = m.requestAttempts.toString()
                                 qValidate = m.validateRetries.toString()
                                 qTimeoutSec = (m.timeoutMs / 1000L).toString()
+                                qDisableThinking = m.disableThinking
                             }
                         }
                     },
@@ -650,12 +653,18 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     AppModalBottomSheet(
         show = quotaTarget != null,
         onDismissRequest = { quotaTarget = null },
-        title = "模型次数：${quotaTarget?.name.orEmpty()}",
+        title = "模型设置：${quotaTarget?.name.orEmpty()}",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             SheetField("响应尝试次数（1=只试一次）", qAttempts) { qAttempts = it }
             SheetField("校验重试次数（0=不重试）", qValidate) { qValidate = it }
             SheetField("超时（秒）", qTimeoutSec) { qTimeoutSec = it }
+            TinySwitchSettingItem(
+                title = "关闭思考",
+                description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
+                checked = qDisableThinking,
+                onCheckedChange = { qDisableThinking = it },
+            )
             TinyClickableSettingItem(
                 title = "保存",
                 onClick = {
@@ -668,6 +677,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 validateRetries = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5),
                                 timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
                                     .coerceIn(5L, 600L)) * 1000L,
+                                disableThinking = qDisableThinking,
                             )
                         )
                         context.toastOnUi("已保存")

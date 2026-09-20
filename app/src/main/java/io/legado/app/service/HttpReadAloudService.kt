@@ -59,6 +59,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
+import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
@@ -180,6 +181,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
     private val chapterSpeechGateway by lazy { GlobalContext.get().get<ChapterSpeechGateway>() }
     private val speechPipeline by lazy { GlobalContext.get().get<SpeechAnalysisPipelineV3>() }
+    private val analysisConfig by lazy { GlobalContext.get().get<AnalysisConfigStore>() }
 
     /** B8.6：单次合成超时（秒→毫秒，设置 5–120 秒） */
     private val ttsSynthTimeoutMs: Long
@@ -534,17 +536,19 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     /**
-     * 等该章朗读分析就绪（DB 里有同 contentHash 的 V3 分析），最长 [timeoutMs]。
+     * 等该章朗读分析就绪（DB 里有同 contentHash 的 V3 分析），最长「AI 分析设置」的等待时长。
      * 就绪前预合成会用「默认声线」产出无用缓存，故宁可等。
      * B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；命中即视为就绪。
+     * B10.4·A4：等待时长可配（默认 180s）。
      */
     private suspend fun waitForChapterAnalysis(
         bookUrl: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
-        timeoutMs: Long = 180_000L,
     ): Boolean {
         if (bookUrl.isEmpty() || paragraphs.isEmpty()) return false
+        val timeoutMs = runCatching { analysisConfig.load().waitAnalysisSec * 1000L }
+            .getOrDefault(180_000L)
         // B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；成功即视为就绪
         val restored = runCatching {
             speechPipeline.restoreFromScriptFiles(

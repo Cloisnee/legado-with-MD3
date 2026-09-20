@@ -18,10 +18,11 @@ import java.io.File
  *
  * 结构（_store/ai_models.json）：
  *  providers：[{id,name,baseUrl,apiKey,protocol,enabled}]
- *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs}]
+ *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs,disableThinking}]
  *  stages   ：{stage1:[modelId...], stage2:[...], stage4:[...], emotion:[...]}
  *   - requestAttempts：响应尝试次数（超时/HTTP错/非JSON → 算一次），1=只试一次
  *   - validateRetries：内容校验重试次数（JSON合法但字段不符 → 算一次）
+ *   - disableThinking：关闭思考（B10.4·A6，默认 true=按协议发送关闭字段；false=不干预）
  */
 data class AiProvider(
     val id: String,
@@ -41,6 +42,7 @@ data class AiModelEntry(
     val requestAttempts: Int = 2,
     val validateRetries: Int = 2,
     val timeoutMs: Long = 120_000L,
+    val disableThinking: Boolean = true,
     val testOk: Boolean? = null,
     val testLatencyMs: Long? = null,
     val testMessage: String? = null,
@@ -104,6 +106,7 @@ class AiModelRepository(private val app: Application) {
                         requestAttempts = m.optInt("requestAttempts", 2).coerceIn(1, 5),
                         validateRetries = m.optInt("validateRetries", 2).coerceIn(0, 5),
                         timeoutMs = m.optLong("timeoutMs", 120_000L).coerceIn(5_000L, 600_000L),
+                        disableThinking = m.optBoolean("disableThinking", true),
                         testOk = if (m.has("testOk") && !m.isNull("testOk")) {
                             m.optBoolean("testOk")
                         } else {
@@ -161,6 +164,7 @@ class AiModelRepository(private val app: Application) {
                     put("requestAttempts", m.requestAttempts)
                     put("validateRetries", m.validateRetries)
                     put("timeoutMs", m.timeoutMs)
+                    put("disableThinking", m.disableThinking)
                     put("testOk", m.testOk ?: JSONObject.NULL)
                     put("testLatencyMs", m.testLatencyMs ?: JSONObject.NULL)
                     put("testMessage", m.testMessage ?: JSONObject.NULL)
