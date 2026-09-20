@@ -636,24 +636,57 @@ class ReadAloudDataRepository(private val app: Application) {
                 }
             }
             if (start < 0) return@withContext emptyList()
-            buildList {
-                for (i in start + 1 until end) {
-                    val raw = lines[i]
-                    if (raw.isBlank()) continue
-                    val spk = speakerOf(raw)
-                    val close = raw.indexOf('〗', 1)
-                    val rest = if (spk != null && close != -1) raw.substring(close + 1) else raw
-                    add(
-                        ScriptLineRow(
-                            absIndex = i,
-                            speaker = spk.orEmpty(),
-                            text = stripEmoRest(rest),
-                            emotion = EMO_VALUE.find(rest)?.groupValues?.getOrNull(1).orEmpty(),
-                        )
-                    )
-                }
+            parseScriptLines(lines.subList(start + 1, end), base = start + 1)
+        }
+
+    /**
+     * B8.3 回填：按 bookUrl 读取某章剧本行。
+     * 优先 `all_clean_text_<书>.txt` 的 [chapter:N] 段（与批量合成同一枚举，条目序号一致）；
+     * 剧本文件缺失时回退 `chapter_cache.<书>.json` 的精确键 `bookUrl|chapter`（state=success）。
+     */
+    suspend fun loadChapterScriptForUrl(
+        book: String,
+        bookUrl: String,
+        chapter: Int,
+    ): List<ScriptLineRow> = withContext(Dispatchers.IO) {
+        if (book.isBlank()) return@withContext emptyList()
+        val fileRows = loadChapterScript(book, chapter)
+        if (fileRows.isNotEmpty()) return@withContext fileRows
+        if (bookUrl.isBlank()) return@withContext emptyList()
+        val entry = runCatching { JSONObject(readText(bookFile(book, "chapter_cache.$book.json"))) }
+            .getOrNull()?.optJSONObject("$bookUrl|$chapter")
+        if (entry != null && entry.optString("state") == "success") {
+            val scriptText = entry.optString("scriptText")
+            if (scriptText.isNotBlank()) {
+                return@withContext parseScriptLines(scriptText.split("\n"), base = 0)
             }
         }
+        emptyList()
+    }
+
+    /** 书名解析（bookUrl → Room 书表）；B8.3 回填定位 books/<书名>/ 目录用 */
+    suspend fun loadBookName(bookUrl: String): String = withContext(Dispatchers.IO) {
+        if (bookUrl.isBlank()) return@withContext ""
+        runCatching { appDb.bookDao.getBook(bookUrl)?.name.orEmpty() }.getOrDefault("")
+    }
+
+    /** 剧本行解析（all_clean_text 章节段 / chapter_cache.scriptText 共用；base=首个元素对应的绝对行号） */
+    private fun parseScriptLines(lines: List<String>, base: Int): List<ScriptLineRow> = buildList {
+        lines.forEachIndexed { i, raw ->
+            if (raw.isBlank()) return@forEachIndexed
+            val spk = speakerOf(raw)
+            val close = raw.indexOf('〗', 1)
+            val rest = if (spk != null && close != -1) raw.substring(close + 1) else raw
+            add(
+                ScriptLineRow(
+                    absIndex = base + i,
+                    speaker = spk.orEmpty(),
+                    text = stripEmoRest(rest),
+                    emotion = EMO_VALUE.find(rest)?.groupValues?.getOrNull(1).orEmpty(),
+                )
+            )
+        }
+    }
 
     /** 修改某章若干行的说话标记；同步 chapter_cache 该章 scriptText；剔除该章合并账本 op；写 book_rev */
     suspend fun rewriteChapterSpeakers(

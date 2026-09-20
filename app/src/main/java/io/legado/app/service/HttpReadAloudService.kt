@@ -179,6 +179,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     // [B8] 朗读音频缓存：持久化于 <数据根>/data/audio/<书名>/<章>/<条目>_<hash>.mp3（不再写索引文件）
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
     private val chapterSpeechGateway by lazy { GlobalContext.get().get<ChapterSpeechGateway>() }
+    private val speechPipeline by lazy { GlobalContext.get().get<SpeechAnalysisPipelineV3>() }
     // 合成失败时的临时静音占位（不进缓存目录，避免「失败」被当成「已合成」）
     private val silentFile by lazy {
         File(cacheDir, "httpTTS_silent/silent.mp3").apply {
@@ -514,6 +515,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     /**
      * 等该章朗读分析就绪（DB 里有同 contentHash 的 V3 分析），最长 [timeoutMs]。
      * 就绪前预合成会用「默认声线」产出无用缓存，故宁可等。
+     * B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；命中即视为就绪。
      */
     private suspend fun waitForChapterAnalysis(
         bookUrl: String,
@@ -522,6 +524,16 @@ class HttpReadAloudService : BaseReadAloudService(),
         timeoutMs: Long = 180_000L,
     ): Boolean {
         if (bookUrl.isEmpty() || paragraphs.isEmpty()) return false
+        // B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；成功即视为就绪
+        val restored = runCatching {
+            speechPipeline.restoreFromScriptFiles(
+                bookUrl = bookUrl,
+                bookName = ReadBook.book?.name.orEmpty(),
+                chapterIndex = chapterIndex,
+                paragraphs = paragraphs,
+            )
+        }.getOrNull()
+        if (restored != null) return true
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {

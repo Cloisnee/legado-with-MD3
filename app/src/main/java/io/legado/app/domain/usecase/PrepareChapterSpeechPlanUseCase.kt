@@ -67,6 +67,28 @@ class PrepareChapterSpeechPlanUseCase(
             }
         }
 
+        // ---- B8.3：DB 未命中 → 本地剧本文件回填（清应用数据后免重析 + 声线/情绪随剧本还原） ----
+        val restored = runCatching {
+            pipeline.restoreFromScriptFiles(
+                bookUrl = bookUrl,
+                bookName = bookName,
+                chapterIndex = chapterIndex,
+                paragraphs = paragraphs,
+            )
+        }.onFailure {
+            AppLog.putAnalysis("本地剧本回填异常: ${it.localizedMessage}", it)
+        }.getOrNull()
+        if (restored != null && restored.segments.isNotEmpty()) {
+            AppLog.put("多角色计划：本地剧本回填（${restored.segments.size} 段）")
+            return buildSpeechPlan(
+                bookUrl = bookUrl,
+                segments = restored.segments,
+                preferredDefaultVoiceId = preferredDefaultVoiceId,
+                useMultiSpeaker = useMultiSpeaker,
+                voiceOverrides = overrides,
+            )
+        }
+
         // ---- 快速链：本地规则 v2 先行（先出声不等 AI） ----
         // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
         AppLog.putAudio(

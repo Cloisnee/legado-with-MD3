@@ -411,6 +411,63 @@ class SpeechAnalysisPipelineV3(
         return assemble(paragraphs, ranges)
     }
 
+    /**
+     * B8.3 本地剧本文件回填：DB 未命中时，把本地剧本（`all_clean_text` / `chapter_cache`）的本章行
+     * 对齐回当前正文，重建 segments 并回写 DB（同 contentHash + resolverVersion）。
+     * 使「清应用数据后」朗读直接消费剧本、不再重析（调度器随后缓存命中），声线/情绪随剧本还原。
+     * 对齐失败（正文已变 / 无法唯一定位）或剧本不存在 → 返回 null，调用方回落快速链。
+     */
+    suspend fun restoreFromScriptFiles(
+        bookUrl: String,
+        bookName: String,
+        chapterIndex: Int,
+        paragraphs: List<CanonicalSpeechParagraph>,
+    ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
+        if (bookUrl.isBlank() || paragraphs.isEmpty()) return@withContext null
+        val name = bookName.ifBlank { dataRepository.loadBookName(bookUrl) }
+        if (name.isBlank()) return@withContext null
+        val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
+        val existing = runCatching {
+            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
+        }.getOrNull()
+        if (existing != null &&
+            existing.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)
+        ) {
+            return@withContext null // DB 已就绪，调用方按命中处理
+        }
+        val rows = dataRepository.loadChapterScriptForUrl(name, bookUrl, chapterIndex)
+        if (rows.isEmpty()) {
+            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行（走快速链）")
+            return@withContext null
+        }
+        val aligned = ScriptFileBackfill.align(paragraphs, rows)
+        if (aligned == null) {
+            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
+            return@withContext null
+        }
+        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
+        val segments = ScriptFileBackfill.toSegments(aligned, bookUrl, chapterIndex, analysisId)
+        val analysis = ChapterSpeechAnalysis(
+            id = analysisId,
+            bookUrl = bookUrl,
+            chapterIndex = chapterIndex,
+            contentHash = contentHash,
+            resolverVersion = RESOLVER_VERSION,
+            characterRevision = "",
+            status = SpeechAnalysisStatus.Success,
+        )
+        val saved = runCatching { chapterSpeechGateway.saveAnalysis(analysis, segments) }
+        if (saved.isFailure) {
+            AppLog.putAnalysis(
+                "【分析V3·第${chapterIndex + 1}章】本地剧本回填：${segments.size} 段（回写 DB 失败，本次仍可用）",
+                saved.exceptionOrNull(),
+            )
+        } else {
+            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填成功：${segments.size} 段（免重析）")
+        }
+        ChapterSpeechAnalysisResult(analysis, segments, true)
+    }
+
     // ---------------- A 话语分析 ----------------
 
     private suspend fun stageA(
