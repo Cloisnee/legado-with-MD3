@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.readaloud.player
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -28,11 +29,33 @@ fun ReadAloudPlayerRouteScreen(
     showReadAloudConfig: Boolean,
     onReadAloudConfigVisibleChange: (Boolean) -> Unit,
     onBack: () -> Unit,
+    /**
+     * 「经典控制」按钮：交给宿主决定回到已有阅读界面还是新开阅读界面。
+     * 参数是当前朗读的书籍 url。
+     */
+    onSwitchToClassic: (bookUrl: String) -> Unit,
+    /** 顶栏「朗读日志」：由宿主导航到日志/缓存页。 */
+    onOpenReadAloudLogs: () -> Unit,
+    /** 底部「剧本审查」：由宿主导航到剧本审查页。 */
+    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit,
 ) {
     val playerViewModel: ReadAloudPlayerViewModel = koinInject()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val settingsState by playerViewModel.readAloudSettings.collectAsStateWithLifecycle()
     val playerTheme = rememberPlayerThemeOverride(playerState)
+
+    LaunchedEffect(playerViewModel) {
+        playerViewModel.effects.collect { effect ->
+            when (effect) {
+                ReadAloudPlayerEffect.ReturnToClassic ->
+                    onSwitchToClassic(playerViewModel.uiState.value.bookUrl)
+
+                ReadAloudPlayerEffect.ReturnToReaderSettings -> Unit
+
+                ReadAloudPlayerEffect.OpenReadAloudLogs -> onOpenReadAloudLogs()
+            }
+        }
+    }
 
     ProvideThemeOverride(playerTheme) {
         ReadAloudPlayerScreenContent(
@@ -40,6 +63,7 @@ fun ReadAloudPlayerRouteScreen(
             onIntent = playerViewModel::onIntent,
             onBack = onBack,
             onOpenConfig = { onReadAloudConfigVisibleChange(true) },
+            onOpenScriptReview = onOpenScriptReview,
         )
     }
     // 播放页自己是一层全屏目的地，这里只叠一层设置卡片，全屏只有这一层 scrim。
