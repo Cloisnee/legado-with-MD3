@@ -766,7 +766,7 @@ private fun ModelLibraryPage(
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                        .padding(vertical = 2.dp),
                     cornerRadius = 12.dp,
                     containerColor = if (vSelected) {
                         LegadoTheme.colorScheme.secondaryContainer
@@ -830,7 +830,7 @@ private fun ModelLibraryPage(
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                            .padding(vertical = 2.dp),
                         cornerRadius = 12.dp,
                         containerColor = if (mSelected) {
                             LegadoTheme.colorScheme.secondaryContainer
@@ -1010,7 +1010,7 @@ private fun AllocationPage(
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                        .padding(vertical = 2.dp),
                     cornerRadius = 12.dp,
                     containerColor = LegadoTheme.colorScheme.surfaceContainer,
                     onClick = { onOpenAddSheet(key) },
@@ -1063,7 +1063,7 @@ private fun AllocationPage(
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 28.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
+                            .padding(start = 28.dp, top = 2.dp, bottom = 2.dp),
                         cornerRadius = 12.dp,
                         containerColor = if (selected) {
                             LegadoTheme.colorScheme.secondaryContainer

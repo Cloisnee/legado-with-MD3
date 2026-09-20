@@ -74,6 +74,7 @@ import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
+import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
@@ -144,6 +145,8 @@ fun BookManageScreen(
     var bmPicker by remember { mutableStateOf<VoiceTagPickRequest?>(null) }
 
     var deleteChapterTarget by remember { mutableStateOf<Int?>(null) }
+    var showDeleteBookSheet by remember { mutableStateOf(false) }
+    var pendingDeleteBook by remember { mutableStateOf<String?>(null) }
 
     fun reloadLines() {
         scope.launch {
@@ -198,7 +201,7 @@ fun BookManageScreen(
     fun applySpeakerTo(targets: List<Int>, speaker: String) {
         targets.forEach { pending[it] = speaker }
         tagPanelFor = null
-        selLines = emptySet()
+        // 保留所选：多选底栏随即提供「主题色 ✓ 保存」（B10.3·U8）
     }
 
     fun savePending() {
@@ -305,10 +308,10 @@ fun BookManageScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 2.dp),
+                                .padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(modifier = Modifier.weight(2f)) {
+                            Box(modifier = Modifier.weight(1.5f)) {
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
                                     cornerRadius = 12.dp,
@@ -428,6 +431,35 @@ fun BookManageScreen(
                                     )
                                 }
                             }
+                            Box(modifier = Modifier.weight(1f)) {
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 12.dp,
+                                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                                    onClick = { showDeleteBookSheet = true },
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            AppText(
+                                                text = "删除书籍",
+                                                style = LegadoTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            AppText(
+                                                text = "清空资产",
+                                                style = LegadoTheme.typography.bodySmall,
+                                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -474,7 +506,7 @@ fun BookManageScreen(
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 2.dp),
+                                .padding(vertical = 2.dp),
                             cornerRadius = 10.dp,
                             containerColor = if (row.absIndex in selLines) {
                                 LegadoTheme.colorScheme.secondaryContainer
@@ -492,44 +524,49 @@ fun BookManageScreen(
                             },
                             onLongClick = null,
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.Top,
                             ) {
-                                AnimatedVisibility(
-                                    visible = selActive,
-                                    enter = fadeIn() + expandHorizontally(),
-                                    exit = fadeOut() + shrinkHorizontally(),
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(top = 2.dp),
+                                    AnimatedVisibility(
+                                        visible = selActive,
+                                        enter = fadeIn() + expandHorizontally(),
+                                        exit = fadeOut() + shrinkHorizontally(),
                                     ) {
-                                        AppCheckbox(
-                                            checked = row.absIndex in selLines,
-                                            onCheckedChange = null,
-                                            includeStateSemantics = false,
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            AppCheckbox(
+                                                checked = row.absIndex in selLines,
+                                                onCheckedChange = null,
+                                                includeStateSemantics = false,
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                        }
+                                    }
+                                    TagChip(
+                                        text = displayedSpeaker.ifBlank { "—" },
+                                        highlighted = changed,
+                                        onClick = {
+                                            if (row.speaker.isNotEmpty()) {
+                                                tagSearch = ""
+                                                tagPanelFor = listOf(row.absIndex)
+                                            }
+                                        },
+                                    )
+                                    if (row.emotion.isNotBlank()) {
                                         Spacer(modifier = Modifier.width(6.dp))
+                                        EmoChip(text = row.emotion)
                                     }
                                 }
-                                TagChip(
-                                    text = displayedSpeaker.ifBlank { "—" },
-                                    highlighted = changed,
-                                    onClick = {
-                                        if (row.speaker.isNotEmpty()) {
-                                            tagSearch = ""
-                                            tagPanelFor = listOf(row.absIndex)
-                                        }
-                                    },
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
                                 AppText(
                                     text = row.text,
                                     style = LegadoTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                             }
                         }
@@ -544,40 +581,8 @@ fun BookManageScreen(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (pending.isNotEmpty()) {
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 12.dp,
-                        containerColor = LegadoTheme.colorScheme.secondaryContainer,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AppText(
-                                text = "未保存：${pending.size} 行标记",
-                                style = LegadoTheme.typography.labelSmall,
-                                modifier = Modifier.weight(1f),
-                            )
-                            SmallPlainButton(
-                                onClick = { savePending() },
-                                icon = Icons.Default.Check,
-                                contentDescription = "保存",
-                            )
-                            SmallPlainButton(
-                                onClick = {
-                                    pending.clear()
-                                },
-                                icon = Icons.Default.Close,
-                                contentDescription = "放弃",
-                            )
-                        }
-                    }
-                }
                 AnimatedVisibility(
-                    visible = selLines.isNotEmpty(),
+                    visible = selLines.isNotEmpty() || pending.isNotEmpty(),
                     enter = slideInVertically { it } + fadeIn(),
                     exit = slideOutVertically { it } + fadeOut(),
                 ) {
@@ -588,10 +593,22 @@ fun BookManageScreen(
                             selLines = all - selLines
                         },
                         primaryAction = ActionItem("换角色", Icons.Default.Edit) {
-                            tagSearch = ""
-                            tagPanelFor = selLines.toList()
+                            if (selLines.isNotEmpty()) {
+                                tagSearch = ""
+                                tagPanelFor = selLines.toList()
+                            }
                         },
-                        secondaryActions = emptyList(),
+                        secondaryActions = if (pending.isNotEmpty()) {
+                            listOf(
+                                ActionItem("放弃修改", Icons.Default.Close) {
+                                    pending.clear()
+                                    selLines = emptySet()
+                                }
+                            )
+                        } else emptyList(),
+                        confirmAction = if (pending.isNotEmpty()) {
+                            ActionItem("保存", Icons.Default.Check) { savePending() }
+                        } else null,
                     )
                 }
             }
@@ -686,6 +703,49 @@ fun BookManageScreen(
             }
         }
     }
+
+    // ---------------- 删除书籍（全套资产清零） ----------------
+    AppModalBottomSheet(
+        show = showDeleteBookSheet,
+        onDismissRequest = { showDeleteBookSheet = false },
+        title = "删除书籍",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            val deletable = bookList.filter { it != ReadAloudDataRepository.DEFAULT_BOOK }
+            if (deletable.isEmpty()) {
+                TinyClickableSettingItem(title = "（暂无可删除的书籍）", onClick = {})
+            }
+            deletable.forEach { b ->
+                TinyClickableSettingItem(
+                    title = b,
+                    description = if (b == currentBook) "点按删除（当前书将回退「默认」）" else "点按删除该书全部数据",
+                    onClick = { pendingDeleteBook = b },
+                )
+            }
+        }
+    }
+    AppAlertDialog(
+        show = pendingDeleteBook != null,
+        onDismissRequest = { pendingDeleteBook = null },
+        title = "删除书籍",
+        text = "将删除「${pendingDeleteBook ?: ""}」的剧本、音频缓存、分析/绑定数据与书籍索引（不动书架）；此操作不可恢复。",
+        confirmText = "删除",
+        onConfirm = {
+            val b = pendingDeleteBook
+            pendingDeleteBook = null
+            showDeleteBookSheet = false
+            if (b != null) scope.launch {
+                val (ok, msg) = repo.deleteBookAssets(b)
+                context.toastOnUi(msg)
+                if (ok) {
+                    selectedChapter = null
+                    reload()
+                }
+            }
+        },
+        dismissText = "取消",
+        onDismiss = { pendingDeleteBook = null },
+    )
 
     // ---------------- 换角色面板 ----------------
     AppModalBottomSheet(
@@ -882,11 +942,7 @@ private fun TagChip(text: String, highlighted: Boolean, onClick: () -> Unit) {
     } else {
         LegadoTheme.colorScheme.primary
     }
-    Box(
-        modifier = Modifier
-            .width(52.dp)
-            .padding(top = 2.dp),
-    ) {
+    Box(modifier = Modifier.widthIn(max = 200.dp)) {
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
@@ -898,6 +954,28 @@ private fun TagChip(text: String, highlighted: Boolean, onClick: () -> Unit) {
                 text = text,
                 style = LegadoTheme.typography.labelSmall,
                 color = fg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmoChip(text: String) {
+    Box(modifier = Modifier.widthIn(max = 140.dp)) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(LegadoTheme.colorScheme.tertiaryContainer)
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        ) {
+            AppText(
+                text = text,
+                style = LegadoTheme.typography.labelSmall,
+                color = LegadoTheme.colorScheme.onTertiaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

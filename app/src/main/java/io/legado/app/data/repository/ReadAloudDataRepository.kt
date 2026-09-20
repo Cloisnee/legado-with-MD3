@@ -63,6 +63,9 @@ class ReadAloudDataRepository(private val app: Application) {
         private val EMO_VALUE = Regex("\\[\\[emo:([^\\]]*)\\]\\]")
     }
 
+    /** 音频缓存仓库（books 数据目录同根：data/audio/<书名>/） */
+    private val audioCache: ReadAloudAudioCacheRepository by lazy { ReadAloudAudioCacheRepository(app) }
+
     // ---------------- 路径 ----------------
 
     fun dataDir(): File = File(TtsDirProvider.baseDir(app), "data").apply { mkdirs() }
@@ -877,6 +880,60 @@ class ReadAloudDataRepository(private val app: Application) {
             writeText(rootFile("characterRecords.json"), json)
             writeText(rootFile("characterRecords_backup.json"), json)
         }
+    }
+
+    /**
+     * 删除书籍全套资产（B10.3·U7）：
+     *  ① 剧本目录 books/<书名>/（含合并账本）+ ② 音频缓存 audio/<书名>/
+     *  ③ DB 按书数据：分析 / 分段 / 绑定（含换源遗留旧 bookUrl 键）
+     *  ④ 书架索引 liebiao.json；若为当前书 → cunfang 切回「默认」并同步根镜像。
+     * 不动书架本体；「默认」不可删除。
+     */
+    suspend fun deleteBookAssets(book: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val name = book.trim()
+        if (name.isEmpty()) return@withContext false to "书名不能为空"
+        if (name == DEFAULT_BOOK) return@withContext false to "「默认」不可删除"
+        val st = initializeState()
+        // 候选 bookUrl：章节缓存键（留住换源遗留）+ Room 当前 url + 表内可归属旧键
+        val urls = linkedSetOf<String>()
+        runCatching {
+            val cache = JSONObject(readText(bookFile(name, "chapter_cache.$name.json")))
+            val keys = cache.keys()
+            while (keys.hasNext()) {
+                val u = keys.next().substringBefore('|')
+                if (u.isNotBlank()) urls.add(u)
+            }
+        }
+        runCatching {
+            appDb.bookDao.getBookByName(name)?.bookUrl?.takeIf { it.isNotBlank() }?.let(urls::add)
+        }
+        runCatching {
+            val tableUrls = appDb.chapterSpeechDao.distinctAnalysisBookUrls() +
+                    appDb.chapterSpeechDao.distinctSegmentBookUrls()
+            tableUrls.distinct().forEach { u ->
+                if (u.isNotBlank() && appDb.bookDao.getBook(u)?.name == name) urls.add(u)
+            }
+        }
+        // 当前书 → 回退「默认」（同步根镜像）
+        if (st.currentBook == name) {
+            val defText = readText(bookFile(DEFAULT_BOOK, "shuming.$DEFAULT_BOOK.json"))
+            val defRecords = if (defText.isEmpty() || defText == "[]") emptyList() else parseRecords(defText)
+            writeText(rootFile("cunfang.txt"), DEFAULT_BOOK)
+            writeText(rootFile("characterRecords.json"), recordsJson(defRecords))
+        }
+        // 书架索引（分析侧 liebiao，不动书架本体）
+        writeText(rootFile("liebiao.json"), JSONArray(st.bookList.filterNot { it == name }).toString())
+        // 目录清零
+        val dir = bookDir(name)
+        if (dir.exists()) dir.deleteRecursively()
+        audioCache.deleteBook(name)
+        // DB 清零（逐 bookUrl：分析 / 分段 / 绑定）
+        urls.forEach { u ->
+            appDb.chapterSpeechDao.deleteBookSegments(u)
+            appDb.chapterSpeechDao.deleteBookAnalyses(u)
+            appDb.readAloudVoiceDao.deleteBindingsByBookUrl(u)
+        }
+        true to "已删除「$name」全部数据"
     }
 
     // ---------------- 配音前缀工具 ----------------

@@ -540,7 +540,7 @@ fun CharacterManageScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                            .padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Box(modifier = Modifier.weight(2f)) {
@@ -1187,7 +1187,7 @@ private fun CharacterCardRow(
     GlassCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
+            .padding(vertical = 2.dp),
         cornerRadius = 12.dp,
         containerColor = if (selected) {
             LegadoTheme.colorScheme.secondaryContainer

@@ -57,4 +57,7 @@ interface ReadAloudVoiceDao {
 
     @Delete
     suspend fun deleteBinding(binding: BookVoiceBindingEntity)
+
+    @Query("delete from book_voice_bindings where bookUrl = :bookUrl")
+    suspend fun deleteBindingsByBookUrl(bookUrl: String)
 }

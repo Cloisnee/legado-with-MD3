@@ -71,7 +71,8 @@ fun SelectionBottomBar(
     onSelectAll: () -> Unit,
     onSelectInvert: () -> Unit,
     primaryAction: ActionItem,
-    secondaryActions: List<ActionItem>
+    secondaryActions: List<ActionItem>,
+    confirmAction: ActionItem? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val isMiuix = ThemeResolver.isMiuixEngine(LegadoTheme.composeEngine)
@@ -116,6 +117,20 @@ fun SelectionBottomBar(
                         contentDescription = primaryAction.text,
                         tint = MiuixTheme.colorScheme.onSecondaryContainer
                     )
+                }
+
+                if (confirmAction != null) {
+                    MiuixIconButton(
+                        onClick = confirmAction.onClick,
+                        backgroundColor = MiuixTheme.colorScheme.primary,
+                        minWidth = 64.dp
+                    ) {
+                        MiuixIcon(
+                            imageVector = confirmAction.icon,
+                            contentDescription = confirmAction.text,
+                            tint = MiuixTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
 
                 if (secondaryActions.isNotEmpty()) {
@@ -163,6 +178,29 @@ fun SelectionBottomBar(
                 }
             },
             trailingContent = {
+                if (confirmAction != null) {
+                    TooltipBox(
+                        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+                            TooltipAnchorPosition.Above
+                        ),
+                        tooltip = { ProvideAppDensity { PlainTooltip { AppText(confirmAction.text) } } },
+                        state = rememberTooltipState(),
+                    ) {
+                        FilledIconButton(
+                            modifier = Modifier.width(64.dp),
+                            onClick = confirmAction.onClick,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = LegadoTheme.colorScheme.primary,
+                                contentColor = LegadoTheme.colorScheme.onPrimary,
+                            ),
+                        ) {
+                            AppIcon(
+                                imageVector = confirmAction.icon,
+                                contentDescription = confirmAction.text
+                            )
+                        }
+                    }
+                }
                 if (secondaryActions.isNotEmpty()) {
                     Box {
                         IconButton(onClick = { showMenu = true }) {

@@ -77,4 +77,18 @@ interface ChapterSpeechDao {
         deleteChapterSegments(bookUrl, chapterIndex)
         deleteChapterAnalyses(bookUrl, chapterIndex)
     }
+
+    // ---- 整本书删除（B10.3·U7：含换源遗留旧 bookUrl 键） ----
+
+    @Query("select distinct bookUrl from chapter_speech_analysis")
+    suspend fun distinctAnalysisBookUrls(): List<String>
+
+    @Query("select distinct bookUrl from chapter_speech_segments")
+    suspend fun distinctSegmentBookUrls(): List<String>
+
+    @Query("delete from chapter_speech_analysis where bookUrl = :bookUrl")
+    suspend fun deleteBookAnalyses(bookUrl: String)
+
+    @Query("delete from chapter_speech_segments where bookUrl = :bookUrl")
+    suspend fun deleteBookSegments(bookUrl: String)
 }
