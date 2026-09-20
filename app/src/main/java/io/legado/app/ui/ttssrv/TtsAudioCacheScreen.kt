@@ -1,73 +1,64 @@
 package io.legado.app.ui.ttssrv
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.legado.app.R
+import io.legado.app.ui.book.readaloud.cache.AudioBookUi
+import io.legado.app.ui.book.readaloud.cache.AudioChapterUi
+import io.legado.app.ui.book.readaloud.cache.AudioJobUi
 import io.legado.app.ui.book.readaloud.cache.TtsCacheDialog
 import io.legado.app.ui.book.readaloud.cache.TtsCacheEffect
-import io.legado.app.ui.book.readaloud.cache.TtsCacheFileUi
 import io.legado.app.ui.book.readaloud.cache.TtsCacheIntent
 import io.legado.app.ui.book.readaloud.cache.TtsCacheUiState
 import io.legado.app.ui.book.readaloud.cache.TtsCacheViewModel
+import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
-import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
-import io.legado.app.ui.widget.components.button.series.SmallPlainButton
-import io.legado.app.ui.widget.components.log.LogDetailSheet
-import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.button.series.SmallTonalButton
+import io.legado.app.ui.widget.components.card.NormalCard
+import io.legado.app.ui.widget.components.card.TextCard
+import io.legado.app.ui.widget.components.icon.AppIcon
+import io.legado.app.ui.widget.components.progressIndicator.AppLinearProgressIndicator
+import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import org.koin.androidx.compose.koinViewModel
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-private data class CacheMeta(val book: String, val bookUrl: String, val chapter: String)
-
-private data class CacheChapterGroup(
-    val chapter: String,
-    val files: List<TtsCacheFileUi>,
-    val totalSize: Long,
-)
-
-private data class CacheBookGroup(
-    val book: String,
-    val chapters: List<CacheChapterGroup>,
-    val totalSize: Long,
-    val count: Int,
-)
 
 /**
- * 朗读音频缓存（书籍 / 章节级视图）：
- *  - 依赖 HttpReadAloudService 写入的 tts_cache_meta.jsonl（文件名→书/章节）
- *  - 支持：删除本书 / 删除本章 / 单文件删除 / 清空全部
- *  - 未记录到书籍信息的缓存归入「未归属」
+ * 音频管理：书籍大卡片（复刻书籍缓存管理页）+ 章节行 x/y（已合成/总数）。
+ *
+ *  - 左侧箭头展开按章节顺序排列的章节音频；
+ *  - 书籍卡片右侧：下载=按本地剧本批量合成整本缺失音频；删除=删除本书全部音频；
+ *  - 章节行右侧：下载=只合成该章缺失条目；删除=删除该章音频。
  */
 @Composable
 fun TtsAudioCacheRouteScreen(
@@ -75,7 +66,7 @@ fun TtsAudioCacheRouteScreen(
     viewModel: TtsCacheViewModel = koinViewModel(),
 ) {
     LaunchedEffect(Unit) {
-        viewModel.onIntent(TtsCacheIntent.LoadCache)
+        viewModel.onIntent(TtsCacheIntent.LoadAudioCache)
     }
     val context = LocalContext.current
     LaunchedEffect(viewModel) {
@@ -85,9 +76,8 @@ fun TtsAudioCacheRouteScreen(
             }
         }
     }
-    val state = viewModel.uiState.collectAsStateWithLifecycle().value
     TtsAudioCacheScreen(
-        state = state,
+        state = viewModel.uiState.collectAsStateWithLifecycle().value,
         onIntent = viewModel::onIntent,
         onBackClick = onBackClick,
     )
@@ -100,205 +90,330 @@ fun TtsAudioCacheScreen(
     onIntent: (TtsCacheIntent) -> Unit,
     onBackClick: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val dateFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
-    var metaMap by remember { mutableStateOf<Map<String, CacheMeta>>(emptyMap()) }
-
-    fun metaFile(): File {
-        val base = context.externalCacheDir ?: context.cacheDir
-        return File(base, "httpTTS/tts_cache_meta.jsonl")
-    }
-
-    fun loadMeta() {
-        scope.launch {
-            metaMap = withContext(Dispatchers.IO) {
-                runCatching {
-                    val f = metaFile()
-                    if (!f.exists()) return@runCatching emptyMap<String, CacheMeta>()
-                    buildMap<String, CacheMeta> {
-                        f.readLines().forEach { line ->
-                            runCatching {
-                                val o = JSONObject(line)
-                                val name = o.optString("f")
-                                if (name.isNotBlank()) {
-                                    put(
-                                        name,
-                                        CacheMeta(
-                                            book = o.optString("b"),
-                                            bookUrl = o.optString("u"),
-                                            chapter = o.optString("c"),
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }.getOrDefault(emptyMap())
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { loadMeta() }
-
-    fun pruneMeta(names: Set<String>) {
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val f = metaFile()
-                    if (!f.exists()) return@runCatching
-                    val kept = f.readLines().filter { line ->
-                        val name =
-                            runCatching { JSONObject(line).optString("f") }.getOrDefault("")
-                        name.isNotBlank() && name !in names
-                    }
-                    f.writeText(
-                        if (kept.isEmpty()) "" else kept.joinToString("\n", postfix = "\n")
-                    )
-                }
-            }
-            loadMeta()
-        }
-    }
-
-    fun deleteFiles(files: List<TtsCacheFileUi>) {
-        files.forEach { onIntent(TtsCacheIntent.DeleteFile(it.name)) }
-        pruneMeta(files.map { it.name }.toSet())
-    }
-
-    val bookGroups: List<CacheBookGroup> = remember(state.files, metaMap) {
-        state.files
-            .groupBy { f -> metaMap[f.name]?.book?.takeIf { it.isNotBlank() } ?: "未归属（无书籍信息）" }
-            .map { (book, files) ->
-                val chapters = files
-                    .groupBy { f -> metaMap[f.name]?.chapter?.takeIf { it.isNotBlank() } ?: "未知章节" }
-                    .map { (ch, cf) -> CacheChapterGroup(ch, cf, cf.sumOf { it.sizeBytes }) }
-                    .sortedBy { it.chapter }
-                CacheBookGroup(book, chapters, files.sumOf { it.sizeBytes }, files.size)
-            }
-            .sortedBy { it.book }
-    }
-
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
+    val totalSize = state.books.sumOf { it.sizeBytes }
+    val totalCached = state.books.sumOf { it.cached }
+    val totalAll = state.books.sumOf { it.total }
 
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = "朗读音频缓存",
-                subtitle = "${TtsCacheViewModel.formatSize(state.totalSizeBytes)} · ${state.files.size} 个文件",
+                title = stringResource(R.string.tts_audio_manage),
+                subtitle = if (state.books.isEmpty()) {
+                    null
+                } else {
+                    "${TtsCacheViewModel.formatSize(totalSize)} · $totalCached/$totalAll"
+                },
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     TopBarNavigationButton(onClick = onBackClick)
                 },
             )
         },
-        floatingActionButton = {
-            if (state.files.isNotEmpty()) {
-                AppFloatingActionButton(
-                    onClick = { onIntent(TtsCacheIntent.ShowClearAllDialog) },
-                    icon = Icons.Default.DeleteSweep,
-                    tooltipText = "清空全部",
-                )
-            }
-        },
     ) { paddingValues ->
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = adaptiveContentPadding(
                 top = paddingValues.calculateTopPadding() + 4.dp,
-                bottom = paddingValues.calculateBottomPadding() + 96.dp,
+                bottom = paddingValues.calculateBottomPadding() + 24.dp,
             ),
         ) {
-            if (state.files.isEmpty() && !state.loading) {
-                item {
-                    TinyClickableSettingItem(
-                        title = "暂无朗读音频缓存",
-                        description = "播放朗读内容后会在此处生成缓存（含书籍/章节信息）",
-                        onClick = {},
+            item(key = "books-header") {
+                AppText(
+                    text = stringResource(R.string.tts_audio_books_section),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    style = LegadoTheme.typography.titleSmallEmphasized,
+                    color = LegadoTheme.colorScheme.primary,
+                )
+            }
+            state.job?.let { job ->
+                item(key = "job") {
+                    AudioJobCard(job = job, onStop = { onIntent(TtsCacheIntent.StopJob) })
+                }
+            }
+            if (state.books.isEmpty() && !state.loading) {
+                item(key = "books-empty") {
+                    TextCard(
+                        text = stringResource(R.string.tts_audio_books_empty),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        verticalPadding = 12.dp,
+                        horizontalPadding = 12.dp,
+                    )
+                }
+                item(key = "books-empty-summary") {
+                    AppText(
+                        text = stringResource(R.string.tts_audio_books_empty_summary),
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        style = LegadoTheme.typography.labelMedium,
+                        color = LegadoTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            bookGroups.forEach { bg ->
-                item(key = "b_${bg.book}") {
-                    TinyClickableSettingItem(
-                        title = "📖 ${bg.book}",
-                        description = "${TtsCacheViewModel.formatSize(bg.totalSize)} · ${bg.count} 个文件",
-                        trailingContent = {
-                            SmallPlainButton(
-                                icon = Icons.Default.Delete,
-                                contentDescription = "删除本书",
-                                onClick = {
-                                    deleteFiles(bg.chapters.flatMap { it.files })
-                                },
-                            )
+            state.books.forEach { book ->
+                val expanded = book.book in state.expandedBooks
+                item(key = "book-${book.book}") {
+                    AudioBookCard(
+                        item = book,
+                        expanded = expanded,
+                        onToggleExpanded = {
+                            onIntent(TtsCacheIntent.ToggleBookExpanded(book.book))
                         },
-                        onClick = {},
+                        onCacheBook = { onIntent(TtsCacheIntent.CacheBook(book.book)) },
+                        onDeleteBook = {
+                            onIntent(TtsCacheIntent.ShowDeleteBookDialog(book.book))
+                        },
                     )
                 }
-                bg.chapters.forEach { cg ->
-                    item(key = "c_${bg.book}|${cg.chapter}") {
-                        TinyClickableSettingItem(
-                            title = "§ ${cg.chapter}",
-                            description = "${TtsCacheViewModel.formatSize(cg.totalSize)} · ${cg.files.size} 个文件",
-                            trailingContent = {
-                                SmallPlainButton(
-                                    icon = Icons.Default.Delete,
-                                    contentDescription = "删除本章",
-                                    onClick = { deleteFiles(cg.files) },
-                                )
-                            },
-                            onClick = {},
-                        )
-                    }
-                    items(cg.files, key = { it.name }) { file ->
-                        val sizeText = TtsCacheViewModel.formatSize(file.sizeBytes)
-                        val dateText = dateFormat.format(Date(file.lastModified))
-                        val displayText = file.text.ifEmpty { file.name }
-                        TinyClickableSettingItem(
-                            title = "   $displayText",
-                            description = "$sizeText · $dateText",
-                            trailingContent = {
-                                SmallPlainButton(
-                                    icon = Icons.Default.Delete,
-                                    contentDescription = "删除",
-                                    onClick = { deleteFiles(listOf(file)) },
-                                )
-                            },
-                            onClick = {
-                                onIntent(
-                                    TtsCacheIntent.ShowFileDetail(
-                                        name = file.name,
-                                        text = file.text,
-                                        sizeBytes = file.sizeBytes,
-                                        lastModified = file.lastModified,
+                if (expanded) {
+                    book.chapters.forEach { chapter ->
+                        item(key = "chapter-${book.book}-${chapter.chapterIndex}") {
+                            AudioChapterRow(
+                                item = chapter,
+                                onCache = {
+                                    onIntent(
+                                        TtsCacheIntent.CacheChapter(
+                                            book.book,
+                                            chapter.chapterIndex,
+                                        )
                                     )
-                                )
-                            },
-                        )
+                                },
+                                onDelete = {
+                                    onIntent(
+                                        TtsCacheIntent.ShowDeleteChapterDialog(
+                                            book.book,
+                                            chapter.chapterIndex,
+                                        )
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
+    val dialog = state.activeDialog
     AppAlertDialog(
-        show = state.activeDialog == TtsCacheDialog.ClearAll,
+        show = dialog is TtsCacheDialog.DeleteBookAudio,
         onDismissRequest = { onIntent(TtsCacheIntent.DismissDialog) },
-        title = "清空朗读音频缓存",
-        text = "确认清空全部朗读音频缓存文件？",
+        title = stringResource(R.string.delete),
+        text = stringResource(
+            R.string.tts_audio_delete_book_message,
+            (dialog as? TtsCacheDialog.DeleteBookAudio)?.book.orEmpty(),
+        ),
         onConfirm = {
-            onIntent(TtsCacheIntent.ClearAll)
-            pruneMeta(state.files.map { it.name }.toSet())
+            (dialog as? TtsCacheDialog.DeleteBookAudio)?.let {
+                onIntent(TtsCacheIntent.DeleteBookAudio(it.book))
+            }
         },
         onDismiss = { onIntent(TtsCacheIntent.DismissDialog) },
     )
-
-    LogDetailSheet(
-        show = state.showDetail,
-        title = state.detailTitle,
-        content = state.detailContent,
-        onDismissRequest = { onIntent(TtsCacheIntent.DismissDetail) },
+    AppAlertDialog(
+        show = dialog is TtsCacheDialog.DeleteChapterAudio,
+        onDismissRequest = { onIntent(TtsCacheIntent.DismissDialog) },
+        title = stringResource(R.string.delete),
+        text = stringResource(
+            R.string.tts_audio_delete_chapter_message,
+            ((dialog as? TtsCacheDialog.DeleteChapterAudio)?.chapterIndex ?: 0) + 1,
+        ),
+        onConfirm = {
+            (dialog as? TtsCacheDialog.DeleteChapterAudio)?.let {
+                onIntent(TtsCacheIntent.DeleteChapterAudio(it.book, it.chapterIndex))
+            }
+        },
+        onDismiss = { onIntent(TtsCacheIntent.DismissDialog) },
     )
+}
+
+@Composable
+private fun AudioJobCard(job: AudioJobUi, onStop: () -> Unit) {
+    NormalCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+        containerColor = LegadoTheme.colorScheme.secondaryContainer,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AppText(
+                text = if (job.chapterCount > 1) {
+                    stringResource(
+                        R.string.tts_audio_job_book,
+                        job.chapterPosition,
+                        job.chapterCount,
+                        job.chapterDone,
+                        job.chapterTotal,
+                    )
+                } else {
+                    stringResource(
+                        R.string.tts_audio_job_single,
+                        job.chapterIndex + 1,
+                        job.chapterDone,
+                        job.chapterTotal,
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                style = LegadoTheme.typography.labelMediumEmphasized,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            SmallTonalButton(
+                onClick = onStop,
+                icon = Icons.Default.Stop,
+                contentDescription = stringResource(R.string.tts_audio_stop),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioBookCard(
+    item: AudioBookUi,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onCacheBook: () -> Unit,
+    onDeleteBook: () -> Unit,
+) {
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 90f else 0f,
+        label = "AudioBookExpandArrow",
+    )
+    val progress = if (item.total <= 0) 0f else item.cached.toFloat() / item.total
+    NormalCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+        onClick = onToggleExpanded,
+        containerColor = LegadoTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AppIcon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .graphicsLayer(rotationZ = arrowRotation),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AppText(
+                        text = item.book,
+                        style = LegadoTheme.typography.titleSmallEmphasized,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    AppText(
+                        text = TtsCacheViewModel.formatSize(item.sizeBytes),
+                        style = LegadoTheme.typography.labelSmallEmphasized,
+                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextCard(
+                    text = "${item.cached}/${item.total}",
+                    backgroundColor = LegadoTheme.colorScheme.cardContainer,
+                )
+            }
+            AppLinearProgressIndicator(
+                progress = progress,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppText(
+                    text = stringResource(
+                        R.string.tts_audio_chapter_count,
+                        item.chapters.size,
+                    ),
+                    modifier = Modifier.weight(1f),
+                    style = LegadoTheme.typography.labelMediumEmphasized,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                )
+                SmallTonalButton(
+                    onClick = onCacheBook,
+                    icon = Icons.Default.Download,
+                    contentDescription = stringResource(R.string.tts_audio_cache_book),
+                )
+                SmallTonalButton(
+                    onClick = onDeleteBook,
+                    icon = Icons.Default.Delete,
+                    contentDescription = stringResource(R.string.tts_audio_delete_book),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioChapterRow(
+    item: AudioChapterUi,
+    onCache: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    NormalCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 12.dp),
+        containerColor = LegadoTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AppText(
+                text = stringResource(R.string.tts_audio_chapter, item.chapterIndex + 1),
+                style = LegadoTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            AppText(
+                text = "${item.cached}/${item.total}",
+                modifier = Modifier.weight(1f),
+                style = LegadoTheme.typography.labelMediumEmphasized,
+                color = if (item.missing == 0) {
+                    LegadoTheme.colorScheme.primary
+                } else {
+                    LegadoTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            if (item.missing > 0) {
+                SmallTonalButton(
+                    onClick = onCache,
+                    icon = Icons.Default.Download,
+                    contentDescription = stringResource(R.string.tts_audio_cache_missing),
+                )
+            }
+            SmallTonalButton(
+                onClick = onDelete,
+                icon = Icons.Default.Delete,
+                contentDescription = stringResource(R.string.tts_audio_delete_chapter),
+            )
+        }
+    }
 }

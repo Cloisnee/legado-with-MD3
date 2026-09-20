@@ -33,6 +33,7 @@ import io.legado.app.data.repository.BookshelfSettingsRepository
 import io.legado.app.data.repository.CacheBookDownloadRepository
 import io.legado.app.data.repository.ChangeSourceSettingsRepository
 import io.legado.app.data.repository.ChapterSpeechRepository
+import io.legado.app.data.repository.ReadAloudAudioCacheRepository
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.CheckSourceSettingsRepository
 import io.legado.app.data.repository.CloudTtsEngineRepository
@@ -172,6 +173,7 @@ import io.legado.app.domain.usecase.SearchBooksUseCase
 import io.legado.app.domain.usecase.ShrinkDatabaseUseCase
 import io.legado.app.domain.usecase.StartBookSourceCheckUseCase
 import io.legado.app.domain.usecase.SyncReadAloudVoicesUseCase
+import io.legado.app.domain.usecase.SynthesizeChapterAudioUseCase
 import io.legado.app.domain.usecase.UpdateBooksGroupUseCase
 import io.legado.app.domain.usecase.UploadReadingProgressUseCase
 import io.legado.app.domain.usecase.VerifyBookmarkTargetUseCase
@@ -371,6 +373,8 @@ val appModule = module {
     singleOf(::BuildSpeechPlanUseCase)
     singleOf(::AiModelRepository)
     singleOf(::ReadAloudDataRepository)
+    singleOf(::ReadAloudAudioCacheRepository)
+    singleOf(::SynthesizeChapterAudioUseCase)
     singleOf(::AiSpeechClient)
     singleOf(::AnalysisConfigStore)
     singleOf(::SpeechAnalysisPipelineV3)

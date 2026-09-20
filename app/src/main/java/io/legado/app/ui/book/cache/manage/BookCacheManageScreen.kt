@@ -246,8 +246,8 @@ private fun BookCacheManageScreen(
                 item(key = "tts_audio_cache_entry") {
                     SplicedColumnGroup {
                         ClickableSettingItem(
-                            title = "朗读音频缓存",
-                            description = "管理 TTS 合成产生的音频文件",
+                            title = "音频管理",
+                            description = "按书籍/章节管理朗读音频缓存与批量合成",
                             onClick = { onOpenTtsAudioCache() }
                         )
                     }

@@ -49,6 +49,8 @@ data class ScriptLineRow(
     val absIndex: Int,
     val speaker: String,
     val text: String,
+    /** 剧本行前缀 [[emo:xxx]] 的情绪（音频缓存键需要，与播放侧一致） */
+    val emotion: String = "",
 )
 
 class ReadAloudDataRepository(private val app: Application) {
@@ -57,6 +59,7 @@ class ReadAloudDataRepository(private val app: Application) {
         const val DEFAULT_BOOK = "默认"
         private val CHAPTER_MARKER = Regex("^\\[chapter:(\\d+)\\]\\s*$")
         private val EMO_HEAD = Regex("^(\\[\\[emo:[^\\]]*\\]\\])+")
+        private val EMO_VALUE = Regex("\\[\\[emo:([^\\]]*)\\]\\]")
     }
 
     // ---------------- 路径 ----------------
@@ -644,6 +647,7 @@ class ReadAloudDataRepository(private val app: Application) {
                             absIndex = i,
                             speaker = spk.orEmpty(),
                             text = stripEmoRest(rest),
+                            emotion = EMO_VALUE.find(rest)?.groupValues?.getOrNull(1).orEmpty(),
                         )
                     )
                 }
@@ -973,6 +977,37 @@ class ReadAloudDataRepository(private val app: Application) {
             writeBookRev(book, chapter)
             true
         }.getOrDefault(false)
+    }
+
+    /** 各章剧本行数（一次读文件；音频管理页统计「已合成/总数」用） */
+    suspend fun loadChapterLineCounts(book: String): Map<Int, Int> = withContext(Dispatchers.IO) {
+        val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
+        if (txt.isEmpty()) return@withContext emptyMap()
+        val counts = mutableMapOf<Int, Int>()
+        var current: Int? = null
+        txt.split("\n").forEach { l ->
+            val m = CHAPTER_MARKER.find(l)
+            if (m != null) {
+                current = m.groupValues[1].toIntOrNull()
+                current?.let { counts.putIfAbsent(it, 0) }
+            } else if (l.isNotBlank() && current != null) {
+                counts[current!!] = (counts[current!!] ?: 0) + 1
+            }
+        }
+        counts
+    }
+
+    /** 从本地章节状态（chapter_cache.<书>.json）解析该书 bookUrl（键形如 "$bookUrl|$chapter"） */
+    suspend fun loadBookUrl(book: String): String = withContext(Dispatchers.IO) {
+        val cacheFile = bookFile(book, "chapter_cache.$book.json")
+        val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
+        val keys = cache.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val url = k.substringBefore('|')
+            if (url.isNotBlank() && url != k) return@withContext url
+        }
+        ""
     }
 
     /** 确保书籍在书架索引（liebiao.json；仅追加，不改变当前书） */

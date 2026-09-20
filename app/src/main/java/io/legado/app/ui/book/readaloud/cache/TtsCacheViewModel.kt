@@ -3,11 +3,15 @@ package io.legado.app.ui.book.readaloud.cache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.AppLog
+import io.legado.app.data.repository.ReadAloudAudioCacheRepository
+import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.domain.usecase.SynthesizeChapterAudioUseCase
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -15,10 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import splitties.init.appCtx
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import org.koin.core.context.GlobalContext
 import java.util.Locale
 
 class TtsCacheViewModel : ViewModel() {
@@ -29,17 +30,16 @@ class TtsCacheViewModel : ViewModel() {
     private val _effects = MutableSharedFlow<TtsCacheEffect>(extraBufferCapacity = 16)
     val effects = _effects.asSharedFlow()
 
-    private val ttsCacheDir: File?
-        get() {
-            val baseDir = appCtx.externalCacheDir ?: appCtx.cacheDir
-            return File(baseDir, "httpTTS").takeIf { it.exists() }
-        }
+    private val dataRepository by lazy { GlobalContext.get().get<ReadAloudDataRepository>() }
+    private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
+    private val synthesizeChapter by lazy {
+        GlobalContext.get().get<SynthesizeChapterAudioUseCase>()
+    }
 
-    private val textIndexFile: File?
-        get() = ttsCacheDir?.let { File(it, "tts_cache_index.json") }
+    private var cacheJob: Job? = null
 
     init {
-        loadCache()
+        loadAudioCache()
         // 实时日志：AppLog 每次写入都会推送新快照（升序），日志页边播边刷
         viewModelScope.launch {
             AppLog.logsFlow.collect { entries ->
@@ -62,7 +62,72 @@ class TtsCacheViewModel : ViewModel() {
 
     fun onIntent(intent: TtsCacheIntent) {
         when (intent) {
-            TtsCacheIntent.LoadCache -> loadCache()
+            TtsCacheIntent.LoadAudioCache -> loadAudioCache()
+            is TtsCacheIntent.ToggleBookExpanded -> _uiState.update { state ->
+                state.copy(
+                    expandedBooks = (if (intent.book in state.expandedBooks) {
+                        state.expandedBooks - intent.book
+                    } else {
+                        state.expandedBooks + intent.book
+                    }).toImmutableSet()
+                )
+            }
+
+            is TtsCacheIntent.CacheChapter -> cacheChapters(intent.book, listOf(intent.chapterIndex))
+            is TtsCacheIntent.CacheBook -> {
+                val chapters = _uiState.value.books.firstOrNull { it.book == intent.book }
+                    ?.chapters
+                    ?.filter { it.missing > 0 }
+                    ?.map { it.chapterIndex }
+                    .orEmpty()
+                if (chapters.isEmpty()) {
+                    _effects.tryEmit(TtsCacheEffect.ShowToast("本书音频已全部缓存"))
+                } else {
+                    cacheChapters(intent.book, chapters)
+                }
+            }
+
+            TtsCacheIntent.StopJob -> {
+                cacheJob?.cancel()
+                cacheJob = null
+                _uiState.update { it.copy(job = null) }
+                _effects.tryEmit(TtsCacheEffect.ShowToast("已停止批量合成"))
+            }
+
+            is TtsCacheIntent.ShowDeleteBookDialog ->
+                _uiState.update { it.copy(activeDialog = TtsCacheDialog.DeleteBookAudio(intent.book)) }
+
+            is TtsCacheIntent.ShowDeleteChapterDialog -> _uiState.update {
+                it.copy(
+                    activeDialog = TtsCacheDialog.DeleteChapterAudio(intent.book, intent.chapterIndex)
+                )
+            }
+
+            is TtsCacheIntent.DeleteBookAudio -> viewModelScope.launch {
+                _uiState.update { it.copy(activeDialog = null) }
+                audioCache.deleteBook(intent.book)
+                _effects.tryEmit(TtsCacheEffect.ShowToast("已删除《${intent.book}》的音频缓存"))
+                loadAudioCache()
+            }
+
+            is TtsCacheIntent.DeleteChapterAudio -> viewModelScope.launch {
+                _uiState.update { it.copy(activeDialog = null) }
+                audioCache.deleteChapter(intent.book, intent.chapterIndex)
+                _effects.tryEmit(TtsCacheEffect.ShowToast("已删除第${intent.chapterIndex + 1}章音频缓存"))
+                loadAudioCache()
+            }
+
+            TtsCacheIntent.ShowClearLogsDialog ->
+                _uiState.update { it.copy(activeDialog = TtsCacheDialog.ClearLogs) }
+
+            TtsCacheIntent.ClearLogs -> {
+                AppLog.clear()
+                _effects.tryEmit(TtsCacheEffect.ShowToast("朗读日志已清空"))
+            }
+
+            TtsCacheIntent.DismissDialog ->
+                _uiState.update { it.copy(activeDialog = null) }
+
             is TtsCacheIntent.SelectTab -> _uiState.update {
                 it.copy(
                     activeTab = intent.tab,
@@ -95,153 +160,90 @@ class TtsCacheViewModel : ViewModel() {
                     }).toImmutableSet()
                 )
             }
-
-            is TtsCacheIntent.DeleteFile -> deleteFile(intent.name)
-            TtsCacheIntent.ClearAll -> clearAll()
-            TtsCacheIntent.ShowClearAllDialog ->
-                _uiState.update { it.copy(activeDialog = TtsCacheDialog.ClearAll) }
-
-            TtsCacheIntent.ShowClearLogsDialog ->
-                _uiState.update { it.copy(activeDialog = TtsCacheDialog.ClearLogs) }
-
-            TtsCacheIntent.ClearLogs -> {
-                AppLog.clear()
-                _effects.tryEmit(TtsCacheEffect.ShowToast("朗读日志已清空"))
-            }
-
-            TtsCacheIntent.DismissDialog ->
-                _uiState.update { it.copy(activeDialog = null) }
-
-            is TtsCacheIntent.ShowFileDetail -> _uiState.update {
-                it.copy(
-                    detailTitle = intent.name,
-                    detailContent = buildString {
-                        append("分片文字:\n${intent.text}\n\n")
-                        append("文件大小: ${formatSize(intent.sizeBytes)}\n")
-                        append("创建时间: ${detailDateFormat.format(Date(intent.lastModified))}\n")
-                        append("文件名: ${intent.name}.mp3")
-                    },
-                    showDetail = true,
-                )
-            }
-
-            TtsCacheIntent.DismissDetail -> _uiState.update { it.copy(showDetail = false) }
         }
     }
 
-    private fun loadCache() {
+    /** 扫描持久化缓存目录 + 本地剧本行数 → 书籍/章节两级统计 */
+    private fun loadAudioCache() {
         viewModelScope.launch(Dispatchers.IO) {
-            val dir = ttsCacheDir
-            if (dir == null) {
-                _uiState.update {
-                    it.copy(loading = false, files = persistentListOf(), totalSizeBytes = 0)
-                }
-                return@launch
+            val books = audioCache.listBooks().map { book ->
+                val lineCounts = dataRepository.loadChapterLineCounts(book)
+                val chapters = lineCounts.entries
+                    .sortedBy { it.key }
+                    .map { (chapterIndex, total) ->
+                        val stats = audioCache.chapterStats(book, chapterIndex, total)
+                        AudioChapterUi(
+                            chapterIndex = chapterIndex,
+                            cached = stats.cached,
+                            total = stats.total,
+                            sizeBytes = stats.sizeBytes,
+                        )
+                    }
+                AudioBookUi(
+                    book = book,
+                    cached = chapters.sumOf { it.cached },
+                    total = chapters.sumOf { it.total },
+                    sizeBytes = chapters.sumOf { it.sizeBytes },
+                    chapters = chapters.toImmutableList(),
+                )
             }
-            val index = loadTextIndex()
-            val files = dir.listFiles()
-                ?.filter { it.isFile && it.name.endsWith(".mp3") }
-                ?.sortedByDescending { it.lastModified() }
-                ?.map { file ->
-                    val baseName = file.nameWithoutExtension
-                    val text = index[baseName].orEmpty()
-                    TtsCacheFileUi(
-                        name = baseName,
-                        text = text,
-                        sizeBytes = file.length(),
-                        lastModified = file.lastModified(),
-                    )
-                } ?: emptyList()
-            val totalSize = files.sumOf { it.sizeBytes }
+            _uiState.update { it.copy(loading = false, books = books.toImmutableList()) }
+        }
+    }
+
+    private fun cacheChapters(book: String, chapterIndexes: List<Int>) {
+        if (chapterIndexes.isEmpty()) return
+        cacheJob?.cancel()
+        cacheJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
-                    loading = false,
-                    files = files.toImmutableList(),
-                    totalSizeBytes = totalSize,
+                    job = AudioJobUi(
+                        book = book,
+                        chapterIndex = chapterIndexes.first(),
+                        chapterDone = 0,
+                        chapterTotal = 0,
+                        chapterPosition = 1,
+                        chapterCount = chapterIndexes.size,
+                    )
                 )
             }
-        }
-    }
-
-    private fun loadTextIndex(): Map<String, String> {
-        return try {
-            val file = textIndexFile ?: return emptyMap()
-            if (!file.exists()) return emptyMap()
-            val json = file.readText()
-            val map = mutableMapOf<String, String>()
-            // Simple JSON parsing: {"filename":"text",...}
-            val regex = Regex("\"([^\"]+)\":\"([^\"]*)\"")
-            regex.findAll(json).forEach { match ->
-                map[match.groupValues[1]] = match.groupValues[2]
-                    .replace("\\n", "\n")
-                    .replace("\\\"", "\"")
-                    .replace("\\\\", "\\")
+            var done = 0
+            var failed = 0
+            chapterIndexes.forEachIndexed { position, chapterIndex ->
+                val result = runCatching {
+                    synthesizeChapter(
+                        book = book,
+                        chapterIndex = chapterIndex,
+                        onProgress = { processed, total ->
+                            _uiState.update { state ->
+                                state.copy(
+                                    job = state.job?.copy(
+                                        chapterIndex = chapterIndex,
+                                        chapterDone = processed,
+                                        chapterTotal = total,
+                                        chapterPosition = position + 1,
+                                        chapterCount = chapterIndexes.size,
+                                    )
+                                )
+                            }
+                        },
+                    )
+                }.getOrNull() ?: SynthesizeChapterAudioUseCase.Result(0, 0, 0)
+                done += result.done
+                failed += result.failed
+                loadAudioCache()
             }
-            map
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    private fun deleteFile(name: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val dir = ttsCacheDir ?: return@launch
-            val file = File(dir, "$name.mp3")
-            if (file.exists() && file.delete()) {
-                removeFromTextIndex(name)
-                _effects.tryEmit(TtsCacheEffect.ShowToast("已删除"))
-                loadCache()
-            }
-        }
-    }
-
-    private fun clearAll() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(activeDialog = null) }
-            val dir = ttsCacheDir
-            if (dir != null && dir.exists()) {
-                dir.listFiles()?.forEach { it.delete() }
-            }
-            textIndexFile?.delete()
-            _effects.tryEmit(TtsCacheEffect.ShowToast("缓存已清除"))
-            loadCache()
-        }
-    }
-
-    private fun removeFromTextIndex(filename: String) {
-        try {
-            val file = textIndexFile ?: return
-            if (!file.exists()) return
-            val index = loadTextIndex().toMutableMap()
-            index.remove(filename)
-            writeTextIndex(index)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun writeTextIndex(index: Map<String, String>) {
-        try {
-            val file = textIndexFile ?: return
-            val json = buildString {
-                append("{")
-                index.entries.forEachIndexed { i, (key, value) ->
-                    if (i > 0) append(",")
-                    val escaped = value
-                        .replace("\\", "\\\\")
-                        .replace("\"", "\\\"")
-                        .replace("\n", "\\n")
-                    append("\"$key\":\"$escaped\"")
-                }
-                append("}")
-            }
-            file.writeText(json)
-        } catch (_: Exception) {
+            _uiState.update { it.copy(job = null) }
+            cacheJob = null
+            _effects.tryEmit(
+                TtsCacheEffect.ShowToast(
+                    String.format(Locale.getDefault(), "批量合成完成：成功 %d，失败 %d", done, failed)
+                )
+            )
         }
     }
 
     companion object {
-        private val detailDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-
         fun formatSize(bytes: Long): String {
             return when {
                 bytes < 1024 -> "$bytes B"

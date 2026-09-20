@@ -11,32 +11,50 @@ import kotlinx.collections.immutable.persistentSetOf
 enum class TtsCacheTab { Analysis, Audio }
 
 @Stable
+data class AudioChapterUi(
+    val chapterIndex: Int,
+    val cached: Int,
+    val total: Int,
+    val sizeBytes: Long,
+) {
+    val missing: Int get() = (total - cached).coerceAtLeast(0)
+}
+
+@Stable
+data class AudioBookUi(
+    val book: String,
+    val cached: Int,
+    val total: Int,
+    val sizeBytes: Long,
+    val chapters: ImmutableList<AudioChapterUi>,
+)
+
+/** 批量合成进度（整本缓存时 chapterCount > 1） */
+@Stable
+data class AudioJobUi(
+    val book: String,
+    val chapterIndex: Int,
+    val chapterDone: Int,
+    val chapterTotal: Int,
+    val chapterPosition: Int,
+    val chapterCount: Int,
+)
+
+@Stable
 data class TtsCacheUiState(
     val loading: Boolean = true,
-    /** 音频缓存文件（书籍/章节视图，TtsAudioCacheScreen 使用） */
-    val files: ImmutableList<TtsCacheFileUi> = persistentListOf(),
-    val totalSizeBytes: Long = 0,
-    /** 朗读日志（按时间升序，实时刷新） */
+    // ---- 音频缓存（书籍/章节视图） ----
+    val books: ImmutableList<AudioBookUi> = persistentListOf(),
+    val expandedBooks: ImmutableSet<String> = persistentSetOf(),
+    val job: AudioJobUi? = null,
+    // ---- 朗读日志（按时间升序，实时刷新） ----
     val logs: ImmutableList<TtsLogEntryUi> = persistentListOf(),
     val activeTab: TtsCacheTab = TtsCacheTab.Analysis,
     val isSearch: Boolean = false,
     val searchKey: String = "",
-    /** 多选中的日志 id（= AppLog.LogEntry.id） */
     val selectedIds: ImmutableSet<Long> = persistentSetOf(),
-    /** 展开详情的日志 id */
     val expandedIds: ImmutableSet<Long> = persistentSetOf(),
     val activeDialog: TtsCacheDialog? = null,
-    val detailTitle: String = "",
-    val detailContent: String = "",
-    val showDetail: Boolean = false,
-)
-
-@Stable
-data class TtsCacheFileUi(
-    val name: String,
-    val text: String,
-    val sizeBytes: Long,
-    val lastModified: Long,
 )
 
 @Stable
@@ -50,23 +68,21 @@ data class TtsLogEntryUi(
 )
 
 sealed interface TtsCacheIntent {
-    data object LoadCache : TtsCacheIntent
-    data class DeleteFile(val name: String) : TtsCacheIntent
-    data object ClearAll : TtsCacheIntent
-    data object ShowClearAllDialog : TtsCacheIntent
+    // ---- 音频缓存 ----
+    data object LoadAudioCache : TtsCacheIntent
+    data class ToggleBookExpanded(val book: String) : TtsCacheIntent
+    data class CacheChapter(val book: String, val chapterIndex: Int) : TtsCacheIntent
+    data class CacheBook(val book: String) : TtsCacheIntent
+    data object StopJob : TtsCacheIntent
+    data class ShowDeleteBookDialog(val book: String) : TtsCacheIntent
+    data class ShowDeleteChapterDialog(val book: String, val chapterIndex: Int) : TtsCacheIntent
+    data class DeleteBookAudio(val book: String) : TtsCacheIntent
+    data class DeleteChapterAudio(val book: String, val chapterIndex: Int) : TtsCacheIntent
+
+    // ---- 朗读日志页 ----
     data object ShowClearLogsDialog : TtsCacheIntent
     data object ClearLogs : TtsCacheIntent
     data object DismissDialog : TtsCacheIntent
-    data class ShowFileDetail(
-        val name: String,
-        val text: String,
-        val sizeBytes: Long,
-        val lastModified: Long
-    ) : TtsCacheIntent
-
-    data object DismissDetail : TtsCacheIntent
-
-    // ---- 朗读日志页交互 ----
     data class SelectTab(val tab: TtsCacheTab) : TtsCacheIntent
     data class SetSearchMode(val isSearch: Boolean) : TtsCacheIntent
     data class SetSearchKey(val key: String) : TtsCacheIntent
@@ -80,6 +96,7 @@ sealed interface TtsCacheEffect {
 }
 
 sealed interface TtsCacheDialog {
-    data object ClearAll : TtsCacheDialog
     data object ClearLogs : TtsCacheDialog
+    data class DeleteBookAudio(val book: String) : TtsCacheDialog
+    data class DeleteChapterAudio(val book: String, val chapterIndex: Int) : TtsCacheDialog
 }
