@@ -2,6 +2,7 @@ package io.legado.app.data.repository
 
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
+import io.legado.app.data.appDb
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.domain.model.readaloud.VoiceGroupInfo
