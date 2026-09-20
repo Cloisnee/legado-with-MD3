@@ -585,9 +585,13 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
     }
 
+    /** 预合成单条结果（逐章汇总日志用） */
+    private enum class CueSyncOutcome { Stored, Cached, Skipped, Failed }
+
     /**
      * 并行合成一个章节的所有 cue，通过 Semaphore 控制并发。
      * 返回 true 表示该章节合成失败（超过半数 cue 失败）。
+     * 无论成败都输出一条「完成」汇总（新增/命中/跳过/失败），便于确认预合成是否真的生效。
      */
     private suspend fun synthesizeChapterCues(
         prepared: PreDownloadChapter,
@@ -595,35 +599,35 @@ class HttpReadAloudService : BaseReadAloudService(),
         concurrency: Int,
     ): Boolean = coroutineScope {
         val semaphore = kotlinx.coroutines.sync.Semaphore(concurrency)
-        var failedCount = 0
         val totalCues = prepared.contentList.size
 
-        prepared.contentList.mapIndexed { index, content ->
+        val outcomes = prepared.contentList.mapIndexed { index, content ->
             async {
                 semaphore.acquire()
                 try {
                     val routedVoice = voiceForCue(prepared.queue, index, httpTts)
                     if (routedVoice.engineType == ReadAloudVoice.ENGINE_SYSTEM) {
-                        return@async
+                        return@async CueSyncOutcome.Skipped
                     }
                     val cue = prepared.queue.cues.getOrNull(index)
                     val segIndex = index - prepared.queue.leadingTitleCueCount
-                    if (synthesizeSingleCueWithRetry(
-                            routedVoice, cue, content, prepared, segIndex, httpTts,
-                        )
-                    ) return@async
-                    failedCount++
+                    synthesizeSingleCueWithRetry(
+                        routedVoice, cue, content, prepared, segIndex, httpTts,
+                    )
                 } finally {
                     semaphore.release()
                 }
             }
         }.awaitAll()
 
-        if (failedCount > 0) {
-            AppLog.putAudio(
-                "【音频缓存】预合成「${prepared.chapterTitle}」失败 $failedCount/$totalCues 条"
-            )
-        }
+        val stored = outcomes.count { it == CueSyncOutcome.Stored }
+        val cached = outcomes.count { it == CueSyncOutcome.Cached }
+        val skipped = outcomes.count { it == CueSyncOutcome.Skipped }
+        val failedCount = outcomes.count { it == CueSyncOutcome.Failed }
+        AppLog.putAudio(
+            "【音频缓存】预合成「${prepared.chapterTitle}」完成：" +
+                "新增 $stored、命中 $cached、跳过 $skipped、失败 $failedCount（共 $totalCues 条）"
+        )
         failedCount > totalCues / 2
     }
 
@@ -637,10 +641,9 @@ class HttpReadAloudService : BaseReadAloudService(),
         prepared: PreDownloadChapter,
         segIndex: Int,
         httpTts: HttpTTS,
-    ): Boolean {
-        if (synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)) {
-            return true
-        }
+    ): CueSyncOutcome {
+        val first = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
+        if (first != CueSyncOutcome.Failed) return first
         delay(500)
         return synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
     }
@@ -655,7 +658,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         prepared: PreDownloadChapter,
         segIndex: Int,
         httpTts: HttpTTS,
-    ): Boolean {
+    ): CueSyncOutcome {
         val itemHttpTts = routedVoice.engineId.toLongOrNull()
             ?.let(appDb.httpTTSDao::get) ?: httpTts
         val voiceKey = ReadAloudAudioCacheKeys.voiceKey(
@@ -675,9 +678,9 @@ class HttpReadAloudService : BaseReadAloudService(),
         val speakText = content.replace(AppPattern.notReadAloudRegex, "")
         if (speakText.isEmpty()) {
             // 空文本不落缓存（播放侧用静音占位）
-            return true
+            return CueSyncOutcome.Skipped
         }
-        if (cacheFile.isValidAudio()) return true
+        if (cacheFile.isValidAudio()) return CueSyncOutcome.Cached
         val failReason = runCatching {
             when (routedVoice.engineType) {
                 ReadAloudVoice.ENGINE_TTS_SERVER -> {
@@ -725,9 +728,9 @@ class HttpReadAloudService : BaseReadAloudService(),
                 "【音频缓存】预合成失败 ${routedVoice.speakerId.ifBlank { routedVoice.displayName }}" +
                     " | ${prepared.chapterTitle} | ${snippet(speakText)} | $failReason"
             )
-            return false
+            return CueSyncOutcome.Failed
         }
-        return true
+        return CueSyncOutcome.Stored
     }
 
     private fun downloadAndPlayAudiosStream() {
@@ -858,11 +861,10 @@ class HttpReadAloudService : BaseReadAloudService(),
                     if (routedVoice.engineType == ReadAloudVoice.ENGINE_CLOUD ||
                         routedVoice.engineType == ReadAloudVoice.ENGINE_TTS_SERVER) {
                         val segIndex = index - prepared.queue.leadingTitleCueCount
-                        if (synthesizeSingleCueWithRetry(
-                                routedVoice, cue, content, prepared, segIndex, httpTts,
-                            )
-                        ) return@async
-                        failedCount++
+                        val outcome = synthesizeSingleCueWithRetry(
+                            routedVoice, cue, content, prepared, segIndex, httpTts,
+                        )
+                        if (outcome == CueSyncOutcome.Failed) failedCount++
                     } else {
                         val speakText = content.replace(AppPattern.notReadAloudRegex, "")
                         val fileName = streamCacheKey(content, httpTts)
