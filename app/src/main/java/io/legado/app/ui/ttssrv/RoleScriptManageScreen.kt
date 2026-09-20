@@ -10,9 +10,9 @@ import androidx.compose.ui.platform.LocalContext
 
 /**
  * 「角色与剧本」二合一面（B10.2·U4，我的 → 朗读 →「角色与剧本」）：
- *  - 与剧本审查同布局：顶栏下 AppTabRow 双栏（角色管理 / 剧本），点按切换、无左右滑动；
- *  - 角色栏（角色管理）= 书籍卡 + 类型卡；剧本栏 = 书籍卡 + 章节卡；
- *  - 顶栏 FindReplace 图标：角色栏=切换类型、剧本栏=重析当前章。
+ *  - 与剧本审查同布局：顶栏下 AppTabRow 双栏（角色管理 / 书籍管理），点按切换、无左右滑动；
+ *  - 顶栏只保留搜索：类型切换/章节操作由下方卡片承担，不做重复入口；
+ *  - 角色栏（角色管理）= 书籍卡 + 类型卡；书籍管理栏 = 书籍卡 + 章节卡。
  */
 @Composable
 fun RoleScriptManageRouteScreen(onBackClick: () -> Unit) {
@@ -32,12 +32,14 @@ fun RoleScriptManageScreen(app: Application, onBack: () -> Unit) {
             onBack = onBack,
             hostTab = tab,
             onHostTabSelected = { tab = it },
+            bookTabLabel = "书籍管理",
         )
         else -> BookManageScreen(
             app = app,
             onBack = onBack,
             hostTab = tab,
             onHostTabSelected = { tab = it },
+            bookTabLabel = "书籍管理",
         )
     }
 }

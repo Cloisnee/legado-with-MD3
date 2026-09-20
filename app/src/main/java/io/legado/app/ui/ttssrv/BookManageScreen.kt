@@ -112,6 +112,7 @@ fun BookManageScreen(
     refreshKey: Int = 0,
     hostTab: Int = 0,
     onHostTabSelected: (Int) -> Unit = {},
+    bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
@@ -241,7 +242,7 @@ fun BookManageScreen(
                 title = if (selLines.isNotEmpty()) {
                     stringResource(R.string.list_selected_count, selLines.size, shown.size)
                 } else {
-                    "剧本"
+                    bookTabLabel
                 },
                 useCharMode = selLines.isNotEmpty(),
                 subtitle = if (embedded) {
@@ -270,16 +271,20 @@ fun BookManageScreen(
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
-                    TopBarActionButton(
-                        onClick = { enqueueReanalyze() },
-                        imageVector = Icons.Default.FindReplace,
-                        contentDescription = "重新分析本章",
-                    )
+                    // 独立入口（二合一面）顶栏只保留搜索：重析仅剧本审查（嵌入）提供
+                    if (embedded) {
+                        TopBarActionButton(
+                            onClick = { enqueueReanalyze() },
+                            imageVector = Icons.Default.FindReplace,
+                            contentDescription = "重新分析本章",
+                        )
+                    }
                 },
                 bottomContent = {
                     RoleScriptTabRow(
                         selectedTabIndex = hostTab,
                         onTabSelected = onHostTabSelected,
+                        bookTabLabel = bookTabLabel,
                     )
                 },
             )

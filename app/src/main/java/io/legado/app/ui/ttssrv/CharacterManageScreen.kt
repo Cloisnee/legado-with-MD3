@@ -117,6 +117,7 @@ fun CharacterManageScreen(
     refreshKey: Int = 0,
     hostTab: Int = 0,
     onHostTabSelected: (Int) -> Unit = {},
+    bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
     val repo = remember(app) { ReadAloudDataRepository(app) }
@@ -478,35 +479,38 @@ fun CharacterManageScreen(
                         imageVector = Icons.Default.Search,
                         contentDescription = "搜索",
                     )
-                    Box {
-                        TopBarActionButton(
-                            onClick = { showTypeMenu = true },
-                            imageVector = Icons.Default.FindReplace,
-                            contentDescription = "筛选：全部/特殊/路人/核心",
-                        )
-                        RoundDropdownMenu(
-                            expanded = showTypeMenu,
-                            onDismissRequest = { showTypeMenu = false },
-                        ) { dismiss ->
-                            ROLES.forEach { t ->
-                                RoundDropdownMenuItem(
-                                    text = t,
-                                    onClick = {
-                                        dismiss()
-                                        roleFilter = t
-                                        sel = emptySet()
-                                        scope.launch { repo.saveCharacterFilter(t) }
-                                    },
-                                    trailingIcon = if (t == roleFilter) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                        }
-                                    } else null,
-                                )
+                    // 类型切换由「类型卡」承担：独立入口（二合一面）顶栏不重复，嵌入（剧本审查）无卡片才上顶栏
+                    if (embedded) {
+                        Box {
+                            TopBarActionButton(
+                                onClick = { showTypeMenu = true },
+                                imageVector = Icons.Default.FindReplace,
+                                contentDescription = "筛选：全部/特殊/路人/核心",
+                            )
+                            RoundDropdownMenu(
+                                expanded = showTypeMenu,
+                                onDismissRequest = { showTypeMenu = false },
+                            ) { dismiss ->
+                                ROLES.forEach { t ->
+                                    RoundDropdownMenuItem(
+                                        text = t,
+                                        onClick = {
+                                            dismiss()
+                                            roleFilter = t
+                                            sel = emptySet()
+                                            scope.launch { repo.saveCharacterFilter(t) }
+                                        },
+                                        trailingIcon = if (t == roleFilter) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
                             }
                         }
                     }
@@ -515,6 +519,7 @@ fun CharacterManageScreen(
                     RoleScriptTabRow(
                         selectedTabIndex = hostTab,
                         onTabSelected = onHostTabSelected,
+                        bookTabLabel = bookTabLabel,
                     )
                 },
             )
