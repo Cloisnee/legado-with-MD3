@@ -486,7 +486,10 @@ abstract class BaseReadAloudService : BaseService(),
             if (shouldReadChapterTitle) {
                 if (usePreparedPlaybackQueue) {
                     preparedPlaybackQueue =
-                        preparedPlaybackQueue.withChapterTitle(preparedChapter.title)
+                        preparedPlaybackQueue.withChapterTitle(
+                            preparedChapter.title,
+                            ReadAloudPlaybackQueue.narratorVoiceOf(preparedSpeechPlan),
+                        )
                     preparedPlaybackCursor = ReadAloudPlaybackCursor(0, 0)
                     preparedContentList = preparedPlaybackQueue.cues.map { it.text }
                     preparedContentChapterPositions = preparedPlaybackQueue.cues.map { cue ->

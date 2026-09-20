@@ -13,6 +13,7 @@ import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlin.concurrent.withLock
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import java.io.File
@@ -127,6 +128,15 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
+        // 同一插件引擎串行合成：并发会互相覆盖 engine.source / 抢占异步流（实测 duihuaA01 偶发 No data written）
+        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+    }
+
+    private fun synthesizeLocked(
+        engine: TtsPluginEngineV2,
+        found: TtsConfigStore.FoundConfig,
+        text: String,
+    ): SynthOutcome {
         // 注入插件特殊参数（source.data）与音频参数，插件侧经 ttsrv.tts.data / .speed 等读取
         engine.source = PluginTtsSource(
             locale = found.locale,

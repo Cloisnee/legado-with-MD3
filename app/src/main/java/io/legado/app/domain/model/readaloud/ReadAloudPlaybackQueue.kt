@@ -80,7 +80,10 @@ class ReadAloudPlaybackQueue private constructor(
         (cursor.cueIndex + 1).takeIf { it in cues.indices }
             ?.let { ReadAloudPlaybackCursor(it, 0) }
 
-    fun withChapterTitle(title: String): ReadAloudPlaybackQueue {
+    fun withChapterTitle(
+        title: String,
+        voice: ReadAloudVoice? = null,
+    ): ReadAloudPlaybackQueue {
         val normalizedTitle = title.trim()
         if (normalizedTitle.isEmpty() || isEmpty || cues.first().isChapterTitle) return this
         val titleCue = ReadAloudPlaybackCue(
@@ -88,7 +91,7 @@ class ReadAloudPlaybackQueue private constructor(
             chapterStart = 0,
             chapterEnd = 0,
             paragraphIndex = -1,
-            voice = null,
+            voice = voice,
             fallbackVoices = emptyList(),
             roleType = SpeechRoleType.Narrator,
             characterId = null,
@@ -99,6 +102,14 @@ class ReadAloudPlaybackQueue private constructor(
 
     companion object {
         val Empty = ReadAloudPlaybackQueue(emptyList())
+
+        /**
+         * 章节标题 cue 的声线：优先取计划里的旁白声线（标题由旁白读），
+         * 无旁白时退首个声线。避免落到「空 engineId/speakerId 的默认路由」导致标题合成必失败。
+         */
+        fun narratorVoiceOf(plan: List<SpeechPlanItem>): ReadAloudVoice? =
+            plan.firstOrNull { it.segment.roleType == SpeechRoleType.Narrator }?.voice
+                ?: plan.firstOrNull()?.voice
 
         fun from(plan: List<SpeechPlanItem>): ReadAloudPlaybackQueue {
             if (plan.isEmpty()) return Empty

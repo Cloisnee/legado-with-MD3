@@ -457,8 +457,10 @@ class HttpReadAloudService : BaseReadAloudService(),
             chapterIndex = chapter.index,
             paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
         )
-        val queue = runCatching { ReadAloudPlaybackQueue.from(plan).withChapterTitle(displayTitle) }
-            .getOrDefault(ReadAloudPlaybackQueue.Empty)
+        val queue = runCatching {
+            ReadAloudPlaybackQueue.from(plan)
+                .withChapterTitle(displayTitle, ReadAloudPlaybackQueue.narratorVoiceOf(plan))
+        }.getOrDefault(ReadAloudPlaybackQueue.Empty)
         val contentList = if (!queue.isEmpty) {
             queue.cues.map { it.text }
         } else {

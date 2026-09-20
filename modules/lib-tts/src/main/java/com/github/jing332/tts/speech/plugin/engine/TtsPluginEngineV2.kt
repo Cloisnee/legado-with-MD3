@@ -28,6 +28,7 @@ import java.io.InputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.lang.IllegalArgumentException
+import java.util.concurrent.locks.ReentrantLock
 
 open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
     companion object {
@@ -151,6 +152,13 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
     }
 
     private val mMutex by lazy { Mutex() } // stream lock
+
+    /**
+     * 合成串行锁：同一插件引擎实例一次只允许一次合成。
+     * 并发调用会互相覆盖 [source] 并抢占插件的异步流（实测同一插件多声线并发时偶发
+     * 「No data written」/空音频）；不同插件是不同实例，仍可并行。
+     */
+    val synthesisLock = ReentrantLock()
     private suspend fun newCallback(ins: JsBridgeInputStream): Scriptable {
         val callback = ins.getCallback(mMutex)
         return withRhinoContext { cx ->
