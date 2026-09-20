@@ -314,7 +314,7 @@ class TtsServerCenterRepository(private val app: Application) {
                     }
                 }
             }
-            gateway().update { it.copy(ttsEngine = value) }
+            gateway().update { it.copy(ttsEngine = value ?: "") }
         }
         withContext(Dispatchers.Main) { ReadAloud.upReadAloudClass() }
         return if (forBook && book != null) "已应用到本书" else "已设为全局"
@@ -956,19 +956,156 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrDefault(false)
     }
 
-    suspend fun exportGroup(groupId: Long): String = withContext(Dispatchers.IO) {
+    /** 导出分组（多选合并为一份文件；数组含多个分组对象，可回导） */
+    suspend fun exportGroups(groupIds: Set<Long>): String = withContext(Dispatchers.IO) {
         runCatching {
+            if (groupIds.isEmpty()) return@runCatching "未选中分组"
             val arr = TtsConfigStore.loadVoices(ctx)
             val out = JSONArray()
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
-                if (item.optJSONObject("group")?.optLong("id") == groupId) out.put(item)
+                if (item.optJSONObject("group")?.optLong("id") in groupIds) out.put(item)
             }
             if (out.length() == 0) return@runCatching "未找到分组"
             val f = File(exportsDir(), "voices_group_${ts()}.json")
             f.writeText(out.toString())
             f.absolutePath
         }.getOrDefault("导出失败")
+    }
+
+    /** 确保分组存在（不存在则新建空组，返回其 id；roleType 为冻结值，空串表示待推断） */
+    suspend fun ensureVoiceGroup(name: String, roleType: String): Long = withContext(Dispatchers.IO) {
+        val n = name.trim()
+        if (n.isEmpty()) return@withContext 0L
+        runCatching {
+            val file = TtsConfigStore.voicesFile(ctx)
+            val arr = if (file.exists()) {
+                JSONArray(file.readText().removePrefix("\uFEFF"))
+            } else {
+                JSONArray()
+            }
+            for (i in 0 until arr.length()) {
+                val grp = arr.optJSONObject(i) ?: continue
+                val gObj = grp.optJSONObject("group") ?: continue
+                if (gObj.optString("name") == n) return@runCatching gObj.optLong("id")
+            }
+            val id = System.currentTimeMillis()
+            arr.put(
+                JSONObject().apply {
+                    put(
+                        "group",
+                        JSONObject().apply {
+                            put("id", id)
+                            put("name", n)
+                            put("order", arr.length())
+                            put("roleType", VoiceBankRoleType.normalize(roleType))
+                        },
+                    )
+                    put("list", JSONArray())
+                },
+            )
+            file.parentFile?.mkdirs()
+            file.writeText(arr.toString())
+            id
+        }.getOrDefault(0L)
+    }
+
+    /**
+     * 移动条目到目标分组（可同时改二级分组）：从原组摘除 → 追加到目标组末尾；
+     * 目标组不存在则新建（roleType 按组名+条目标签推断）；被移空的原组自动清理。
+     * keys 支持 g{gid}_e{id} / e_{id} / k_{ruleId}|{tag} 三种形态（同列表 key 口径）。
+     */
+    suspend fun moveEntriesToGroup(
+        keys: Set<String>,
+        targetGroupName: String,
+        categoryPath: String,
+    ): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val name = targetGroupName.trim()
+        if (name.isEmpty()) return@withContext 0 to "目标分组为空"
+        if (keys.isEmpty()) return@withContext 0 to "未选中条目"
+        runCatching {
+            val file = TtsConfigStore.voicesFile(ctx)
+            val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
+            val moved = ArrayList<JSONObject>()
+            val touched = HashSet<Long>()
+            for (gi in 0 until arr.length()) {
+                val grp = arr.optJSONObject(gi) ?: continue
+                val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
+                val list = grp.optJSONArray("list") ?: continue
+                val kept = JSONArray()
+                for (i in 0 until list.length()) {
+                    val e = list.optJSONObject(i) ?: continue
+                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
+                    val key = when {
+                        e.optLong("groupId") != 0L && e.optLong("id") != 0L ->
+                            "g${e.optLong("groupId")}_e${e.optLong("id")}"
+                        e.optLong("id") != 0L -> "e_${e.optLong("id")}"
+                        else -> "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                    }
+                    if (key in keys) {
+                        moved.add(JSONObject(e.toString()))
+                        touched.add(gid)
+                    } else {
+                        kept.put(e)
+                    }
+                }
+                grp.put("list", kept)
+            }
+            if (moved.isEmpty()) return@runCatching 0 to "未找到可移动的条目"
+            // 找/建目标组
+            var target: JSONObject? = null
+            var targetId = 0L
+            for (gi in 0 until arr.length()) {
+                val grp = arr.optJSONObject(gi) ?: continue
+                val gObj = grp.optJSONObject("group") ?: continue
+                if (gObj.optString("name") == name) {
+                    target = grp
+                    targetId = gObj.optLong("id")
+                    break
+                }
+            }
+            val tGrp: JSONObject
+            if (target == null) {
+                val tags = moved.mapNotNull {
+                    it.optJSONObject("config")?.optJSONObject("speechRule")
+                        ?.optString("tag")?.takeIf { t -> t.isNotBlank() }
+                }
+                targetId = System.currentTimeMillis()
+                tGrp = JSONObject().apply {
+                    put(
+                        "group",
+                        JSONObject().apply {
+                            put("id", targetId)
+                            put("name", name)
+                            put("order", arr.length())
+                            put("roleType", VoiceBankRoleType.infer(name, tags))
+                        },
+                    )
+                    put("list", JSONArray())
+                }
+                arr.put(tGrp)
+            } else {
+                tGrp = target
+            }
+            val tList = tGrp.optJSONArray("list") ?: JSONArray().also { tGrp.put("list", it) }
+            moved.forEach { e ->
+                e.put("groupId", targetId)
+                e.put("categoryPath", categoryPath)
+                tList.put(e)
+            }
+            // 仅清理「被移空」的原组（其它空组不动）
+            val pruned = JSONArray()
+            for (gi in 0 until arr.length()) {
+                val grp = arr.optJSONObject(gi) ?: continue
+                val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
+                val list = grp.optJSONArray("list")
+                if (gid in touched && (list == null || list.length() == 0)) continue
+                pruned.put(grp)
+            }
+            file.parentFile?.mkdirs()
+            file.writeText(pruned.toString())
+            moved.size to "已移动 ${moved.size} 条到「$name」"
+        }.getOrElse { 0 to "移动失败：${it.message ?: it.javaClass.simpleName}" }
     }
 
     /** 精确试听：按 (groupId, entryId) 定位条目 → 直连其插件/声音/参数合成（避免同 tag 多条串声） */
@@ -1253,34 +1390,6 @@ class TtsServerCenterRepository(private val app: Application) {
             }
             hit
         }.getOrDefault(false)
-    }
-
-    suspend fun exportEntries(keys: Set<String>): String = withContext(Dispatchers.IO) {
-        runCatching {
-            val arr = TtsConfigStore.loadVoices(ctx)
-            val out = JSONArray()
-            for (gi in 0 until arr.length()) {
-                val grp = arr.optJSONObject(gi) ?: continue
-                val list = grp.optJSONArray("list") ?: continue
-                val sel = JSONArray()
-                for (i in 0 until list.length()) {
-                    val e = list.optJSONObject(i) ?: continue
-                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                    val key = "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                    if (key in keys) sel.put(e)
-                }
-                if (sel.length() > 0) {
-                    out.put(JSONObject().apply {
-                        put("group", grp.optJSONObject("group") ?: JSONObject())
-                        put("list", sel)
-                    })
-                }
-            }
-            if (out.length() == 0) return@runCatching "未选中任何条目"
-            val f = File(exportsDir(), "voices_selected_${ts()}.json")
-            f.writeText(out.toString())
-            f.absolutePath
-        }.getOrDefault("导出失败")
     }
 
     // ---------------- 条目排序（分类内拖动 / 置顶置底） ----------------

@@ -267,8 +267,6 @@ data class ReadBookUiState(
     // 正文编辑域状态见 ContentEditUiState —— 由 ReadContentEditDelegate 独立持有
     val preDownloadNum: Int = 10,
     val preSynthesisConcurrency: Int = 3,
-    val ttsSynthTimeoutSec: Int = 30,
-    val ttsMaxRetry: Int = 5,
     val audioCacheCleanTime: Int = 0,
     // Read aloud config
     val readAloudIgnoreAudioFocus: Boolean = false,
@@ -724,10 +722,6 @@ sealed interface ReadBookIntent {
     data class ApplyPreSynthesisConcurrency(val value: Int) : ReadBookIntent
     data class ApplyAudioCacheCleanTime(val value: Int) : ReadBookIntent
     data class ApplyParagraphInterval(val value: Int) : ReadBookIntent
-    data object OpenTtsSynthTimeoutPicker : ReadBookIntent
-    data object OpenTtsMaxRetryPicker : ReadBookIntent
-    data class ApplyTtsSynthTimeout(val value: Int) : ReadBookIntent
-    data class ApplyTtsMaxRetry(val value: Int) : ReadBookIntent
     data class SetReadAloudIgnoreAudioFocus(val value: Boolean) : ReadBookIntent
     data class SetReadAloudPauseOnPhoneCall(val value: Boolean) : ReadBookIntent
     data class SetReadAloudWakeLock(val value: Boolean) : ReadBookIntent
@@ -957,8 +951,6 @@ sealed interface ReadBookSheet {
     data object PreSynthesisConcurrencyConfig : ReadBookSheet
     data object AudioCacheCleanConfig : ReadBookSheet
     data object ParagraphIntervalConfig : ReadBookSheet
-    data object TtsSynthTimeoutConfig : ReadBookSheet
-    data object TtsMaxRetryConfig : ReadBookSheet
     data object ClickActionConfig : ReadBookSheet
     data object PageKeyConfig : ReadBookSheet
     data object InfoConfig : ReadBookSheet

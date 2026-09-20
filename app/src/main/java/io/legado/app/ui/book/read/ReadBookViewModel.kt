@@ -1209,10 +1209,6 @@ class ReadBookViewModel(
                 readAloudDelegate.openParagraphIntervalPicker()
             is ReadBookIntent.OpenCacheCleanTimePicker ->
                 readAloudDelegate.openCacheCleanTimePicker()
-            is ReadBookIntent.OpenTtsSynthTimeoutPicker ->
-                readAloudDelegate.openTtsSynthTimeoutPicker()
-            is ReadBookIntent.OpenTtsMaxRetryPicker ->
-                readAloudDelegate.openTtsMaxRetryPicker()
             is ReadBookIntent.ApplyPreDownloadNum ->
                 readAloudDelegate.applyPreDownloadNum(intent.value)
             is ReadBookIntent.ApplyPreSynthesisConcurrency ->
@@ -1221,10 +1217,6 @@ class ReadBookViewModel(
                 readAloudDelegate.applyAudioCacheCleanTime(intent.value)
             is ReadBookIntent.ApplyParagraphInterval ->
                 readAloudDelegate.applyParagraphInterval(intent.value)
-            is ReadBookIntent.ApplyTtsSynthTimeout ->
-                readAloudDelegate.applyTtsSynthTimeout(intent.value)
-            is ReadBookIntent.ApplyTtsMaxRetry ->
-                readAloudDelegate.applyTtsMaxRetry(intent.value)
             is ReadBookIntent.SetReadAloudIgnoreAudioFocus ->
                 readAloudDelegate.setIgnoreAudioFocus(intent.value)
             is ReadBookIntent.SetReadAloudPauseOnPhoneCall ->

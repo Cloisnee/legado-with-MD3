@@ -10,6 +10,7 @@ import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.HttpTTS
+import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.data.repository.UploadRepository
 import io.legado.app.domain.gateway.CloudTtsEngineGateway
 import io.legado.app.domain.gateway.HttpTtsEngineGateway
@@ -803,7 +804,7 @@ class CloudTtsViewModel(
                     }
                 }
             }
-            readAloudSettingsGateway.update { it.copy(ttsEngine = value) }
+            readAloudSettingsGateway.update { it.copy(ttsEngine = value ?: "") }
             bookEngineValue = null
         }
         ReadAloud.upReadAloudClass()
@@ -829,7 +830,9 @@ class CloudTtsViewModel(
         val id = engineId.toLongOrNull() ?: return@launch
         withContext(Dispatchers.IO) { appDb.httpTTSDao.get(id)?.let(appDb.httpTTSDao::delete) }
         if (isDefaultEngine(ReadAloudVoice.ENGINE_HTTP, engineId)) {
-            readAloudSettingsGateway.update { it.copy(ttsEngine = null) }
+            readAloudSettingsGateway.update {
+                it.copy(ttsEngine = TtsServerCenterRepository.BUILTIN_ENGINE_JSON)
+            }
             ReadAloud.upReadAloudClass()
         }
     }
@@ -968,7 +971,9 @@ class CloudTtsViewModel(
         voices.filter { it.engineId == id }.forEach { voiceGateway.deleteVoice(it) }
         engines.firstOrNull { it.id == id }?.let { engineGateway.delete(it) }
         if (isDefaultEngine(ReadAloudVoice.ENGINE_CLOUD, id)) {
-            readAloudSettingsGateway.update { it.copy(ttsEngine = null) }
+            readAloudSettingsGateway.update {
+                it.copy(ttsEngine = TtsServerCenterRepository.BUILTIN_ENGINE_JSON)
+            }
             ReadAloud.upReadAloudClass()
         }
     }
@@ -999,7 +1004,9 @@ class CloudTtsViewModel(
         if (voice != null && selection?.engineType == voice.engineType &&
             selection.engineId == voice.engineId && selection.speakerId == voice.speakerId
         ) {
-            readAloudSettingsGateway.update { it.copy(ttsEngine = null) }
+            readAloudSettingsGateway.update {
+                it.copy(ttsEngine = TtsServerCenterRepository.BUILTIN_ENGINE_JSON)
+            }
             ReadAloud.upReadAloudClass()
             refreshEngineSelection()
         }

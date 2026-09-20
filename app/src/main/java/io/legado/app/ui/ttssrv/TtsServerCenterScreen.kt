@@ -125,6 +125,9 @@ private sealed interface CenterSheet {
     data object ManualImport : CenterSheet
 }
 
+/** 「新增分组」输入框的目标上下文（新建条目 / 编辑条目 / 移动声线 共用一套弹窗） */
+private enum class GroupNameDlgTarget { NewEntryL1, NewEntryL2, EditL1, EditL2, MoveL1, MoveL2 }
+
 private sealed interface PickerPurpose {
     data object Audition : PickerPurpose
 }
@@ -246,11 +249,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voicePickerSheet by remember { mutableStateOf(false) }
     var voiceQuery by remember { mutableStateOf("") }
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
-    var grpDlg by remember { mutableStateOf(false) }
-    var grpInput by remember { mutableStateOf("") }
+    var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
+    var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
-    var grp2Dlg by remember { mutableStateOf(false) }
-    var grp2Input by remember { mutableStateOf("") }
     var pluginUiEngine by remember { mutableStateOf<TtsPluginUiEngineV2?>(null) }
     var pluginUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
     var pluginUiEmpty by remember { mutableStateOf(true) }
@@ -262,6 +263,15 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var edTag by remember { mutableStateOf("") }
     var edCategory by remember { mutableStateOf("") }
     var edGroup by remember { mutableStateOf("") }
+    var edAssign by remember { mutableStateOf(VoiceBankRoleType.ASSIGN_DIALOG) }
+    var edRoleType by remember { mutableStateOf(VoiceBankRoleType.CORE) }
+    var edGender2 by remember { mutableStateOf("男") }
+    var edAge2 by remember { mutableStateOf("男青年") }
+    var edSlotDirty by remember { mutableStateOf(false) }
+    var moveSheet by remember { mutableStateOf(false) }
+    var moveKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var mvGroup by remember { mutableStateOf("") }
+    var mvCat by remember { mutableStateOf("") }
     var edSpeed by remember { mutableStateOf(1f) }
     var edVolume by remember { mutableStateOf(1f) }
     var edPitch by remember { mutableStateOf(1f) }
@@ -302,6 +312,37 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         else -> "k_${e.tagRuleId}|${e.tag}"
     }
 
+    /** 拖选回调过滤：仅保留条目 key（g*_e* / e_* / k_*），剔除组头（纯数字）与二级分组（c_*）等行 key */
+    fun isEntrySelKey(k: String): Boolean =
+        k.startsWith("g") || k.startsWith("e_") || k.startsWith("k_")
+
+    // ---- 编辑条目：从现有标签反推 音色分配/类型/性别/年龄（编辑弹窗初始化与保存重命名用） ----
+    fun deriveEditAssign(tag: String): String =
+        VoiceBankRoleType.fromTag(tag)?.let(VoiceBankRoleType::assignSlotOf)
+            ?: VoiceBankRoleType.ASSIGN_DIALOG
+
+    fun deriveEditRole(tag: String): String =
+        VoiceBankRoleType.fromTag(tag)?.takeIf { it in VoiceBankRoleType.DIALOG_ROLE_TYPES }
+            ?: VoiceBankRoleType.CORE
+
+    fun deriveEditGender(tag: String): String =
+        if (tag.startsWith("duihuaB") || tag.contains("女")) "女" else "男"
+
+    fun deriveEditAge(tag: String, role: String, gender: String): String {
+        if (role == VoiceBankRoleType.SPECIAL) return "系统"
+        return when {
+            tag.contains("童") || tag.contains("幼") || tag.contains("婴") ->
+                if (gender == "女") "女童" else "男童"
+            tag.contains("老年") -> if (gender == "女") "女老年" else "男老年"
+            tag.contains("中年") -> if (gender == "女") "女中年" else "男中年"
+            tag.contains("少年") || tag.contains("少女") ->
+                if (gender == "女") "少女" else "少年"
+            tag.contains("青年") || tag.contains("轻") ->
+                if (gender == "女") "女青年" else "男青年"
+            else -> if (gender == "女") "女青年" else "男青年"
+        }
+    }
+
     fun uniqueEntryList(src: List<EntryRow>): List<EntryRow> {
         val seen = HashSet<String>()
         return src.filter { seen.add(entryKeyOf(it)) }
@@ -337,10 +378,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         selGroupNames = gSet
         val cSet = LinkedHashSet<String>()
         groups.forEach { g ->
-            g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }.forEach { (cat, list) ->
-                val keys = list.map { entryKeyOf(it) }
-                if (keys.isNotEmpty() && keys.all { it in selEntries }) cSet.add("${groupKeyOf(g)}|$cat")
-            }
+            g.entries.filter { it.categoryPath.isNotBlank() }
+                .groupBy { it.categoryPath.trim() }
+                .forEach { (cat, list) ->
+                    val keys = list.map { entryKeyOf(it) }
+                    if (keys.isNotEmpty() && keys.all { it in selEntries }) {
+                        cSet.add("${groupKeyOf(g)}|$cat")
+                    }
+                }
         }
         selCatKeys = cSet
     }
@@ -716,10 +761,37 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     } else {
         buildList {
-            add(ActionItem("导出所选") { scope.launch {
-                detailTitle = "导出完成（所选条目）"
-                detailText = repo.exportEntries(selEntries)
-            } })
+            // 组级操作：仅当上下文分组的「整组或某个二级分组」处于全选态时展示（避免陈旧上下文）
+            val g = selGroupContext?.takeIf { key ->
+                key in selGroupNames || selCatKeys.any { it.startsWith("$key|") }
+            }
+            if (g != null) {
+                add(ActionItem("导出分组") { scope.launch {
+                    // 多选分组：合并为一份文件导出（含所选全部分组）
+                    val ids = (selGroupNames.mapNotNull { it.toLongOrNull() } +
+                            listOfNotNull(g.toLongOrNull())).toSet()
+                    detailTitle = "导出完成（分组）"
+                    detailText = repo.exportGroups(ids)
+                } })
+                add(ActionItem("重命名分组") {
+                    renameGroupText = groupNameOfKey(g)
+                    renameGroupTarget = g
+                })
+                add(ActionItem("重置池类型") { scope.launch {
+                    val ok = repo.resetGroupRoleType(g.toLongOrNull() ?: return@launch)
+                    context.toastOnUi(
+                        if (ok) "已按组内首个声线重新推断池类型" else "重置失败"
+                    )
+                    reload()
+                } })
+            } else if (selEntries.isNotEmpty()) {
+                add(ActionItem("移动声线") {
+                    moveKeys = selEntries
+                    mvGroup = ""
+                    mvCat = ""
+                    moveSheet = true
+                })
+            }
             add(ActionItem("置顶") { scope.launch {
                 when {
                     selGroupNames.isNotEmpty() ->
@@ -738,23 +810,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 }
                 reload()
             } })
-            val g = selGroupContext
             if (g != null) {
-                add(ActionItem("重命名分组") {
-                    renameGroupText = groupNameOfKey(g)
-                    renameGroupTarget = g
-                })
-                add(ActionItem("导出分组") { scope.launch {
-                    detailTitle = "导出完成（分组）"
-                    detailText = repo.exportGroup(g.toLongOrNull() ?: return@launch)
-                } })
-                add(ActionItem("重置池类型") { scope.launch {
-                    val ok = repo.resetGroupRoleType(g.toLongOrNull() ?: return@launch)
-                    context.toastOnUi(
-                        if (ok) "已按组内首个声线重新推断池类型" else "重置失败"
-                    )
-                    reload()
-                } })
                 add(ActionItem("在此组新建条目") {
                     // 长按进入：一级分组锁定为该组，分配方式随之固定
                     newEntryGroupDefault = groupNameOfKey(g)
@@ -1078,19 +1134,23 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 )
                             }
                             if (collapsedGroups[groupKeyOf(g)] != true) {
-                                val byCat =
-                                    g.entries.groupBy { it.categoryPath.ifBlank { "未分类" } }
-                                byCat.forEach { (cat, list) ->
-                                    val catKey = "${groupKeyOf(g)}|$cat"
-                                    val fresh = list
-                                    val catKeys = fresh.map { entryKeyOf(it) }
-                                    val catAllSel =
-                                        fresh.isNotEmpty() && catKeys.all { it in selEntries }
-                                    item(key = "c_${gi}_$catKey") {
+                                // C6：未设二级分组的条目直接挂一级分组下（不再生成「未分类」节点）
+                                val sections = ArrayList<Pair<String?, List<EntryRow>>>()
+                                val direct = g.entries.filter { it.categoryPath.isBlank() }
+                                if (direct.isNotEmpty()) sections.add(null to direct)
+                                g.entries.filter { it.categoryPath.isNotBlank() }
+                                    .groupBy { it.categoryPath.trim() }
+                                    .forEach { (cat, list) -> sections.add(cat to list) }
+                                sections.forEach { (cat, list) ->
+                                    val isDirect = cat == null
+                                    val catKey = if (isDirect) "" else "${groupKeyOf(g)}|$cat"
+                                    val catKeys = list.map { entryKeyOf(it) }
+                                    if (!isDirect) {
+                                        item(key = "c_${gi}_$catKey") {
                                         val cSel = catKey in selCatKeys
                                         LevelRow(
                                             title = cat,
-                                            subtitle = "共 ${fresh.size} 条",
+                                            subtitle = "共 ${list.size} 条",
                                             arrowExpanded = collapsedCats[catKey] != true,
                                             indent = 16.dp,
                                             selActive = entrySelActive,
@@ -1117,9 +1177,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                                 }
                                             },
                                         )
+                                        }
                                     }
-                                    if (collapsedCats[catKey] != true) {
-                                        items(fresh, key = { entryKeyOf(it) }) { e ->
+                                    if (isDirect || collapsedCats[catKey] != true) {
+                                        items(list, key = { entryKeyOf(it) }) { e ->
                                             LevelRow(
                                                 title = "[${e.tag}] ${e.displayName}",
                                                 subtitle = "${e.voice} · ${pluginNameOf(e.pluginId)}",
@@ -1182,7 +1243,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     items = flat,
                     selectedIds = selEntries,
                     onSelectionChange = { sel ->
-                        selEntries = sel.filter { it.contains("|") }.toSet()
+                        // 仅保留条目 key（组头/二级分组等行 key 会被剔除，避免误清空选择态）
+                        selEntries = sel.filterIsInstance<String>()
+                            .filter { isEntrySelKey(it) }
+                            .toSet()
+                        normalizeSelection()
                     },
                     idProvider = { entryKeyOf(it) },
                     modifier = Modifier
@@ -1430,20 +1495,21 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 NeGroupPickerRow(
                     title = "一级分组",
                     value = neGroup,
-                    placeholder = "点按选择（或新增分组）",
+                    placeholder = "选组或新增",
                     options = groups.map { it.name },
                     description = when {
-                        neGroup.isBlank() -> "选已有分组，或在弹窗底部「新增分组」自定义命名"
-                        targetFrozenRole != null -> "已存在分组「$neGroup」（$targetFrozenRole 池）：分配方式随分组固定"
-                        else -> "新分组：由上方「音色分配」决定池类型"
+                        neGroup.isBlank() -> "未选择"
+                        targetFrozenRole != null -> "已固定「$targetFrozenRole」池"
+                        groups.any { it.name == neGroup.trim() } -> "已存在分组（类型未固定）"
+                        else -> "新分组（类型随「音色分配」）"
                     },
                     onPick = {
                         neGroup = it
                         neCat2 = ""
                     },
                     onCreate = {
-                        grpInput = ""
-                        grpDlg = true
+                        grpNameInput = ""
+                        grpNameDlgTarget = GroupNameDlgTarget.NewEntryL1
                     },
                 )
                 val neCat2Options = groups.firstOrNull { it.name == neGroup.trim() }
@@ -1452,19 +1518,19 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 NeGroupPickerRow(
                     title = "二级分组名（可选）",
                     value = neCat2,
-                    placeholder = "不设（直接放一级分组下）",
+                    placeholder = "选组或新增",
                     options = neCat2Options,
                     emptyOption = "不设二级分组",
                     enabled = neGroup.isNotBlank(),
                     description = if (neGroup.isBlank()) {
                         "请先选择一级分组"
                     } else {
-                        "随一级分组变化（已有 ${neCat2Options.size} 个），也可在底部新增"
+                        "已有 ${neCat2Options.size} 个（可新增）"
                     },
                     onPick = { neCat2 = it },
                     onCreate = {
-                        grp2Input = ""
-                        grp2Dlg = true
+                        grpNameInput = ""
+                        grpNameDlgTarget = GroupNameDlgTarget.NewEntryL2
                     },
                 )
                 // 「对话」档位才需要选池类型；旁白/默认对话的池类型由「音色分配」决定
@@ -1731,51 +1797,52 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 新建条目 · 输入对话框 ----------------
+    // ---------------- 分组名输入对话框（新建条目 / 编辑条目 / 移动声线 共用） ----------------
     AppAlertDialog(
-        show = grpDlg,
-        onDismissRequest = { grpDlg = false },
-        title = "新增一级分组",
+        show = grpNameDlgTarget != null,
+        onDismissRequest = { grpNameDlgTarget = null },
+        title = when (grpNameDlgTarget) {
+            GroupNameDlgTarget.NewEntryL1, GroupNameDlgTarget.EditL1,
+            GroupNameDlgTarget.MoveL1 -> "新增一级分组"
+            else -> "新增二级分组"
+        },
         content = {
             AppTextField(
-                value = grpInput,
-                onValueChange = { grpInput = it },
+                value = grpNameInput,
+                onValueChange = { grpNameInput = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = "一级分组名（不与已有分组重名）",
+                label = when (grpNameDlgTarget) {
+                    GroupNameDlgTarget.NewEntryL1, GroupNameDlgTarget.EditL1,
+                    GroupNameDlgTarget.MoveL1 -> "一级分组名（不与已有分组重名）"
+                    else -> "二级分组名（可留空）"
+                },
             )
         },
         confirmText = "保存",
         onConfirm = {
-            grpDlg = false
-            val t = grpInput.trim()
-            if (t.isNotEmpty()) {
-                neGroup = t
-                neCat2 = ""
+            val t = grpNameInput.trim()
+            when (grpNameDlgTarget) {
+                GroupNameDlgTarget.NewEntryL1 -> if (t.isNotEmpty()) {
+                    neGroup = t
+                    neCat2 = ""
+                }
+                GroupNameDlgTarget.NewEntryL2 -> neCat2 = t
+                GroupNameDlgTarget.EditL1 -> if (t.isNotEmpty()) {
+                    edGroup = t
+                    edCategory = ""
+                }
+                GroupNameDlgTarget.EditL2 -> edCategory = t
+                GroupNameDlgTarget.MoveL1 -> if (t.isNotEmpty()) {
+                    mvGroup = t
+                    mvCat = ""
+                }
+                GroupNameDlgTarget.MoveL2 -> mvCat = t
+                null -> Unit
             }
+            grpNameDlgTarget = null
         },
         dismissText = "取消",
-        onDismiss = { grpDlg = false },
-    )
-
-    AppAlertDialog(
-        show = grp2Dlg,
-        onDismissRequest = { grp2Dlg = false },
-        title = "新增二级分组",
-        content = {
-            AppTextField(
-                value = grp2Input,
-                onValueChange = { grp2Input = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = "二级分组名（可留空）",
-            )
-        },
-        confirmText = "保存",
-        onConfirm = {
-            grp2Dlg = false
-            neCat2 = grp2Input.trim()
-        },
-        dismissText = "取消",
-        onDismiss = { grp2Dlg = false },
+        onDismiss = { grpNameDlgTarget = null },
     )
 
     AppAlertDialog(
@@ -1859,19 +1926,49 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             MediumTonalButton(
                 onClick = {
                     val t = editTarget ?: return@MediumTonalButton
-                    if (edTag.isBlank()) {
+                    val groupName = edGroup.trim()
+                    if (groupName.isBlank()) {
+                        context.toastOnUi("请选择一级分组")
+                        return@MediumTonalButton
+                    }
+                    // 目标分组已固定池类型 → 保存时按该池重命名标签（与新建弹窗的冻结口径一致）
+                    val targetExisting = groups.firstOrNull { it.name == groupName }
+                    val frozen = targetExisting?.roleType?.takeIf { it.isNotBlank() }
+                    val effRole = frozen
+                        ?: VoiceBankRoleType.resolveAssignedRoleType(edAssign, edRoleType)
+                    val needRegen = edSlotDirty ||
+                        (frozen != null && VoiceBankRoleType.fromTag(t.tag) != frozen)
+                    var newTag = edTag.trim()
+                    if (needRegen) {
+                        val prefix = VoiceBankRoleType.tagPrefix(
+                            effRole, edGender2,
+                            if (effRole == VoiceBankRoleType.SPECIAL) "系统" else edAge2,
+                        )
+                        val num0 = Regex("(\\d+)\\s*$").find(t.tag)?.groupValues?.get(1)
+                        var n = num0?.toIntOrNull() ?: 1
+                        val used = (targetExisting?.entries?.map { it.tag } ?: emptyList())
+                            .filter { it != t.tag }
+                            .toMutableSet()
+                        while (n < 100 && (prefix + "%02d".format(n)) in used) n++
+                        newTag = prefix + "%02d".format(n)
+                    }
+                    if (newTag.isBlank()) {
                         context.toastOnUi("标签不能为空")
                         return@MediumTonalButton
                     }
-                    val targetGid = groups.firstOrNull { it.name == edGroup }?.groupId ?: 0L
+                    val newGroupName = groupName
+                    val existingGid = targetExisting?.groupId ?: 0L
+                    val newRoleType = effRole
                     editTarget = null
                     scope.launch {
+                        val targetGid = if (existingGid != 0L) existingGid
+                        else repo.ensureVoiceGroup(newGroupName, newRoleType)
                         val ok = repo.updateVoiceEntry(
                             groupId = t.groupId,
                             entryId = t.id,
                             tag = t.tag,
                             newName = edName.trim(),
-                            newTag = edTag.trim(),
+                            newTag = newTag,
                             newCategoryPath = edCategory.trim(),
                             newGroupId = targetGid,
                             speed = edSpeed,
@@ -1895,25 +1992,130 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         val t = editTarget
         if (t != null) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                SectionHint("— 音色分配 —")
+                SplicedColumnGroup {
+                    val targetFrozenRole = groups.firstOrNull { it.name == edGroup }
+                        ?.roleType?.takeIf { it.isNotBlank() }
+                    if (targetFrozenRole != null) {
+                        TinySettingItem(
+                            title = "音色分配",
+                            description = "目标分组已固定「$targetFrozenRole」池，保存时按该池重命名标签",
+                            trailingContent = {
+                                AppText(VoiceBankRoleType.assignSlotOf(targetFrozenRole))
+                            },
+                            enabled = false,
+                        )
+                    } else {
+                        TinyDropdownSettingItem(
+                            title = "音色分配",
+                            selectedValue = edAssign,
+                            displayEntries = VoiceBankRoleType.ASSIGN_OPTIONS.toTypedArray(),
+                            entryValues = VoiceBankRoleType.ASSIGN_OPTIONS.toTypedArray(),
+                            description = when (edAssign) {
+                                VoiceBankRoleType.NARRATOR -> "旁白：保存时按「旁白NN」重命名标签"
+                                VoiceBankRoleType.DEFAULT_DIALOG -> "默认对话：保存时按 duihuaA/B 重命名标签"
+                                else -> "对话：保存时按「类型+性别+年龄」重命名标签"
+                            },
+                            onValueChange = { v ->
+                                edAssign = v
+                                edSlotDirty = true
+                                if (v == VoiceBankRoleType.ASSIGN_DIALOG &&
+                                    edRoleType !in VoiceBankRoleType.DIALOG_ROLE_TYPES
+                                ) {
+                                    edRoleType = VoiceBankRoleType.CORE
+                                }
+                            },
+                        )
+                        if (edAssign == VoiceBankRoleType.ASSIGN_DIALOG) {
+                            TinyDropdownSettingItem(
+                                title = "类型",
+                                selectedValue = edRoleType,
+                                displayEntries = VoiceBankRoleType.DIALOG_ROLE_TYPES.toTypedArray(),
+                                entryValues = VoiceBankRoleType.DIALOG_ROLE_TYPES.toTypedArray(),
+                                onValueChange = {
+                                    edRoleType = it
+                                    edSlotDirty = true
+                                },
+                            )
+                        }
+                        if (edAssign != VoiceBankRoleType.NARRATOR) {
+                            TinyDropdownSettingItem(
+                                title = "性别",
+                                selectedValue = edGender2,
+                                displayEntries = arrayOf("男", "女"),
+                                entryValues = arrayOf("男", "女"),
+                                onValueChange = { g ->
+                                    edGender2 = g
+                                    edSlotDirty = true
+                                    val ages = if (g == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                                    if (edRoleType != VoiceBankRoleType.SPECIAL && edAge2 !in ages) {
+                                        edAge2 = if (g == "女") "女青年" else "男青年"
+                                    }
+                                },
+                            )
+                        }
+                        if (edAssign == VoiceBankRoleType.ASSIGN_DIALOG) {
+                            TinyDropdownSettingItem(
+                                title = "年龄",
+                                selectedValue = edAge2,
+                                displayEntries = (if (edRoleType == VoiceBankRoleType.SPECIAL) {
+                                    listOf("系统")
+                                } else {
+                                    if (edGender2 == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                                }).toTypedArray(),
+                                entryValues = (if (edRoleType == VoiceBankRoleType.SPECIAL) {
+                                    listOf("系统")
+                                } else {
+                                    if (edGender2 == "女") NE_FEMALE_AGES else NE_MALE_AGES
+                                }).toTypedArray(),
+                                onValueChange = {
+                                    edAge2 = it
+                                    edSlotDirty = true
+                                },
+                            )
+                        }
+                    }
+                }
                 SectionHint("— 音色分组 —")
                 SplicedColumnGroup {
-                    TinyDropdownSettingItem(
-                        title = "分组名",
-                        selectedValue = edGroup,
-                        displayEntries = groups.map { it.name }.toTypedArray(),
-                        entryValues = groups.map { it.name }.toTypedArray(),
-                        onValueChange = { edGroup = it },
-                    )
-                    TinyClickableSettingItem(
-                        title = "二级分组名（categoryPath）",
-                        description = if (edCategory.isBlank()) {
-                            "未填 → 直接放一级分组下"
-                        } else {
-                            edCategory
+                    NeGroupPickerRow(
+                        title = "一级分组",
+                        value = edGroup,
+                        placeholder = "选组或新增",
+                        options = groups.map { it.name },
+                        description = when {
+                            edGroup.isBlank() -> "未选择"
+                            groups.any { it.name == edGroup } -> "已存在分组"
+                            else -> "新分组（类型随「音色分配」）"
                         },
-                        onClick = {
-                            edFieldInput = edCategory
-                            edFieldDlg = "二级分组名"
+                        onPick = {
+                            edGroup = it
+                            edCategory = ""
+                        },
+                        onCreate = {
+                            grpNameInput = ""
+                            grpNameDlgTarget = GroupNameDlgTarget.EditL1
+                        },
+                    )
+                    val edCatOptions = groups.firstOrNull { it.name == edGroup.trim() }
+                        ?.entries?.map { it.categoryPath.trim() }?.filter { it.isNotEmpty() }
+                        ?.distinct().orEmpty()
+                    NeGroupPickerRow(
+                        title = "二级分组名（可选）",
+                        value = edCategory,
+                        placeholder = "选组或新增",
+                        options = edCatOptions,
+                        emptyOption = "不设二级分组",
+                        enabled = edGroup.isNotBlank(),
+                        description = if (edGroup.isBlank()) {
+                            "请先选择一级分组"
+                        } else {
+                            "已有 ${edCatOptions.size} 个（可新增）"
+                        },
+                        onPick = { edCategory = it },
+                        onCreate = {
+                            grpNameInput = ""
+                            grpNameDlgTarget = GroupNameDlgTarget.EditL2
                         },
                     )
                 }
@@ -1977,6 +2179,85 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    // ---------------- 移动声线（长按多选 → 三个点 → 移动声线） ----------------
+    AppModalBottomSheet(
+        show = moveSheet,
+        onDismissRequest = { moveSheet = false },
+        title = "移动声线：${moveKeys.size} 条",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val name = mvGroup.trim()
+                    if (name.isBlank()) {
+                        context.toastOnUi("请选择目标分组")
+                    } else {
+                        val keys = moveKeys
+                        val cat = mvCat.trim()
+                        moveSheet = false
+                        scope.launch {
+                            val (count, msg) = repo.moveEntriesToGroup(keys, name, cat)
+                            context.toastOnUi(msg)
+                            if (count > 0) {
+                                selEntries = emptySet()
+                                selGroupContext = null
+                                normalizeSelection()
+                            }
+                            reload()
+                        }
+                    }
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "移动",
+            )
+        },
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SectionHint("— 移动到 —")
+            SplicedColumnGroup {
+                NeGroupPickerRow(
+                    title = "一级分组",
+                    value = mvGroup,
+                    placeholder = "选组或新增",
+                    options = groups.map { it.name },
+                    description = when {
+                        mvGroup.isBlank() -> "未选择"
+                        groups.any { it.name == mvGroup } -> "已存在分组"
+                        else -> "新分组（类型按组名/标签推断）"
+                    },
+                    onPick = {
+                        mvGroup = it
+                        mvCat = ""
+                    },
+                    onCreate = {
+                        grpNameInput = ""
+                        grpNameDlgTarget = GroupNameDlgTarget.MoveL1
+                    },
+                )
+                val mvCatOptions = groups.firstOrNull { it.name == mvGroup.trim() }
+                    ?.entries?.map { it.categoryPath.trim() }?.filter { it.isNotEmpty() }
+                    ?.distinct().orEmpty()
+                NeGroupPickerRow(
+                    title = "二级分组名（可选）",
+                    value = mvCat,
+                    placeholder = "选组或新增",
+                    options = mvCatOptions,
+                    emptyOption = "不设二级分组",
+                    enabled = mvGroup.isNotBlank(),
+                    description = if (mvGroup.isBlank()) {
+                        "请先选择一级分组"
+                    } else {
+                        "已有 ${mvCatOptions.size} 个（可新增）"
+                    },
+                    onPick = { mvCat = it },
+                    onCreate = {
+                        grpNameInput = ""
+                        grpNameDlgTarget = GroupNameDlgTarget.MoveL2
+                    },
+                )
             }
         }
     }
@@ -2091,6 +2372,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     edTag = e.tag
                     edCategory = e.categoryPath
                     edGroup = groups.firstOrNull { it.groupId == e.groupId }?.name ?: ""
+                    val dRole = deriveEditRole(e.tag)
+                    val dGender = deriveEditGender(e.tag)
+                    edAssign = deriveEditAssign(e.tag)
+                    edRoleType = dRole
+                    edGender2 = dGender
+                    edAge2 = deriveEditAge(e.tag, dRole, dGender)
+                    edSlotDirty = false
                     edSpeed = if (e.speed > 0f) e.speed else 0f
                     edVolume = if (e.volume > 0f) e.volume else 0f
                     edPitch = if (e.pitch > 0f) e.pitch else 0f
@@ -2274,7 +2562,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             scope.launch {
                 repo.deleteHttpTts(h.id)
                 if (engineValue == h.id.toString()) {
-                    repo.applyEngine(null, forBook = false)
+                    repo.applyEngine(
+                        TtsServerCenterRepository.BUILTIN_ENGINE_JSON,
+                        forBook = false,
+                    )
                 }
                 context.toastOnUi("已删除")
                 reload()

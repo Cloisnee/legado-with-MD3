@@ -97,8 +97,6 @@ class ReadAloudDelegate(
                         preDownloadNum = host.preDownloadNum,
                         audioCacheCleanTime = prefs.audioCacheCleanTime,
                         readAloudParagraphInterval = prefs.ttsParagraphInterval,
-                        ttsSynthTimeoutSec = prefs.ttsSynthTimeoutSec,
-                        ttsMaxRetry = prefs.ttsMaxRetry,
                     )
                 }
             }
@@ -315,24 +313,6 @@ class ReadAloudDelegate(
         }
     }
 
-    fun openTtsSynthTimeoutPicker() {
-        host.updateState {
-            it.copy(
-                ttsSynthTimeoutSec = readAloudSettingsRepository.currentSettings.ttsSynthTimeoutSec,
-                activeSheet = ReadBookSheet.TtsSynthTimeoutConfig,
-            )
-        }
-    }
-
-    fun openTtsMaxRetryPicker() {
-        host.updateState {
-            it.copy(
-                ttsMaxRetry = readAloudSettingsRepository.currentSettings.ttsMaxRetry,
-                activeSheet = ReadBookSheet.TtsMaxRetryConfig,
-            )
-        }
-    }
-
     fun applyPreDownloadNum(value: Int) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             readSettingsRepository.setPreDownloadNum(value)
@@ -359,26 +339,6 @@ class ReadAloudDelegate(
         }
         host.updateState {
             it.copy(audioCacheCleanTime = value, activeSheet = ReadBookSheet.ReadAloudConfig)
-        }
-    }
-
-    fun applyTtsSynthTimeout(value: Int) {
-        val v = value.coerceIn(5, 120)
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            readAloudSettingsRepository.update { it.copy(ttsSynthTimeoutSec = v) }
-        }
-        host.updateState {
-            it.copy(ttsSynthTimeoutSec = v, activeSheet = ReadBookSheet.ReadAloudConfig)
-        }
-    }
-
-    fun applyTtsMaxRetry(value: Int) {
-        val v = value.coerceIn(0, 10)
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            readAloudSettingsRepository.update { it.copy(ttsMaxRetry = v) }
-        }
-        host.updateState {
-            it.copy(ttsMaxRetry = v, activeSheet = ReadBookSheet.ReadAloudConfig)
         }
     }
 

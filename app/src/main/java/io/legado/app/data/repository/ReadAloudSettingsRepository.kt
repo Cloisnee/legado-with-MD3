@@ -42,7 +42,8 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
 }
 
 internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSettings(
-    ttsEngine = compatDsString(PreferKey.ttsEngine),
+    ttsEngine = compatDsString(PreferKey.ttsEngine)
+        ?: TtsServerCenterRepository.BUILTIN_ENGINE_JSON,
     ttsParagraphInterval = compatDsValue(ReadAloudKeys.TtsParagraphInterval, 0),
     audioCacheCleanTime = compatDsValue(ReadAloudKeys.AudioCacheCleanTime, 0),
     ignoreAudioFocus = compatDsValue(ReadAloudKeys.IgnoreAudioFocus, false),

@@ -439,36 +439,6 @@ fun ReadBookScreen(
         },
     )
     ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.TtsSynthTimeoutConfig,
-        title = stringResource(R.string.tts_synth_timeout),
-        description = stringResource(
-            R.string.tts_synth_timeout_summary,
-            state.ttsSynthTimeoutSec
-        ),
-        value = state.ttsSynthTimeoutSec,
-        defaultValue = 30,
-        valueRange = 5f..120f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyTtsSynthTimeout(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
-    ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.TtsMaxRetryConfig,
-        title = stringResource(R.string.tts_max_retry),
-        description = stringResource(
-            R.string.tts_max_retry_summary,
-            state.ttsMaxRetry
-        ),
-        value = state.ttsMaxRetry,
-        defaultValue = 5,
-        valueRange = 0f..10f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyTtsMaxRetry(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
-    ReadAloudNumberConfigSheet(
         show = state.activeSheet is ReadBookSheet.ParagraphIntervalConfig,
         title = stringResource(R.string.tts_paragraph_interval),
         description = stringResource(
