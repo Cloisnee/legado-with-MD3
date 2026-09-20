@@ -173,7 +173,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         com.github.jing332.tts.readaloud.TtsServerSynthesizer(this)
     }
     // [B8] 朗读音频缓存：持久化于 <数据根>/data/audio/<书名>/<章>/<条目>_<hash>.mp3（不再写索引文件）
-    private val audioCache by lazy { get(ReadAloudAudioCacheRepository::class.java) }
+    private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
     // 合成失败时的临时静音占位（不进缓存目录，避免「失败」被当成「已合成」）
     private val silentFile by lazy {
         File(cacheDir, "httpTTS_silent/silent.mp3").apply {

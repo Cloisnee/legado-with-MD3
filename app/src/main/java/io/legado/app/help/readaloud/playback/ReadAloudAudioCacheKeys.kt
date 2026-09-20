@@ -47,6 +47,10 @@ object ReadAloudAudioCacheKeys {
         else -> httpTts?.url.orEmpty()
     }
 
+    /** 源级语速刻度（0..80，1 倍速 = 5）：与 HttpReadAloudService.speechRate 保持一致 */
+    fun speechRateScale(followSys: Boolean, ttsSpeechRate: Int): Int =
+        (if (followSys) 5 else ttsSpeechRate) + 5
+
     fun contentHash(voiceKey: String, speechRate: Int, text: String): String =
         MD5Utils.md5Encode16("$voiceKey-|-$speechRate-|-$text")
 
