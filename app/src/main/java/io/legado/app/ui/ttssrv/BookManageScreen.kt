@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
@@ -311,7 +310,7 @@ fun BookManageScreen(
                                 .padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(modifier = Modifier.weight(1.5f)) {
+                            Box(modifier = Modifier.weight(2f)) {
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
                                     cornerRadius = 12.dp,
@@ -369,6 +368,13 @@ fun BookManageScreen(
                                             } else null,
                                         )
                                     }
+                                    RoundDropdownMenuItem(
+                                        text = "删除书籍…",
+                                        onClick = {
+                                            dismiss()
+                                            showDeleteBookSheet = true
+                                        },
+                                    )
                                 }
                             }
                             Box(modifier = Modifier.weight(1f)) {
@@ -431,35 +437,6 @@ fun BookManageScreen(
                                     )
                                 }
                             }
-                            Box(modifier = Modifier.weight(1f)) {
-                                GlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    cornerRadius = 12.dp,
-                                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
-                                    onClick = { showDeleteBookSheet = true },
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            AppText(
-                                                text = "删除书籍",
-                                                style = LegadoTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            AppText(
-                                                text = "清空资产",
-                                                style = LegadoTheme.typography.bodySmall,
-                                                color = LegadoTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -501,72 +478,90 @@ fun BookManageScreen(
                 } else {
                     items(shown, key = { "ln_${it.absIndex}" }) { row ->
                         val displayedSpeaker = pending[row.absIndex] ?: row.speaker
-                        val changed = row.absIndex in pending
                         val selActive = selLines.isNotEmpty()
-                        GlassCard(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 2.dp),
-                            cornerRadius = 10.dp,
-                            containerColor = if (row.absIndex in selLines) {
-                                LegadoTheme.colorScheme.secondaryContainer
-                            } else {
-                                LegadoTheme.colorScheme.surfaceContainer
-                            },
-                            onClick = {
-                                if (row.speaker.isNotEmpty()) {
-                                    selLines = if (row.absIndex in selLines) {
-                                        selLines - row.absIndex
-                                    } else {
-                                        selLines + row.absIndex
-                                    }
-                                }
-                            },
-                            onLongClick = null,
                         ) {
-                            Column(
+                            // 卡片上方独立一行小字：旁白 / 人物名（+情绪异色）
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
+                                AnimatedVisibility(
+                                    visible = selActive,
+                                    enter = fadeIn() + expandHorizontally(),
+                                    exit = fadeOut() + shrinkHorizontally(),
                                 ) {
-                                    AnimatedVisibility(
-                                        visible = selActive,
-                                        enter = fadeIn() + expandHorizontally(),
-                                        exit = fadeOut() + shrinkHorizontally(),
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            AppCheckbox(
-                                                checked = row.absIndex in selLines,
-                                                onCheckedChange = null,
-                                                includeStateSemantics = false,
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                        }
-                                    }
-                                    TagChip(
-                                        text = displayedSpeaker.ifBlank { "—" },
-                                        highlighted = changed,
-                                        onClick = {
-                                            if (row.speaker.isNotEmpty()) {
-                                                tagSearch = ""
-                                                tagPanelFor = listOf(row.absIndex)
-                                            }
-                                        },
-                                    )
-                                    if (row.emotion.isNotBlank()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        AppCheckbox(
+                                            checked = row.absIndex in selLines,
+                                            onCheckedChange = null,
+                                            includeStateSemantics = false,
+                                        )
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        EmoChip(text = row.emotion)
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                AppText(
+                                    text = displayedSpeaker.ifBlank { "旁白" },
+                                    style = if (displayedSpeaker.isBlank()) {
+                                        LegadoTheme.typography.labelSmall
+                                    } else {
+                                        LegadoTheme.typography.labelSmallEmphasized
+                                    },
+                                    color = if (displayedSpeaker.isBlank()) {
+                                        LegadoTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        LegadoTheme.colorScheme.primary
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable(
+                                        enabled = row.speaker.isNotEmpty(),
+                                    ) {
+                                        tagSearch = ""
+                                        tagPanelFor = listOf(row.absIndex)
+                                    },
+                                )
+                                if (row.emotion.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    AppText(
+                                        text = row.emotion,
+                                        style = LegadoTheme.typography.labelSmall,
+                                        color = LegadoTheme.colorScheme.tertiary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 10.dp,
+                                containerColor = if (row.absIndex in selLines) {
+                                    LegadoTheme.colorScheme.secondaryContainer
+                                } else {
+                                    LegadoTheme.colorScheme.surfaceContainer
+                                },
+                                onClick = {
+                                    if (row.speaker.isNotEmpty()) {
+                                        selLines = if (row.absIndex in selLines) {
+                                            selLines - row.absIndex
+                                        } else {
+                                            selLines + row.absIndex
+                                        }
+                                    }
+                                },
+                                onLongClick = null,
+                            ) {
                                 AppText(
                                     text = row.text,
                                     style = LegadoTheme.typography.bodySmall,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
                                 )
                             }
                         }
@@ -929,57 +924,6 @@ fun BookManageScreen(
 }
 
 // ---------------- 组件 ----------------
-
-@Composable
-private fun TagChip(text: String, highlighted: Boolean, onClick: () -> Unit) {
-    val bg = if (highlighted) {
-        LegadoTheme.colorScheme.primary
-    } else {
-        LegadoTheme.colorScheme.primary.copy(alpha = 0.12f)
-    }
-    val fg = if (highlighted) {
-        LegadoTheme.colorScheme.onPrimary
-    } else {
-        LegadoTheme.colorScheme.primary
-    }
-    Box(modifier = Modifier.widthIn(max = 200.dp)) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(bg)
-                .clickable(onClick = onClick)
-                .padding(horizontal = 8.dp, vertical = 5.dp),
-        ) {
-            AppText(
-                text = text,
-                style = LegadoTheme.typography.labelSmall,
-                color = fg,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmoChip(text: String) {
-    Box(modifier = Modifier.widthIn(max = 140.dp)) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(LegadoTheme.colorScheme.tertiaryContainer)
-                .padding(horizontal = 8.dp, vertical = 5.dp),
-        ) {
-            AppText(
-                text = text,
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onTertiaryContainer,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
 
 @Composable
 private fun SmallChoiceRow(
