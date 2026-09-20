@@ -68,6 +68,11 @@ class PrepareChapterSpeechPlanUseCase(
         }
 
         // ---- 快速链：本地规则 v2 先行（先出声不等 AI） ----
+        // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
+        AppLog.putAudio(
+            "【音频缓存】第${chapterIndex + 1}章 朗读分析未就绪，先用默认声线出声" +
+                "（分析完成后重进本章即切换）"
+        )
         val local = pipeline.quickLocalSegments(paragraphs)
         return buildSpeechPlan(
             bookUrl = bookUrl,

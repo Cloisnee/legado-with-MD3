@@ -32,14 +32,17 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.HttpTTS
+import io.legado.app.domain.gateway.ChapterSpeechGateway
 import io.legado.app.domain.gateway.CloudTtsEngineGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadSettingsGateway
+import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackQueue
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechEngineRoute
+import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.SpeechVoiceRouter
 import io.legado.app.domain.model.readaloud.SystemTtsVoiceConfig
@@ -56,6 +59,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
@@ -174,6 +178,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
     // [B8] 朗读音频缓存：持久化于 <数据根>/data/audio/<书名>/<章>/<条目>_<hash>.mp3（不再写索引文件）
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
+    private val chapterSpeechGateway by lazy { GlobalContext.get().get<ChapterSpeechGateway>() }
     // 合成失败时的临时静音占位（不进缓存目录，避免「失败」被当成「已合成」）
     private val silentFile by lazy {
         File(cacheDir, "httpTTS_silent/silent.mp3").apply {
@@ -476,6 +481,17 @@ class HttpReadAloudService : BaseReadAloudService(),
             semanticContent = source.semanticContent,
             pageStarts = ReadBook.readerPagination(chapter.index)?.pageStarts.orEmpty(),
         )
+        // 等该章朗读分析就绪再预合成：分析未就绪时会退化成「本地规则 + 默认声线」，
+        // 白合成且污染缓存（用户实测：新章立刻用 duihuaA01 合成）
+        if (!waitForChapterAnalysis(
+                bookUrl = book.bookUrl,
+                chapterIndex = chapter.index,
+                paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
+            )
+        ) {
+            AppLog.putAudio("【音频缓存】跳过预合成 第${chapter.index + 1}章（朗读分析未就绪）")
+            return null
+        }
         val plan = buildSpeechPlan(
             bookUrl = book.bookUrl,
             chapterIndex = chapter.index,
@@ -493,6 +509,35 @@ class HttpReadAloudService : BaseReadAloudService(),
                         .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
         }
         return PreDownloadChapter(book.name, chapter.index, displayTitle, queue, contentList)
+    }
+
+    /**
+     * 等该章朗读分析就绪（DB 里有同 contentHash 的 V3 分析），最长 [timeoutMs]。
+     * 就绪前预合成会用「默认声线」产出无用缓存，故宁可等。
+     */
+    private suspend fun waitForChapterAnalysis(
+        bookUrl: String,
+        chapterIndex: Int,
+        paragraphs: List<CanonicalSpeechParagraph>,
+        timeoutMs: Long = 180_000L,
+    ): Boolean {
+        if (bookUrl.isEmpty() || paragraphs.isEmpty()) return false
+        val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val ready = runCatching {
+                chapterSpeechGateway.getAnalysis(
+                    bookUrl = bookUrl,
+                    chapterIndex = chapterIndex,
+                    contentHash = contentHash,
+                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
+                ) != null
+            }.getOrDefault(false)
+            if (ready) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            currentCoroutineContext().ensureActive()
+            delay(3_000)
+        }
     }
 
     private suspend fun preDownloadAudios(httpTts: HttpTTS) {
