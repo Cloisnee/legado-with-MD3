@@ -767,6 +767,7 @@ fun MainActivity.mainEntryProvider(
                     it,
                     AudioPlay.durChapter,
                     BookType.audio,
+                    result = AudioPlayService.url,
                 ) {
                     sendToClip(AudioPlayService.url)
                 }
