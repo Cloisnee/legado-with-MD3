@@ -154,6 +154,7 @@ import io.legado.app.domain.usecase.DeleteBooksUseCase
 import io.legado.app.domain.usecase.ExploreBooksUseCase
 import io.legado.app.domain.usecase.ExploreKindUiUseCase
 import io.legado.app.domain.usecase.ExportBookshelfUseCase
+import io.legado.app.domain.usecase.FindBookshelfConflictUseCase
 import io.legado.app.domain.usecase.GetChapterContentUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.HomeDashboardUseCase
@@ -168,6 +169,7 @@ import io.legado.app.domain.usecase.RefreshTocUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
 import io.legado.app.domain.usecase.RemoveBookGroupAssignmentUseCase
 import io.legado.app.domain.usecase.ResolveBookShelfStateUseCase
+import io.legado.app.domain.usecase.ResolveBookshelfConflictUseCase
 import io.legado.app.domain.usecase.SaveMarkingUseCase
 import io.legado.app.domain.usecase.SaveSearchBooksUseCase
 import io.legado.app.domain.usecase.SearchBooksUseCase
@@ -399,6 +401,8 @@ val appModule = module {
     singleOf(::RefreshTocUseCase)
     singleOf(::AddBookUseCase)
     singleOf(::AddToBookshelfUseCase)
+    singleOf(::FindBookshelfConflictUseCase)
+    singleOf(::ResolveBookshelfConflictUseCase)
     singleOf(::ImportBookshelfUseCase)
     singleOf(::ExportBookshelfUseCase)
     factory { GetReadRecordOverviewUseCase() }

@@ -21,7 +21,7 @@ object DatabaseMigrations {
             migration_35_36, migration_36_37, migration_37_38, migration_38_39,
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
-            migration_102_103, migration_105_106, migration_106_107,
+            migration_102_103, migration_105_106, migration_106_107, migration_107_108,
         )
     }
 
@@ -736,6 +736,16 @@ object DatabaseMigrations {
             db.execSQL(
                 "CREATE INDEX IF NOT EXISTS `index_book_content_processes_bookUrl_kind` " +
                     "ON `book_content_processes` (`bookUrl`, `kind`)"
+            )
+        }
+    }
+
+    // v5-U5：readRecordSession 新增 bookUrl 归属列（上游 105→106 同构增量；本仓 106/107 为我方
+    // 降表降列，故按本链版本号写作 107→108 手写迁移；列定义与上游 106.json 一致）
+    private val migration_107_108 = object : Migration(107, 108) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE `readRecordSession` ADD COLUMN `bookUrl` TEXT NOT NULL DEFAULT ''"
             )
         }
     }

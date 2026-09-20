@@ -7,6 +7,8 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.readRecord.ReadRecordTimelineDay
+import io.legado.app.domain.model.BookshelfConflict
+import io.legado.app.domain.model.ConflictBookSummary
 import io.legado.app.domain.usecase.ChangeSourceMigrationOptions
 import io.legado.app.ui.widget.components.variable.VariableEditorUiState
 import kotlinx.collections.immutable.ImmutableList
@@ -49,6 +51,9 @@ data class BookInfoUiState(
     val defaultCover: String = "",
     val defaultCoverDark: String = "",
     val showMangaUi: Boolean = true,
+    /** 加入书架时发现的疑似重复；非空时由冲突 Sheet 决定共存还是迁移。 */
+    val shelfConflict: BookshelfConflict? = null,
+    val isResolvingShelfConflict: Boolean = false,
 )
 
 @Stable
@@ -154,6 +159,18 @@ sealed interface BookInfoIntent {
     data class AddSourceAsNewBook(
         val book: Book,
         val toc: List<BookChapter>,
+    ) : BookInfoIntent
+
+    data object DismissShelfConflict : BookInfoIntent
+    data class OpenShelfConflictBook(val summary: ConflictBookSummary) : BookInfoIntent
+    data class CoexistWithShelfConflict(
+        val existingBookUrl: String,
+        val options: ChangeSourceMigrationOptions,
+    ) : BookInfoIntent
+
+    data class MigrateShelfConflict(
+        val existingBookUrl: String,
+        val options: ChangeSourceMigrationOptions,
     ) : BookInfoIntent
 
     data class ReplaceConflictingBook(

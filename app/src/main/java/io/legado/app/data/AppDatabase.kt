@@ -93,7 +93,7 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 107,
+    version = 108,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -173,6 +173,8 @@ val appDb by lazy {
         // v4-B4/B9：105→106（降 13 表）与 106→107（降列）改为手写迁移 ——
         // schema 快照止于 105，缺失的 106.json 无法重建整条自动迁移链
         // （见 DatabaseMigrations.migration_105_106 / migration_106_107）
+        // v5-U5：107→108（readRecordSession 新增 bookUrl 归属列）同为手写迁移
+        // （见 DatabaseMigrations.migration_107_108）
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
