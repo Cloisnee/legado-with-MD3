@@ -30,6 +30,7 @@ class TtsServerSynthesizer(context: Context) {
         speakerId: String,
         text: String,
         output: File,
+        timeoutMs: Long = TtsEngineContext.AUDITION_TIMEOUT,
     ): Outcome = withContext(Dispatchers.IO) {
         if (engineId.isBlank() || speakerId.isBlank() || text.isBlank()) {
             return@withContext Outcome(false, "参数为空(engineId/speakerId/text)")
@@ -40,6 +41,7 @@ class TtsServerSynthesizer(context: Context) {
                 userVars = emptyMap(),
                 context = appContext,
                 engineId = engineId,
+                synthTimeoutMs = timeoutMs,
             ).synthesizeByTag(speakerId, text)
         } catch (t: CancellationException) {
             throw t

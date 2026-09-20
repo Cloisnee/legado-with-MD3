@@ -44,7 +44,7 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
 internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSettings(
     ttsEngine = compatDsString(PreferKey.ttsEngine),
     ttsParagraphInterval = compatDsValue(ReadAloudKeys.TtsParagraphInterval, 0),
-    audioCacheCleanTime = compatDsValue(ReadAloudKeys.AudioCacheCleanTime, 10),
+    audioCacheCleanTime = compatDsValue(ReadAloudKeys.AudioCacheCleanTime, 0),
     ignoreAudioFocus = compatDsValue(ReadAloudKeys.IgnoreAudioFocus, false),
     mediaButtonOnExit = compatDsValue(ReadAloudKeys.MediaButtonOnExit, true),
     readAloudByMediaButton = compatDsValue(ReadAloudKeys.ReadAloudByMediaButton, false),
@@ -74,6 +74,8 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     contentSelectSpeakMode = compatDsValue(ReadAloudKeys.ContentSelectSpeakMode, 0),
     audioPreDownloadNum = compatDsValue(ReadAloudKeys.AudioPreDownloadNum, 10),
     ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 3),
+    ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 30),
+    ttsMaxRetry = compatDsValue(ReadAloudKeys.TtsMaxRetry, 5),
 )
 
 internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
@@ -103,6 +105,8 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
     PreferKey.audioPreDownloadNum to audioPreDownloadNum,
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
+    PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
+    PreferKey.ttsMaxRetry to ttsMaxRetry,
 )
 
 private object ReadAloudKeys {
@@ -135,4 +139,6 @@ private object ReadAloudKeys {
     val ContentSelectSpeakMode = intPreferencesKey(PreferKey.contentSelectSpeakMod)
     val AudioPreDownloadNum = intPreferencesKey(PreferKey.audioPreDownloadNum)
     val PreSynthesisConcurrency = intPreferencesKey(PreferKey.ttsPreSynthesisConcurrency)
+    val TtsSynthTimeoutSec = intPreferencesKey(PreferKey.ttsSynthTimeoutSec)
+    val TtsMaxRetry = intPreferencesKey(PreferKey.ttsMaxRetry)
 }

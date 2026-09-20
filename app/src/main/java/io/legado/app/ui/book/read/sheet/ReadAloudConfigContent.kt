@@ -215,6 +215,14 @@ fun ReadAloudConfigContent(
                         onClick = { onIntent(ReadBookIntent.OpenPreSynthesisConcurrencyPicker) },
                     )
                     TinyClickableSettingItem(
+                        title = stringResource(R.string.tts_synth_timeout),
+                        onClick = { onIntent(ReadBookIntent.OpenTtsSynthTimeoutPicker) },
+                    )
+                    TinyClickableSettingItem(
+                        title = stringResource(R.string.tts_max_retry),
+                        onClick = { onIntent(ReadBookIntent.OpenTtsMaxRetryPicker) },
+                    )
+                    TinyClickableSettingItem(
                         title = stringResource(R.string.tts_paragraph_interval),
                         onClick = { onIntent(ReadBookIntent.OpenParagraphIntervalPicker) },
                     )

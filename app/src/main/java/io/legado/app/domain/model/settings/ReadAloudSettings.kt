@@ -4,7 +4,7 @@ package io.legado.app.domain.model.settings
 data class ReadAloudSettings(
     val ttsEngine: String? = null,
     val ttsParagraphInterval: Int = 0,
-    val audioCacheCleanTime: Int = 10,
+    val audioCacheCleanTime: Int = 0,
     val ignoreAudioFocus: Boolean = false,
     val mediaButtonOnExit: Boolean = true,
     val readAloudByMediaButton: Boolean = false,
@@ -28,4 +28,8 @@ data class ReadAloudSettings(
     val contentSelectSpeakMode: Int = 0,
     val audioPreDownloadNum: Int = 10,
     val ttsPreSynthesisConcurrency: Int = 3,
+    /** 单次 TTS 合成请求超时（秒；B8.6 可调，默认 30） */
+    val ttsSynthTimeoutSec: Int = 30,
+    /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
+    val ttsMaxRetry: Int = 5,
 )

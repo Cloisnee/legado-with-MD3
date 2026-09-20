@@ -424,6 +424,8 @@ object PreferKey {
     const val audioPreDownloadNum = "audioPreDownloadNum"
     const val ttsPreSynthesisConcurrency = "ttsPreSynthesisConcurrency"
     const val ttsParagraphInterval = "ttsParagraphInterval"
+    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
+    const val ttsMaxRetry = "ttsMaxRetry"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"

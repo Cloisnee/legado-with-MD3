@@ -33,7 +33,9 @@ data class TtsEngineContext(
     var tts: PluginTtsSource,
     val userVars: Map<String, String> = mutableMapOf(),
     override val context: Context,
-    override val engineId: String
+    override val engineId: String,
+    /** 单次合成请求超时（毫秒；朗读侧按设置注入，默认 30s） */
+    val synthTimeoutMs: Long = AUDITION_TIMEOUT
 ) : JsExtensions(context, engineId) {
 
     companion object {
@@ -152,12 +154,12 @@ data class TtsEngineContext(
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
         val bytes = try {
             runBlocking {
-                withTimeout(AUDITION_TIMEOUT) {
+                withTimeout(synthTimeoutMs) {
                     engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
                 }
             }
         } catch (t: TimeoutCancellationException) {
-            return SynthOutcome(null, "合成超时(${AUDITION_TIMEOUT}ms)")
+            return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {

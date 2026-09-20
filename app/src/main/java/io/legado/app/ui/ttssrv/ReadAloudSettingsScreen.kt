@@ -93,6 +93,8 @@ fun ReadAloudSettingsScreen(
     var showConcurrency by remember { mutableStateOf(false) }
     var showInterval by remember { mutableStateOf(false) }
     var showCleanTime by remember { mutableStateOf(false) }
+    var showSynthTimeout by remember { mutableStateOf(false) }
+    var showMaxRetry by remember { mutableStateOf(false) }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -278,6 +280,22 @@ fun ReadAloudSettingsScreen(
                         onClick = { showConcurrency = true },
                     )
                     TinyClickableSettingItem(
+                        title = stringResource(R.string.tts_synth_timeout),
+                        description = stringResource(
+                            R.string.tts_synth_timeout_summary,
+                            st.ttsSynthTimeoutSec,
+                        ),
+                        onClick = { showSynthTimeout = true },
+                    )
+                    TinyClickableSettingItem(
+                        title = stringResource(R.string.tts_max_retry),
+                        description = stringResource(
+                            R.string.tts_max_retry_summary,
+                            st.ttsMaxRetry,
+                        ),
+                        onClick = { showMaxRetry = true },
+                    )
+                    TinyClickableSettingItem(
                         title = stringResource(R.string.tts_paragraph_interval),
                         description = stringResource(
                             R.string.tts_paragraph_interval_summary,
@@ -341,9 +359,29 @@ fun ReadAloudSettingsScreen(
         title = stringResource(R.string.audio_cache_clean_time),
         description = stringResource(R.string.audio_cache_clean_time_summary, st.audioCacheCleanTime),
         value = st.audioCacheCleanTime,
-        defaultValue = 10,
+        defaultValue = 0,
         valueRange = 0f..10080f,
         onValueChange = { v -> update { it.copy(audioCacheCleanTime = v) } },
         onDismissRequest = { showCleanTime = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showSynthTimeout,
+        title = stringResource(R.string.tts_synth_timeout),
+        description = stringResource(R.string.tts_synth_timeout_summary, st.ttsSynthTimeoutSec),
+        value = st.ttsSynthTimeoutSec,
+        defaultValue = 30,
+        valueRange = 5f..120f,
+        onValueChange = { v -> update { it.copy(ttsSynthTimeoutSec = v.coerceIn(5, 120)) } },
+        onDismissRequest = { showSynthTimeout = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showMaxRetry,
+        title = stringResource(R.string.tts_max_retry),
+        description = stringResource(R.string.tts_max_retry_summary, st.ttsMaxRetry),
+        value = st.ttsMaxRetry,
+        defaultValue = 5,
+        valueRange = 0f..10f,
+        onValueChange = { v -> update { it.copy(ttsMaxRetry = v.coerceIn(0, 10)) } },
+        onDismissRequest = { showMaxRetry = false },
     )
 }

@@ -180,6 +180,15 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
     private val chapterSpeechGateway by lazy { GlobalContext.get().get<ChapterSpeechGateway>() }
     private val speechPipeline by lazy { GlobalContext.get().get<SpeechAnalysisPipelineV3>() }
+
+    /** B8.6：单次合成超时（秒→毫秒，设置 5–120 秒） */
+    private val ttsSynthTimeoutMs: Long
+        get() = readAloudSettings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
+
+    /** B8.6：请求失败后的最大重试次数（设置 0–10；0=不重试） */
+    private val ttsMaxRetryCount: Int
+        get() = readAloudSettings.ttsMaxRetry.coerceIn(0, 10)
+
     // 合成失败时的临时静音占位（不进缓存目录，避免「失败」被当成「已合成」）
     private val silentFile by lazy {
         File(cacheDir, "httpTTS_silent/silent.mp3").apply {
@@ -294,6 +303,10 @@ class HttpReadAloudService : BaseReadAloudService(),
                 ensureActive()
                 val httpTts = ReadAloud.httpTTS ?: throw NoStackTraceException("tts is null")
 
+                // B8.6：本章合成检查计数（预合成失败条目的补合成情况可见化）
+                var chapterNew = 0
+                var chapterHit = 0
+                var chapterFail = 0
                 contentList.forEachIndexed { index, content ->
                     ensureActive()
                     if (index < nowSpeak) return@forEachIndexed
@@ -351,6 +364,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                                         routedVoice.speakerId,
                                         speakText,
                                         cacheFile,
+                                        ttsSynthTimeoutMs,
                                     )
                                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                                 }
@@ -391,6 +405,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                             return@execute
                         }.getOrNull()
                         if (failReason == null) {
+                            chapterNew++
                             AppLog.putAudio(
                                 "【音频缓存】已缓存 $cueLabel " +
                                     "${cacheFile.length() / 1024}KB " +
@@ -403,6 +418,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                                 "【音频缓存】合成失败→静音占位 $cueLabel: $failReason | ${snippet(speakText)}"
                             )
                         }
+                    } else {
+                        chapterHit++
                     }
                     val mediaItem = MediaItem.fromUri(
                         Uri.fromFile(if (cacheFile.isValidAudio()) cacheFile else silentFile)
@@ -427,6 +444,10 @@ class HttpReadAloudService : BaseReadAloudService(),
                         }
                     }
                 }
+                AppLog.putAudio(
+                    "【音频缓存】第${(readerReadAloudChapter?.chapterIndex ?: 0) + 1}章" +
+                        " 缓存检查：新增合成 $chapterNew 条、命中 $chapterHit 条、失败 $chapterFail 条"
+                )
                 // 串行铁律：本章条目全部合成结束后，才启动后续章节预合成。
                 // 两者若并行，会同时调用同一插件引擎（音色插件普遍不耐并发）→ "No data written"。
                 AppLog.putAudio(
@@ -588,6 +609,9 @@ class HttpReadAloudService : BaseReadAloudService(),
     /** 预合成单条结果（逐章汇总日志用） */
     private enum class CueSyncOutcome { Stored, Cached, Skipped, Failed }
 
+    /** 预合成单条尝试结果（含失败原因，供重试与日志统一输出） */
+    private data class CueSyncResult(val outcome: CueSyncOutcome, val reason: String? = null)
+
     /**
      * 并行合成一个章节的所有 cue，通过 Semaphore 控制并发。
      * 返回 true 表示该章节合成失败（超过半数 cue 失败）。
@@ -632,7 +656,8 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     /**
-     * 单个 cue 合成 + 重试 1 次（500ms 延迟）
+     * 单个 cue 合成 + 失败后按「最大重试次数」重试（500ms 间隔；B8.6）。
+     * 每次失败与最终放弃都会写入音频缓存日志。
      */
     private suspend fun synthesizeSingleCueWithRetry(
         routedVoice: ReadAloudVoice,
@@ -642,14 +667,29 @@ class HttpReadAloudService : BaseReadAloudService(),
         segIndex: Int,
         httpTts: HttpTTS,
     ): CueSyncOutcome {
-        val first = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
-        if (first != CueSyncOutcome.Failed) return first
-        delay(500)
-        return synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
+        val label = routedVoice.speakerId.ifBlank { routedVoice.displayName }
+        var result = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
+        if (result.outcome != CueSyncOutcome.Failed) return result.outcome
+        val maxRetry = ttsMaxRetryCount
+        var n = 0
+        while (n < maxRetry) {
+            n++
+            AppLog.putAudio(
+                "【音频缓存】预合成失败，第 $n/$maxRetry 次重试 $label: ${result.reason} | ${snippet(content)}"
+            )
+            delay(500)
+            result = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
+            if (result.outcome != CueSyncOutcome.Failed) return result.outcome
+        }
+        AppLog.putAudio(
+            "【音频缓存】预合成失败（已重试 $n 次后放弃）$label" +
+                " | ${prepared.chapterTitle} | ${snippet(content)} | ${result.reason}"
+        )
+        return result.outcome
     }
 
     /**
-     * 单个 cue 合成核心方法
+     * 单个 cue 合成核心方法（只做单次尝试与结果分类；失败日志由带重试的上层统一输出）
      */
     private suspend fun synthesizeSingleCue(
         routedVoice: ReadAloudVoice,
@@ -658,7 +698,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         prepared: PreDownloadChapter,
         segIndex: Int,
         httpTts: HttpTTS,
-    ): CueSyncOutcome {
+    ): CueSyncResult {
         val itemHttpTts = routedVoice.engineId.toLongOrNull()
             ?.let(appDb.httpTTSDao::get) ?: httpTts
         val voiceKey = ReadAloudAudioCacheKeys.voiceKey(
@@ -678,9 +718,9 @@ class HttpReadAloudService : BaseReadAloudService(),
         val speakText = content.replace(AppPattern.notReadAloudRegex, "")
         if (speakText.isEmpty()) {
             // 空文本不落缓存（播放侧用静音占位）
-            return CueSyncOutcome.Skipped
+            return CueSyncResult(CueSyncOutcome.Skipped)
         }
-        if (cacheFile.isValidAudio()) return CueSyncOutcome.Cached
+        if (cacheFile.isValidAudio()) return CueSyncResult(CueSyncOutcome.Cached)
         val failReason = runCatching {
             when (routedVoice.engineType) {
                 ReadAloudVoice.ENGINE_TTS_SERVER -> {
@@ -689,6 +729,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         routedVoice.speakerId,
                         speakText,
                         cacheFile,
+                        ttsSynthTimeoutMs,
                     )
                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }
@@ -724,13 +765,9 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
         if (failReason != null) {
             runCatching { cacheFile.delete() }
-            AppLog.putAudio(
-                "【音频缓存】预合成失败 ${routedVoice.speakerId.ifBlank { routedVoice.displayName }}" +
-                    " | ${prepared.chapterTitle} | ${snippet(speakText)} | $failReason"
-            )
-            return CueSyncOutcome.Failed
+            return CueSyncResult(CueSyncOutcome.Failed, failReason)
         }
-        return CueSyncOutcome.Stored
+        return CueSyncResult(CueSyncOutcome.Stored)
     }
 
     private fun downloadAndPlayAudiosStream() {
@@ -1050,7 +1087,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     /**
-     * 文件型引擎合成 + 失败重试一次（400ms 后）。
+     * 文件型引擎合成 + 失败后按「最大重试次数」重试（500ms 间隔；B8.6）。
      * [attempt] 返回失败原因（null = 成功），失败原因会写入音频缓存日志。
      */
     private suspend fun synthesizeWithRetry(
@@ -1058,11 +1095,20 @@ class HttpReadAloudService : BaseReadAloudService(),
         text: String,
         attempt: suspend () -> String?,
     ): String? {
-        val first = attempt()
-        if (first == null) return null
-        AppLog.putAudio("【音频缓存】合成失败重试 $label: $first | ${snippet(text)}")
-        delay(400)
-        return attempt()
+        var reason = attempt()
+        if (reason == null) return null
+        val maxRetry = ttsMaxRetryCount
+        var n = 0
+        while (n < maxRetry) {
+            n++
+            AppLog.putAudio(
+                "【音频缓存】合成失败，第 $n/$maxRetry 次重试 $label: $reason | ${snippet(text)}"
+            )
+            delay(500)
+            reason = attempt()
+            if (reason == null) return null
+        }
+        return reason
     }
 
     private fun hasFileSynthesisCue(): Boolean = playbackQueue.cues.indices.any { index ->

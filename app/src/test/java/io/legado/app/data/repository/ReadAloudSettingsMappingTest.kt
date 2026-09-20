@@ -85,6 +85,8 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         audioPreDownloadNum = 66,
         capsuleAutoCollapse = false,
         ttsPreSynthesisConcurrency = 7,
+        ttsSynthTimeoutSec = 45,
+        ttsMaxRetry = 6,
     )
     return listOf(
         base,
@@ -132,4 +134,6 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
     PreferKey.audioPreDownloadNum to audioPreDownloadNum,
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
+    PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
+    PreferKey.ttsMaxRetry to ttsMaxRetry,
 )

@@ -13,6 +13,7 @@ import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
@@ -135,7 +136,18 @@ class SynthesizeChapterAudioUseCase(
                 return@forEachIndexed
             }
             val t0 = System.currentTimeMillis()
-            val outcome = synthesizer.synthesize(voice.engineId, voice.speakerId, text, file)
+            val timeoutMs = settings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
+            var outcome = synthesizer.synthesize(voice.engineId, voice.speakerId, text, file, timeoutMs)
+            val maxRetry = settings.ttsMaxRetry.coerceIn(0, 10)
+            var retried = 0
+            while (!outcome.ok && retried < maxRetry) {
+                retried++
+                AppLog.putAudio(
+                    "【音频缓存】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
+                )
+                delay(500)
+                outcome = synthesizer.synthesize(voice.engineId, voice.speakerId, text, file, timeoutMs)
+            }
             if (outcome.ok) {
                 done++
                 AppLog.putAudio(
@@ -147,7 +159,7 @@ class SynthesizeChapterAudioUseCase(
                 runCatching { file.delete() }
                 AppLog.putAudio(
                     "【音频缓存】批量合成失败 第${chapterIndex + 1}章 #$index ${row.speaker}:" +
-                        " ${outcome.reason} | ${text.take(24)}"
+                        " ${outcome.reason}（已重试 $retried 次） | ${text.take(24)}"
                 )
             }
             onProgress(done + failed + skipped, total)

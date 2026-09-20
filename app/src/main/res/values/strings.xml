@@ -1963,7 +1963,7 @@
     <string name="read_aloud_preload">Read-Aloud Preload Count</string>
     <string name="read_aloud_preload_summary">%d</string>
     <string name="audio_cache_clean_time">Audio Cache Retention Time (minutes)</string>
-    <string name="audio_cache_clean_time_summary">Current: %1$d. Enter 0 to clear immediately on exit.</string>
+    <string name="audio_cache_clean_time_summary">Current: %1$d min. 0 = no auto-cleanup (delete manually in Book Cache management).</string>
     <string name="tts_paragraph_interval">Paragraph Interval (ms)</string>
     <string name="tts_paragraph_interval_summary">Current: %1$d ms. Pause between paragraphs during read-aloud.</string>
     <string name="show_swipe_animation">Enable Animation While Swiping</string>
@@ -2776,6 +2776,10 @@
     <string name="tts_cache_manage_summary">View read-aloud / synthesis operation logs</string>
     <string name="tts_pre_synthesis_concurrency">Pre-synthesis threads</string>
     <string name="tts_pre_synthesis_concurrency_summary">%d threads</string>
+    <string name="tts_synth_timeout">TTS Synthesis Timeout (sec)</string>
+    <string name="tts_synth_timeout_summary">Requests exceeding this duration are treated as failed; current %1$d s</string>
+    <string name="tts_max_retry">Max Retries</string>
+    <string name="tts_max_retry_summary">Retries after a failed request; current %1$d (0 = no retry)</string>
     <string name="tts_cache_unknown_text">Unknown text</string>
     <string name="capsule_auto_collapse">Auto-collapse capsule</string>
     <string name="capsule_auto_collapse_summary">Collapse to mini capsule after 3 seconds of inactivity</string>

@@ -1906,7 +1906,7 @@
     <string name="read_aloud_preload">听书预加载数量</string>
     <string name="read_aloud_preload_summary">%d</string>
     <string name="audio_cache_clean_time">音频缓存保留时间(分钟)</string>
-    <string name="audio_cache_clean_time_summary">当前%1$d, 输入 0 代表退出即刻清理。</string>
+    <string name="audio_cache_clean_time_summary">当前 %1$d 分钟；0 = 不自动清理（删除请到缓存管理页操作）</string>
     <string name="tts_paragraph_interval">段落间隔(毫秒)</string>
     <string name="tts_paragraph_interval_summary">当前: %1$d 毫秒。朗读时段落之间的停顿时间。</string>
     <string name="show_swipe_animation">启用滑动时动画</string>
@@ -2771,6 +2771,10 @@
     <string name="tts_cache_manage_summary">查看朗读 / 合成操作日志</string>
     <string name="tts_pre_synthesis_concurrency">预合成线程数</string>
     <string name="tts_pre_synthesis_concurrency_summary">%d 线程</string>
+    <string name="tts_synth_timeout">TTS 合成超时(秒)</string>
+    <string name="tts_synth_timeout_summary">请求音频超过该时长按失败处理；当前 %1$d 秒</string>
+    <string name="tts_max_retry">最大重试次数</string>
+    <string name="tts_max_retry_summary">请求失败后的重试次数；当前 %1$d 次（0=不重试）</string>
     <string name="tts_cache_unknown_text">未知文本</string>
     <string name="capsule_auto_collapse">自动收缩胶囊</string>
     <string name="capsule_auto_collapse_summary">3秒无操作后收缩为迷你胶囊</string>
