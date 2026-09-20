@@ -165,9 +165,11 @@ fun TtsCacheScreen(
         val text = selected.joinToString("\n\n") { entry ->
             "[${timeFormat.format(Date(entry.timestamp))}] ${entry.fullContent}"
         }
-        clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("readAloudLogs", text)))
-        context.toastOnUi(context.getString(R.string.tts_log_copied_count, selected.size))
-        onIntent(TtsCacheIntent.SetSelection(emptySet()))
+        scope.launch {
+            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("readAloudLogs", text)))
+            context.toastOnUi(context.getString(R.string.tts_log_copied_count, selected.size))
+            onIntent(TtsCacheIntent.SetSelection(emptySet()))
+        }
     }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
