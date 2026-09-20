@@ -565,7 +565,7 @@ fun MainActivity.mainEntryProvider(
     entry<MainRouteBookCacheManage> {
         BookCacheManageRouteScreen(
             onBackClick = { onNavigateBack() },
-            onOpenTtsAudioCache = { onNavigateToRoute(MainRouteTtsAudioCache) },
+            onOpenReadAloudLogs = { onNavigateToRoute(MainRouteTtsCache) },
         )
     }
 
@@ -1173,12 +1173,6 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteTtsServerCenter> {
         io.legado.app.ui.ttssrv.TtsServerCenterRouteScreen(
-            onBackClick = { onNavigateBack() },
-        )
-    }
-
-    entry<MainRouteTtsAudioCache> {
-        io.legado.app.ui.ttssrv.TtsAudioCacheRouteScreen(
             onBackClick = { onNavigateBack() },
         )
     }

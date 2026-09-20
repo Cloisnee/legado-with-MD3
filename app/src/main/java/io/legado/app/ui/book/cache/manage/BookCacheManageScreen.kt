@@ -15,8 +15,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -44,12 +44,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.book.readaloud.cache.TtsCacheDialog
+import io.legado.app.ui.book.readaloud.cache.TtsCacheEffect
+import io.legado.app.ui.book.readaloud.cache.TtsCacheIntent
+import io.legado.app.ui.book.readaloud.cache.TtsCacheUiState
+import io.legado.app.ui.book.readaloud.cache.TtsCacheViewModel
 import io.legado.app.ui.theme.adaptiveContentPadding
-import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
-import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
-import io.legado.app.ui.widget.components.settingItem.ClickableSettingItem
 import io.legado.app.ui.widget.components.button.series.SmallTonalButton
 import io.legado.app.ui.widget.components.card.NormalCard
 import io.legado.app.ui.widget.components.card.TextCard
@@ -79,8 +81,9 @@ private data class BookCacheManageListState(
 @Composable
 fun BookCacheManageRouteScreen(
     onBackClick: () -> Unit,
-    onOpenTtsAudioCache: () -> Unit = {},
-    viewModel: BookCacheManageViewModel = koinViewModel()
+    onOpenReadAloudLogs: () -> Unit = {},
+    viewModel: BookCacheManageViewModel = koinViewModel(),
+    audioViewModel: TtsCacheViewModel = koinViewModel(),
 ) {
     LaunchedEffect(Unit) {
         viewModel.onIntent(BookCacheManageIntent.Initialize)
@@ -94,11 +97,24 @@ fun BookCacheManageRouteScreen(
         }
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val audioState by audioViewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        audioViewModel.onIntent(TtsCacheIntent.LoadAudioCache)
+    }
+    LaunchedEffect(audioViewModel) {
+        audioViewModel.effects.collect { effect ->
+            when (effect) {
+                is TtsCacheEffect.ShowToast -> context.toastOnUi(effect.message)
+            }
+        }
+    }
     BookCacheManageScreen(
         state = state,
         onBackClick = onBackClick,
         onIntent = viewModel::onIntent,
-        onOpenTtsAudioCache = onOpenTtsAudioCache,
+        audioState = audioState,
+        onAudioIntent = audioViewModel::onIntent,
+        onOpenReadAloudLogs = onOpenReadAloudLogs,
     )
 }
 
@@ -108,7 +124,9 @@ private fun BookCacheManageScreen(
     state: BookCacheManageUiState,
     onBackClick: () -> Unit,
     onIntent: (BookCacheManageIntent) -> Unit,
-    onOpenTtsAudioCache: () -> Unit = {},
+    audioState: TtsCacheUiState = TtsCacheUiState(),
+    onAudioIntent: (TtsCacheIntent) -> Unit = {},
+    onOpenReadAloudLogs: () -> Unit = {},
 ) {
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
     var pendingDeleteBook by remember { mutableStateOf<BookCacheBookItem?>(null) }
@@ -133,8 +151,6 @@ private fun BookCacheManageScreen(
     }
     val filteredShelfBooks = remember(filteredBooks) { filteredBooks.filterNot { it.isNotShelf } }
     val filteredNotShelfBooks = remember(filteredBooks) { filteredBooks.filter { it.isNotShelf } }
-    val hasRunningDownload = filteredBooks.any { it.hasActiveDownload }
-    val hasDownloadTarget = filteredBooks.any { it.cachedCount < it.totalCount }
     val listUiState = remember(filteredBooks, searchKey, isSearchMode) {
         BookCacheManageListState(
             items = filteredBooks,
@@ -160,7 +176,10 @@ private fun BookCacheManageScreen(
         topBar = {
             DynamicTopAppBar(
                 title = stringResource(R.string.cache_management),
-                subtitle = state.downloadSummary.takeIf { it.isNotBlank() },
+                subtitle = listOfNotNull(
+                    state.downloadSummary.takeIf { it.isNotBlank() },
+                    audioState.audioQueueSummary.takeIf { it.isNotBlank() },
+                ).joinToString(" · ").takeIf { it.isNotBlank() },
                 state = listUiState,
                 onBackClick = onBackClick,
                 onSearchToggle = { active ->
@@ -194,35 +213,14 @@ private fun BookCacheManageScreen(
                         }
                     }
                     TopBarActionButton(
-                        onClick = { onIntent(BookCacheManageIntent.Refresh) },
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = stringResource(R.string.refresh)
+                        onClick = onOpenReadAloudLogs,
+                        imageVector = Icons.Default.History,
+                        contentDescription = stringResource(R.string.tts_cache_manage)
                     )
                 },
                 scrollBehavior = scrollBehavior
             )
         },
-        floatingActionButton = {
-            if (hasRunningDownload || hasDownloadTarget) {
-                AppFloatingActionButton(
-                    onClick = {
-                        if (hasRunningDownload) {
-                            onIntent(BookCacheManageIntent.StopAllDownloads)
-                        } else {
-                            onIntent(BookCacheManageIntent.StartAllDownloads)
-                        }
-                    },
-                    icon = if (hasRunningDownload) Icons.Default.Stop else Icons.Default.Download,
-                    tooltipText = stringResource(
-                        if (hasRunningDownload) {
-                            R.string.stop_download
-                        } else {
-                            R.string.start_download
-                        }
-                    )
-                )
-            }
-        }
     ) { paddingValues ->
         if (state.isLoading) {
             Column(
@@ -243,15 +241,19 @@ private fun BookCacheManageScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                item(key = "tts_audio_cache_entry") {
-                    SplicedColumnGroup {
-                        ClickableSettingItem(
-                            title = "音频管理",
-                            description = "按书籍/章节管理朗读音频缓存与批量合成",
-                            onClick = { onOpenTtsAudioCache() }
-                        )
-                    }
-                }
+                audioCacheSection(
+                    books = audioState.books,
+                    expandedBooks = audioState.expandedBooks,
+                    onToggleExpanded = { onAudioIntent(TtsCacheIntent.ToggleBookExpanded(it)) },
+                    onCacheBook = { onAudioIntent(TtsCacheIntent.CacheBook(it.book)) },
+                    onStopBook = { onAudioIntent(TtsCacheIntent.StopBook(it.book)) },
+                    onDeleteBook = { onAudioIntent(TtsCacheIntent.ShowDeleteBookDialog(it.book)) },
+                    onCacheChapter = { book, ch -> onAudioIntent(TtsCacheIntent.CacheChapter(book, ch)) },
+                    onStopChapter = { book, ch -> onAudioIntent(TtsCacheIntent.StopChapter(book, ch)) },
+                    onDeleteChapter = { book, ch ->
+                        onAudioIntent(TtsCacheIntent.ShowDeleteChapterDialog(book, ch))
+                    },
+                )
                 cacheSection(
                     title = bookshelfSectionTitle,
                     emptyText = bookshelfSectionEmptyText,
@@ -285,6 +287,19 @@ private fun BookCacheManageScreen(
             }
         }
     }
+
+    val audioDialog = audioState.activeDialog
+    DeleteAudioBookDialog(
+        book = (audioDialog as? TtsCacheDialog.DeleteBookAudio)?.book,
+        onConfirm = { onAudioIntent(TtsCacheIntent.DeleteBookAudio(it)) },
+        onDismiss = { onAudioIntent(TtsCacheIntent.DismissDialog) },
+    )
+    DeleteAudioChapterDialog(
+        target = (audioDialog as? TtsCacheDialog.DeleteChapterAudio)
+            ?.let { it.book to it.chapterIndex },
+        onConfirm = { book, chapter -> onAudioIntent(TtsCacheIntent.DeleteChapterAudio(book, chapter)) },
+        onDismiss = { onAudioIntent(TtsCacheIntent.DismissDialog) },
+    )
 
     DeleteBookCacheDialog(
         item = pendingDeleteBook,
@@ -642,6 +657,42 @@ private fun chapterStatusText(item: BookCacheChapterItem): String {
         ChapterCacheStatusKey.Cached -> stringResource(R.string.download_success)
         ChapterCacheStatusKey.NotCached -> stringResource(R.string.not_cached)
     }
+}
+
+@Composable
+private fun DeleteAudioBookDialog(
+    book: String?,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AppAlertDialog(
+        show = book != null,
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.delete),
+        text = stringResource(R.string.tts_audio_delete_book_message, book.orEmpty()),
+        confirmText = stringResource(android.R.string.ok),
+        onConfirm = { book?.let(onConfirm) },
+        dismissText = stringResource(android.R.string.cancel),
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+private fun DeleteAudioChapterDialog(
+    target: Pair<String, Int>?,
+    onConfirm: (String, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AppAlertDialog(
+        show = target != null,
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.delete),
+        text = stringResource(R.string.tts_audio_delete_chapter_message, (target?.second ?: 0) + 1),
+        confirmText = stringResource(android.R.string.ok),
+        onConfirm = { target?.let { onConfirm(it.first, it.second) } },
+        dismissText = stringResource(android.R.string.cancel),
+        onDismiss = onDismiss,
+    )
 }
 
 @Composable

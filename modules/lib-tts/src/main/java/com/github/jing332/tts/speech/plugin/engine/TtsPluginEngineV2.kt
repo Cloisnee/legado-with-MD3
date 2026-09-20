@@ -12,7 +12,6 @@ import com.github.jing332.script.runtime.console.Console
 import com.github.jing332.script.simple.CompatScriptRuntime
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.script.withRhinoContext
-import com.github.jing332.tts.speech.EmptyInputStream
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import okhttp3.Response
@@ -250,7 +249,8 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             getAudioV2(request)
         }
 
-        return handleAudioResult(result) ?: EmptyInputStream
+        return handleAudioResult(result)
+            ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
     }
 
 }

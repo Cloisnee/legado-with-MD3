@@ -125,6 +125,9 @@ interface BookDao {
     )
     fun flowBookShelfRoot(): Flow<List<BookShelfItem>>
 
+    @Query("SELECT * FROM books WHERE name = :name LIMIT 1")
+    suspend fun getBookByName(name: String): Book?
+
     @Query("SELECT * FROM books order by durChapterTime desc")
     fun flowAll(): Flow<List<Book>>
 

@@ -997,6 +997,20 @@ class ReadAloudDataRepository(private val app: Application) {
         counts
     }
 
+    /** 章节标题（书名 → chapter_cache 的 bookUrl → Room 章节表） */
+    suspend fun loadChapterTitles(book: String): Map<Int, String> = withContext(Dispatchers.IO) {
+        val url = loadBookUrl(book)
+        if (url.isEmpty()) return@withContext emptyMap()
+        runCatching {
+            appDb.bookChapterDao.getChapterList(url).associate { it.index to it.title }
+        }.getOrDefault(emptyMap())
+    }
+
+    /** 作者（书名 → Room 书表） */
+    suspend fun loadBookAuthor(book: String): String = withContext(Dispatchers.IO) {
+        runCatching { appDb.bookDao.getBookByName(book)?.author.orEmpty() }.getOrDefault("")
+    }
+
     /** 从本地章节状态（chapter_cache.<书>.json）解析该书 bookUrl（键形如 "$bookUrl|$chapter"） */
     suspend fun loadBookUrl(book: String): String = withContext(Dispatchers.IO) {
         val cacheFile = bookFile(book, "chapter_cache.$book.json")

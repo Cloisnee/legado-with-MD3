@@ -10,6 +10,7 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentSetOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -18,11 +19,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
 import java.util.Locale
 
 class TtsCacheViewModel : ViewModel() {
+
+    private data class QueueItem(val book: String, val chapterIndex: Int)
 
     private val _uiState = MutableStateFlow(TtsCacheUiState())
     val uiState = _uiState.asStateFlow()
@@ -36,7 +40,10 @@ class TtsCacheViewModel : ViewModel() {
         GlobalContext.get().get<SynthesizeChapterAudioUseCase>()
     }
 
-    private var cacheJob: Job? = null
+    /** 待合成队列（顺序 = 卡片上的等待顺序）；暂停的条目留在队列里等恢复 */
+    private val queue = mutableListOf<QueueItem>()
+    private var current: QueueItem? = null
+    private var worker: Job? = null
 
     init {
         loadAudioCache()
@@ -73,25 +80,45 @@ class TtsCacheViewModel : ViewModel() {
                 )
             }
 
-            is TtsCacheIntent.CacheChapter -> cacheChapters(intent.book, listOf(intent.chapterIndex))
+            is TtsCacheIntent.CacheChapter ->
+                enqueue(listOf(QueueItem(intent.book, intent.chapterIndex)))
+
+            is TtsCacheIntent.StopChapter -> {
+                val item = QueueItem(intent.book, intent.chapterIndex)
+                if (current == item) {
+                    worker?.cancel()
+                } else if (chapterState(item) == AudioChapterState.Waiting) {
+                    setChapterState(item, AudioChapterState.Paused, null)
+                }
+                updateSummary()
+            }
+
             is TtsCacheIntent.CacheBook -> {
                 val chapters = _uiState.value.books.firstOrNull { it.book == intent.book }
                     ?.chapters
-                    ?.filter { it.missing > 0 }
-                    ?.map { it.chapterIndex }
+                    ?.filter { !it.isCached || it.isPaused }
+                    ?.map { QueueItem(intent.book, it.chapterIndex) }
                     .orEmpty()
                 if (chapters.isEmpty()) {
                     _effects.tryEmit(TtsCacheEffect.ShowToast("本书音频已全部缓存"))
                 } else {
-                    cacheChapters(intent.book, chapters)
+                    enqueue(chapters)
                 }
             }
 
-            TtsCacheIntent.StopJob -> {
-                cacheJob?.cancel()
-                cacheJob = null
-                _uiState.update { it.copy(job = null) }
-                _effects.tryEmit(TtsCacheEffect.ShowToast("已停止批量合成"))
+            is TtsCacheIntent.StopBook -> {
+                if (current?.book == intent.book) {
+                    worker?.cancel()
+                }
+                _uiState.value.books.firstOrNull { it.book == intent.book }
+                    ?.chapters
+                    ?.forEach { ch ->
+                        val item = QueueItem(intent.book, ch.chapterIndex)
+                        if (chapterState(item) == AudioChapterState.Waiting) {
+                            setChapterState(item, AudioChapterState.Paused, null)
+                        }
+                    }
+                updateSummary()
             }
 
             is TtsCacheIntent.ShowDeleteBookDialog ->
@@ -163,10 +190,14 @@ class TtsCacheViewModel : ViewModel() {
         }
     }
 
-    /** 扫描持久化缓存目录 + 本地剧本行数 → 书籍/章节两级统计 */
+    // ---------------- 音频缓存数据 ----------------
+
+    /** 扫描持久化缓存目录 + 本地剧本行数 + Room 章节标题/作者 → 书籍/章节两级统计 */
     private fun loadAudioCache() {
         viewModelScope.launch(Dispatchers.IO) {
             val books = audioCache.listBooks().map { book ->
+                val author = dataRepository.loadBookAuthor(book)
+                val titles = dataRepository.loadChapterTitles(book)
                 val lineCounts = dataRepository.loadChapterLineCounts(book)
                 val chapters = lineCounts.entries
                     .sortedBy { it.key }
@@ -174,6 +205,7 @@ class TtsCacheViewModel : ViewModel() {
                         val stats = audioCache.chapterStats(book, chapterIndex, total)
                         AudioChapterUi(
                             chapterIndex = chapterIndex,
+                            title = titles[chapterIndex].orEmpty(),
                             cached = stats.cached,
                             total = stats.total,
                             sizeBytes = stats.sizeBytes,
@@ -181,6 +213,7 @@ class TtsCacheViewModel : ViewModel() {
                     }
                 AudioBookUi(
                     book = book,
+                    author = author,
                     cached = chapters.sumOf { it.cached },
                     total = chapters.sumOf { it.total },
                     sizeBytes = chapters.sumOf { it.sizeBytes },
@@ -191,56 +224,185 @@ class TtsCacheViewModel : ViewModel() {
         }
     }
 
-    private fun cacheChapters(book: String, chapterIndexes: List<Int>) {
-        if (chapterIndexes.isEmpty()) return
-        cacheJob?.cancel()
-        cacheJob = viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    job = AudioJobUi(
-                        book = book,
-                        chapterIndex = chapterIndexes.first(),
-                        chapterDone = 0,
-                        chapterTotal = 0,
-                        chapterPosition = 1,
-                        chapterCount = chapterIndexes.size,
-                    )
-                )
-            }
-            var done = 0
-            var failed = 0
-            chapterIndexes.forEachIndexed { position, chapterIndex ->
-                val result = runCatching {
-                    synthesizeChapter(
-                        book = book,
-                        chapterIndex = chapterIndex,
-                        onProgress = { processed, total ->
-                            _uiState.update { state ->
-                                state.copy(
-                                    job = state.job?.copy(
-                                        chapterIndex = chapterIndex,
-                                        chapterDone = processed,
-                                        chapterTotal = total,
-                                        chapterPosition = position + 1,
-                                        chapterCount = chapterIndexes.size,
+    private suspend fun refreshChapter(item: QueueItem) {
+        val total = dataRepository.loadChapterLineCounts(item.book)[item.chapterIndex] ?: 0
+        val stats = audioCache.chapterStats(item.book, item.chapterIndex, total)
+        _uiState.update { state ->
+            state.copy(
+                books = state.books.map { book ->
+                    if (book.book != item.book) {
+                        book
+                    } else {
+                        book.copy(
+                            chapters = book.chapters.map { ch ->
+                                if (ch.chapterIndex != item.chapterIndex) {
+                                    ch
+                                } else {
+                                    ch.copy(
+                                        cached = stats.cached,
+                                        total = stats.total,
+                                        sizeBytes = stats.sizeBytes,
                                     )
-                                )
-                            }
-                        },
-                    )
-                }.getOrNull() ?: SynthesizeChapterAudioUseCase.Result(0, 0, 0)
-                done += result.done
-                failed += result.failed
-                loadAudioCache()
-            }
-            _uiState.update { it.copy(job = null) }
-            cacheJob = null
-            _effects.tryEmit(
-                TtsCacheEffect.ShowToast(
-                    String.format(Locale.getDefault(), "批量合成完成：成功 %d，失败 %d", done, failed)
-                )
+                                }
+                            }.toImmutableList()
+                        ).recalc()
+                    }
+                }.toImmutableList()
             )
         }
+    }
+
+    // ---------------- 队列 / 批量合成 ----------------
+
+    private fun chapterState(item: QueueItem): AudioChapterState? =
+        _uiState.value.books.firstOrNull { it.book == item.book }
+            ?.chapters?.firstOrNull { it.chapterIndex == item.chapterIndex }
+            ?.state
+
+    private fun setChapterState(
+        item: QueueItem,
+        state: AudioChapterState,
+        label: String?,
+        progress: Float = 0f,
+    ) {
+        _uiState.update { s ->
+            s.copy(
+                books = s.books.map { book ->
+                    if (book.book != item.book) {
+                        book
+                    } else {
+                        book.copy(
+                            chapters = book.chapters.map { ch ->
+                                if (ch.chapterIndex != item.chapterIndex) {
+                                    ch
+                                } else {
+                                    ch.copy(
+                                        state = state,
+                                        progressLabel = label,
+                                        progress = progress,
+                                    )
+                                }
+                            }.toImmutableList()
+                        )
+                    }
+                }.toImmutableList()
+            )
+        }
+        updateSummary()
+    }
+
+    private fun updateChapterProgress(item: QueueItem, processed: Int, total: Int) {
+        val progress = if (total <= 0) 0f else processed.toFloat() / total
+        setChapterState(
+            item = item,
+            state = AudioChapterState.Downloading,
+            label = "$processed/$total",
+            progress = progress,
+        )
+    }
+
+    private fun enqueue(items: List<QueueItem>) {
+        var added = false
+        items.forEach { item ->
+            val state = chapterState(item)
+            if (state == AudioChapterState.Waiting || state == AudioChapterState.Downloading) {
+                return@forEach
+            }
+            if (item !in queue) queue.add(item)
+            setChapterState(item, AudioChapterState.Waiting, null)
+            added = true
+        }
+        if (added) startWorker()
+    }
+
+    private fun nextReady(): QueueItem? {
+        val index = queue.indexOfFirst { chapterState(it) == AudioChapterState.Waiting }
+        return if (index < 0) null else queue.removeAt(index)
+    }
+
+    private fun startWorker() {
+        if (worker?.isActive == true) return
+        worker = viewModelScope.launch {
+            var done = 0
+            var failed = 0
+            var skipped = 0
+            while (isActive) {
+                val item = nextReady() ?: break
+                current = item
+                setChapterState(item, AudioChapterState.Downloading, "0/0")
+                try {
+                    val result = synthesizeChapter(
+                        book = item.book,
+                        chapterIndex = item.chapterIndex,
+                        onProgress = { processed, total ->
+                            updateChapterProgress(item, processed, total)
+                        },
+                    )
+                    done += result.done
+                    failed += result.failed
+                    skipped += result.skipped
+                    refreshChapter(item)
+                    setChapterState(
+                        item = item,
+                        state = if (result.failed > 0) {
+                            AudioChapterState.Error
+                        } else {
+                            AudioChapterState.Idle
+                        },
+                        label = if (result.failed > 0) "失败 ${result.failed} 条" else null,
+                    )
+                } catch (e: CancellationException) {
+                    setChapterState(item, AudioChapterState.Paused, null)
+                    current = null
+                    throw e
+                } catch (e: Exception) {
+                    AppLog.putAudio(
+                        "【音频缓存】批量合成异常 第${item.chapterIndex + 1}章: ${e.localizedMessage}",
+                        e,
+                    )
+                    setChapterState(item, AudioChapterState.Error, "异常")
+                }
+                current = null
+            }
+            worker = null
+            updateSummary()
+            if (done + failed + skipped > 0) {
+                _effects.tryEmit(
+                    TtsCacheEffect.ShowToast(
+                        String.format(
+                            Locale.getDefault(),
+                            "批量合成完成：成功 %d · 失败 %d · 跳过 %d",
+                            done,
+                            failed,
+                            skipped,
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    private fun updateSummary() {
+        val books = _uiState.value.books
+        val cur = current
+        val summary = when {
+            cur != null -> {
+                val label = books.firstOrNull { it.book == cur.book }
+                    ?.chapters?.firstOrNull { it.chapterIndex == cur.chapterIndex }
+                    ?.progressLabel
+                    .orEmpty()
+                "音频缓存 第${cur.chapterIndex + 1}章 $label".trim()
+            }
+
+            books.sumOf { it.waitingCount } > 0 ->
+                "音频缓存 等待 ${books.sumOf { it.waitingCount }} 章"
+
+            books.sumOf { it.pausedCount } > 0 ->
+                "音频缓存 已暂停 ${books.sumOf { it.pausedCount }} 章"
+
+            else -> ""
+        }
+        _uiState.update { it.copy(audioQueueSummary = summary) }
     }
 
     companion object {

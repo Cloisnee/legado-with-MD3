@@ -98,7 +98,6 @@ object MainNavigator {
             is MainRouteCache,
             MainRouteBookCacheManage,
             MainRouteTtsServerCenter,
-            MainRouteTtsAudioCache,
             MainRouteReadAloudSettings,
             MainRouteAiModelManage,
             MainRouteCharacterManage,
@@ -182,6 +181,7 @@ object MainNavigator {
                     currentRoute is MainRouteBookInfo ||
                     currentRoute is MainRouteCloudTtsEngines ||
                     currentRoute == MainRouteTtsCache ||
+                    currentRoute == MainRouteBookCacheManage ||
                     currentRoute is MainRouteReadBook ||
                     currentRoute is MainRouteReadManga
                 ) {

@@ -150,9 +150,6 @@ data object MainRouteTtsCache : MainRoute
 data object MainRouteTtsServerCenter : MainRoute
 
 @Serializable
-data object MainRouteTtsAudioCache : MainRoute
-
-@Serializable
 data object MainRouteReadAloudSettings : MainRoute
 
 @Serializable

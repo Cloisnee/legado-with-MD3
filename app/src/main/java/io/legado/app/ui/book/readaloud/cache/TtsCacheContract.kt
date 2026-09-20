@@ -10,35 +10,54 @@ import kotlinx.collections.immutable.persistentSetOf
 /** 朗读日志页分区：朗读分析流程 / 音频缓存 */
 enum class TtsCacheTab { Analysis, Audio }
 
+/** 章节音频任务状态（与「书架书籍」缓存页同构：等待/缓存中/暂停/失败） */
+enum class AudioChapterState { Idle, Waiting, Downloading, Paused, Error }
+
 @Stable
 data class AudioChapterUi(
     val chapterIndex: Int,
+    val title: String,
     val cached: Int,
     val total: Int,
     val sizeBytes: Long,
+    val state: AudioChapterState = AudioChapterState.Idle,
+    val progressLabel: String? = null,
+    val progress: Float = 0f,
 ) {
     val missing: Int get() = (total - cached).coerceAtLeast(0)
+    val isCached: Boolean get() = total > 0 && cached >= total
+    val isDownloading: Boolean get() = state == AudioChapterState.Downloading
+    val isWaiting: Boolean get() = state == AudioChapterState.Waiting
+    val isPaused: Boolean get() = state == AudioChapterState.Paused
+    val isError: Boolean get() = state == AudioChapterState.Error
 }
 
 @Stable
 data class AudioBookUi(
     val book: String,
+    val author: String,
     val cached: Int,
     val total: Int,
     val sizeBytes: Long,
     val chapters: ImmutableList<AudioChapterUi>,
-)
+) {
+    val progress: Float get() = if (total <= 0) 0f else cached.toFloat() / total
+    val cachedCount: Int get() = chapters.count { it.isCached }
+    val totalCount: Int get() = chapters.size
+    val waitingCount: Int get() = chapters.count { it.isWaiting }
+    val downloadingCount: Int get() = chapters.count { it.isDownloading }
+    val pausedCount: Int get() = chapters.count { it.isPaused }
+    val errorCount: Int get() = chapters.count { it.isError }
+    val hasActiveDownload: Boolean get() = waitingCount > 0 || downloadingCount > 0
+    val isPaused: Boolean get() = pausedCount > 0
+    val hasDownloadTask: Boolean get() = hasActiveDownload || isPaused
 
-/** 批量合成进度（整本缓存时 chapterCount > 1） */
-@Stable
-data class AudioJobUi(
-    val book: String,
-    val chapterIndex: Int,
-    val chapterDone: Int,
-    val chapterTotal: Int,
-    val chapterPosition: Int,
-    val chapterCount: Int,
-)
+    fun recalc(): AudioBookUi = copy(
+        cached = chapters.sumOf { it.cached },
+        total = chapters.sumOf { it.total },
+        sizeBytes = chapters.sumOf { it.sizeBytes },
+    )
+}
 
 @Stable
 data class TtsCacheUiState(
@@ -46,7 +65,8 @@ data class TtsCacheUiState(
     // ---- 音频缓存（书籍/章节视图） ----
     val books: ImmutableList<AudioBookUi> = persistentListOf(),
     val expandedBooks: ImmutableSet<String> = persistentSetOf(),
-    val job: AudioJobUi? = null,
+    /** 顶栏/卡片用进度摘要（空 = 无任务） */
+    val audioQueueSummary: String = "",
     // ---- 朗读日志（按时间升序，实时刷新） ----
     val logs: ImmutableList<TtsLogEntryUi> = persistentListOf(),
     val activeTab: TtsCacheTab = TtsCacheTab.Analysis,
@@ -72,8 +92,9 @@ sealed interface TtsCacheIntent {
     data object LoadAudioCache : TtsCacheIntent
     data class ToggleBookExpanded(val book: String) : TtsCacheIntent
     data class CacheChapter(val book: String, val chapterIndex: Int) : TtsCacheIntent
+    data class StopChapter(val book: String, val chapterIndex: Int) : TtsCacheIntent
     data class CacheBook(val book: String) : TtsCacheIntent
-    data object StopJob : TtsCacheIntent
+    data class StopBook(val book: String) : TtsCacheIntent
     data class ShowDeleteBookDialog(val book: String) : TtsCacheIntent
     data class ShowDeleteChapterDialog(val book: String, val chapterIndex: Int) : TtsCacheIntent
     data class DeleteBookAudio(val book: String) : TtsCacheIntent
