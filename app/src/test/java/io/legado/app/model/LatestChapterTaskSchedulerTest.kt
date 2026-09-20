@@ -1,6 +1,7 @@
 package io.legado.app.model
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -38,6 +39,11 @@ class LatestChapterTaskSchedulerTest {
         withTimeout(2_000) { latest.await() }
 
         assertEquals(listOf("running-start", "running-end", "latest"), events)
+        // 任务状态清理发生在被调任务的 finally（onTaskFinished）中，与 await 恢复存在竞态：
+        // 有界等待状态收敛，避免 CI 上偶发失败（断言意图不变）
+        withTimeout(2_000) {
+            while (scheduler.stateOf("chapter").running) delay(10)
+        }
         assertEquals(LatestChapterTaskScheduler.TaskState(), scheduler.stateOf("chapter"))
     }
 
