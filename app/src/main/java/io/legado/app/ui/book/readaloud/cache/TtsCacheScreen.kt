@@ -159,6 +159,9 @@ fun TtsCacheScreen(
         }
     }
 
+    // 复制结果提示：在组合内解析（避免 LocalContext.getString 的配置感知 lint）
+    val copiedMessage = stringResource(R.string.tts_log_copied_count, state.selectedIds.size)
+
     fun copySelected() {
         val selected = displayed.filter { it.id in state.selectedIds }
         if (selected.isEmpty()) return
@@ -167,7 +170,7 @@ fun TtsCacheScreen(
         }
         scope.launch {
             clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("readAloudLogs", text)))
-            context.toastOnUi(context.getString(R.string.tts_log_copied_count, selected.size))
+            context.toastOnUi(copiedMessage)
             onIntent(TtsCacheIntent.SetSelection(emptySet()))
         }
     }
