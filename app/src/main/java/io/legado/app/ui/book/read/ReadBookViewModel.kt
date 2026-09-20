@@ -1157,6 +1157,7 @@ class ReadBookViewModel(
             is ReadBookIntent.UpdateHighlightRuleImportItem ->
                 highlightRuleDelegate.updateImportItem(intent.index, intent.rule)
             is ReadBookIntent.SaveImportedHighlightRules -> highlightRuleDelegate.saveImported()
+            is ReadBookIntent.ShowHighlightRulePresets -> highlightRuleDelegate.showPresets()
             is ReadBookIntent.ExportHighlightRules -> {
                 _effects.tryEmit(ReadBookEffect.OpenHighlightRuleExportPicker)
             }
