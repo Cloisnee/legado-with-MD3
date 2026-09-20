@@ -408,8 +408,6 @@ class HttpReadAloudService : BaseReadAloudService(),
                                 if (!pause) {
                                     exoPlayer.prepare()
                                 }
-                                // 当前章开始播放后，立即异步启动后续章节预合成
-                                launchPreDownload(httpTts)
                             }
                         } else {
                             if (exoPlayer.mediaItemCount == 0) {
@@ -417,14 +415,19 @@ class HttpReadAloudService : BaseReadAloudService(),
                                 if (!pause) {
                                     exoPlayer.prepare()
                                 }
-                                // 当前章开始播放后，立即异步启动后续章节预合成
-                                launchPreDownload(httpTts)
                             } else {
                                 exoPlayer.addMediaItem(mediaItem)
                             }
                         }
                     }
                 }
+                // 串行铁律：本章条目全部合成结束后，才启动后续章节预合成。
+                // 两者若并行，会同时调用同一插件引擎（音色插件普遍不耐并发）→ "No data written"。
+                AppLog.putAudio(
+                    "【音频缓存】第${(readerReadAloudChapter?.chapterIndex ?: 0) + 1}章" +
+                        " 条目合成结束，开始预合成后续章节"
+                )
+                launchPreDownload(httpTts)
             }
         }.onError {
             AppLog.putAudio("朗读下载出错\n${it.localizedMessage}", it, toast = true)
@@ -432,8 +435,8 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     /**
-     * 异步启动后续章节的预合成，与当前章节播放并行。
-     * 不持有 downloadTaskActiveLock，不阻塞当前章节的合成和播放。
+     * 启动后续章节的预合成（在当前章**条目全部合成结束**后调用）。
+     * 逐章串行：同一时刻只有一条合成在跑（含当前章合成），避免音色插件并发失败。
      */
     private fun launchPreDownload(httpTts: HttpTTS) {
         preDownloadJob?.cancel()
