@@ -6,6 +6,7 @@ import io.legado.app.data.appDb
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.domain.model.readaloud.VoiceGroupInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -21,7 +22,7 @@ import java.util.zip.ZipOutputStream
 
 /**
  * 朗读分析数据层（对照「角色管理」v36 忠实移植，数据根=<应用根>/data/）：
- *  - liebiao.json / cunfang.txt / characterRecords.json / fayinren.json / bare_words / special_words
+ *  - liebiao.json / cunfang.txt / characterRecords.json / bare_words / special_words
  *  - books/<书名>/：shuming.<书名>.json（角色）、all_clean_text_<书名>.txt（剧本〖说话人〗+[chapter:N]）、
  *    chapter_cache.<书名>.json、merge_log.<书名>.json（合并账本）
  *  - 合并账本可回放；改名/合并=文本+缓存+账本三同步；FNV 行指纹防误伤。
@@ -125,9 +126,6 @@ class ReadAloudDataRepository(private val app: Application) {
             records = parseRecords(charRec)
         }
 
-        if (readText(rootFile("fayinren.json")).isEmpty()) {
-            writeText(rootFile("fayinren.json"), "[]")
-        }
         return JueseState(bookList, current, records)
     }
 
@@ -534,19 +532,6 @@ class ReadAloudDataRepository(private val app: Application) {
             added
         }
 
-    // ---------------- 声线标签池（供声线选择弹窗） ----------------
-
-    suspend fun loadFayinrenTags(): List<String> = withContext(Dispatchers.IO) {
-        val arr = runCatching { JSONArray(readText(rootFile("fayinren.json"))) }
-            .getOrDefault(JSONArray())
-        buildList {
-            for (i in 0 until arr.length()) {
-                val v = arr.optString(i).trim()
-                if (v.isNotEmpty()) add(v)
-            }
-        }
-    }
-
     suspend fun loadActiveVoiceBanks(): List<String> = withContext(Dispatchers.IO) {
         runCatching {
             val f = File(TtsDirProvider.baseDir(app), "_store/readaloud_ext.json")
@@ -604,6 +589,41 @@ class ReadAloudDataRepository(private val app: Application) {
         Unit
     }
 
+    /** 最近朗读的书名（朗读会话启动时记录，B10.5·Q4） */
+    suspend fun loadRecentReadBook(): String = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(readText(uiStateFile())).optString("recentReadBook") }
+            .getOrDefault("")
+    }
+
+    /** 记录最近朗读的书名（ui_state.json；B10.5·Q4） */
+    suspend fun setRecentReadBook(book: String) = withContext(Dispatchers.IO) {
+        val name = book.trim()
+        if (name.isEmpty()) return@withContext
+        runCatching {
+            val o = runCatching { JSONObject(readText(uiStateFile())) }
+                .getOrElse { JSONObject() }
+            o.put("recentReadBook", name)
+            writeText(uiStateFile(), o.toString())
+        }
+        Unit
+    }
+
+    /**
+     * Q4：把「当前书」自动切到最近朗读的书（书籍管理/角色管理非嵌入入口调用）。
+     * 仅在 最近朗读 ≠ 当前书 且仍在书架索引（liebiao）内时切换；switchBook 同步 cunfang 与根镜像。
+     */
+    suspend fun syncBookToRecentRead(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val recent = loadRecentReadBook()
+            if (recent.isBlank()) return@runCatching false
+            val st = loadState()
+            if (recent == st.currentBook || recent !in st.bookList) return@runCatching false
+            switchBook(recent).first
+        }.onFailure {
+            if (it is CancellationException) throw it
+        }.getOrDefault(false)
+    }
+
     /** 章节号列表（从剧本 [chapter:N] 标记读取） */
     suspend fun loadChapters(book: String): List<Int> = withContext(Dispatchers.IO) {
         val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
@@ -650,28 +670,77 @@ class ReadAloudDataRepository(private val app: Application) {
         }
 
     /**
-     * B8.3 回填：按 bookUrl 读取某章剧本行。
-     * 优先 `all_clean_text_<书>.txt` 的 [chapter:N] 段（与批量合成同一枚举，条目序号一致）；
-     * 剧本文件缺失时回退 `chapter_cache.<书>.json` 的精确键 `bookUrl|chapter`（state=success）。
+     * B8.3 回填 / Q3 换源复用：某章剧本文本候选（按可用性排序，去重）。
+     *  ① `all_clean_text_<书>.txt` 的 [chapter:N] 段（与批量合成同一枚举，条目序号一致）；
+     *  ② `chapter_cache.<书>.json` 精确键 `bookUrl|chapter`（state=success）；
+     *  ③ 同章任意键（换源后 URL 漂移：旧源键仍在，由调用方做文本对齐校验后复用）。
+     * 调用方逐个做 ScriptFileBackfill.align，首个对齐成功者胜出。
      */
-    suspend fun loadChapterScriptForUrl(
+    suspend fun loadChapterScriptCandidates(
         book: String,
         bookUrl: String,
         chapter: Int,
-    ): List<ScriptLineRow> = withContext(Dispatchers.IO) {
+    ): List<List<ScriptLineRow>> = withContext(Dispatchers.IO) {
         if (book.isBlank()) return@withContext emptyList()
-        val fileRows = loadChapterScript(book, chapter)
-        if (fileRows.isNotEmpty()) return@withContext fileRows
-        if (bookUrl.isBlank()) return@withContext emptyList()
-        val entry = runCatching { JSONObject(readText(bookFile(book, "chapter_cache.$book.json"))) }
-            .getOrNull()?.optJSONObject("$bookUrl|$chapter")
-        if (entry != null && entry.optString("state") == "success") {
-            val scriptText = entry.optString("scriptText")
-            if (scriptText.isNotBlank()) {
-                return@withContext parseScriptLines(scriptText.split("\n"), base = 0)
+        val out = ArrayList<List<ScriptLineRow>>()
+        val seen = HashSet<String>()
+        fun addRows(rows: List<ScriptLineRow>) {
+            if (rows.isEmpty()) return
+            val sig = rows.joinToString("|") { "${it.speaker}:${it.text}:${it.emotion}" }.hashCode().toString()
+            if (seen.add(sig)) out.add(rows)
+        }
+        addRows(loadChapterScript(book, chapter))
+        val cache = runCatching { JSONObject(readText(bookFile(book, "chapter_cache.$book.json"))) }.getOrNull()
+        if (cache != null) {
+            fun rowsOf(key: String): List<ScriptLineRow>? {
+                val entry = cache.optJSONObject(key) ?: return null
+                if (entry.optString("state") != "success") return null
+                val scriptText = entry.optString("scriptText")
+                if (scriptText.isBlank()) return null
+                return parseScriptLines(scriptText.split("\n"), base = 0)
+            }
+            if (bookUrl.isNotBlank()) rowsOf("$bookUrl|$chapter")?.let { addRows(it) }
+            val keys = cache.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (k.substringAfterLast('|', "").toIntOrNull() == chapter) {
+                    rowsOf(k)?.let { addRows(it) }
+                }
             }
         }
-        emptyList()
+        out
+    }
+
+    /**
+     * Q3 换源自愈：为当前 bookUrl 补写该章缓存条目（已存在则不动），
+     * 使「换源后复用」的章节状态落到最新 URL 键，后续读取走精确命中。
+     */
+    suspend fun ensureChapterCacheForUrl(
+        book: String,
+        bookUrl: String,
+        chapter: Int,
+        scriptText: String,
+    ) {
+        if (book.isBlank() || bookUrl.isBlank() || scriptText.isBlank()) return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val cacheFile = bookFile(book, "chapter_cache.$book.json")
+                val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
+                val key = "$bookUrl|$chapter"
+                if (cache.has(key)) return@runCatching
+                cache.put(
+                    key,
+                    JSONObject().apply {
+                        put("state", "success")
+                        put("scriptText", scriptText)
+                        put("currentLogicOffset", 0)
+                        put("saveTime", System.currentTimeMillis())
+                    },
+                )
+                writeText(cacheFile, cache.toString())
+                writeBookRev(book, chapter)
+            }
+        }
     }
 
     /** 书名解析（bookUrl → Room 书表）；B8.3 回填定位 books/<书名>/ 目录用 */
@@ -1171,8 +1240,12 @@ class ReadAloudDataRepository(private val app: Application) {
         runCatching { appDb.bookDao.getBookByName(book)?.author.orEmpty() }.getOrDefault("")
     }
 
-    /** 从本地章节状态（chapter_cache.<书>.json）解析该书 bookUrl（键形如 "$bookUrl|$chapter"） */
+    /** 该书当前 bookUrl：优先 Room 书表（换源后为最新源 url，B10.5·Q3），未收录再回退 chapter_cache 键扫描 */
     suspend fun loadBookUrl(book: String): String = withContext(Dispatchers.IO) {
+        runCatching { appDb.bookDao.getBookByName(book)?.bookUrl.orEmpty() }
+            .getOrDefault("")
+            .takeIf { it.isNotBlank() }
+            ?.let { return@withContext it }
         val cacheFile = bookFile(book, "chapter_cache.$book.json")
         val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
         val keys = cache.keys()

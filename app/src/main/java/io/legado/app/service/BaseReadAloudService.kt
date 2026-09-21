@@ -36,6 +36,7 @@ import io.legado.app.constant.IntentAction
 import io.legado.app.constant.NotificationId
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
@@ -433,6 +434,16 @@ abstract class BaseReadAloudService : BaseService(),
                 }
             }.onFailure {
                 AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
+            }
+            // B10.5·Q4：记录「最近朗读的书」（非嵌入入口的书籍管理/角色管理自动切换用；cunfang 由入口 switchBook 同步）
+            runCatching {
+                val bookName: String = ReadBook.book?.name.orEmpty()
+                if (bookName.isNotEmpty()) {
+                    val readAloudRepo: ReadAloudDataRepository = get(ReadAloudDataRepository::class.java)
+                    readAloudRepo.setRecentReadBook(bookName)
+                }
+            }.onFailure {
+                AppLog.putAnalysis("记录最近朗读书名失败: ${it.localizedMessage}", it)
             }
             val preparedSpeechPlan = buildSpeechPlan(
                 bookUrl = ReadBook.book?.bookUrl.orEmpty(),

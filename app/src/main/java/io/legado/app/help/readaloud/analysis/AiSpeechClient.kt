@@ -31,6 +31,9 @@ import java.util.concurrent.TimeUnit
  *  - 关闭思考：模型开启「关闭思考」时按协议附加关闭字段
  *    （openai = enable_thinking:false + thinking{type:disabled}；claude = thinking{type:disabled}；
  *    google = generationConfig.thinkingConfig.thinkingBudget=0）。
+ *
+ * B10.5（Q2）：日志统一携带调用来源 [logTag]（如「第1章·第2阶段」「第1章·情绪」），
+ *  渲染为 `【AI调用·<logTag>】…`，便于按章节+阶段定位；同步移除无调用方的旧 `complete` 入口。
  */
 class AiSpeechClient(
     private val aiModels: AiModelRepository,
@@ -54,38 +57,6 @@ class AiSpeechClient(
             .build()
 
     /**
-     * @param validate 内容校验（返回 null = 校验失败，记一次尝试后重试）
-     * @return 校验通过的结果；队列耗尽返回 null
-     */
-    suspend fun <T> complete(
-        refs: List<ModelRef>,
-        system: String,
-        user: String,
-        maxTokens: Int = 4096,
-        validate: (String) -> T?,
-    ): T? = withContext(Dispatchers.IO) {
-        val timeoutMs = unifiedTimeoutMs()
-        for (ref in refs) {
-            val attempts = ref.model.requestAttempts.coerceIn(1, 5)
-            repeat(attempts) { attempt ->
-                val raw = callOnce(ref, system, user, maxTokens, timeoutMs)
-                if (raw == null) {
-                    AppLog.putAnalysis(
-                        "分析AI请求失败（${ref.model.name} 第${attempt + 1}次尝试，超时/HTTP错），换下次尝试或下个模型",
-                    )
-                    return@repeat
-                }
-                val parsed = runCatching { validate(raw) }.getOrNull()
-                if (parsed != null) return@withContext parsed
-                AppLog.putAnalysis(
-                    "分析AI内容校验失败（${ref.model.name} 第${attempt + 1}次尝试），重试或换模型",
-                )
-            }
-        }
-        null
-    }
-
-    /**
      * 两级重试（复刻脚本 callAIValidated）：
      *  - 第一级「响应问题」：超时/HTTP错/非JSON → 每模型 requestAttempts 次；
      *  - 第二级「内容校验」：JSON 合法但字段不符 → 每模型 validateRetries 次，失败原因作为 failHint 顺延进下一次提示词；
@@ -96,6 +67,7 @@ class AiSpeechClient(
         system: String,
         promptFactory: (failHint: String) -> String,
         maxTokens: Int = 4096,
+        logTag: String,
         validate: (String) -> ValidateOutcome<T>,
     ): T? = withContext(Dispatchers.IO) {
         val timeoutMs = unifiedTimeoutMs()
@@ -106,11 +78,11 @@ class AiSpeechClient(
             var validFails = 0
             var failHint = ""
             while (true) {
-                val raw = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs)
+                val raw = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs, logTag)
                 if (raw == null) {
                     respFails++
                     AppLog.putAnalysis(
-                        "【AI调用】模型 ${ref.model.name} 响应失败（$respFails/$respMax）",
+                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax）",
                     )
                     if (respFails >= respMax) break
                     delay(2000L * respFails)
@@ -120,20 +92,20 @@ class AiSpeechClient(
                     ValidateOutcome(null, "解析异常：${it.localizedMessage ?: it.javaClass.simpleName}")
                 }
                 if (outcome.data != null) {
-                    AppLog.putAnalysis("【AI调用】模型 ${ref.model.name} 校验通过")
+                    AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 校验通过")
                     return@withContext outcome.data
                 }
                 validFails++
                 AppLog.putAnalysis(
-                    "【AI调用】模型 ${ref.model.name} 校验失败（$validFails/$validMax）：${outcome.failReason}",
+                    "【AI调用·$logTag】模型 ${ref.model.name} 校验失败（$validFails/$validMax）：${outcome.failReason}",
                 )
                 if (validFails >= validMax) break
                 failHint = outcome.failReason
                 delay(1000)
             }
-            AppLog.putAnalysis("【AI调用】模型 ${ref.model.name} 额度耗尽，切换下一模型")
+            AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 额度耗尽，切换下一模型")
         }
-        AppLog.putAnalysis("【AI调用】所有模型响应/校验额度均已耗尽")
+        AppLog.putAnalysis("【AI调用·$logTag】所有模型响应/校验额度均已耗尽")
         null
     }
 
@@ -144,6 +116,7 @@ class AiSpeechClient(
         user: String,
         maxTokens: Int,
         timeoutMs: Long,
+        logTag: String,
     ): String? {
         return runCatching {
             val base = ref.provider.baseUrl.trim().trimEnd('/')
@@ -235,7 +208,7 @@ class AiSpeechClient(
             }
         }.getOrElse {
             AppLog.putAnalysis(
-                "分析AI调用异常（${ref.model.name}）: ${it.localizedMessage ?: it.javaClass.simpleName}",
+                "【AI调用·$logTag】异常（${ref.model.name}）: ${it.localizedMessage ?: it.javaClass.simpleName}",
             )
             null
         }
