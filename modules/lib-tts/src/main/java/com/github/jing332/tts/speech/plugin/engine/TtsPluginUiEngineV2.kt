@@ -11,6 +11,7 @@ import com.github.jing332.compat.log.KLog
 import org.mozilla.javascript.ScriptRuntime
 import org.mozilla.javascript.ScriptableObject
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.to
 
 class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(context, plugin) {
@@ -124,6 +125,27 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
         try {
             engine.invokeMethod(editUiJsObject, FUNC_ON_LOAD_DATA)
         } catch (_: NoSuchMethodException) {
+        }
+    }
+
+    private val onLoadDataDone = AtomicBoolean(false)
+
+    /**
+     * B12：数据初始化（onLoadData）幂等封装。
+     *
+     * 语言/声线列表路径此前只 eval、未执行 onLoadData，数据型插件（猫箱-v2 / 微软翻译 等）
+     * 的发音人数据从未加载 → 列表为空/「加载中…或该语言无声音」。
+     * 每个引擎实例至多执行一次（失败亦标记，避免每次列表操作都重试网络/解析）。
+     */
+    fun ensureOnLoadData() {
+        if (onLoadDataDone.get()) return
+        synchronized(onLoadDataDone) {
+            if (onLoadDataDone.get()) return
+            try {
+                onLoadData()
+            } finally {
+                onLoadDataDone.set(true)
+            }
         }
     }
 

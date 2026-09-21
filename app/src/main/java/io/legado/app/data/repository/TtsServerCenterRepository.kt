@@ -618,6 +618,9 @@ class TtsServerCenterRepository(private val app: Application) {
         runCatching {
             val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
             val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+            // B12：数据型插件（猫箱-v2/微软翻译 等）的语言/声线数据在 EditorJS.onLoadData 里加载，
+            // 不先执行它 → 列表为空（「加载中…或该语言无声音」）。幂等，每个引擎实例只跑一次。
+            engine.ensureOnLoadData()
             engine.getLocales().map { (k, v) -> LocaleOption(k, v) }
         }.getOrDefault(emptyList())
     }
@@ -627,6 +630,8 @@ class TtsServerCenterRepository(private val app: Application) {
             runCatching {
                 val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
                 val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+                // B12：同 loadLocales —— 数据型插件的声线表需先跑 onLoadData
+                engine.ensureOnLoadData()
                 engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
             }.getOrDefault(emptyList())
         }
