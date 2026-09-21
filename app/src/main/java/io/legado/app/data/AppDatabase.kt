@@ -169,9 +169,10 @@ val appDb by lazy {
         AutoMigration(from = 101, to = 102),
         // httpTTS 新增可空列 speed（源级语速）
         AutoMigration(from = 103, to = 104),
-        AutoMigration(from = 104, to = 105),
-        // v4-B4：AI/翻译/上游人物链 全量拔除 —— 删除 13 张遗留表
-        AutoMigration(from = 105, to = 106, spec = DatabaseMigrations.Migration_105_106::class)
+        AutoMigration(from = 104, to = 105)
+        // v4-B4/B9：105→106（降 13 表）与 106→107（降列）改为手写迁移 ——
+        // schema 快照止于 105，缺失的 106.json 无法重建整条自动迁移链
+        // （见 DatabaseMigrations.migration_105_106 / migration_106_107）
     ]
 )
 abstract class AppDatabase : RoomDatabase() {

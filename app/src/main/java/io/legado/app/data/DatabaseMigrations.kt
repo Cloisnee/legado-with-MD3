@@ -1,7 +1,6 @@
 package io.legado.app.data
 
 import androidx.room.DeleteColumn
-import androidx.room.DeleteTable
 import androidx.room.migration.AutoMigrationSpec
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -22,7 +21,7 @@ object DatabaseMigrations {
             migration_35_36, migration_36_37, migration_37_38, migration_38_39,
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
-            migration_102_103, migration_106_107,
+            migration_102_103, migration_105_106, migration_106_107,
         )
     }
 
@@ -499,22 +498,6 @@ object DatabaseMigrations {
     )
     class Migration_64_65 : AutoMigrationSpec
 
-    @Suppress("ClassName")
-    @DeleteTable(tableName = "ai_provider_profiles")
-    @DeleteTable(tableName = "ai_model_profiles")
-    @DeleteTable(tableName = "ai_task_presets")
-    @DeleteTable(tableName = "ai_artifacts")
-    @DeleteTable(tableName = "ai_chat_conversations")
-    @DeleteTable(tableName = "ai_chat_messages")
-    @DeleteTable(tableName = "ai_memory")
-    @DeleteTable(tableName = "ai_prompt_presets")
-    @DeleteTable(tableName = "book_character_profiles")
-    @DeleteTable(tableName = "book_character_events")
-    @DeleteTable(tableName = "book_character_relations")
-    @DeleteTable(tableName = "book_knowledge_entries")
-    @DeleteTable(tableName = "book_outline_nodes")
-    class Migration_105_106 : AutoMigrationSpec
-
     //已在书架的书没有 listIntro, 搜索缓存里还留着的就补回去(缓存只保留一天, 补不到的回落到 intro)
     @Suppress("ClassName")
     class Migration_100_101 : AutoMigrationSpec {
@@ -681,6 +664,26 @@ object DatabaseMigrations {
             )
             db.execSQL("DROP TABLE readRecordSession")
             db.execSQL("ALTER TABLE readRecordSession_migrated RENAME TO readRecordSession")
+        }
+    }
+
+    // v4-B4：AI/翻译/上游人物链全量拔除 —— 删除 13 张遗留表（表清单与 B4.3 @DeleteTable 一致；
+    // 因 106.json 快照缺失、自动迁移链无法重建，改手写）
+    private val migration_105_106 = object : Migration(105, 106) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP TABLE IF EXISTS `ai_provider_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_model_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_task_presets`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_artifacts`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_chat_conversations`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_chat_messages`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_memory`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_prompt_presets`")
+            db.execSQL("DROP TABLE IF EXISTS `book_character_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `book_character_events`")
+            db.execSQL("DROP TABLE IF EXISTS `book_character_relations`")
+            db.execSQL("DROP TABLE IF EXISTS `book_knowledge_entries`")
+            db.execSQL("DROP TABLE IF EXISTS `book_outline_nodes`")
         }
     }
 
