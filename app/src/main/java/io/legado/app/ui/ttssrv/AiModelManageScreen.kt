@@ -104,9 +104,9 @@ private sealed interface TestUi {
 }
 
 private val STAGE_CARDS = listOf(
-    "stage1" to "话语分析",
-    "stage2" to "话语归属与人物",
-    "stage4" to "历史人物比对",
+    "stage1" to "stage1 话语选号",
+    "stage2" to "stage2 角色归并",
+    "stage4" to "stage4 同名判定",
     "emotion" to "情绪分析",
 )
 

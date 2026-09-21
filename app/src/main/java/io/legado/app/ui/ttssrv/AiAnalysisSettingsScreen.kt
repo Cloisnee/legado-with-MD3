@@ -20,6 +20,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -28,6 +29,7 @@ import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
@@ -49,10 +51,10 @@ fun AiAnalysisSettingsRouteScreen(onBackClick: () -> Unit) {
 }
 
 private enum class PromptTarget(val title: String, val key: String) {
-    Stage1("第1阶段提示词（话语选号）", "stage1"),
-    Stage2("第2阶段提示词（角色归并）", "stage2"),
-    Stage4("第4阶段提示词（同名判定）", "stage4"),
-    Emotion("情绪提示词", "emotion"),
+    Stage1("stage1 话语选号 提示词", "stage1"),
+    Stage2("stage2 角色归并 提示词", "stage2"),
+    Stage4("stage4 同名判定 提示词", "stage4"),
+    Emotion("情绪分析 提示词", "emotion"),
 }
 
 private fun AnalysisConfigStore.Config.withPrompt(key: String, value: String): AnalysisConfigStore.Config =
@@ -128,6 +130,12 @@ fun AiAnalysisSettingsScreen(
                         description = "预合成前等待本章分析就绪 · ${cfg.waitAnalysisSec} 秒",
                         onClick = { showWait = true },
                     )
+                    TinySwitchSettingItem(
+                        title = "先用默认声线出声",
+                        description = "开：分析未就绪先出声（默认声线；重进本章即切换）；关：等待分析就绪再出声（上限=上方等待秒数）",
+                        checked = cfg.fallbackDefaultVoice,
+                        onCheckedChange = { v -> update { it.copy(fallbackDefaultVoice = v) } },
+                    )
                 }
             }
             item {
@@ -136,7 +144,9 @@ fun AiAnalysisSettingsScreen(
                         title = PromptTarget.Stage1.title,
                         description = promptDesc(cfg.stage1Prompt),
                         onClick = {
-                            promptDraft = cfg.stage1Prompt
+                            promptDraft = cfg.stage1Prompt.ifBlank {
+                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage1.key)
+                            }
                             promptTarget = PromptTarget.Stage1
                         },
                     )
@@ -144,7 +154,9 @@ fun AiAnalysisSettingsScreen(
                         title = PromptTarget.Stage2.title,
                         description = promptDesc(cfg.stage2Prompt),
                         onClick = {
-                            promptDraft = cfg.stage2Prompt
+                            promptDraft = cfg.stage2Prompt.ifBlank {
+                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage2.key)
+                            }
                             promptTarget = PromptTarget.Stage2
                         },
                     )
@@ -152,7 +164,9 @@ fun AiAnalysisSettingsScreen(
                         title = PromptTarget.Stage4.title,
                         description = promptDesc(cfg.stage4Prompt),
                         onClick = {
-                            promptDraft = cfg.stage4Prompt
+                            promptDraft = cfg.stage4Prompt.ifBlank {
+                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage4.key)
+                            }
                             promptTarget = PromptTarget.Stage4
                         },
                     )
@@ -160,7 +174,9 @@ fun AiAnalysisSettingsScreen(
                         title = PromptTarget.Emotion.title,
                         description = promptDesc(cfg.emotionPrompt),
                         onClick = {
-                            promptDraft = cfg.emotionPrompt
+                            promptDraft = cfg.emotionPrompt.ifBlank {
+                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Emotion.key)
+                            }
                             promptTarget = PromptTarget.Emotion
                         },
                     )
@@ -202,7 +218,13 @@ fun AiAnalysisSettingsScreen(
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             AppText(
-                text = "留空 = 使用内置默认提示词；保存后下次分析生效",
+                text = when (target) {
+                    PromptTarget.Stage4 ->
+                        "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
+                    PromptTarget.Emotion ->
+                        "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"
+                    else -> "已载入内置默认文本，可直接编辑；保存后下次分析生效"
+                },
                 style = LegadoTheme.typography.labelSmall,
                 color = LegadoTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -221,15 +243,20 @@ fun AiAnalysisSettingsScreen(
                 title = "保存",
                 onClick = {
                     val k = promptTarget ?: return@TinyClickableSettingItem
+                    val def = SpeechAnalysisPipelineV3.defaultPrompt(k.key).trim()
+                    // 与内置默认一致时存空串（保持「内置默认」态，便于后续随内置更新）
+                    val v = if (promptDraft.trim() == def) "" else promptDraft
                     promptTarget = null
-                    update { it.withPrompt(k.key, promptDraft) }
+                    update { it.withPrompt(k.key, v) }
                     context.toastOnUi("已保存提示词")
                 },
             )
             TinyClickableSettingItem(
-                title = "恢复内置默认（清空）",
-                description = "清空后使用脚本内置默认提示词",
-                onClick = { promptDraft = "" },
+                title = "恢复内置默认",
+                description = "将上方文本重置为内置默认提示词（可继续编辑）",
+                onClick = {
+                    promptTarget?.let { promptDraft = SpeechAnalysisPipelineV3.defaultPrompt(it.key) }
+                },
             )
         }
     }

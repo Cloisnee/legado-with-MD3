@@ -50,6 +50,15 @@ class SpeechAnalysisPipelineV3(
     companion object {
         const val RESOLVER_VERSION = "v3-script-1"
 
+        /** 内置默认提示词（「AI 分析设置」页载入编辑器用）；key: stage1/stage2/stage4/emotion。
+         *  stage4 含 %ROLE% 占位（角色名）、情绪含 %VOCAB% 占位（情绪词表），运行时自动替换。 */
+        fun defaultPrompt(key: String): String = when (key) {
+            "stage1" -> DEFAULT_STAGE1_PROMPT
+            "stage2" -> DEFAULT_STAGE2_PROMPT
+            "stage4" -> DEFAULT_STAGE4_HEAD
+            else -> DEFAULT_EMOTION_PROMPT
+        }
+
         private val EMOTIONS = listOf("平静", "愉快", "悲伤", "愤怒", "恐惧", "惊讶", "厌恶", "严肃", "温柔", "鄙夷")
 
         /** 裸类属词库（脚本 BARE_CLASS_WORDS，另有外挂 bare_words.json 合流） */
@@ -1404,7 +1413,7 @@ class SpeechAnalysisPipelineV3(
         descs: String,
         failHint: String,
     ): String = buildString {
-        append(cfgText.ifBlank { DEFAULT_STAGE4_HEAD.replace("%ROLE%", roleName) })
+        append((cfgText.ifBlank { DEFAULT_STAGE4_HEAD }).replace("%ROLE%", roleName))
         append("\n\n【长文本】\n").append(context)
         append("\n\n【历史角色列表】\n").append(descs)
         append("\n\n").append(DEFAULT_STAGE4_RULES)

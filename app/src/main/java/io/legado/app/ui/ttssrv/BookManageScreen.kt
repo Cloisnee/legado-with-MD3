@@ -369,7 +369,7 @@ fun BookManageScreen(
                                         )
                                     }
                                     RoundDropdownMenuItem(
-                                        text = "删除书籍…",
+                                        text = "删除书籍",
                                         onClick = {
                                             dismiss()
                                             showDeleteBookSheet = true
@@ -429,7 +429,7 @@ fun BookManageScreen(
                                         )
                                     }
                                     RoundDropdownMenuItem(
-                                        text = "管理章节（删除 / 回滚）…",
+                                        text = "管理章节（删除 / 回滚）",
                                         onClick = {
                                             dismiss()
                                             showChapterSheet = true

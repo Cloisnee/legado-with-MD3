@@ -3052,7 +3052,7 @@ private fun SheetField(label: String, value: String, onChange: (String) -> Unit)
  * 「下拉 + 底部新增分组卡片」选择器（观感对齐 朗读设置 → 播放器背景 的卡片下拉）。
  *
  * 用于新建条目弹窗的一级/二级分组：不用手输完整分组名，直接从已有分组里挑；
- * 想建新分组时点弹窗**最底部**的「新增分组…」卡片，再去命名。
+ * 想建新分组时点弹窗**最底部**的「新增分组」卡片，再去命名。
  * [enabled] = false 时整行不可点（例如尚未选一级分组时的二级分组行）。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -3117,7 +3117,7 @@ private fun NeGroupPickerRow(
                 )
             }
             RoundDropdownMenuItem(
-                text = "新增分组…",
+                text = "新增分组",
                 onClick = {
                     dismiss()
                     onCreate()

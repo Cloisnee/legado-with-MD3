@@ -177,9 +177,15 @@ fun MyScreen(
             ) {
                 ClickableSettingItem(
                     title = "模型管理",
-                    description = "服务商 / 模型 / 文本分析阶段配",
+                    description = "模型库 / 模型分配 / 文本分析",
                     imageVector = Icons.Default.Tune,
                     onClick = { onNavigate(PrefClickEvent.OpenAiModelManage) }
+                )
+                ClickableSettingItem(
+                    title = "AI 分析设置",
+                    description = "请求 / 提示词 / 取文与输出",
+                    imageVector = Icons.Default.AutoAwesome,
+                    onClick = { onNavigate(PrefClickEvent.OpenAiAnalysisSettings) }
                 )
             }
 
@@ -187,32 +193,26 @@ fun MyScreen(
                 title = "朗读"
             ) {
                 ClickableSettingItem(
-                    title = stringResource(R.string.read_aloud_engines_and_voices),
-                    description = "声线插件 · 配置列表 · 内置引擎",
-                    imageVector = Icons.Default.RecordVoiceOver,
-                    onClick = { onNavigate(PrefClickEvent.OpenTtsServerCenter) }
-                )
-                ClickableSettingItem(
                     title = stringResource(R.string.aloud_config),
-                    description = "界面 / 播放行为 / 语音与分析 / 性能",
+                    description = "界面 / 播放行为 / 其他",
                     imageVector = Icons.Default.Settings,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudSettings) }
                 )
                 ClickableSettingItem(
-                    title = "AI 分析设置",
-                    description = "统一超时 · 提示词 · 取文与输出",
-                    imageVector = Icons.Default.AutoAwesome,
-                    onClick = { onNavigate(PrefClickEvent.OpenAiAnalysisSettings) }
+                    title = stringResource(R.string.read_aloud_engines_and_voices),
+                    description = "音色插件 / 配置列表 / 内置引擎",
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    onClick = { onNavigate(PrefClickEvent.OpenTtsServerCenter) }
                 )
                 ClickableSettingItem(
                     title = "角色与剧本",
-                    description = "角色 · 剧本 · 声线 / 改标签 / 章节管理",
+                    description = "角色管理 / 书籍管理 / 声线 / 改标签 / 章节管理",
                     imageVector = Icons.Default.TheaterComedy,
                     onClick = { onNavigate(PrefClickEvent.OpenRoleScriptManage) }
                 )
                 ClickableSettingItem(
                     title = stringResource(R.string.tts_cache_manage),
-                    description = "查看朗读 / 合成操作日志",
+                    description = "朗读分析流程 / 音频缓存",
                     imageVector = Icons.Default.BugReport,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
                 )

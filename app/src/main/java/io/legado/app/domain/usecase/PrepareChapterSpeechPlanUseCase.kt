@@ -6,13 +6,18 @@ import io.legado.app.domain.gateway.ChapterSpeechGateway
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.readaloud.BookVoiceBinding
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
+import io.legado.app.domain.model.readaloud.ChapterSpeechAnalysis
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
+import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import kotlin.random.Random
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 
 /**
  * Builds the persisted speech plan used by a read-aloud session.
@@ -28,6 +33,7 @@ class PrepareChapterSpeechPlanUseCase(
     private val voiceGateway: ReadAloudVoiceGateway,
     private val recordsStore: ReadAloudDataRepository,
     private val pipeline: SpeechAnalysisPipelineV3,
+    private val analysisConfig: AnalysisConfigStore,
 ) {
 
     suspend operator fun invoke(
@@ -89,12 +95,42 @@ class PrepareChapterSpeechPlanUseCase(
             )
         }
 
-        // ---- 快速链：本地规则 v2 先行（先出声不等 AI） ----
-        // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
-        AppLog.putAudio(
-            "【音频缓存】第${chapterIndex + 1}章 朗读分析未就绪，先用默认声线出声" +
-                "（分析完成后重进本章即切换）"
-        )
+        // ---- B10.4·S1：按「先用默认声线出声」开关决定：等待分析就绪 或 立即快速链出声 ----
+        val cfg = runCatching { analysisConfig.load() }.getOrDefault(AnalysisConfigStore.Config())
+        if (!cfg.fallbackDefaultVoice) {
+            AppLog.putAudio("【音频缓存】第${chapterIndex + 1}章 等待分析就绪（最长 ${cfg.waitAnalysisSec} 秒）…")
+            val waited = awaitAnalysisReady(
+                bookUrl = bookUrl,
+                chapterIndex = chapterIndex,
+                contentHash = contentHash,
+                timeoutMs = cfg.waitAnalysisSec * 1000L,
+            )
+            if (waited != null) {
+                val segments = runCatching { chapterSpeechGateway.getSegments(waited.id) }
+                    .getOrDefault(emptyList())
+                if (segments.isNotEmpty()) {
+                    AppLog.put("多角色计划：等待后就绪，消费 V3 剧本（${segments.size} 段）")
+                    return buildSpeechPlan(
+                        bookUrl = bookUrl,
+                        segments = segments,
+                        preferredDefaultVoiceId = preferredDefaultVoiceId,
+                        useMultiSpeaker = useMultiSpeaker,
+                        voiceOverrides = overrides,
+                    )
+                }
+            }
+            AppLog.putAudio(
+                "【音频缓存】第${chapterIndex + 1}章 等待分析未就绪（超时），先用默认声线出声" +
+                    "（分析完成后重进本章即切换）"
+            )
+        } else {
+            // 快速链：本地规则 v2 先行（先出声不等 AI）
+            // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
+            AppLog.putAudio(
+                "【音频缓存】第${chapterIndex + 1}章 朗读分析未就绪，先用默认声线出声" +
+                    "（分析完成后重进本章即切换）"
+            )
+        }
         val local = pipeline.quickLocalSegments(paragraphs)
         return buildSpeechPlan(
             bookUrl = bookUrl,
@@ -103,6 +139,32 @@ class PrepareChapterSpeechPlanUseCase(
             useMultiSpeaker = useMultiSpeaker,
             voiceOverrides = overrides,
         )
+    }
+
+    /** 等待本章 V3 分析就绪（最长 [timeoutMs]）；由设置开关「关=等待分析后再出声」调用 */
+    private suspend fun awaitAnalysisReady(
+        bookUrl: String,
+        chapterIndex: Int,
+        contentHash: String,
+        timeoutMs: Long,
+    ): ChapterSpeechAnalysis? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val v3 = runCatching {
+                chapterSpeechGateway.getAnalysis(
+                    bookUrl = bookUrl,
+                    chapterIndex = chapterIndex,
+                    contentHash = contentHash,
+                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
+                )
+            }.getOrNull()
+            if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
+                return v3
+            }
+            if (System.currentTimeMillis() >= deadline) return null
+            currentCoroutineContext().ensureActive()
+            delay(1_000)
+        }
     }
 
     /** 角色记录库 + 声线库分组 → 声线覆盖表：narrator / duihuaA / duihuaB + 角色名→标签 */
