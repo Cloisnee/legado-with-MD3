@@ -28,7 +28,7 @@ import kotlin.math.abs
 /**
  * 分析管线 V3 —— 复刻自研朗读脚本（重构 1.4.9.x）四阶段流程（第三阶段已按甲方要求去除）：
  *
- *  触发：调度器按“预加载窗口”驱动；连续性（上一章已分析）决定第1阶段是否走 AI 选号。
+ *  触发：调度器按“预加载窗口”驱动；连续性（上一章为最近完成解析章）决定第1阶段是否走 AI 选号。
  *  A 话语分析：本地规则 v2（新书首章 / 非连续章 / 队列空 / AI失败 → 快速路径）或 AI 选号
  *    （〖第N段〗+[n] 编号；校验复刻=段号/区间/越界/重叠全量收集→failHint 顺延重试；装配=按号截原文、零改写）。
  *  B 归属+人物：必须走 AI。入参=前情提要+本章〖NN〗〔〕+后续剧情（按完整段落取、上限可配、无人物表）；
@@ -298,6 +298,8 @@ class SpeechAnalysisPipelineV3(
                     writeFileArtifacts(bookName, chapterIndex, bookUrl, cached)
                     AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】缓存命中，已补写剧本文件")
                 }
+                // B17：缓存命中也推进「最近完成解析章」（顺读穿过缓存段不断链）
+                if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
                 return@withContext ChapterSpeechAnalysisResult(existing, cached, true)
             }
         }
@@ -314,9 +316,18 @@ class SpeechAnalysisPipelineV3(
 
         val cfg = configStore.load()
         val records0 = dataRepository.loadBookRecords(bookName)
-        val lastCh = dataRepository.lastAnalyzedChapter(bookName)
-        val isContinuous = lastCh >= 0 && lastCh == chapterIndex - 1
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】开始：连续=$isContinuous 段数=${paragraphs.size}")
+        // B17：连续 =「最近一次完成解析的章节 == 上一章」（顺读=接上章；跳读/回跳=false → 第1阶段走本地规则）
+        val tailCh = dataRepository.lastResolvedChapter(bookName)
+        val isContinuous = tailCh >= 0 && tailCh == chapterIndex - 1
+        val contLabel = when {
+            isContinuous -> "接上章"
+            chapterIndex == 0 -> "首章"
+            tailCh < 0 -> "跳读；上次分析=无"
+            tailCh > chapterIndex -> "回跳；上次分析=第${tailCh + 1}章"
+            tailCh == chapterIndex -> "重析；上次分析=第${tailCh + 1}章"
+            else -> "跳读；上次分析=第${tailCh + 1}章"
+        }
+        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】开始：连续=$isContinuous（$contLabel） 段数=${paragraphs.size}")
 
         // ===== A 话语分析 =====
         val t0 = System.currentTimeMillis()
@@ -414,6 +425,8 @@ class SpeechAnalysisPipelineV3(
         // ===== 文件产物：all_clean_text / chapter_cache / book_rev（供角色管理/书籍管理读取） =====
         val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound)
         AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】剧本文件写入=$fileOk")
+        // B17：完成解析 → 推进「最近完成解析章」（顺读 / 跳读 / 回跳 判定依据）
+        if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
         ChapterSpeechAnalysisResult(analysis, bound, false)
     }
 
@@ -487,6 +500,8 @@ class SpeechAnalysisPipelineV3(
         } else {
             AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填成功：${segments.size} 段（免重析）")
         }
+        // B17：回填复用也算完成解析 → 推进「最近完成解析章」
+        dataRepository.markChapterResolved(name, chapterIndex)
         // B10.5·Q3 换源自愈：把复用结果落到当前 bookUrl 的缓存键（已存在则跳过）
         dataRepository.ensureChapterCacheForUrl(name, bookUrl, chapterIndex, renderScriptForStore(segments))
         ChapterSpeechAnalysisResult(analysis, segments, true)

@@ -68,6 +68,8 @@ class PrepareChapterSpeechPlanUseCase(
             }
             if (segments.isNotEmpty()) {
                 AppLog.put("多角色计划：消费 V3 剧本（${v3.status.storageValue}，${segments.size} 段）")
+                // B17：消费 V3 = 该章已解析 → 推进「最近完成解析章」（顺读穿过缓存段不断链）
+                if (bookName.isNotBlank()) recordsStore.markChapterResolved(bookName, chapterIndex)
                 return buildSpeechPlan(
                     bookUrl = bookUrl,
                     segments = segments,

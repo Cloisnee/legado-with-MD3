@@ -1107,16 +1107,32 @@ class ReadAloudDataRepository(private val app: Application) {
             ok
         }
 
-    /** 最近已分析章节（以剧本文件里的 [chapter:N] 标记为准；无则 -1）——连续性判定用 */
-    suspend fun lastAnalyzedChapter(book: String): Int = withContext(Dispatchers.IO) {
-        val txt = readText(bookFile(book, "all_clean_text_$book.txt"))
-        if (txt.isEmpty()) return@withContext -1
-        var max = -1
-        for (line in txt.split("\n")) {
-            val n = CHAPTER_MARKER.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: continue
-            if (n > max) max = n
+    /**
+     * B17：最近一次「完成解析」的章节（0 基；-1=无）——连续性判定用。
+     * 语义：顺读接续（最近解析章 == 上一章）→ true；跳读/回跳 → false。
+     * 由 新分析（管线完成）/ 回填复用 / 缓存命中 三条路经 [markChapterResolved] 推进。
+     * （取代旧实现：以 all_clean_text 的 [chapter:N] 最大标记为准——旧残留会干扰判定）
+     */
+    suspend fun lastResolvedChapter(book: String): Int = withContext(Dispatchers.IO) {
+        if (book.isBlank()) return@withContext -1
+        runCatching {
+            val f = bookFile(book, "analyze_state.$book.json")
+            if (!f.exists()) -1 else JSONObject(readText(f)).optInt("lastChapter", -1)
+        }.getOrDefault(-1)
+    }
+
+    /** B17：标记某章完成解析（三条路共用；落盘 <书>/analyze_state.<书>.json） */
+    suspend fun markChapterResolved(book: String, chapterIndex: Int) {
+        if (book.isBlank()) return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val f = bookFile(book, "analyze_state.$book.json")
+                val o = runCatching { JSONObject(readText(f)) }.getOrDefault(JSONObject())
+                o.put("lastChapter", chapterIndex)
+                o.put("updatedAt", System.currentTimeMillis())
+                writeText(f, o.toString())
+            }
         }
-        max
     }
 
     /** 读取「已选中」声线库分组（activeVoiceBanks ↔ voices.json；tags 保持列表顺序=配置列表显示顺序，首=置顶） */
