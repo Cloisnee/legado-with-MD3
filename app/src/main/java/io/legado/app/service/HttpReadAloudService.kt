@@ -1,6 +1,7 @@
 package io.legado.app.service
 
 import android.annotation.SuppressLint
+import android.app.Application
 import android.app.PendingIntent
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
@@ -180,7 +181,7 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     // ---- B11 响度均衡（播放端 LoudnessEnhancer；条目增益随 MediaItem.mediaId 携带）----
     private val loudness by lazy { GlobalContext.get().get<LoudnessNormalizer>() }
-    private val loudnessRepo by lazy { TtsServerCenterRepository(appCtx) }
+    private val loudnessRepo by lazy { TtsServerCenterRepository(applicationContext as Application) }
     private var loudnessBalanceOn = false
     private var loudnessEnhancer: LoudnessEnhancer? = null
     // [TTS-Server 移植] 内嵌引擎合成器（engineType = tts_server）
