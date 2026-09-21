@@ -22,7 +22,7 @@ object DatabaseMigrations {
             migration_35_36, migration_36_37, migration_37_38, migration_38_39,
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
-            migration_102_103,
+            migration_102_103, migration_106_107,
         )
     }
 
@@ -515,13 +515,6 @@ object DatabaseMigrations {
     @DeleteTable(tableName = "book_outline_nodes")
     class Migration_105_106 : AutoMigrationSpec
 
-    // v4-B9：book_content_processes 拔除 AI 遗留列（aiArtifactId / sourceContentHash；原索引随列一并移除）
-    @DeleteColumn.Entries(
-        DeleteColumn(tableName = "book_content_processes", columnName = "aiArtifactId"),
-        DeleteColumn(tableName = "book_content_processes", columnName = "sourceContentHash"),
-    )
-    class Migration_106_107 : AutoMigrationSpec
-
     //已在书架的书没有 listIntro, 搜索缓存里还留着的就补回去(缓存只保留一天, 补不到的回落到 intro)
     @Suppress("ClassName")
     class Migration_100_101 : AutoMigrationSpec {
@@ -688,6 +681,59 @@ object DatabaseMigrations {
             )
             db.execSQL("DROP TABLE readRecordSession")
             db.execSQL("ALTER TABLE readRecordSession_migrated RENAME TO readRecordSession")
+        }
+    }
+
+    // v4-B9：book_content_processes 降列（拔除 aiArtifactId / sourceContentHash；表重建式手写迁移，
+    // 自动迁移需历史 schema 106.json，本仓快照止于 105）
+    private val migration_106_107 = object : Migration(106, 107) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `book_content_processes_new` (
+                    `id` TEXT NOT NULL,
+                    `bookUrl` TEXT NOT NULL,
+                    `chapterIndex` INTEGER,
+                    `kind` TEXT NOT NULL,
+                    `stage` TEXT NOT NULL,
+                    `target` TEXT NOT NULL,
+                    `anchorJson` TEXT NOT NULL,
+                    `actionJson` TEXT NOT NULL,
+                    `styleJson` TEXT,
+                    `source` TEXT NOT NULL,
+                    `enabled` INTEGER NOT NULL,
+                    `sortOrder` INTEGER NOT NULL,
+                    `status` INTEGER NOT NULL,
+                    `schemaVersion` INTEGER NOT NULL,
+                    `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO `book_content_processes_new` (
+                    `id`, `bookUrl`, `chapterIndex`, `kind`, `stage`, `target`,
+                    `anchorJson`, `actionJson`, `styleJson`, `source`, `enabled`,
+                    `sortOrder`, `status`, `schemaVersion`, `createdAt`, `updatedAt`
+                )
+                SELECT `id`, `bookUrl`, `chapterIndex`, `kind`, `stage`, `target`,
+                    `anchorJson`, `actionJson`, `styleJson`, `source`, `enabled`,
+                    `sortOrder`, `status`, `schemaVersion`, `createdAt`, `updatedAt`
+                FROM `book_content_processes`
+                """.trimIndent()
+            )
+            db.execSQL("DROP TABLE `book_content_processes`")
+            db.execSQL("ALTER TABLE `book_content_processes_new` RENAME TO `book_content_processes`")
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_book_content_processes_bookUrl_chapterIndex_enabled_sortOrder` " +
+                    "ON `book_content_processes` (`bookUrl`, `chapterIndex`, `enabled`, `sortOrder`)"
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_book_content_processes_bookUrl_kind` " +
+                    "ON `book_content_processes` (`bookUrl`, `kind`)"
+            )
         }
     }
 }

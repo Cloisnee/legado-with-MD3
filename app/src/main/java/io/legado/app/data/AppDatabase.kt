@@ -171,9 +171,7 @@ val appDb by lazy {
         AutoMigration(from = 103, to = 104),
         AutoMigration(from = 104, to = 105),
         // v4-B4：AI/翻译/上游人物链 全量拔除 —— 删除 13 张遗留表
-        AutoMigration(from = 105, to = 106, spec = DatabaseMigrations.Migration_105_106::class),
-        // v4-B9：book_content_processes 降列（aiArtifactId / sourceContentHash）
-        AutoMigration(from = 106, to = 107, spec = DatabaseMigrations.Migration_106_107::class)
+        AutoMigration(from = 105, to = 106, spec = DatabaseMigrations.Migration_105_106::class)
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
