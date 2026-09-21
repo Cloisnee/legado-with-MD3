@@ -15,6 +15,7 @@ import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -57,10 +58,14 @@ class PrepareChapterSpeechPlanUseCase(
                 resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
             )
         }.onFailure {
+            if (it is CancellationException) throw it
             AppLog.put("读取 V3 剧本失败，走本地快速链: ${it.localizedMessage}", it)
         }.getOrNull()
         if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
-            val segments = runCatching { chapterSpeechGateway.getSegments(v3.id) }.getOrDefault(emptyList())
+            val segments = runCatching { chapterSpeechGateway.getSegments(v3.id) }.getOrElse {
+                if (it is CancellationException) throw it
+                emptyList()
+            }
             if (segments.isNotEmpty()) {
                 AppLog.put("多角色计划：消费 V3 剧本（${v3.status.storageValue}，${segments.size} 段）")
                 return buildSpeechPlan(
@@ -83,6 +88,7 @@ class PrepareChapterSpeechPlanUseCase(
                 logMiss = false,
             )
         }.onFailure {
+            if (it is CancellationException) throw it
             AppLog.putAnalysis("本地剧本回填异常: ${it.localizedMessage}", it)
         }.getOrNull()
         if (restored != null && restored.segments.isNotEmpty()) {
@@ -97,7 +103,10 @@ class PrepareChapterSpeechPlanUseCase(
         }
 
         // ---- B10.4·S1：按「先用默认声线出声」开关决定：等待分析就绪 或 立即快速链出声 ----
-        val cfg = runCatching { analysisConfig.load() }.getOrDefault(AnalysisConfigStore.Config())
+        val cfg = runCatching { analysisConfig.load() }.getOrElse {
+            if (it is CancellationException) throw it
+            AnalysisConfigStore.Config()
+        }
         if (!cfg.fallbackDefaultVoice) {
             AppLog.putAudio("【音频缓存】第${chapterIndex + 1}章 等待分析就绪（最长 ${cfg.waitAnalysisSec} 秒）…")
             val waited = awaitAnalysisReady(
@@ -108,7 +117,10 @@ class PrepareChapterSpeechPlanUseCase(
             )
             if (waited != null) {
                 val segments = runCatching { chapterSpeechGateway.getSegments(waited.id) }
-                    .getOrDefault(emptyList())
+                    .getOrElse {
+                        if (it is CancellationException) throw it
+                        emptyList()
+                    }
                 if (segments.isNotEmpty()) {
                     AppLog.put("多角色计划：等待后就绪，消费 V3 剧本（${segments.size} 段）")
                     // B10.4.3：等待期间分析刚写入角色声线分配——重算覆盖表，避免整章落到「默认对话」声线
@@ -206,6 +218,7 @@ class PrepareChapterSpeechPlanUseCase(
                 }
             }
         }.onFailure {
+            if (it is CancellationException) throw it
             AppLog.put("声线覆盖表构建失败: ${it.localizedMessage}", it)
         }.getOrDefault(emptyMap())
     }

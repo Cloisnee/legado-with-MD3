@@ -423,12 +423,8 @@ abstract class BaseReadAloudService : BaseService(),
                 .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
             var preparedContentChapterPositions: List<Int?> =
                 preparedParagraphs.map { it.chapterPosition }
-            val preparedSpeechPlan = buildSpeechPlan(
-                bookUrl = ReadBook.book?.bookUrl.orEmpty(),
-                chapterIndex = ReadBook.durChapterIndex,
-                paragraphs = preparedChapter.canonicalSpeechParagraphs(),
-            )
-            // V4 分析调度：本地快速链先出声，脚本复刻管线后台补全 当前章+预加载窗口（不阻塞播放）
+            // B10.4.4：先启动分析调度（本会话的分析生产源），再构建播放计划——
+            // 「等分析就绪再出声」模式下计划构建会阻塞等待分析结果，若调度后启动会形成自锁
             runCatching {
                 val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
                 val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
@@ -438,6 +434,11 @@ abstract class BaseReadAloudService : BaseService(),
             }.onFailure {
                 AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
             }
+            val preparedSpeechPlan = buildSpeechPlan(
+                bookUrl = ReadBook.book?.bookUrl.orEmpty(),
+                chapterIndex = ReadBook.durChapterIndex,
+                paragraphs = preparedChapter.canonicalSpeechParagraphs(),
+            )
             if (generation != prepareReadAloudGeneration) return@execute
             var preparedPlaybackQueue = runCatching {
                 ReadAloudPlaybackQueue.from(preparedSpeechPlan)
