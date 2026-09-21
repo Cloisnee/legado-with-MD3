@@ -342,7 +342,9 @@ class SpeechAnalysisPipelineV3(
                 usedAi2 = true
                 entries = s2.chars
                 segments = applyStage2(segments, s2.seqMap)
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）")
+                val roleNames = entries.map { it.name }
+                val roleList = if (roleNames.isEmpty()) "" else "：${joinCapped(roleNames)}"
+                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）$roleList")
             } else {
                 AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】失败：话语改用默认对话(duihuaA/duihuaB)发声")
             }
