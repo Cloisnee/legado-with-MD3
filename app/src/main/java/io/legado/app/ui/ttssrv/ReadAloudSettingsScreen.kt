@@ -241,7 +241,7 @@ fun ReadAloudSettingsScreen(
                     )
                     TinySwitchSettingItem(
                         title = "响度均衡",
-                        description = "统一不同插件声线的响度（处理逻辑将在后续版本生效）",
+                        description = "自动学习各声线平均音量，播放时拉平不同插件声线的响度（±6dB 内）",
                         checked = loudness,
                         onCheckedChange = { v ->
                             loudness = v

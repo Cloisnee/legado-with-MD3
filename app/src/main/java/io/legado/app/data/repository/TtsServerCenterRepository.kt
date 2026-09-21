@@ -1551,12 +1551,15 @@ class TtsServerCenterRepository(private val app: Application) {
     private fun extSettingsFile(): File =
         File(TtsDirProvider.baseDir(ctx), "_store/readaloud_ext.json")
 
+    /** 同步读（播放服务路径用；文件极小） */
+    fun readLoudnessBalanceNow(): Boolean = runCatching {
+        val f = extSettingsFile()
+        if (!f.exists()) false
+        else JSONObject(f.readText().removePrefix("\uFEFF")).optBoolean("loudnessBalance", false)
+    }.getOrDefault(false)
+
     suspend fun getLoudnessBalance(): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            val f = extSettingsFile()
-            if (!f.exists()) false
-            else JSONObject(f.readText().removePrefix("\uFEFF")).optBoolean("loudnessBalance", false)
-        }.getOrDefault(false)
+        readLoudnessBalanceNow()
     }
 
     suspend fun setLoudnessBalance(value: Boolean): Boolean = withContext(Dispatchers.IO) {

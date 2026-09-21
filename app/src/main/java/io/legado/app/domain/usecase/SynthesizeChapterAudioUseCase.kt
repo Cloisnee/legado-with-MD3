@@ -10,6 +10,7 @@ import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
+import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -34,6 +35,7 @@ class SynthesizeChapterAudioUseCase(
     private val voiceGateway: ReadAloudVoiceGateway,
     private val settingsGateway: ReadAloudSettingsGateway,
     private val syncTtsServerVoices: SyncTtsServerVoicesUseCase,
+    private val loudness: LoudnessNormalizer,
 ) {
 
     data class Result(val done: Int, val failed: Int, val skipped: Int)
@@ -154,6 +156,8 @@ class SynthesizeChapterAudioUseCase(
                     "【音频缓存】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
                         " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}"
                 )
+                // B11 响度均衡：学习该声线响度（异步；失败静默）
+                loudness.measureAsync(voice, file)
             } else {
                 failed++
                 runCatching { file.delete() }

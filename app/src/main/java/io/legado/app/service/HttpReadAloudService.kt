@@ -2,6 +2,7 @@ package io.legado.app.service
 
 import android.annotation.SuppressLint
 import android.app.PendingIntent
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
@@ -10,6 +11,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.cache.CacheDataSink
@@ -59,12 +61,14 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
+import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
 import io.legado.app.help.readaloud.playback.CloudTtsRoleInstructionMapper
+import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import io.legado.app.help.readaloud.playback.SystemTtsFileSynthesizer
 import io.legado.app.model.ReadAloud
@@ -173,6 +177,12 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val cloudTtsAudioSynthesizer by lazy {
         CloudTtsAudioSynthesizer(get(CloudTtsEngineGateway::class.java))
     }
+
+    // ---- B11 响度均衡（播放端 LoudnessEnhancer；条目增益随 MediaItem.mediaId 携带）----
+    private val loudness by lazy { GlobalContext.get().get<LoudnessNormalizer>() }
+    private val loudnessRepo by lazy { TtsServerCenterRepository(appCtx) }
+    private var loudnessBalanceOn = false
+    private var loudnessEnhancer: LoudnessEnhancer? = null
     // [TTS-Server 移植] 内嵌引擎合成器（engineType = tts_server）
     private val ttsServerSynthesizer by lazy {
         com.github.jing332.tts.readaloud.TtsServerSynthesizer(this)
@@ -225,6 +235,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         downloadTask?.cancel()
         preDownloadJob?.cancel()
         exoPlayer.release()
+        loudnessEnhancer?.release()
+        loudnessEnhancer = null
         cache.release()
         val book = ReadBook.book?.name.orEmpty()
         val chapterIndex = readerReadAloudChapter?.chapterIndex ?: -1
@@ -245,6 +257,7 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     override fun play() {
         pageChanged = false
+        refreshLoudnessFlags()
         exoPlayer.stop()
         if (!requestFocus()) return
         if (contentList.isEmpty()) {
@@ -273,6 +286,37 @@ class HttpReadAloudService : BaseReadAloudService(),
         exoPlayer.stop()
         playIndexJob?.cancel()
         preDownloadJob?.cancel()
+    }
+
+    // ---------------- B11 响度均衡 ----------------
+
+    /** 刷新响度均衡开关（每次 play() 读取；运行中改设置 = 下次播放生效） */
+    private fun refreshLoudnessFlags() {
+        loudnessBalanceOn = runCatching { loudnessRepo.readLoudnessBalanceNow() }.getOrDefault(false)
+    }
+
+    /** 应用当前条目的声线增益（mB；0=不调整；未启用=释放） */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun applyLoudnessGain(gainMb: Int) {
+        try {
+            if (!loudnessBalanceOn) {
+                loudnessEnhancer?.release()
+                loudnessEnhancer = null
+                return
+            }
+            if (gainMb == 0) {
+                loudnessEnhancer?.setTargetGain(0)
+                return
+            }
+            if (loudnessEnhancer == null) {
+                loudnessEnhancer = LoudnessEnhancer(exoPlayer.audioSessionId).apply {
+                    setEnabled(true)
+                }
+            }
+            loudnessEnhancer?.setTargetGain(gainMb.coerceIn(-6000, 6000))
+        } catch (e: Exception) {
+            AppLog.putDebug("响度均衡应用失败: ${e.localizedMessage}")
+        }
     }
 
     private fun updateNextPos(naturalCompletion: Boolean = false) {
@@ -422,10 +466,16 @@ class HttpReadAloudService : BaseReadAloudService(),
                         }
                     } else {
                         chapterHit++
+                        // B11 响度均衡：缓存命中且该声线样本不足 → 异步补测（失败静默）
+                        if (loudnessBalanceOn && loudness.needsSamples(routedVoice)) {
+                            loudness.measureAsync(routedVoice, cacheFile)
+                        }
                     }
+                    // B11 响度均衡：条目增益随 MediaItem 携带（切段时应用；未启用=0）
+                    val cueGainMb = if (loudnessBalanceOn) loudness.gainMbFor(routedVoice) else 0
                     val mediaItem = MediaItem.fromUri(
                         Uri.fromFile(if (cacheFile.isValidAudio()) cacheFile else silentFile)
-                    )
+                    ).buildUpon().setMediaId(cueGainMb.toString()).build()
                     launch(Main) {
                         if (readAloudSettings.ttsParagraphInterval > 0) {
                             if (index == nowSpeak && exoPlayer.mediaItemCount == 0) {
@@ -772,6 +822,8 @@ class HttpReadAloudService : BaseReadAloudService(),
             runCatching { cacheFile.delete() }
             return CueSyncResult(CueSyncOutcome.Failed, failReason)
         }
+        // B11 响度均衡：合成完成 → 异步测量并学习（按声线聚合；失败静默）
+        loudness.measureAsync(routedVoice, cacheFile)
         return CueSyncResult(CueSyncOutcome.Stored)
     }
 
@@ -1247,6 +1299,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                 // 准备好
                 if (pause) return
                 exoPlayer.play()
+                // B11 响度均衡：缓冲/就绪时兜底应用当前条目增益
+                applyLoudnessGain(exoPlayer.currentMediaItem?.mediaId?.toIntOrNull() ?: 0)
                 upPlayPos()
             }
 
@@ -1295,6 +1349,8 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        // B11 响度均衡：切段即应用该条目的声线增益（含首个条目的 PLAYLIST_CHANGED 转换）
+        applyLoudnessGain(mediaItem?.mediaId?.toIntOrNull() ?: 0)
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) return
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
             playErrorNo = 0

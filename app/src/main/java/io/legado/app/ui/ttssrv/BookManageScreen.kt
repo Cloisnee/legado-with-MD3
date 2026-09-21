@@ -638,7 +638,8 @@ fun BookManageScreen(
                                 onLongClick = null,
                             ) {
                                 AppText(
-                                    text = row.text,
+                                    // B10.6：旁白/对话统一从卡片边界起始——显示层裁剪行首空白（全角空格等）
+                                    text = row.text.trimStart { it.isWhitespace() || it == '\u3000' },
                                     style = LegadoTheme.typography.bodySmall,
                                     modifier = Modifier
                                         .fillMaxWidth()

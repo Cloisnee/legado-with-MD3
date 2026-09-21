@@ -162,6 +162,7 @@ import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.domain.usecase.RefreshTocUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
@@ -375,6 +376,7 @@ val appModule = module {
     singleOf(::AiModelRepository)
     singleOf(::ReadAloudDataRepository)
     singleOf(::ReadAloudAudioCacheRepository)
+    singleOf(::LoudnessNormalizer)
     singleOf(::SynthesizeChapterAudioUseCase)
     singleOf(::SyncTtsServerVoicesUseCase)
     singleOf(::AiSpeechClient)
