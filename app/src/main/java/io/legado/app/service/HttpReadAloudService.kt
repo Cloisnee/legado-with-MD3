@@ -184,6 +184,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val loudnessRepo by lazy { TtsServerCenterRepository(applicationContext as Application) }
     private var loudnessBalanceOn = false
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var lastLoudnessSummary = ""
     // [TTS-Server 移植] 内嵌引擎合成器（engineType = tts_server）
     private val ttsServerSynthesizer by lazy {
         com.github.jing332.tts.readaloud.TtsServerSynthesizer(this)
@@ -294,6 +295,15 @@ class HttpReadAloudService : BaseReadAloudService(),
     /** 刷新响度均衡开关（每次 play() 读取；运行中改设置 = 下次播放生效） */
     private fun refreshLoudnessFlags() {
         loudnessBalanceOn = runCatching { loudnessRepo.readLoudnessBalanceNow() }.getOrDefault(false)
+        if (!loudnessBalanceOn) return
+        // B11.1：学习进度变化时留一条可见日志（无变化不刷）
+        val voices = loudness.learnedVoiceCount()
+        val samples = loudness.learnedSampleCount()
+        val summary = "$voices|$samples"
+        if (summary != lastLoudnessSummary) {
+            lastLoudnessSummary = summary
+            AppLog.putAudio("【响度均衡】已启用：已学习 $voices 个声线 / $samples 条样本")
+        }
     }
 
     /** 应用当前条目的声线增益（mB；0=不调整；未启用=释放） */
@@ -458,6 +468,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                                     "${cacheFile.length() / 1024}KB " +
                                     "${System.currentTimeMillis() - t0}ms | ${snippet(speakText)}"
                             )
+                            // B11.1 响度均衡：当前章即时合成完成 → 异步测量并学习（原缺口）
+                            loudness.measureAsync(routedVoice, cacheFile)
                         } else {
                             // 失败不落缓存（避免「失败」被当成「已合成」）；播放时用临时静音占位
                             runCatching { cacheFile.delete() }

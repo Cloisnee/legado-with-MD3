@@ -68,6 +68,22 @@ class LoudnessNormalizer(private val app: Application) {
         }.getOrDefault(false)
     }
 
+    /** 已学习声线数（日志展示用） */
+    fun learnedVoiceCount(): Int = synchronized(lock) {
+        runCatching {
+            ensureLoaded()
+            stats.values.count { it.n > 0 }
+        }.getOrDefault(0)
+    }
+
+    /** 已学习样本总数（日志展示用） */
+    fun learnedSampleCount(): Int = synchronized(lock) {
+        runCatching {
+            ensureLoaded()
+            stats.values.sumOf { it.n }
+        }.getOrDefault(0)
+    }
+
     /** 异步测量并学习（同一时刻每声线至多一个测量任务；失败静默） */
     fun measureAsync(voice: ReadAloudVoice, audio: File) {
         val key = voiceKeyOf(voice)
