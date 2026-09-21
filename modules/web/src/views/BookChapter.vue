@@ -113,7 +113,6 @@ import API from '@api'
 import { useLoading } from '@/hooks/loading'
 import { useThrottleFn } from '@vueuse/shared'
 import { isNullOrBlank } from '@/utils/utils'
-import { initXboxGamepad } from '@/utils/xboxGamepad'
 
 const content = ref()
 // loading spinner
@@ -520,11 +519,6 @@ onMounted(async () => {
       document.title = (name as string) + ' | ' + chapters[chapterIndex].title
     }),
   )
-  initXboxGamepad({
-    onToggleCatalog: () => {
-      popCataVisible.value = !popCataVisible.value
-    },
-  })
 })
 
 onUnmounted(() => {

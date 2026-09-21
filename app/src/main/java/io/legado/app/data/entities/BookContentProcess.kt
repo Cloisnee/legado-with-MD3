@@ -9,7 +9,6 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["bookUrl", "chapterIndex", "enabled", "sortOrder"]),
         Index(value = ["bookUrl", "kind"]),
-        Index(value = ["aiArtifactId"]),
     ]
 )
 data class BookContentProcess(
@@ -24,8 +23,6 @@ data class BookContentProcess(
     val actionJson: String,
     val styleJson: String? = null,
     val source: String = SOURCE_USER,
-    val aiArtifactId: String? = null,
-    val sourceContentHash: String? = null,
     val enabled: Boolean = true,
     val sortOrder: Int = 0,
     val status: Int = STATUS_ACTIVE,

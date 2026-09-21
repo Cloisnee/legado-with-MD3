@@ -644,8 +644,29 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 )
             }
 
-            // B13：模型选择模式 —— 左侧 60dp 拖选条（复刻书源管理/配置列表：模型行=单条、厂商行=整块）
-            if (tab == 0 && libCtx == "model" && selModels.isNotEmpty()) {
+            // B15：厂商选择模式 —— 左侧 60dp 拖选条（拖选厂商大卡片）
+            if (tab == 0 && libCtx == "vendor" && selVendors.isNotEmpty()) {
+                DraggableSelectionHandler(
+                    listState = modelLibListState,
+                    items = cfg?.providers.orEmpty(),
+                    selectedIds = selVendors,
+                    onSelectionChange = { selVendors = it },
+                    idProvider = { it.id },
+                    resolveIds = { raw ->
+                        val s = raw as? String
+                        if (s != null && s.startsWith("vendor_") && !s.startsWith("vendor_search_")) {
+                            setOf(s.removePrefix("vendor_"))
+                        } else {
+                            emptySet()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
+            } else if (tab == 0 && libCtx == "model" && selModels.isNotEmpty()) {
+                // B13：模型选择模式 —— 模型行=单条、厂商行=整块
                 DraggableSelectionHandler(
                     listState = modelLibListState,
                     items = cfg?.models.orEmpty(),
