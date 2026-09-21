@@ -62,13 +62,6 @@ class ReadAloudAudioCacheRepository(private val app: Application) {
             .toSet()
     }
 
-    fun hasTitle(book: String, chapterIndex: Int): Boolean =
-        chapterDir(book, chapterIndex).listFiles()?.any {
-            it.isFile &&
-                    ReadAloudAudioCacheKeys.parseSegIndex(it.name) ==
-                    ReadAloudAudioCacheKeys.TITLE_SEG_INDEX
-        } ?: false
-
     /** 扫描缓存根下的书名列表 */
     fun listBooks(): List<String> =
         rootDir().listFiles()

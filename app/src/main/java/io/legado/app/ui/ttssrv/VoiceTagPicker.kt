@@ -64,6 +64,7 @@ fun VoiceTagPickerSheet(
     }
 
     AppModalBottomSheet(
+        animateContentSize = false,
         show = show,
         onDismissRequest = onDismiss,
         title = request?.title ?: "选择声线",

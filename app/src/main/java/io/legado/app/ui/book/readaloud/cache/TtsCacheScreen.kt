@@ -67,7 +67,7 @@ import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.checkBox.AppCheckbox
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
-import io.legado.app.ui.widget.components.tabRow.CardTabRow
+import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
@@ -232,8 +232,7 @@ fun TtsCacheScreen(
                             placeholder = stringResource(R.string.tts_log_search_hint),
                         )
                     }
-                    CardTabRow(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    AppTabRow(
                         tabTitles = listOf(
                             stringResource(R.string.tts_log_tab_analysis),
                             stringResource(R.string.tts_log_tab_audio),
@@ -246,6 +245,7 @@ fun TtsCacheScreen(
                                 )
                             )
                         },
+                        isScrollable = false,
                     )
                 },
             )

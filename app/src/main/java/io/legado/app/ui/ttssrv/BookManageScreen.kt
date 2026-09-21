@@ -531,7 +531,7 @@ fun BookManageScreen(
                         SearchBar(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 2.dp),
+                                .padding(vertical = 2.dp),
                             query = query,
                             onQueryChange = { query = it },
                             placeholder = "搜索本章剧本内容 / 标签",
@@ -709,6 +709,7 @@ fun BookManageScreen(
 
     // ---------------- 章节列表（点选 / 删除） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = showChapterSheet,
         onDismissRequest = { showChapterSheet = false },
         title = "章节列表",
@@ -740,6 +741,7 @@ fun BookManageScreen(
 
     // ---------------- 删除章节 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = deleteChapterTarget != null,
         onDismissRequest = { deleteChapterTarget = null },
         title = "删除第${deleteChapterTarget ?: ""}章",
@@ -783,6 +785,7 @@ fun BookManageScreen(
 
     // ---------------- 删除书籍（全套资产清零） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = showDeleteBookSheet,
         onDismissRequest = { showDeleteBookSheet = false },
         title = "删除书籍",
@@ -826,6 +829,7 @@ fun BookManageScreen(
 
     // ---------------- 导出书籍资产（zip，不含音频） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = showExportAssetSheet,
         onDismissRequest = { showExportAssetSheet = false },
         title = "导出书籍资产",
@@ -890,6 +894,7 @@ fun BookManageScreen(
 
     // ---------------- 换角色面板 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = tagPanelFor != null,
         onDismissRequest = { tagPanelFor = null },
         title = "换角色 · ${tagPanelFor?.size ?: 0} 行",
@@ -914,7 +919,7 @@ fun BookManageScreen(
                 SearchBar(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                        .padding(vertical = 2.dp),
                     query = tagSearch,
                     onQueryChange = { tagSearch = it },
                     placeholder = "搜索人物（本章 / 历史）",
@@ -975,6 +980,7 @@ fun BookManageScreen(
 
     // ---------------- 新增人物 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = newCharDialog,
         onDismissRequest = { newCharDialog = false },
         title = "新增人物",

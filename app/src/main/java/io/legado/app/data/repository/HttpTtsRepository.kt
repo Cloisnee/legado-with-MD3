@@ -19,8 +19,6 @@ class HttpTtsRepository(
 
     fun getAllSync(): List<HttpTTS> = dao.all
 
-    fun getNameSync(id: Long): String? = dao.getName(id)
-
     suspend fun insert(vararg sources: HttpTTS) = withContext(Dispatchers.IO) {
         dao.insert(*sources)
     }

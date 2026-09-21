@@ -675,7 +675,7 @@ fun CharacterManageScreen(
                     SearchBar(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                            .padding(vertical = 2.dp),
                         query = query,
                         onQueryChange = { query = it },
                         placeholder = "搜索：标签 / 名字 / 性别 / 年龄 / 声线",
@@ -756,6 +756,7 @@ fun CharacterManageScreen(
 
     // ---------------- 合并与跟随（选择跟随角色） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = mergeTargetPick,
         onDismissRequest = { mergeTargetPick = false },
         title = "选择跟随角色",
@@ -777,6 +778,7 @@ fun CharacterManageScreen(
 
     // ---------------- 编辑弹窗 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = editIdx != null,
         onDismissRequest = { editIdx = null },
         title = "角色信息",
@@ -870,6 +872,7 @@ fun CharacterManageScreen(
 
     // ---------------- 别名管理 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = aliasSheet,
         onDismissRequest = { aliasSheet = false },
         title = "别名管理",
@@ -1027,6 +1030,7 @@ fun CharacterManageScreen(
 
     // ---------------- 发音人（试听 / 更换声线） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = auditionIdx != null,
         onDismissRequest = { auditionIdx = null },
         title = "发音人",
@@ -1073,6 +1077,7 @@ fun CharacterManageScreen(
 
     // ---------------- 入库（裸属/特殊词库） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = joinLib != null,
         onDismissRequest = { joinLib = null },
         title = "加入词库",

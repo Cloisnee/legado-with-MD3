@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -65,6 +68,7 @@ import io.legado.app.ui.widget.components.AdaptiveSwitch
 import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
+import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
@@ -135,6 +139,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var libCtx by remember { mutableStateOf<String?>(null) }
     var selVendors by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selModels by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val modelLibListState = rememberLazyListState() // B13：模型库拖选条
     var modelScopeVendor by remember { mutableStateOf<String?>(null) }
     val expandedVendors = remember { mutableStateMapOf<String, Boolean>() }
     val vendorQueries = remember { mutableStateMapOf<String, String>() }
@@ -489,6 +494,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             when (tab) {
                 0 -> ModelLibraryPage(
                     config = cfg,
+                    listState = modelLibListState,
                     libActive = libActive,
                     libCtx = libCtx,
                     selVendors = selVendors,
@@ -637,11 +643,39 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     secondaryActions = secondary,
                 )
             }
+
+            // B13：模型选择模式 —— 左侧 60dp 拖选条（复刻书源管理/配置列表：模型行=单条、厂商行=整块）
+            if (tab == 0 && libCtx == "model" && selModels.isNotEmpty()) {
+                DraggableSelectionHandler(
+                    listState = modelLibListState,
+                    items = cfg?.models.orEmpty(),
+                    selectedIds = selModels,
+                    onSelectionChange = { selModels = it },
+                    idProvider = { it.id },
+                    resolveIds = { raw ->
+                        val s = raw as? String
+                        when {
+                            s == null -> emptySet()
+                            s.startsWith("model_") -> setOf(s.removePrefix("model_"))
+                            s.startsWith("vendor_") && !s.startsWith("vendor_search_") ->
+                                cfg?.models.orEmpty()
+                                    .filter { it.providerId == s.removePrefix("vendor_") }
+                                    .map { it.id }.toSet()
+                            else -> emptySet()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
+                )
+            }
         }
     }
 
     // ---------------- 厂商添加/编辑 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = vendorSheet,
         onDismissRequest = { vendorSheet = false },
         title = if (veId.isBlank()) "添加服务商" else "编辑服务商",
@@ -669,6 +703,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     // ---------------- 模型分配 · 添加模型（数字顺序 + 二次点击取消） ----------------
     val addKey = addStageKey
     AppModalBottomSheet(
+        animateContentSize = false,
         show = addKey != null,
         onDismissRequest = { addStageKey = null },
         title = "添加模型 · ${stageTitle(addKey)}",
@@ -729,6 +764,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 模型分配 · 次数设置 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = quotaTarget != null,
         onDismissRequest = { quotaTarget = null },
         title = "模型设置：${quotaTarget?.name.orEmpty()}",
@@ -817,6 +853,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 @Composable
 private fun ModelLibraryPage(
     config: AiModelsConfig?,
+    listState: LazyListState,
     libActive: Boolean,
     libCtx: String?,
     selVendors: Set<String>,
@@ -836,6 +873,7 @@ private fun ModelLibraryPage(
     onTestModel: (AiModelEntry, AiProvider) -> Unit,
 ) {
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = adaptiveContentPadding(
             top = contentPaddingTop + 8.dp,
@@ -903,7 +941,7 @@ private fun ModelLibraryPage(
                     SearchBar(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                            .padding(vertical = 2.dp),
                         query = vendorQueries[p.id].orEmpty(),
                         onQueryChange = { q -> onQueryChange(p.id, q) },
                         placeholder = "搜索 ${p.name} 的模型",

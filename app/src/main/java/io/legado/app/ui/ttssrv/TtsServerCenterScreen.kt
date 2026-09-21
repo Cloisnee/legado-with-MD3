@@ -1287,6 +1287,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 手动粘贴 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = sheet is CenterSheet.ManualImport,
         onDismissRequest = { sheet = null },
         title = if (selectedTab == 0) "粘贴插件 JSON" else "粘贴配置列表 JSON",
@@ -1337,6 +1338,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 声线选择（试听 / 新建共用） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = pickerTarget != null,
         onDismissRequest = { pickerTarget = null },
         title = pickerTarget?.let { "试听：" + it.pluginName } ?: "",
@@ -1407,6 +1409,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 新建条目 · 第二步（音色分组 → 基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = neStep2,
         onDismissRequest = { neStep2 = false },
         title = "新建条目 · ${nePluginName}",
@@ -1684,6 +1687,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 新建条目 · 第一步：选择音色插件 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = pluginPickerSheet,
         onDismissRequest = { pluginPickerSheet = false },
         title = "新建条目 · 选择音色插件",
@@ -1713,6 +1717,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 声音选择（多选 + 试听） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = voicePickerSheet,
         onDismissRequest = { voicePickerSheet = false },
         title = "选择声音 · 已选 ${neVoiceSel.size}",
@@ -1929,6 +1934,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = editTarget != null,
         onDismissRequest = { editTarget = null },
         title = "编辑条目：${editTarget?.displayName.orEmpty()}",
@@ -2195,6 +2201,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 移动声线（长按多选 → 三个点 → 移动声线） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = moveSheet,
         onDismissRequest = { moveSheet = false },
         title = "移动声线：${moveKeys.size} 条",
@@ -2274,6 +2281,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 编辑插件（元信息 + 变量，卡片化） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = varsEditorPlugin != null,
         onDismissRequest = { varsEditorPlugin = null },
         title = "编辑插件：${varsEditorPlugin?.name.orEmpty()}",
@@ -2356,6 +2364,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 声线条目操作 ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = sheet is CenterSheet.EntryActions,
         onDismissRequest = { sheet = null },
         title = (sheet as? CenterSheet.EntryActions)?.entry?.let {
@@ -2416,6 +2425,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     // ---------------- 引擎切换（MD3：添加/编辑/删除/导入导出/全局直选） ----------------
     AppModalBottomSheet(
+        animateContentSize = false,
         show = showEngineSheet,
         onDismissRequest = { showEngineSheet = false },
         title = "切换朗读引擎",
@@ -2829,6 +2839,7 @@ private fun EngineEditorSheet(
     )
 
     AppModalBottomSheet(
+        animateContentSize = false,
         show = value != null,
         onDismissRequest = onDismiss,
         title = if (isNew) "添加引擎" else "编辑引擎",
