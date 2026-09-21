@@ -556,6 +556,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 bookName = ReadBook.book?.name.orEmpty(),
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,
+                logMiss = false,
             )
         }.getOrNull()
         if (restored != null) return true

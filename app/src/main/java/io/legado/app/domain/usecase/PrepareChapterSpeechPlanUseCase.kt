@@ -80,6 +80,7 @@ class PrepareChapterSpeechPlanUseCase(
                 bookName = bookName,
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,
+                logMiss = false,
             )
         }.onFailure {
             AppLog.putAnalysis("本地剧本回填异常: ${it.localizedMessage}", it)
@@ -110,12 +111,14 @@ class PrepareChapterSpeechPlanUseCase(
                     .getOrDefault(emptyList())
                 if (segments.isNotEmpty()) {
                     AppLog.put("多角色计划：等待后就绪，消费 V3 剧本（${segments.size} 段）")
+                    // B10.4.3：等待期间分析刚写入角色声线分配——重算覆盖表，避免整章落到「默认对话」声线
+                    val freshOverrides = voiceOverrides(bookName, bookUrl, chapterIndex)
                     return buildSpeechPlan(
                         bookUrl = bookUrl,
                         segments = segments,
                         preferredDefaultVoiceId = preferredDefaultVoiceId,
                         useMultiSpeaker = useMultiSpeaker,
-                        voiceOverrides = overrides,
+                        voiceOverrides = freshOverrides,
                     )
                 }
             }

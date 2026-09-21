@@ -66,6 +66,7 @@ import io.legado.app.utils.isNightMode
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.Job
@@ -539,7 +540,7 @@ abstract class BaseReadAloudService : BaseService(),
         if (bookUrl.isEmpty() || !ReadConfig.useMultiSpeaker) return emptyList()
         val prepareSpeechPlan: PrepareChapterSpeechPlanUseCase =
             get(PrepareChapterSpeechPlanUseCase::class.java)
-        return runCatching {
+        return try {
             prepareSpeechPlan(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
@@ -547,9 +548,13 @@ abstract class BaseReadAloudService : BaseService(),
                 useMultiSpeaker = ReadConfig.useMultiSpeaker,
                 bookName = ReadBook.book?.name.orEmpty(),
             )
-        }.onFailure {
-            AppLog.putAnalysis("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
-        }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            // B10.4.3：重新触发朗读/停止会取消等待中的计划构建——取消不是失败，不记错、交回协程机制
+            throw e
+        } catch (e: Throwable) {
+            AppLog.putAnalysis("生成多角色朗读计划失败，使用原朗读方式\n${e.localizedMessage}", e)
+            emptyList()
+        }
     }
 
     @SuppressLint("WakelockTimeout")

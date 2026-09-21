@@ -431,12 +431,14 @@ class SpeechAnalysisPipelineV3(
      * 对齐回当前正文，重建 segments 并回写 DB（同 contentHash + resolverVersion）。
      * 使「清应用数据后」朗读直接消费剧本、不再重析（调度器随后缓存命中），声线/情绪随剧本还原。
      * 对齐失败（正文已变 / 无法唯一定位）或剧本不存在 → 返回 null，调用方回落快速链。
+     * [logMiss]=false 时静默未命中（播放侧 / 预下载侧的探测用，避免与管线侧重复记账，B10.4.3）。
      */
     suspend fun restoreFromScriptFiles(
         bookUrl: String,
         bookName: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
+        logMiss: Boolean = true,
     ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
         if (bookUrl.isBlank() || paragraphs.isEmpty()) return@withContext null
         val name = bookName.ifBlank { dataRepository.loadBookName(bookUrl) }
@@ -452,12 +454,12 @@ class SpeechAnalysisPipelineV3(
         }
         val rows = dataRepository.loadChapterScriptForUrl(name, bookUrl, chapterIndex)
         if (rows.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行")
+            if (logMiss) AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行")
             return@withContext null
         }
         val aligned = ScriptFileBackfill.align(paragraphs, rows)
         if (aligned == null) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
+            if (logMiss) AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
             return@withContext null
         }
         val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
