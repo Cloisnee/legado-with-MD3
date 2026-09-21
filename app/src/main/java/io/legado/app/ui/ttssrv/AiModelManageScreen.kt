@@ -1,6 +1,8 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -68,6 +70,9 @@ import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.card.SelectionItemCardContent
+import io.legado.app.ui.widget.components.icon.AppIcons
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
@@ -76,9 +81,12 @@ import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
+import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * AI 服务 · 模型管理（对齐真身 MD3 / 书源管理交互）：
@@ -152,6 +160,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var selQueue by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     var confirmBulkDel by remember { mutableStateOf(false) }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var confirmImport by remember { mutableStateOf(false) }
 
     fun reload() {
         scope.launch { cfg = repo.load() }
@@ -377,6 +387,46 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
+    // B10.4.2·U9：模型配置导出 / 导入（SAF）
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = runCatching {
+                    val json = repo.exportJson()
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(json.toByteArray())
+                        } ?: error("无法写入目标文件")
+                    }
+                }.isSuccess
+                context.toastOnUi(if (ok) "已导出模型与分配" else "导出失败")
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val text = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)
+                            ?.bufferedReader()?.use { it.readText() }
+                    }
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    context.toastOnUi("读取文件为空或失败")
+                } else {
+                    val (ok, msg) = repo.importJson(text)
+                    context.toastOnUi(msg)
+                    if (ok) reload()
+                }
+            }
+        }
+    }
+
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -386,6 +436,34 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     TopBarNavigationButton(onClick = onBack)
+                },
+                actions = {
+                    Box {
+                        TopBarActionButton(
+                            onClick = { showTopMenu = true },
+                            imageVector = AppIcons.MoreVert,
+                            contentDescription = "导出 / 导入",
+                        )
+                        RoundDropdownMenu(
+                            expanded = showTopMenu,
+                            onDismissRequest = { showTopMenu = false },
+                        ) {
+                            RoundDropdownMenuItem(
+                                text = "导出模型与分配",
+                                onClick = {
+                                    showTopMenu = false
+                                    exportLauncher.launch("ai_models.json")
+                                },
+                            )
+                            RoundDropdownMenuItem(
+                                text = "导入模型与分配",
+                                onClick = {
+                                    showTopMenu = false
+                                    confirmImport = true
+                                },
+                            )
+                        }
+                    }
                 },
                 bottomContent = {
                     AppTabRow(
@@ -687,6 +765,21 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             )
         }
     }
+
+    // ---------------- 导入确认 ----------------
+    AppAlertDialog(
+        show = confirmImport,
+        onDismissRequest = { confirmImport = false },
+        title = "导入模型与分配",
+        text = "导入将覆盖当前的服务商 / 模型 / 阶段队列配置，确认？",
+        confirmText = "选择文件",
+        onConfirm = {
+            confirmImport = false
+            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+        },
+        dismissText = "取消",
+        onDismiss = { confirmImport = false },
+    )
 
     // ---------------- 删除确认 ----------------
     AppAlertDialog(

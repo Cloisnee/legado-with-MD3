@@ -1,6 +1,8 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -80,6 +82,7 @@ import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.checkBox.AppCheckbox
+import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
@@ -90,7 +93,9 @@ import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.koin.core.context.GlobalContext
 
 /**
@@ -146,6 +151,11 @@ fun BookManageScreen(
     var deleteChapterTarget by remember { mutableStateOf<Int?>(null) }
     var showDeleteBookSheet by remember { mutableStateOf(false) }
     var pendingDeleteBook by remember { mutableStateOf<String?>(null) }
+    var showAssetMenu by remember { mutableStateOf(false) }
+    var showExportAssetSheet by remember { mutableStateOf(false) }
+    var exportSel by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingExportBooks by remember { mutableStateOf<List<String>>(emptyList()) }
+    var confirmImportAssets by remember { mutableStateOf(false) }
 
     fun reloadLines() {
         scope.launch {
@@ -237,6 +247,47 @@ fun BookManageScreen(
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
     val listState = rememberLazyListState()
 
+    // B10.4.2·U10：书籍资产导出 / 导入（zip · SAF）
+    val exportZipLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val books = pendingExportBooks
+                val n = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            repo.exportBooksZip(books, out)
+                        } ?: -1
+                    }
+                }.getOrDefault(-1)
+                context.toastOnUi(
+                    when {
+                        n < 0 -> "导出失败"
+                        n == 0 -> "没有可导出的数据"
+                        else -> "已导出 $n 本书资产"
+                    }
+                )
+            }
+        }
+    }
+    val importZipLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val (ok, msg) = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { repo.importBooksZip(it) }
+                            ?: (false to "读取文件失败")
+                    }
+                }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
+                context.toastOnUi(msg)
+                if (ok) reload()
+            }
+        }
+    }
+
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -280,6 +331,36 @@ fun BookManageScreen(
                             imageVector = Icons.Default.FindReplace,
                             contentDescription = "重新分析本章",
                         )
+                    }
+                    // B10.4.2·U10：书籍资产导出 / 导入（仅二合一面）
+                    if (!embedded) {
+                        Box {
+                            TopBarActionButton(
+                                onClick = { showAssetMenu = true },
+                                imageVector = AppIcons.MoreVert,
+                                contentDescription = "导出 / 导入",
+                            )
+                            RoundDropdownMenu(
+                                expanded = showAssetMenu,
+                                onDismissRequest = { showAssetMenu = false },
+                            ) {
+                                RoundDropdownMenuItem(
+                                    text = "导出书籍资产",
+                                    onClick = {
+                                        showAssetMenu = false
+                                        exportSel = emptySet()
+                                        showExportAssetSheet = true
+                                    },
+                                )
+                                RoundDropdownMenuItem(
+                                    text = "导入书籍资产",
+                                    onClick = {
+                                        showAssetMenu = false
+                                        confirmImportAssets = true
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
                 bottomContent = {
@@ -740,6 +821,70 @@ fun BookManageScreen(
         },
         dismissText = "取消",
         onDismiss = { pendingDeleteBook = null },
+    )
+
+    // ---------------- 导出书籍资产（zip，不含音频） ----------------
+    AppModalBottomSheet(
+        show = showExportAssetSheet,
+        onDismissRequest = { showExportAssetSheet = false },
+        title = "导出书籍资产",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            val exportable = bookList.filter { it != ReadAloudDataRepository.DEFAULT_BOOK }
+            if (exportable.isEmpty()) {
+                TinyClickableSettingItem(title = "（暂无可导出的书籍）", onClick = {})
+            } else {
+                TinyClickableSettingItem(
+                    title = "导出全部书籍（${exportable.size} 本）",
+                    description = "含角色记录 / 剧本 / 章节缓存 / 合并账本（不含音频）",
+                    onClick = {
+                        showExportAssetSheet = false
+                        pendingExportBooks = exportable
+                        exportZipLauncher.launch("legado-book-assets.zip")
+                    },
+                )
+            }
+            exportable.forEach { b ->
+                TinyClickableSettingItem(
+                    title = b,
+                    trailingContent = {
+                        AppCheckbox(
+                            checked = b in exportSel,
+                            onCheckedChange = null,
+                            includeStateSemantics = false,
+                        )
+                    },
+                    onClick = {
+                        exportSel = if (b in exportSel) exportSel - b else exportSel + b
+                    },
+                )
+            }
+            if (exportSel.isNotEmpty()) {
+                TinyClickableSettingItem(
+                    title = "导出所选（${exportSel.size} 本）",
+                    onClick = {
+                        showExportAssetSheet = false
+                        pendingExportBooks = exportSel.toList()
+                        exportZipLauncher.launch("legado-book-assets.zip")
+                    },
+                )
+            }
+        }
+    }
+
+    // ---------------- 导入确认 ----------------
+    AppAlertDialog(
+        show = confirmImportAssets,
+        onDismissRequest = { confirmImportAssets = false },
+        title = "导入书籍资产",
+        text = "将把压缩包内的书籍数据写入本地（覆盖同名文件），确认？",
+        confirmText = "选择文件",
+        onConfirm = {
+            confirmImportAssets = false
+            importZipLauncher.launch(arrayOf("application/zip", "*/*"))
+        },
+        dismissText = "取消",
+        onDismiss = { confirmImportAssets = false },
     )
 
     // ---------------- 换角色面板 ----------------

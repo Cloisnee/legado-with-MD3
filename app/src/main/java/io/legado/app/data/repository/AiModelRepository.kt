@@ -75,6 +75,27 @@ class AiModelRepository(private val app: Application) {
         }.getOrDefault(AiModelsConfig())
     }
 
+    /** B10.4.2·U9：导出原始配置 JSON（模型 + 分配；文件缺失时返回空对象） */
+    suspend fun exportJson(): String = withContext(Dispatchers.IO) {
+        val f = file()
+        if (f.exists()) f.readText().removePrefix("\uFEFF") else "{}"
+    }
+
+    /** B10.4.2·U9：导入配置 JSON（校验后归一化覆盖写入） */
+    suspend fun importJson(text: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val o = JSONObject(text.removePrefix("\uFEFF").trim())
+            require(o.has("providers") || o.has("models") || o.has("stages")) { "不是有效的模型配置" }
+            val cfg = parse(o)
+            val ok = save(cfg)
+            if (ok) {
+                true to "已导入：服务商 ${cfg.providers.size} · 模型 ${cfg.models.size}"
+            } else {
+                false to "写入失败"
+            }
+        }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
+    }
+
     private fun parse(o: JSONObject): AiModelsConfig {
         val providers = buildList {
             val arr = o.optJSONArray("providers") ?: JSONArray()

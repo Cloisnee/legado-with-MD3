@@ -10,7 +10,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /**
  * 朗读分析数据层（对照「角色管理」v36 忠实移植，数据根=<应用根>/data/）：
@@ -934,6 +941,68 @@ class ReadAloudDataRepository(private val app: Application) {
             appDb.readAloudVoiceDao.deleteBindingsByBookUrl(u)
         }
         true to "已删除「$name」全部数据"
+    }
+
+    // ---------------- 书籍资产导出 / 导入（B10.4.2·U10） ----------------
+
+    /**
+     * 导出所选书籍资产为 zip 流：打包 `books/<书名>/` 目录树（角色记录 / 剧本 / 章节缓存 / 合并账本；
+     * 不含音频）。返回实际导出的书籍数。
+     */
+    suspend fun exportBooksZip(books: List<String>, out: OutputStream): Int = withContext(Dispatchers.IO) {
+        var count = 0
+        ZipOutputStream(BufferedOutputStream(out)).use { zos ->
+            books.distinct().forEach { book ->
+                val dir = bookDir(book)
+                if (!dir.isDirectory) return@forEach
+                var wrote = false
+                dir.walkTopDown().forEach { f ->
+                    if (!f.isFile) return@forEach
+                    val rel = f.relativeTo(dir).path.replace(File.separatorChar, '/')
+                    zos.putNextEntry(ZipEntry("books/$book/$rel"))
+                    f.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                    wrote = true
+                }
+                if (wrote) count++
+            }
+        }
+        count
+    }
+
+    /** 导入书籍资产 zip：解包 `books/<书名>/…` 到数据目录（覆盖同名文件）并追加 liebiao；返回导入结论 */
+    suspend fun importBooksZip(input: InputStream): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val names = linkedSetOf<String>()
+            var files = 0
+            ZipInputStream(BufferedInputStream(input)).use { zis ->
+                while (true) {
+                    val e = zis.nextEntry ?: break
+                    val name = e.name.replace('\\', '/')
+                    if (e.isDirectory || !name.startsWith("books/")) {
+                        zis.closeEntry()
+                        continue
+                    }
+                    val parts = name.split('/')
+                    // 防目录穿越：books/<书名>/<相对路径>，且不含 . / ..
+                    if (parts.size < 3 || parts.any { it.isBlank() || it == ".." || it == "." }) {
+                        zis.closeEntry()
+                        continue
+                    }
+                    val book = parts[1]
+                    val rel = parts.drop(2).joinToString("/")
+                    val target = File(bookDir(book), rel)
+                    target.parentFile?.mkdirs()
+                    target.outputStream().use { zis.copyTo(it) }
+                    names.add(book)
+                    files++
+                    zis.closeEntry()
+                }
+            }
+            if (files == 0) return@runCatching false to "压缩包内没有可导入的书籍数据"
+            names.forEach { runCatching { ensureBookInList(it) } }
+            true to "已导入 ${names.size} 本书（${files} 个文件）"
+        }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
     }
 
     // ---------------- 配音前缀工具 ----------------
