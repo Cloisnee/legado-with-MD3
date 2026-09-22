@@ -842,13 +842,19 @@ class ReadAloudDataRepository(private val app: Application) {
         true
     }
 
-    /** 删除章节剧本：轻量=剧本+缓存+状态；回滚=另含 合并账本/人物逆向（用于"接续到末尾的连续章"） */
+    /**
+     * 删除章节剧本：轻量=剧本+缓存+状态；回滚=另含 合并账本/人物逆向（用于"接续到末尾的连续章"）。
+     * B22：回滚统一按「≥ min(chapters) 连续尾段」口径清理（缓存/账本/人物与剧本同一集合）；
+     *      人物出场逆向不再以「合并账本非空」为门控（无 op 也必须执行，对齐 1.4.x rollbackChaptersFrom）；
+     *      并把 analyze_state 分析前沿回退到删除区间之前的最大保留章（连续判定不再指向已回滚章节）。
+     */
     suspend fun deleteChapterScripts(
         book: String,
         chapters: Set<Int>,
         rollback: Boolean,
     ): Boolean = withContext(Dispatchers.IO) {
         if (chapters.isEmpty()) return@withContext false
+        val floor = chapters.minOrNull() ?: return@withContext false
         val f = bookFile(book, "all_clean_text_$book.txt")
         val txt = readText(f)
         var changed = false
@@ -873,7 +879,7 @@ class ReadAloudDataRepository(private val app: Application) {
             }
             if (changed) writeText(f, kept.joinToString("\n"))
         }
-        // 缓存
+        // 缓存（回滚=≥floor 全清；轻量=所列章节）
         runCatching {
             val cacheFile = bookFile(book, "chapter_cache.$book.json")
             val raw = readText(cacheFile)
@@ -882,40 +888,73 @@ class ReadAloudDataRepository(private val app: Application) {
                 val keys = buildList { val it = cache.keys(); while (it.hasNext()) add(it.next()) }
                 keys.forEach { key ->
                     val ch = key.split("|").lastOrNull()?.toIntOrNull() ?: return@forEach
-                    if (ch in chapters) cache.remove(key)
+                    val hit = if (rollback) ch >= floor else ch in chapters
+                    if (hit) cache.remove(key)
                 }
                 writeText(cacheFile, cache.toString())
             }
         }
-        // 合并账本（回滚时剔除并做人物逆向）
+        // 合并账本 + 人物逆向（回滚剔除 ≥floor 的 op；人物出场清理独立于账本是否存在）
         runCatching {
             val ops = readMergeLog(book)
             if (rollback) {
-                val removed = ops.filter { it.optInt("chapter", -1) in chapters }
-                val kept = ops.filterNot { it.optInt("chapter", -1) in chapters }
-                if (removed.isNotEmpty()) {
-                    writeMergeLog(book, kept)
-                    rollbackCharacters(book, removed, chapters)
+                val removed = ops.filter { it.optInt("chapter", -1) >= floor }
+                val kept = ops.filterNot { it.optInt("chapter", -1) >= floor }
+                if (removed.isNotEmpty()) writeMergeLog(book, kept)
+                rollbackCharacters(book, removed, kept, floor)
+            }
+        }
+        // B17 分析前沿回退：回滚后前沿 = 保留区最大章（原值指向 ≥floor 的已回滚章节会破坏后续「连续」判定）
+        if (rollback) {
+            runCatching {
+                val stateFile = bookFile(book, "analyze_state.$book.json")
+                if (stateFile.exists()) {
+                    val curState = runCatching { JSONObject(readText(stateFile)).optInt("lastChapter", -1) }
+                        .getOrDefault(-1)
+                    var maxKept = -1
+                    readText(f).split("\n").forEach { l ->
+                        CHAPTER_MARKER.find(l)?.groupValues?.get(1)?.toIntOrNull()?.let { c ->
+                            if (c < floor && c > maxKept) maxKept = c
+                        }
+                    }
+                    if (curState > maxKept) {
+                        writeText(
+                            stateFile,
+                            JSONObject().apply {
+                                put("lastChapter", maxKept)
+                                put("updatedAt", System.currentTimeMillis())
+                            }.toString(),
+                        )
+                    }
                 }
             }
         }
-        writeBookRev(book, chapters.minOrNull() ?: -1)
+        writeBookRev(book, floor)
         true
     }
 
-    /** 人物逆向：按被删合并账本回退别名/重建被合并角色，并按删除章清理出场数组 */
+    /** 人物逆向：按被删合并账本回退别名/重建被合并角色，并按回滚下界清理出场（≥floor 全清，对齐 1.4.x c<X 保留口径） */
     private fun rollbackCharacters(
         book: String,
         removedOps: List<JSONObject>,
-        deletedChapters: Set<Int>,
+        keptOps: List<JSONObject>,
+        floor: Int,
     ) {
         runCatching {
             val current = parseRecords(readText(bookFile(book, "shuming.$book.json"))).toMutableList()
+            // 保留区仍持有同一 from|to 对 → 该合并未随回滚段失效，不逆向（对齐原版 keepPairs 守卫）
+            val keptPairs = HashSet<String>()
+            keptOps.forEach { op ->
+                val from = op.optString("from")
+                val to = op.optString("to")
+                if (from.isNotBlank() && to.isNotBlank()) keptPairs.add("$from|$to")
+            }
             removedOps.forEach opLoop@{ op ->
                 if (op.optString("status") != "active") return@opLoop
                 val from = op.optString("from")
                 val to = op.optString("to")
                 if (from.isBlank() || to.isBlank() || from == to) return@opLoop
+                if (keptPairs.contains("$from|$to")) return@opLoop
                 val extra = mutableListOf<String>()
                 op.optJSONArray("aliases")?.let { a ->
                     for (i in 0 until a.length()) {
@@ -945,7 +984,7 @@ class ReadAloudDataRepository(private val app: Application) {
             while (iter.hasNext()) {
                 val r = iter.next()
                 val had = r.appearanceChapters.isNotEmpty()
-                r.appearanceChapters.removeAll { it in deletedChapters }
+                r.appearanceChapters.removeAll { it >= floor }
                 r.lastAppearanceChapter = r.appearanceChapters.maxOrNull() ?: -1
                 r.appearanceCount = r.appearanceChapters.size
                 if (had && r.appearanceChapters.isEmpty() && r.lastAppearanceChapter < 0) {
@@ -954,8 +993,11 @@ class ReadAloudDataRepository(private val app: Application) {
             }
             val json = recordsJson(current)
             writeText(bookFile(book, "shuming.$book.json"), json)
-            writeText(rootFile("characterRecords.json"), json)
-            writeText(rootFile("characterRecords_backup.json"), json)
+            // 根镜像仅在本书为「当前书」时同步（与 saveBookRecords / 原版 writeBookCharacters 同款门控）
+            if (readText(rootFile("cunfang.txt")).trim() == book) {
+                writeText(rootFile("characterRecords.json"), json)
+                writeText(rootFile("characterRecords_backup.json"), json)
+            }
         }
     }
 
@@ -1171,7 +1213,11 @@ class ReadAloudDataRepository(private val app: Application) {
 
     // ---------------- 分析管线（V3）文件产物 ----------------
 
-    /** 写入/替换 某章剧本（[chapter:N] 标记+行内容；重析=原地替换旧段）；同步 chapter_cache 与 book_rev */
+    /**
+     * 写入/替换 某章剧本（[chapter:N] 标记+行内容；重析=原地替换旧段）；同步 chapter_cache 与 book_rev。
+     * B22：写回按章号升序重组（对齐 1.4.x globalLibSerialize「按章号升序，保证追加时按顺序存储」；
+     * 跳章/回跳补析不再把新段追加到文件尾造成乱序——顺带自愈历史乱序）。
+     */
     suspend fun saveChapterScript(
         book: String,
         chapter: Int,
@@ -1181,30 +1227,10 @@ class ReadAloudDataRepository(private val app: Application) {
         if (book.isBlank() || scriptText.isBlank()) return@withContext false
         runCatching {
             val f = bookFile(book, "all_clean_text_$book.txt")
-            val lines = if (f.exists()) readText(f).split("\n").toMutableList() else mutableListOf()
-            while (lines.isNotEmpty() && lines.last().isBlank()) lines.removeAt(lines.size - 1)
-            val section = mutableListOf("[chapter:$chapter]")
-            scriptText.split("\n").filter { it.isNotEmpty() }.forEach { section.add(it) }
-            var start = -1
-            var end = lines.size
-            for (i in lines.indices) {
-                val m = CHAPTER_MARKER.find(lines[i]) ?: continue
-                val ch = m.groupValues[1].toIntOrNull() ?: continue
-                if (ch == chapter) {
-                    start = i
-                } else if (start >= 0) {
-                    end = i
-                    break
-                }
-            }
-            if (start >= 0) {
-                lines.subList(start, end).clear()
-                lines.addAll(start, section)
-            } else {
-                if (lines.isNotEmpty()) lines.add("")
-                lines.addAll(section)
-            }
-            writeText(f, lines.joinToString("\n"))
+            val raw = if (f.exists()) readText(f) else ""
+            val (prefix, sections) = ScriptSectionStore.parse(raw)
+            sections[chapter] = scriptText.split("\n").filter { it.isNotEmpty() }.toMutableList()
+            writeText(f, ScriptSectionStore.serialize(prefix, sections))
             // 章节缓存（键=bookUrl|chapter；与既有同步逻辑同构）
             val cacheFile = bookFile(book, "chapter_cache.$book.json")
             val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
@@ -1302,5 +1328,47 @@ class ReadAloudDataRepository(private val app: Application) {
         txt.split("\n").any { l ->
             CHAPTER_MARKER.find(l)?.groupValues?.get(1)?.toIntOrNull() == chapter
         }
+    }
+}
+
+/**
+ * B22：剧本文件段落存储（[chapter:N] 标记切段）。
+ * 原版 1.4.x 以「按章号升序」序列化落库（globalLibSerialize：保证追加时按顺序存储）——
+ * 移植版此前缺失该不变量：跳章/回跳补析会把新段追加到文件尾，文件顺序随分析顺序漂移。
+ * 本对象把解析/重组抽成纯函数（单测直测），写入时统一升序重组（顺带自愈历史乱序）。
+ */
+internal object ScriptSectionStore {
+
+    private val MARKER = Regex("^\\[chapter:(\\d+)\\]\\s*$")
+
+    /** 解析：prefix=首个标记之前的行（正常为空）；sections=章号→段内行（同章多标记合并，内容不丢）。 */
+    fun parse(content: String): Pair<List<String>, LinkedHashMap<Int, MutableList<String>>> {
+        val prefix = mutableListOf<String>()
+        val sections = LinkedHashMap<Int, MutableList<String>>()
+        if (content.isEmpty()) return prefix to sections
+        var cur = -1
+        for (l in content.split("\n")) {
+            val idx = MARKER.find(l)?.groupValues?.get(1)?.toIntOrNull()
+            if (idx != null) {
+                cur = idx
+                sections.getOrPut(cur) { mutableListOf() }
+                continue
+            }
+            if (cur >= 0) sections[cur]!!.add(l) else prefix.add(l)
+        }
+        return prefix to sections
+    }
+
+    /** 升序重组写回：prefix + 各段 [chapter:N]+行（段尾空行归一，段间无空行——与 1.4.x 序列化同款）。 */
+    fun serialize(prefix: List<String>, sections: Map<Int, List<String>>): String {
+        val out = ArrayList<String>()
+        out.addAll(prefix)
+        sections.toSortedMap().forEach { (ch, body) ->
+            out.add("[chapter:$ch]")
+            var end = body.size
+            while (end > 0 && body[end - 1].isBlank()) end--
+            for (i in 0 until end) out.add(body[i])
+        }
+        return out.joinToString("\n")
     }
 }
