@@ -1559,9 +1559,10 @@ class TtsServerCenterRepository(private val app: Application) {
     /** 同步读（播放服务路径用；文件极小） */
     fun readLoudnessBalanceNow(): Boolean = runCatching {
         val f = extSettingsFile()
-        if (!f.exists()) false
-        else JSONObject(f.readText().removePrefix("\uFEFF")).optBoolean("loudnessBalance", false)
-    }.getOrDefault(false)
+        // B18：默认开启（与「朗读设置→响度均衡」新默认一致）
+        if (!f.exists()) true
+        else JSONObject(f.readText().removePrefix("\uFEFF")).optBoolean("loudnessBalance", true)
+    }.getOrDefault(true)
 
     suspend fun getLoudnessBalance(): Boolean = withContext(Dispatchers.IO) {
         readLoudnessBalanceNow()

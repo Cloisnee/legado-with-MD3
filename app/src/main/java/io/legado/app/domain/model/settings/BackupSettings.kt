@@ -8,8 +8,8 @@ data class BackupSettings(
     val webDavDeviceName: String = "",
     val syncBookProgress: Boolean = true,
     val syncBookProgressPlus: Boolean = false,
-    val autoCheckNewBackup: Boolean = true,
-    val onlyLatestBackup: Boolean = true,
+    val autoCheckNewBackup: Boolean = false,
+    val onlyLatestBackup: Boolean = false,
     val backupSyncMode: String = "both",
     val backupPath: String? = null,
 )

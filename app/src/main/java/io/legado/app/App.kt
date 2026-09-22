@@ -227,7 +227,7 @@ class App : Application(), SingletonImageLoader.Factory {
             BookCover.toString()
             //清除过期数据
             appDb.cacheDao.clearDeadline(System.currentTimeMillis())
-            if (getPrefBoolean(PreferKey.autoClearExpired, true)) {
+            if (getPrefBoolean(PreferKey.autoClearExpired, false)) {
                 val clearTime = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
                 appDb.searchBookDao.clearExpired(clearTime)
             }

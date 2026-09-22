@@ -6,7 +6,7 @@ data class ReadAloudSettings(
     val ttsParagraphInterval: Int = 0,
     val audioCacheCleanTime: Int = 0,
     val ignoreAudioFocus: Boolean = false,
-    val mediaButtonOnExit: Boolean = true,
+    val mediaButtonOnExit: Boolean = false,
     val readAloudByMediaButton: Boolean = false,
     val pauseReadAloudWhilePhoneCalls: Boolean = false,
     val readAloudWakeLock: Boolean = false,
@@ -17,7 +17,7 @@ data class ReadAloudSettings(
     val mediaButtonPerNext: Boolean = false,
     val readAloudByPage: Boolean = false,
     val androidMediaControlEnabled: Boolean = false,
-    val systemMediaControlCompatibilityChange: Boolean = true,
+    val systemMediaControlCompatibilityChange: Boolean = false,
     val streamReadAloudAudio: Boolean = false,
     val ttsTimer: Int = 0,
     val finishCurrentChapterAfterTimer: Boolean = false,
@@ -26,10 +26,10 @@ data class ReadAloudSettings(
     val useMultiSpeaker: Boolean = true,
     val defaultInterface: String = "classic",
     val contentSelectSpeakMode: Int = 0,
-    val audioPreDownloadNum: Int = 10,
-    val ttsPreSynthesisConcurrency: Int = 3,
-    /** 单次 TTS 合成请求超时（秒；B8.6 可调，默认 30） */
-    val ttsSynthTimeoutSec: Int = 30,
+    val audioPreDownloadNum: Int = 2,
+    val ttsPreSynthesisConcurrency: Int = 1,
+    /** 单次 TTS 合成请求超时（秒；B8.6 可调，默认 75） */
+    val ttsSynthTimeoutSec: Int = 75,
     /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
     val ttsMaxRetry: Int = 5,
 )

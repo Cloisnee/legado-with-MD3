@@ -156,6 +156,10 @@ fun BookManageScreen(
     var exportSel by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingExportBooks by remember { mutableStateOf<List<String>>(emptyList()) }
     var confirmImportAssets by remember { mutableStateOf(false) }
+    var chapterTitles by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+
+    /** B18：章号显示统一 = 章节标题（内部仍用 chapter index 匹配；无标题时回退 第N章） */
+    fun chLabel(ch: Int): String = chapterTitles[ch]?.takeIf { it.isNotBlank() } ?: "第${ch + 1}章"
 
     fun reloadLines() {
         scope.launch {
@@ -173,6 +177,7 @@ fun BookManageScreen(
             currentBook = st.currentBook
             records = st.records
             chapters = repo.loadChapters(currentBook)
+            chapterTitles = repo.loadChapterTitles(currentBook)
             if (embedded && initialChapter != null) {
                 selectedChapter = initialChapter
             } else if (selectedChapter == null || selectedChapter !in chapters) {
@@ -201,7 +206,7 @@ fun BookManageScreen(
                 val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
                 scheduler.enqueueChapter(url, ch, force = true)
             }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }
-            context.toastOnUi("已提交重新分析（第${ch + 1}章）")
+            context.toastOnUi("已提交重新分析（${chLabel(ch)}）")
         }
     }
 
@@ -299,7 +304,7 @@ fun BookManageScreen(
                 },
                 useCharMode = selLines.isNotEmpty(),
                 subtitle = if (embedded) {
-                    "当前书：$currentBook · 第${selectedChapter ?: "-"}章"
+                    "当前书：$currentBook · ${selectedChapter?.let { chLabel(it) } ?: "-"}"
                 } else {
                     "当前书：$currentBook · ${chapters.size} 章剧本"
                 },
@@ -473,7 +478,7 @@ fun BookManageScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             AppText(
-                                                text = selectedChapter?.let { "第${it}章" } ?: "未选择",
+                                                text = selectedChapter?.let { chLabel(it) } ?: "未选择",
                                                 style = LegadoTheme.typography.titleSmall,
                                                 maxLines = 1,
                                             )
@@ -492,7 +497,7 @@ fun BookManageScreen(
                                 ) { dismiss ->
                                     chapters.sorted().forEach { ch ->
                                         RoundDropdownMenuItem(
-                                            text = "第${ch}章",
+                                            text = chLabel(ch),
                                             onClick = {
                                                 dismiss()
                                                 selectedChapter = ch
@@ -720,7 +725,7 @@ fun BookManageScreen(
             }
             chapters.sorted().forEach { ch ->
                 TinyClickableSettingItem(
-                    title = "第${ch}章",
+                    title = chLabel(ch),
                     description = if (ch == selectedChapter) "当前显示中" else null,
                     trailingContent = {
                         SmallPlainButton(
@@ -744,7 +749,7 @@ fun BookManageScreen(
         animateContentSize = false,
         show = deleteChapterTarget != null,
         onDismissRequest = { deleteChapterTarget = null },
-        title = "删除第${deleteChapterTarget ?: ""}章",
+        title = "删除${deleteChapterTarget?.let { chLabel(it) } ?: ""}",
     ) {
         val target = deleteChapterTarget
         if (target != null) {
@@ -757,7 +762,7 @@ fun BookManageScreen(
                         deleteChapterTarget = null
                         scope.launch {
                             repo.deleteChapterScripts(currentBook, setOf(target), false)
-                            context.toastOnUi("已删除第${target}章剧本（轻量）")
+                            context.toastOnUi("已删除${chLabel(target)}剧本（轻量）")
                             selectedChapter = null
                             reload()
                         }
@@ -766,13 +771,13 @@ fun BookManageScreen(
                 if (eligible) {
                     TinyClickableSettingItem(
                         title = "回滚（恢复本章分析之前）",
-                        description = "删除第${target}章起（连续尾章）的剧本/缓存/合并账本，并逆向人物出场与合并",
+                        description = "删除${chLabel(target)}起（连续尾章）的剧本/缓存/合并账本，并逆向人物出场与合并",
                         onClick = {
                             val set = chapters.filter { it >= target }.toSet()
                             deleteChapterTarget = null
                             scope.launch {
                                 repo.deleteChapterScripts(currentBook, set, true)
-                                context.toastOnUi("已回滚：第${target}章起全部撤销")
+                                context.toastOnUi("已回滚：${chLabel(target)}起全部撤销")
                                 selectedChapter = null
                                 reload()
                             }
@@ -1043,7 +1048,8 @@ fun BookManageScreen(
                         return@TinyClickableSettingItem
                     }
                     val finalName = if (ncRole == "路人" && !nm.contains("【第")) {
-                        "$nm【第${ch}章】"
+                        // B18：与管线数据戳对齐（index+1 口径）
+                        "$nm【第${ch + 1}章】"
                     } else {
                         nm
                     }

@@ -47,7 +47,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsParagraphInterval = compatDsValue(ReadAloudKeys.TtsParagraphInterval, 0),
     audioCacheCleanTime = compatDsValue(ReadAloudKeys.AudioCacheCleanTime, 0),
     ignoreAudioFocus = compatDsValue(ReadAloudKeys.IgnoreAudioFocus, false),
-    mediaButtonOnExit = compatDsValue(ReadAloudKeys.MediaButtonOnExit, true),
+    mediaButtonOnExit = compatDsValue(ReadAloudKeys.MediaButtonOnExit, false),
     readAloudByMediaButton = compatDsValue(ReadAloudKeys.ReadAloudByMediaButton, false),
     pauseReadAloudWhilePhoneCalls =
         compatDsValue(ReadAloudKeys.PauseReadAloudWhilePhoneCalls, false),
@@ -60,7 +60,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     readAloudByPage = compatDsValue(ReadAloudKeys.ReadAloudByPage, false),
     androidMediaControlEnabled = compatDsValue(ReadAloudKeys.AndroidMediaControlEnabled, false),
     systemMediaControlCompatibilityChange =
-        compatDsValue(ReadAloudKeys.SystemMediaControlCompatibilityChange, true),
+        compatDsValue(ReadAloudKeys.SystemMediaControlCompatibilityChange, false),
     streamReadAloudAudio = compatDsValue(ReadAloudKeys.StreamReadAloudAudio, false),
     ttsTimer = PlaybackTimer.normalize(compatDsValue(ReadAloudKeys.TtsTimer, 0)),
     finishCurrentChapterAfterTimer =
@@ -73,9 +73,9 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
         ReadAloudSettingsRepository.DEFAULT_INTERFACE_CLASSIC,
     ),
     contentSelectSpeakMode = compatDsValue(ReadAloudKeys.ContentSelectSpeakMode, 0),
-    audioPreDownloadNum = compatDsValue(ReadAloudKeys.AudioPreDownloadNum, 10),
-    ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 3),
-    ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 30),
+    audioPreDownloadNum = compatDsValue(ReadAloudKeys.AudioPreDownloadNum, 2),
+    ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 1),
+    ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 75),
     ttsMaxRetry = compatDsValue(ReadAloudKeys.TtsMaxRetry, 5),
 )
 

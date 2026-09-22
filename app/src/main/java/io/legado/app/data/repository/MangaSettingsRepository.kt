@@ -80,7 +80,7 @@ internal fun MangaSettings.toPrefMap(): Map<String, Any?> = mapOf(
 )
 
 internal fun Preferences.toMangaSettings(): MangaSettings = MangaSettings(
-    showMangaUi = compatDsBoolean(PreferKey.showMangaUi) ?: true,
+    showMangaUi = compatDsBoolean(PreferKey.showMangaUi) ?: false,
     disableMangaScale = compatDsBoolean(PreferKey.disableMangaScale) ?: true,
     disableMangaScrollAnimation = compatDsBoolean(PreferKey.disableMangaScrollAnimation) ?: false,
     disableMangaCrossFade = compatDsBoolean(PreferKey.disableMangaCrossFade) ?: false,
