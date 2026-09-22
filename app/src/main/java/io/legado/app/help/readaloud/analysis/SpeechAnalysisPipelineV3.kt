@@ -1138,10 +1138,12 @@ class SpeechAnalysisPipelineV3(
             val hit = if (hasHistory && e.roleType != "路人") histMatch(snapshot, e) else null
             val hitAll = if (hit == null && e.roleType != "路人") histMatch(recs, e) else null
             if (hit != null) {
+                captureAutoMerge(bookName, chapterIndex, segments, e, hit, finalNameOf(e))
                 val (fn, desc) = applyMerge(hit, e, finalNameOf(e), chapterIndex, bookName)
                 rename[e.name] = fn
                 hitLogs.add(desc)
             } else if (hitAll != null) {
+                captureAutoMerge(bookName, chapterIndex, segments, e, hitAll, finalNameOf(e))
                 val (fn, desc) = applyMerge(hitAll, e, finalNameOf(e), chapterIndex, bookName)
                 rename[e.name] = fn
                 backLogs.add(desc)
@@ -1187,6 +1189,7 @@ class SpeechAnalysisPipelineV3(
                 target = cands.firstOrNull { it.name == mn || mn in aliasTokensOf(it.aliases) }
             }
             if (target != null) {
+                captureAutoMerge(bookName, chapterIndex, segments, e, target, finalNameOf(e))
                 val (fn, desc) = applyMerge(target, e, finalNameOf(e), chapterIndex, bookName)
                 rename[e.name] = fn
                 AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段·长文本匹配】$desc")
@@ -1205,6 +1208,50 @@ class SpeechAnalysisPipelineV3(
             }
         }
         return out to recs
+    }
+
+    /** B23：自动合并捕获（对齐 1.4.x `mergeLogCapture`；在合并改名映射覆盖前捕获本章台词行指纹）——
+     *  'm' 凭据供：①回滚逆向（保留区同 from|to 对则跳过）②释放回放（行指纹精确回写）③编辑保存清账。 */
+    private suspend fun captureAutoMerge(
+        bookName: String,
+        chapterIndex: Int,
+        segments: List<ChapterSpeechSegment>,
+        e: Calibrated,
+        hist: CharacterRecord,
+        fromName: String,
+    ) {
+        runCatching {
+            val to = hist.name
+            if (bookName.isBlank() || fromName.isBlank() || to.isBlank() || fromName == to) return@runCatching
+            val extra = aliasTokensOf(e.alias).filter { it.isNotBlank() && it != fromName && it != to }
+            val lines = ArrayList<Pair<Int, String>>()
+            segments.forEachIndexed { i, s ->
+                if (s.roleType != SpeechRoleType.Narrator && s.characterName == e.name) {
+                    lines.add(i to s.text)
+                }
+            }
+            if (lines.isEmpty()) return@runCatching
+            dataRepository.captureAutoMergeOp(
+                book = bookName,
+                chapter = chapterIndex,
+                from = fromName,
+                to = to,
+                aliases = extra,
+                via = mergeViaToken(e, hist),
+                lines = lines,
+            )
+        }
+    }
+
+    /** 合并凭据 via：e（名+别名）与 hist（名+别名）的首个共同 token（对齐原版 __mergeLogViaToken） */
+    private fun mergeViaToken(e: Calibrated, hist: CharacterRecord): String {
+        val eToks = listOf(e.name) + aliasTokensOf(e.alias)
+        val hToks = listOf(hist.name) + aliasTokensOf(hist.aliases)
+        for (t in eToks) {
+            val tt = t.trim()
+            if (tt.isNotEmpty() && tt in hToks) return tt
+        }
+        return ""
     }
 
     private suspend fun applyMerge(

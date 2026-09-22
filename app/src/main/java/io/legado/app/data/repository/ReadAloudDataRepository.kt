@@ -256,6 +256,51 @@ class ReadAloudDataRepository(private val app: Application) {
         writeMergeLog(book, ops)
     }
 
+    /**
+     * B23：脚本自动合并捕获（对齐 1.4.x `mergeLogCapture`）——快速命中/回跳命中/长文本命中各写一条
+     * 'm' 凭据：chapter=命中章、from=合并方显示名、to=主名、aliases=随行别名、lines=本章台词行指纹。
+     * 与改名/手动合并的 'u' 账分工：回滚逆 'm'（保留区同对跳过）、编辑保存只清本章 'm'、释放回放按行指纹回写。
+     */
+    suspend fun captureAutoMergeOp(
+        book: String,
+        chapter: Int,
+        from: String,
+        to: String,
+        aliases: List<String>,
+        via: String,
+        lines: List<Pair<Int, String>>,
+    ) = withContext(Dispatchers.IO) {
+        if (book.isBlank() || from.isBlank() || to.isBlank() || from == to) return@withContext
+        runCatching {
+            val arr = JSONArray()
+            lines.forEach { (i, text) ->
+                arr.put(
+                    JSONObject().apply {
+                        put("i", i)
+                        put("h", fnv1a(text))
+                        put("len", text.length)
+                    }
+                )
+            }
+            if (arr.length() == 0) return@runCatching
+            val ts = System.currentTimeMillis()
+            appendMergeOpInternal(
+                book,
+                JSONObject().apply {
+                    put("id", "m${ts}_c${chapter}_${fnv1a(from)}")
+                    put("ts", ts)
+                    put("chapter", chapter)
+                    put("from", from)
+                    put("to", to)
+                    put("aliases", JSONArray().apply { aliases.filter { it.isNotBlank() }.forEach { put(it) } })
+                    put("via", via)
+                    put("lines", arr)
+                    put("status", "active")
+                },
+            )
+        }
+    }
+
     suspend fun renameMergeLogTokens(book: String, oldName: String, newName: String) =
         withContext(Dispatchers.IO) {
             if (book.isBlank() || oldName.isBlank() || newName.isBlank() || oldName == newName) return@withContext
@@ -832,10 +877,12 @@ class ReadAloudDataRepository(private val app: Application) {
                 if (t > 0) writeText(cacheFile, cache.toString())
             }
         }
-        // 剔除该章合并账本 op（人物记录不动）
+        // 剔除该章「自动合并凭据」op（对齐 1.4.x：只清本章 'm'；改名/手动合并账不随编辑清除；人物记录不动）
         runCatching {
             val ops = readMergeLog(book)
-            val kept = ops.filterNot { it.optInt("chapter", -1) == chapter }
+            val kept = ops.filterNot {
+                it.optInt("chapter", -1) == chapter && it.optString("id").startsWith("m")
+            }
             if (kept.size != ops.size) writeMergeLog(book, kept)
         }
         writeBookRev(book, chapter)
@@ -942,55 +989,12 @@ class ReadAloudDataRepository(private val app: Application) {
     ) {
         runCatching {
             val current = parseRecords(readText(bookFile(book, "shuming.$book.json"))).toMutableList()
-            // 保留区仍持有同一 from|to 对 → 该合并未随回滚段失效，不逆向（对齐原版 keepPairs 守卫）
-            val keptPairs = HashSet<String>()
-            keptOps.forEach { op ->
-                val from = op.optString("from")
-                val to = op.optString("to")
-                if (from.isNotBlank() && to.isNotBlank()) keptPairs.add("$from|$to")
-            }
-            removedOps.forEach opLoop@{ op ->
-                if (op.optString("status") != "active") return@opLoop
-                val from = op.optString("from")
-                val to = op.optString("to")
-                if (from.isBlank() || to.isBlank() || from == to) return@opLoop
-                if (keptPairs.contains("$from|$to")) return@opLoop
-                val extra = mutableListOf<String>()
-                op.optJSONArray("aliases")?.let { a ->
-                    for (i in 0 until a.length()) {
-                        a.optString(i).takeIf { it.isNotBlank() }?.let(extra::add)
-                    }
-                }
-                current.firstOrNull { it.name == to }?.let { target ->
-                    target.aliases = target.aliases.split("|")
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() }
-                        .filterNot { it == from || it in extra }
-                        .joinToString("|")
-                }
-                if (current.none { it.name == from }) {
-                    current.add(
-                        CharacterRecord(
-                            name = from,
-                            aliases = extra.joinToString("|"),
-                            roletype = if (from.contains("【第")) "路人" else "核心",
-                            gender = "男",
-                            age = "男青年",
-                        )
-                    )
-                }
-            }
-            val iter = current.iterator()
-            while (iter.hasNext()) {
-                val r = iter.next()
-                val had = r.appearanceChapters.isNotEmpty()
-                r.appearanceChapters.removeAll { it >= floor }
-                r.lastAppearanceChapter = r.appearanceChapters.maxOrNull() ?: -1
-                r.appearanceCount = r.appearanceChapters.size
-                if (had && r.appearanceChapters.isEmpty() && r.lastAppearanceChapter < 0) {
-                    iter.remove()
-                }
-            }
+            MergeRollbackCore.reverseOps(
+                current,
+                removedOps = removedOps.map(::mergeOpViewOf),
+                keptOps = keptOps.map(::mergeOpViewOf),
+            )
+            MergeRollbackCore.purgeAppearances(current, floor)
             val json = recordsJson(current)
             writeText(bookFile(book, "shuming.$book.json"), json)
             // 根镜像仅在本书为「当前书」时同步（与 saveBookRecords / 原版 writeBookCharacters 同款门控）
@@ -1000,6 +1004,22 @@ class ReadAloudDataRepository(private val app: Application) {
             }
         }
     }
+
+    /** 合并账本 op → 逆向核心视图（纯函数入参） */
+    private fun mergeOpViewOf(op: JSONObject): MergeRollbackCore.OpView =
+        MergeRollbackCore.OpView(
+            id = op.optString("id"),
+            status = op.optString("status"),
+            from = op.optString("from"),
+            to = op.optString("to"),
+            aliases = op.optJSONArray("aliases")?.let { a ->
+                buildList {
+                    for (i in 0 until a.length()) {
+                        a.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                }
+            } ?: emptyList(),
+        )
 
     /**
      * 删除书籍全套资产（B10.3·U7）：
@@ -1370,5 +1390,98 @@ internal object ScriptSectionStore {
             for (i in 0 until end) out.add(body[i])
         }
         return out.joinToString("\n")
+    }
+}
+
+/**
+ * B23：合并账本『逆向』核心（纯函数，app 单测直测）。
+ * 对齐 1.4.x/角色管理 v50 回滚语义：
+ *  - 'm'（脚本自动合并凭据）：①记录名==from 且别名含 to → 改名回退（升级/吸收回退）；
+ *    ②任一带 from（或凭据随行别名）的记录 → 剥离这些别名；不新建记录。
+ *  - 'u'（移植版改名/手动合并账本）：维持既有可逆语义（剥离 + 被并走记录缺失时重建）。
+ *  - keepPairs：保留区仍持有同一 from|to 对 → 跳过该逆向（"并入章节比回滚点更早 → 保留别名"）。
+ *  - 出场清理：≥floor 全清；清空即删记录。
+ */
+internal object MergeRollbackCore {
+
+    data class OpView(
+        val id: String,
+        val status: String,
+        val from: String,
+        val to: String,
+        val aliases: List<String>,
+    )
+
+    private fun tokens(s: String): List<String> =
+        s.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+
+    fun reverseOps(
+        current: MutableList<CharacterRecord>,
+        removedOps: List<OpView>,
+        keptOps: List<OpView>,
+    ) {
+        val keptPairs = HashSet<String>()
+        keptOps.forEach { op ->
+            if (op.from.isNotBlank() && op.to.isNotBlank()) keptPairs.add("${op.from}|${op.to}")
+        }
+        for (op in removedOps.asReversed()) {
+            if (op.status != "active") continue
+            val from = op.from
+            val to = op.to
+            if (from.isBlank() || to.isBlank() || from == to) continue
+            if (keptPairs.contains("$from|$to")) continue
+            val extra = op.aliases.filter { it.isNotBlank() }
+            if (op.id.startsWith("m")) {
+                val named = current.firstOrNull { it.name == from }
+                if (named != null) {
+                    val ts = tokens(named.aliases)
+                    if (to in ts) {
+                        named.name = to
+                        named.aliases = ts.filterNot { it == to }.joinToString("|")
+                    }
+                } else {
+                    val holder = current.firstOrNull { r ->
+                        val ts = tokens(r.aliases)
+                        from in ts || extra.any { it in ts }
+                    }
+                    if (holder != null) {
+                        holder.aliases = tokens(holder.aliases)
+                            .filterNot { it == from || it in extra }
+                            .joinToString("|")
+                    }
+                }
+            } else {
+                current.firstOrNull { it.name == to }?.let { target ->
+                    target.aliases = tokens(target.aliases)
+                        .filterNot { it == from || it in extra }
+                        .joinToString("|")
+                }
+                if (current.none { it.name == from }) {
+                    current.add(
+                        CharacterRecord(
+                            name = from,
+                            aliases = extra.joinToString("|"),
+                            roletype = if (from.contains("【第")) "路人" else "核心",
+                            gender = "男",
+                            age = "男青年",
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun purgeAppearances(current: MutableList<CharacterRecord>, floor: Int) {
+        val iter = current.iterator()
+        while (iter.hasNext()) {
+            val r = iter.next()
+            val had = r.appearanceChapters.isNotEmpty()
+            r.appearanceChapters.removeAll { it >= floor }
+            r.lastAppearanceChapter = r.appearanceChapters.maxOrNull() ?: -1
+            r.appearanceCount = r.appearanceChapters.size
+            if (had && r.appearanceChapters.isEmpty() && r.lastAppearanceChapter < 0) {
+                iter.remove()
+            }
+        }
     }
 }
