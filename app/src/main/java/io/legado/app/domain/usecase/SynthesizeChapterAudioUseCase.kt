@@ -13,6 +13,7 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
+import io.legado.app.help.readaloud.playback.isUsableCacheFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -136,7 +137,7 @@ class SynthesizeChapterAudioUseCase(
             )
             val hash = ReadAloudAudioCacheKeys.contentHash(voiceKey, speechRate, text)
             val file = audioCache.cueFile(book, chapterIndex, index, hash)
-            if (file.exists() && file.length() > 0L) {
+            if (file.isUsableCacheFile()) {
                 done++
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed

@@ -73,6 +73,7 @@ import io.legado.app.help.readaloud.playback.CloudTtsRoleInstructionMapper
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import io.legado.app.help.readaloud.playback.SystemTtsFileSynthesizer
+import io.legado.app.help.readaloud.playback.isUsableCacheFile
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeUrl
@@ -1147,8 +1148,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         voiceKey = voiceKey,
     )
 
-    /** 缓存文件有效判定：存在且非空（0 字节视为未缓存，避免播放解码失败被跳过） */
-    private fun File.isValidAudio(): Boolean = exists() && length() > 0L
+    /** 缓存文件有效判定：存在、非空，且非旧版「误包 WAV 头」坏文件（白噪音自愈，见 [isUsableCacheFile]） */
+    private fun File.isValidAudio(): Boolean = isUsableCacheFile()
 
     /** 音频日志中的 cue 标识：#序号 + 声线标签 */
     private fun cueLabel(index: Int, voice: ReadAloudVoice): String =

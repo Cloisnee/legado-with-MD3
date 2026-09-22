@@ -1640,6 +1640,20 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         neTextDlg = true
                     },
                 )
+            }
+            if (pluginUiLayout != null && !pluginUiEmpty) {
+                SectionHint("— 插件特色界面 —", "由插件自身提供")
+                key(pluginUiLayout) {
+                    AndroidView(
+                        factory = { pluginUiLayout!! },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                    )
+                }
+            }
+            SectionHint("— 音频参数 —")
+            SplicedColumnGroup {
                 TinySliderSettingItem(
                     title = "语速",
                     value = neSpeed,
@@ -1670,17 +1684,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     description = "1.00 = 原音高",
                     onValueChange = { nePitch = it },
                 )
-            }
-            if (pluginUiLayout != null && !pluginUiEmpty) {
-                SectionHint("— 插件特色界面 —")
-                key(pluginUiLayout) {
-                    AndroidView(
-                        factory = { pluginUiLayout!! },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp),
-                    )
-                }
             }
         }
     }
@@ -2135,7 +2138,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         },
                     )
                 }
-                SectionHint("— 音色基础信息 —")
+                SectionHint("— 条目信息 —")
                 SplicedColumnGroup {
                     TinyClickableSettingItem(
                         title = "显示名",
@@ -2153,6 +2156,20 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             edFieldDlg = "标签"
                         },
                     )
+                }
+                if (edUiLayout != null && !edUiEmpty) {
+                    SectionHint("— 插件特色界面 —", "由插件自身提供")
+                    key(edUiLayout) {
+                        AndroidView(
+                            factory = { edUiLayout!! },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                        )
+                    }
+                }
+                SectionHint("— 音频参数 —")
+                SplicedColumnGroup {
                     TinySliderSettingItem(
                         title = "语速",
                         value = edSpeed,
@@ -2183,17 +2200,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         description = "0 = 跟随朗读设置；1.00 = 原音高",
                         onValueChange = { edPitch = it },
                     )
-                }
-                if (edUiLayout != null && !edUiEmpty) {
-                    SectionHint("— 插件特色界面 —")
-                    key(edUiLayout) {
-                        AndroidView(
-                            factory = { edUiLayout!! },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp),
-                        )
-                    }
                 }
             }
         }
@@ -3038,13 +3044,22 @@ private fun BankTag(active: Boolean, onClick: () -> Unit) {
 
 /** 分组提醒头（与「插件特色界面」同款样式） */
 @Composable
-private fun SectionHint(text: String) {
-    AppText(
-        text = text,
-        style = LegadoTheme.typography.labelSmall,
-        color = LegadoTheme.colorScheme.primary,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-    )
+private fun SectionHint(text: String, description: String? = null) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        AppText(
+            text = text,
+            style = LegadoTheme.typography.labelSmall,
+            color = LegadoTheme.colorScheme.primary,
+        )
+        if (!description.isNullOrBlank()) {
+            AppText(
+                text = description,
+                style = LegadoTheme.typography.labelSmall,
+                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
 }
 
 @Composable

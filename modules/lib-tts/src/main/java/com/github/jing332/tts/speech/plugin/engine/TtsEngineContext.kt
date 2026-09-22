@@ -2,6 +2,7 @@ package com.github.jing332.tts.speech.plugin.engine
 
 import android.content.Context
 import androidx.annotation.Keep
+import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.compat.log.KLog
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
@@ -17,8 +18,6 @@ import kotlin.concurrent.withLock
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * 插件运行时上下文（JS 中通过 `ttsrv` 访问）。
@@ -63,7 +62,8 @@ data class TtsEngineContext(
             return@tryImpl null
         }
         val dir = File(TtsDirProvider.baseDir(context), "_audition").apply { mkdirs() }
-        val f = File(dir, "audition_${tag}_${System.currentTimeMillis()}.${sniffExt(bytes)}")
+        val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
+        val f = File(dir, "audition_${tag}_${System.currentTimeMillis()}.$ext")
         f.writeBytes(bytes)
         f.absolutePath
     }
@@ -166,35 +166,14 @@ data class TtsEngineContext(
             return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
         }
         if (bytes.isEmpty()) return SynthOutcome(null, "合成返回空音频")
-        return SynthOutcome(if (needsWavWrap(bytes)) wrapPcmInWav(bytes, found.sampleRate) else bytes)
-    }
-
-    private fun sniffExt(b: ByteArray): String = when {
-        b.size >= 4 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() -> "wav"
-        b.size >= 2 && b[0] == 0xFF.toByte() && (b[1].toInt() and 0xE0) == 0xE0 -> "mp3"
-        b.size >= 3 && b[0] == 'I'.code.toByte() && b[1] == 'D'.code.toByte() && b[2] == '3'.code.toByte() -> "mp3"
-        else -> "bin"
-    }
-
-    private fun needsWavWrap(b: ByteArray): Boolean = sniffExt(b) == "bin"
-
-    /** PCM(16bit 单声道) 包 WAV 头（对齐补丁版 wrapPcmInWav 语义） */
-    fun wrapPcmInWav(pcm: ByteArray, sampleRate: Int): ByteArray {
-        val sr = sampleRate.takeIf { it > 0 } ?: 24000
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("RIFF".toByteArray())
-        header.putInt(36 + pcm.size)
-        header.put("WAVE".toByteArray())
-        header.put("fmt ".toByteArray())
-        header.putInt(16)
-        header.putShort(1.toShort())
-        header.putShort(1.toShort())
-        header.putInt(sr)
-        header.putInt(sr * 2)
-        header.putShort(2.toShort())
-        header.putShort(16.toShort())
-        header.put("data".toByteArray())
-        header.putInt(pcm.size)
-        return header.array() + pcm
+        // 音频格式归一化（白噪音修复）：webm/ogg/amr 等容器直通播放器解码；仅未识别格式按裸 PCM 包 WAV 头
+        val sniffed = AudioSniffer.normalizeForPlayback(bytes, found.sampleRate)
+        if (sniffed.wrappedPcm) {
+            KLog.logger(TAG).debug {
+                "未识别音频格式(kind=${sniffed.kind.name}, 首8字节=${AudioSniffer.hexPreview(bytes)})" +
+                        "，按裸 PCM 包 WAV 头(${found.sampleRate} Hz)"
+            }
+        }
+        return SynthOutcome(sniffed.bytes)
     }
 }

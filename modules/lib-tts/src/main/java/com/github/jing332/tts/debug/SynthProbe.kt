@@ -1,13 +1,12 @@
 package com.github.jing332.tts.debug
 
 import android.content.Context
+import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * 试听合成诊断器：逐步执行并返回完整报告（失败时定位到具体环节）。
@@ -86,21 +85,17 @@ object SynthProbe {
             sb.appendLine("✗ 合成结果为空(0B)")
             return Result(null, sb.toString())
         }
-        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it) }}")
+        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
 
-        val out = if (needsWavWrap(bytes)) {
-            val wrapped = wrapPcmInWav(bytes, found.sampleRate)
-            sb.appendLine("→ 已包 WAV 头 total=${wrapped.size}")
-            wrapped
-        } else bytes
-        return Result(out, sb.toString())
-    }
-
-    private fun needsWavWrap(b: ByteArray): Boolean {
-        if (b.size >= 4 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte()) return false
-        if (b.size >= 2 && b[0] == 0xFF.toByte() && (b[1].toInt() and 0xE0) == 0xE0) return false
-        if (b.size >= 3 && b[0] == 'I'.code.toByte() && b[1] == 'D'.code.toByte() && b[2] == '3'.code.toByte()) return false
-        return true
+        val sniffed = AudioSniffer.normalizeForPlayback(bytes, found.sampleRate)
+        sb.appendLine(
+            if (sniffed.wrappedPcm) {
+                "→ 未识别格式：按裸 PCM 包 WAV 头(${found.sampleRate} Hz) total=${sniffed.bytes.size}"
+            } else {
+                "→ 容器格式直通(${sniffed.kind.name}) total=${sniffed.bytes.size}"
+            }
+        )
+        return Result(sniffed.bytes, sb.toString())
     }
 
     /** 直连试听（不依赖配置列表条目）：按 插件 + locale + voice 合成 */
@@ -163,32 +158,16 @@ object SynthProbe {
             sb.appendLine("✗ 合成结果为空(0B)")
             return Result(null, sb.toString())
         }
-        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it) }}")
+        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
 
-        val out = if (needsWavWrap(bytes)) {
-            val wrapped = wrapPcmInWav(bytes, sampleRate)
-            sb.appendLine("→ 已包 WAV 头($sampleRate) total=${wrapped.size}")
-            wrapped
-        } else bytes
-        return Result(out, sb.toString())
-    }
-
-    private fun wrapPcmInWav(pcm: ByteArray, sampleRate: Int): ByteArray {
-        val sr = sampleRate.takeIf { it > 0 } ?: 24000
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("RIFF".toByteArray())
-        header.putInt(36 + pcm.size)
-        header.put("WAVE".toByteArray())
-        header.put("fmt ".toByteArray())
-        header.putInt(16)
-        header.putShort(1.toShort())
-        header.putShort(1.toShort())
-        header.putInt(sr)
-        header.putInt(sr * 2)
-        header.putShort(2.toShort())
-        header.putShort(16.toShort())
-        header.put("data".toByteArray())
-        header.putInt(pcm.size)
-        return header.array() + pcm
+        val sniffed = AudioSniffer.normalizeForPlayback(bytes, sampleRate)
+        sb.appendLine(
+            if (sniffed.wrappedPcm) {
+                "→ 未识别格式：按裸 PCM 包 WAV 头(${sampleRate} Hz) total=${sniffed.bytes.size}"
+            } else {
+                "→ 容器格式直通(${sniffed.kind.name}) total=${sniffed.bytes.size}"
+            }
+        )
+        return Result(sniffed.bytes, sb.toString())
     }
 }

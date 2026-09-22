@@ -2,6 +2,7 @@ package io.legado.app.data.repository
 
 import android.app.Application
 import android.content.Context
+import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.debug.SynthProbe
@@ -656,11 +657,7 @@ class TtsServerCenterRepository(private val app: Application) {
         val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
-            val ext = when {
-                bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
-                bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
-                else -> "bin"
-            }
+            val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
             val f = File(dir, "audition_direct_${System.currentTimeMillis()}.$ext")
             f.writeBytes(bytes)
             AuditionOutcome(
@@ -1177,11 +1174,7 @@ class TtsServerCenterRepository(private val app: Application) {
             val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
-                val ext = when {
-                    bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
-                    bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
-                    else -> "bin"
-                }
+                val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
                 val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
                 f.writeBytes(bytes)
                 AuditionOutcome(

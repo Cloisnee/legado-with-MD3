@@ -162,9 +162,29 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
         }
     }
 
+    /** 已让插件自身加载过声线表的语言（随语言变化重载） */
+    private var selfVoicesLocale: String? = null
+
+    /**
+     * 让插件自身执行 EditorJS.getVoices(locale)（补丁版 PluginTtsViewModel.updateVoices 同款）。
+     *
+     * 为什么必须在 onVoiceChanged 之前调用：微软翻译等插件的 onVoiceChanged 会读取插件内部
+     * 声线表（getVoices 时才填充的 Map），缺失则直接 return —— 风格/角色/风格强度等特色控件
+     * 永远不出现（真机实测：只显示 服务区域+音频格式 两个下拉的根因）。
+     * 每个语言至多执行一次；失败不抛（部分插件无 getVoices）。
+     */
+    private fun ensureSelfVoices(locale: String) {
+        if (selfVoicesLocale == locale) return
+        runCatching { engine.invokeMethod(editUiJsObject, FUNC_VOICES, locale) }
+            .onFailure { runtime.console.debug("ensureSelfVoices($locale) failed: ${it.message}") }
+        selfVoicesLocale = locale
+    }
+
     fun onVoiceChanged(locale: String, voice: String) {
         runtime.console.debug("onVoiceChanged($locale, $voice)")
 
+        // 补丁版同款顺序：先 getVoices 填充插件内部声线表，再通知 onVoiceChanged
+        ensureSelfVoices(locale)
         try {
             engine.invokeMethod(
                 editUiJsObject,

@@ -5,6 +5,7 @@ import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.utils.MD5Utils
+import java.io.File
 
 /**
  * 朗读音频缓存「命名契约」（播放侧与批量缓存侧唯一真源）。
@@ -66,4 +67,44 @@ object ReadAloudAudioCacheKeys {
         if (base.startsWith("title_")) return TITLE_SEG_INDEX
         return base.substringBefore('_').toIntOrNull()
     }
+}
+
+/**
+ * 缓存文件是否可用（存在、非空，且不是旧版「误包 WAV 头」的坏文件）。
+ *
+ * B21 白噪音修复：修复前的实现把 webm/ogg 等未识别字节按裸 PCM 包了 44 字节 WAV 头，
+ * 播放为滋滋白噪音。此判定识别该产物（RIFF/WAVE 头 + data 起于压缩容器魔数）→ 归为无效，
+ * 播放/批量合成路径据此自动重新合成，旧坏缓存无需手动清理。
+ */
+fun File.isUsableCacheFile(): Boolean {
+    if (!exists() || length() <= 0L) return false
+    return !isLegacyMisWrappedWav()
+}
+
+private fun File.isLegacyMisWrappedWav(): Boolean = runCatching {
+    if (length() < 48L) return false
+    val head = ByteArray(64)
+    inputStream().use { ins ->
+        var off = 0
+        while (off < head.size) {
+            val r = ins.read(head, off, head.size - off)
+            if (r <= 0) break
+            off += r
+        }
+        if (off < 48) return false
+    }
+    if (!head.asciiAt(0, "RIFF") || !head.asciiAt(8, "WAVE")) return false
+    val d = 44
+    head.asciiAt(d, "OggS") || head.asciiAt(d, "fLaC") || head.asciiAt(d, "#!AMR") ||
+            head.asciiAt(d + 4, "ftyp") ||
+            (head[d] == 0x1A.toByte() && head[d + 1] == 0x45.toByte() &&
+                    head[d + 2] == 0xDF.toByte() && head[d + 3] == 0xA3.toByte())
+}.getOrDefault(false)
+
+private fun ByteArray.asciiAt(off: Int, s: String): Boolean {
+    if (off + s.length > size) return false
+    for (i in s.indices) {
+        if (this[off + i] != s[i].code.toByte()) return false
+    }
+    return true
 }
