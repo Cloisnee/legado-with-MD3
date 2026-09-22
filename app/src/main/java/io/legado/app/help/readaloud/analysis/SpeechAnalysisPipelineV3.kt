@@ -14,6 +14,7 @@ import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
+import io.legado.app.utils.AliasTokens
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -431,7 +432,7 @@ class SpeechAnalysisPipelineV3(
         runCatching { chapterSpeechGateway.saveAnalysis(analysis, bound) }
             .onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】落库失败: ${it.localizedMessage}", it) }
         AppLog.putAnalysis("【分析V3·${chapterLabel}】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
-        // ===== 文件产物：all_clean_text / chapter_cache / book_rev（供角色管理/书籍管理读取） =====
+        // ===== 文件产物：all_clean_text / chapter_cache（供角色管理/书籍管理读取） =====
         val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound)
         AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入=$fileOk")
         // B17：完成解析 → 推进「最近完成解析章」（顺读 / 跳读 / 回跳 判定依据）
@@ -992,9 +993,9 @@ class SpeechAnalysisPipelineV3(
                     val winner = if (b.minSeq < a.minSeq) b else a
                     val loser = if (winner === a) b else a
                     AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
-                    val toks = aliasTokensOf(winner.alias).toMutableList()
+                    val toks = AliasTokens.of(winner.alias).toMutableList()
                     if (loser.name != winner.name && loser.name !in toks) toks.add(loser.name)
-                    aliasTokensOf(loser.alias).forEach { t ->
+                    AliasTokens.of(loser.alias).forEach { t ->
                         if (t != winner.name && t !in toks) toks.add(t)
                     }
                     winner.alias = toks.distinct().joinToString("|")
@@ -1010,13 +1011,10 @@ class SpeechAnalysisPipelineV3(
 
     private fun isSamePersonEntry(a: Calibrated, b: Calibrated): Boolean {
         if (a.name == b.name) return true
-        if (b.name in aliasTokensOf(a.alias)) return true
-        if (a.name in aliasTokensOf(b.alias)) return true
+        if (b.name in AliasTokens.of(a.alias)) return true
+        if (a.name in AliasTokens.of(b.alias)) return true
         return false
     }
-
-    private fun aliasTokensOf(alias: String): List<String> =
-        alias.split("|").map { it.trim() }.filter { it.isNotEmpty() }
 
     private fun applyStage2(
         segments: List<ChapterSpeechSegment>,
@@ -1176,7 +1174,7 @@ class SpeechAnalysisPipelineV3(
             val descs = cands.joinToString("、") { c ->
                 c.name + (if (c.age.isNotBlank()) "(${c.age})" else "") +
                     (if (c.aliases.isNotBlank()) {
-                        "，别名：" + aliasTokensOf(c.aliases).joinToString("、")
+                        "，别名：" + AliasTokens.of(c.aliases).joinToString("、")
                     } else {
                         ""
                     })
@@ -1186,7 +1184,7 @@ class SpeechAnalysisPipelineV3(
             var target: CharacterRecord? = null
             if (verdict != null && verdict.first) {
                 val mn = verdict.second.orEmpty()
-                target = cands.firstOrNull { it.name == mn || mn in aliasTokensOf(it.aliases) }
+                target = cands.firstOrNull { it.name == mn || mn in AliasTokens.of(it.aliases) }
             }
             if (target != null) {
                 captureAutoMerge(bookName, chapterIndex, segments, e, target, finalNameOf(e))
@@ -1223,7 +1221,7 @@ class SpeechAnalysisPipelineV3(
         runCatching {
             val to = hist.name
             if (bookName.isBlank() || fromName.isBlank() || to.isBlank() || fromName == to) return@runCatching
-            val extra = aliasTokensOf(e.alias).filter { it.isNotBlank() && it != fromName && it != to }
+            val extra = AliasTokens.of(e.alias).filter { it.isNotBlank() && it != fromName && it != to }
             val lines = ArrayList<Pair<Int, String>>()
             segments.forEachIndexed { i, s ->
                 if (s.roleType != SpeechRoleType.Narrator && s.characterName == e.name) {
@@ -1245,8 +1243,8 @@ class SpeechAnalysisPipelineV3(
 
     /** 合并凭据 via：e（名+别名）与 hist（名+别名）的首个共同 token（对齐原版 __mergeLogViaToken） */
     private fun mergeViaToken(e: Calibrated, hist: CharacterRecord): String {
-        val eToks = listOf(e.name) + aliasTokensOf(e.alias)
-        val hToks = listOf(hist.name) + aliasTokensOf(hist.aliases)
+        val eToks = listOf(e.name) + AliasTokens.of(e.alias)
+        val hToks = listOf(hist.name) + AliasTokens.of(hist.aliases)
         for (t in eToks) {
             val tt = t.trim()
             if (tt.isNotEmpty() && tt in hToks) return tt
@@ -1267,9 +1265,9 @@ class SpeechAnalysisPipelineV3(
                 // 升级：核心/特殊 接管主名；旧路人主名（含后缀完整名）转别名
                 val oldName = hist.name
                 val voiceKept = hist.voice
-                val aliasList = aliasTokensOf(hist.aliases).toMutableList()
+                val aliasList = AliasTokens.of(hist.aliases).toMutableList()
                 if (oldName.isNotBlank() && oldName != e.name && oldName !in aliasList) aliasList.add(oldName)
-                aliasTokensOf(e.alias).forEach { t ->
+                AliasTokens.of(e.alias).forEach { t ->
                     if (t.isNotBlank() && t != e.name && t !in aliasList) aliasList.add(t)
                 }
                 hist.name = e.name
@@ -1283,9 +1281,9 @@ class SpeechAnalysisPipelineV3(
         }
         // 并入核心/特殊：别名加法（路人侧用完整名【第N章】；后缀是章节消歧凭据，必须保留）
         val effName = if (e.roleType == "路人") eFinalName else e.name
-        val aliasList = aliasTokensOf(hist.aliases).toMutableList()
+        val aliasList = AliasTokens.of(hist.aliases).toMutableList()
         if (effName.isNotBlank() && effName != hist.name && effName !in aliasList) aliasList.add(effName)
-        aliasTokensOf(e.alias).forEach { t ->
+        AliasTokens.of(e.alias).forEach { t ->
             if (t.isNotBlank() && t != hist.name && t !in aliasList) aliasList.add(t)
         }
         hist.aliases = aliasList.filter { it.isNotBlank() && it != hist.name }.distinct().joinToString("|")
@@ -1298,11 +1296,11 @@ class SpeechAnalysisPipelineV3(
         chapterIndex: Int,
     ): CharacterRecord {
         val existing = findRecord(recs, e.name)
-            ?: aliasTokensOf(e.alias).firstNotNullOfOrNull { findRecord(recs, it) }
+            ?: AliasTokens.of(e.alias).firstNotNullOfOrNull { findRecord(recs, it) }
         if (existing != null) {
             touchAppearance(existing, chapterIndex)
-            val aliasList = aliasTokensOf(existing.aliases).toMutableList()
-            aliasTokensOf(e.alias).forEach { t ->
+            val aliasList = AliasTokens.of(existing.aliases).toMutableList()
+            AliasTokens.of(e.alias).forEach { t ->
                 if (t.isNotBlank() && t != existing.name && t !in aliasList) aliasList.add(t)
             }
             if (e.name != existing.name && e.name !in aliasList) aliasList.add(e.name)
@@ -1346,13 +1344,13 @@ class SpeechAnalysisPipelineV3(
     private fun findRecord(recs: List<CharacterRecord>, name: String): CharacterRecord? {
         val n = name.trim()
         if (n.isBlank()) return null
-        return recs.firstOrNull { it.name.equals(n, true) || aliasTokensOf(it.aliases).any { a -> a.equals(n, true) } }
+        return recs.firstOrNull { it.name.equals(n, true) || AliasTokens.of(it.aliases).any { a -> a.equals(n, true) } }
     }
 
     private fun histMatch(records: List<CharacterRecord>, e: Calibrated): CharacterRecord? {
-        val eTokens = (listOf(e.name) + aliasTokensOf(e.alias)).filter { it.isNotBlank() }
+        val eTokens = (listOf(e.name) + AliasTokens.of(e.alias)).filter { it.isNotBlank() }
         for (rec in records) {
-            val rTokens = (listOf(rec.name) + aliasTokensOf(rec.aliases)).filter { it.isNotBlank() }
+            val rTokens = (listOf(rec.name) + AliasTokens.of(rec.aliases)).filter { it.isNotBlank() }
             if (eTokens.any { t -> rTokens.any { r -> r == t } }) return rec
         }
         return null
@@ -1390,10 +1388,10 @@ class SpeechAnalysisPipelineV3(
         keepSet.add(e.name)
         keepSet.add(rename[e.name] ?: e.name)
         if (e.roleType == "路人") keepSet.add(e.name + "【第${chapterIndex + 1}章】")
-        keepSet.addAll(aliasTokensOf(e.alias))
+        keepSet.addAll(AliasTokens.of(e.alias))
         cands.forEach { c ->
             keepSet.add(c.name)
-            keepSet.addAll(aliasTokensOf(c.aliases))
+            keepSet.addAll(AliasTokens.of(c.aliases))
         }
         ctx = ctx.lines().joinToString("\n") { line ->
             if (line.startsWith("[chapter:")) {
@@ -1456,7 +1454,7 @@ class SpeechAnalysisPipelineV3(
         return sb.toString().trimEnd('\n')
     }
 
-    /** 文件产物写入（幂等）：all_clean_text/chapter_cache/book_rev + 书架索引 */
+    /** 文件产物写入（幂等）：all_clean_text/chapter_cache + 书架索引 */
     private suspend fun writeFileArtifacts(
         bookName: String,
         chapterIndex: Int,

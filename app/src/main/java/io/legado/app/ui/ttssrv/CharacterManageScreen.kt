@@ -89,6 +89,7 @@ import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
+import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
 
@@ -185,9 +186,6 @@ fun CharacterManageScreen(
             runCatching { player.release() }
         }
     }
-
-    fun parseAliases(s: String): List<String> =
-        s.split("|").map { it.trim() }.filter { it.isNotEmpty() }
 
     fun openEdit(idx: Int) {
         val r = records.getOrNull(idx) ?: return
@@ -297,10 +295,10 @@ fun CharacterManageScreen(
         scope.launch {
             val aliasArr = LinkedHashSet<String>()
             if (target.name.isNotBlank()) aliasArr.add(target.name)
-            aliasArr.addAll(parseAliases(target.aliases))
+            aliasArr.addAll(AliasTokens.of(target.aliases))
             followers.forEach { f ->
                 if (f.name.isNotBlank()) aliasArr.add(f.name)
-                aliasArr.addAll(parseAliases(f.aliases))
+                aliasArr.addAll(AliasTokens.of(f.aliases))
             }
             target.aliases = aliasArr.joinToString("|")
             val newList = records.filterNot { it in followers }
@@ -332,7 +330,7 @@ fun CharacterManageScreen(
             scope.launch {
                 val parentIndex = editIdx ?: return@launch
                 val parent = records.getOrNull(parentIndex) ?: return@launch
-                var curAliases = parseAliases(edAliases).filterNot { it == alias }
+                var curAliases = AliasTokens.of(edAliases).filterNot { it == alias }
                 var curName = edName
                 if (curName == alias) {
                     if (curAliases.isNotEmpty()) {
@@ -356,7 +354,7 @@ fun CharacterManageScreen(
                     val ex = list[existingIdx]
                     ex.voice = selectedVoice
                     if (extraAliases.isNotEmpty()) {
-                        ex.aliases = (parseAliases(ex.aliases) + extraAliases)
+                        ex.aliases = (AliasTokens.of(ex.aliases) + extraAliases)
                             .distinct().joinToString("|")
                     }
                 } else {
@@ -802,7 +800,7 @@ fun CharacterManageScreen(
             TinyClickableSettingItem(
                 title = "别名",
                 description = run {
-                    val a = parseAliases(edAliases)
+                    val a = AliasTokens.of(edAliases)
                     if (a.isEmpty()) "无" else a.joinToString("、") + "（${a.size}个）"
                 },
                 trailingContent = {
@@ -885,7 +883,7 @@ fun CharacterManageScreen(
                     aliasInputDialog = true
                 },
             )
-            val aliases = parseAliases(edAliases)
+            val aliases = AliasTokens.of(edAliases)
             if (aliases.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无别名）", onClick = {})
             }
@@ -930,7 +928,7 @@ fun CharacterManageScreen(
                         Spacer(modifier = Modifier.width(2.dp))
                         SmallPlainButton(
                             onClick = {
-                                edAliases = parseAliases(edAliases)
+                                edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it == a }.joinToString("|")
                             },
                             icon = Icons.Default.Delete,
@@ -983,7 +981,7 @@ fun CharacterManageScreen(
             val t = aliasInput.trim()
             aliasInputDialog = false
             if (t.isNotEmpty()) {
-                val cur = parseAliases(edAliases)
+                val cur = AliasTokens.of(edAliases)
                 if (t !in cur) edAliases = (cur + t).joinToString("|")
             }
         },
@@ -1010,7 +1008,7 @@ fun CharacterManageScreen(
             val to = aliasRenameInput.trim()
             aliasRenameTarget = null
             if (from != null && to.isNotEmpty() && to != from) {
-                edAliases = parseAliases(edAliases)
+                edAliases = AliasTokens.of(edAliases)
                     .map { if (it == from) to else it }
                     .distinct()
                     .joinToString("|")
@@ -1096,7 +1094,7 @@ fun CharacterManageScreen(
                         scope.launch {
                             val n = repo.appendWordLibrary("bare_words.json", req.words)
                             req.aliasToRemove?.let { rm ->
-                                edAliases = parseAliases(edAliases)
+                                edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
                             }
                             context.toastOnUi("已加入裸属类词库（新增 $n 个）")
@@ -1110,7 +1108,7 @@ fun CharacterManageScreen(
                         scope.launch {
                             val n = repo.appendWordLibrary("special_words.json", req.words)
                             req.aliasToRemove?.let { rm ->
-                                edAliases = parseAliases(edAliases)
+                                edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
                             }
                             context.toastOnUi("已加入特殊类词库（新增 $n 个）")

@@ -1040,8 +1040,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     } else {
                         groups.forEachIndexed { gi, g ->
                             val groupKeys = g.entries.map { entryKeyOf(it) }
-                            val groupAllSel =
-                                g.entries.isNotEmpty() && groupKeys.all { it in selEntries }
                             item(key = "g_${gi}_${g.name}") {
                                 val gSel = groupKeyOf(g) in selGroupNames
                                 LevelRow(

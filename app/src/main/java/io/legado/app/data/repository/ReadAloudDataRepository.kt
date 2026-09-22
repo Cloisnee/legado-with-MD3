@@ -1,5 +1,6 @@
 package io.legado.app.data.repository
 
+import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.ChapterLabels
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
@@ -38,7 +39,6 @@ data class CharacterRecord(
     var lastAppearanceChapter: Int = -1,
     var appearanceCount: Int = 0,
     var appearanceChapters: MutableList<Int> = mutableListOf(),
-    var usageCount: Int = 0,
 )
 
 data class JueseState(
@@ -184,7 +184,6 @@ class ReadAloudDataRepository(private val app: Application) {
                             lastAppearanceChapter = o.optInt("lastAppearanceChapter", -1),
                             appearanceCount = o.optInt("appearanceCount", 0),
                             appearanceChapters = chapters,
-                            usageCount = o.optInt("usageCount", 0),
                         )
                     )
                 }
@@ -208,7 +207,6 @@ class ReadAloudDataRepository(private val app: Application) {
                     val chaptersArr = JSONArray()
                     r.appearanceChapters.forEach { chaptersArr.put(it) }
                     put("appearanceChapters", chaptersArr)
-                    put("usageCount", r.usageCount)
                 }
             )
         }
@@ -683,16 +681,6 @@ class ReadAloudDataRepository(private val app: Application) {
 
     // ---------------- 书籍管理：剧本读取 / 修改 / 删除 ----------------
 
-    private fun writeBookRev(book: String, chapter: Int) {
-        writeText(
-            bookFile(book, "book_rev.json"),
-            JSONObject().apply {
-                put("ts", System.currentTimeMillis())
-                put("chapter", chapter)
-            }.toString()
-        )
-    }
-
     /** 读取某章的剧本行（absIndex=整书文件行号，供修改定位） */
     suspend fun loadChapterScript(book: String, chapter: Int): List<ScriptLineRow> =
         withContext(Dispatchers.IO) {
@@ -779,12 +767,9 @@ class ReadAloudDataRepository(private val app: Application) {
                     JSONObject().apply {
                         put("state", "success")
                         put("scriptText", scriptText)
-                        put("currentLogicOffset", 0)
-                        put("saveTime", System.currentTimeMillis())
                     },
                 )
                 writeText(cacheFile, cache.toString())
-                writeBookRev(book, chapter)
             }
         }
     }
@@ -813,7 +798,7 @@ class ReadAloudDataRepository(private val app: Application) {
         }
     }
 
-    /** 修改某章若干行的说话标记；同步 chapter_cache 该章 scriptText；剔除该章合并账本 op；写 book_rev */
+    /** 修改某章若干行的说话标记；同步 chapter_cache 该章 scriptText；剔除该章合并账本 op */
     suspend fun rewriteChapterSpeakers(
         book: String,
         chapter: Int,
@@ -885,7 +870,6 @@ class ReadAloudDataRepository(private val app: Application) {
             }
             if (kept.size != ops.size) writeMergeLog(book, kept)
         }
-        writeBookRev(book, chapter)
         true
     }
 
@@ -976,7 +960,6 @@ class ReadAloudDataRepository(private val app: Application) {
                 }
             }
         }
-        writeBookRev(book, floor)
         true
     }
 
@@ -998,10 +981,7 @@ class ReadAloudDataRepository(private val app: Application) {
             val json = recordsJson(current)
             writeText(bookFile(book, "shuming.$book.json"), json)
             // 根镜像仅在本书为「当前书」时同步（与 saveBookRecords / 原版 writeBookCharacters 同款门控）
-            if (readText(rootFile("cunfang.txt")).trim() == book) {
-                writeText(rootFile("characterRecords.json"), json)
-                writeText(rootFile("characterRecords_backup.json"), json)
-            }
+            syncRootMirror(book, json)
         }
     }
 
@@ -1163,12 +1143,19 @@ class ReadAloudDataRepository(private val app: Application) {
         withContext(Dispatchers.IO) {
             val json = recordsJson(records)
             var ok = writeText(bookFile(book, "shuming.$book.json"), json)
-            if (ok && readText(rootFile("cunfang.txt")) == book) {
-                ok = writeText(rootFile("characterRecords.json"), json)
-                writeText(rootFile("characterRecords_backup.json"), json)
+            if (ok && readText(rootFile("cunfang.txt")).trim() == book) {
+                ok = syncRootMirror(book, json)
             }
             ok
         }
+
+    /** B24：当前书时同步根镜像（characterRecords.json + 备份）；非当前书返回 false（调用方自行决定是否关心）。 */
+    private fun syncRootMirror(book: String, json: String): Boolean {
+        if (readText(rootFile("cunfang.txt")).trim() != book) return false
+        val ok = writeText(rootFile("characterRecords.json"), json)
+        writeText(rootFile("characterRecords_backup.json"), json)
+        return ok
+    }
 
     /**
      * B17：最近一次「完成解析」的章节（0 基；-1=无）——连续性判定用。
@@ -1234,7 +1221,7 @@ class ReadAloudDataRepository(private val app: Application) {
     // ---------------- 分析管线（V3）文件产物 ----------------
 
     /**
-     * 写入/替换 某章剧本（[chapter:N] 标记+行内容；重析=原地替换旧段）；同步 chapter_cache 与 book_rev。
+     * 写入/替换 某章剧本（[chapter:N] 标记+行内容；重析=原地替换旧段）；同步 chapter_cache。
      * B22：写回按章号升序重组（对齐 1.4.x globalLibSerialize「按章号升序，保证追加时按顺序存储」；
      * 跳章/回跳补析不再把新段追加到文件尾造成乱序——顺带自愈历史乱序）。
      */
@@ -1255,18 +1242,14 @@ class ReadAloudDataRepository(private val app: Application) {
             val cacheFile = bookFile(book, "chapter_cache.$book.json")
             val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
             val key = "$bookUrl|$chapter"
-            val old = cache.optJSONObject(key)
             cache.put(
                 key,
                 JSONObject().apply {
                     put("state", "success")
                     put("scriptText", scriptText)
-                    put("currentLogicOffset", old?.optInt("currentLogicOffset", 0) ?: 0)
-                    put("saveTime", System.currentTimeMillis())
                 },
             )
             writeText(cacheFile, cache.toString())
-            writeBookRev(book, chapter)
             true
         }.getOrDefault(false)
     }
@@ -1412,9 +1395,6 @@ internal object MergeRollbackCore {
         val aliases: List<String>,
     )
 
-    private fun tokens(s: String): List<String> =
-        s.split("|").map { it.trim() }.filter { it.isNotEmpty() }
-
     fun reverseOps(
         current: MutableList<CharacterRecord>,
         removedOps: List<OpView>,
@@ -1434,25 +1414,25 @@ internal object MergeRollbackCore {
             if (op.id.startsWith("m")) {
                 val named = current.firstOrNull { it.name == from }
                 if (named != null) {
-                    val ts = tokens(named.aliases)
+                    val ts = AliasTokens.of(named.aliases)
                     if (to in ts) {
                         named.name = to
                         named.aliases = ts.filterNot { it == to }.joinToString("|")
                     }
                 } else {
                     val holder = current.firstOrNull { r ->
-                        val ts = tokens(r.aliases)
+                        val ts = AliasTokens.of(r.aliases)
                         from in ts || extra.any { it in ts }
                     }
                     if (holder != null) {
-                        holder.aliases = tokens(holder.aliases)
+                        holder.aliases = AliasTokens.of(holder.aliases)
                             .filterNot { it == from || it in extra }
                             .joinToString("|")
                     }
                 }
             } else {
                 current.firstOrNull { it.name == to }?.let { target ->
-                    target.aliases = tokens(target.aliases)
+                    target.aliases = AliasTokens.of(target.aliases)
                         .filterNot { it == from || it in extra }
                         .joinToString("|")
                 }
