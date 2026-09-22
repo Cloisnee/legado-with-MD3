@@ -1,5 +1,6 @@
 package io.legado.app.ui.book.readaloud.cache
 
+import io.legado.app.utils.ChapterLabels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.AppLog
@@ -145,7 +146,11 @@ class TtsCacheViewModel : ViewModel() {
             is TtsCacheIntent.DeleteChapterAudio -> viewModelScope.launch {
                 _uiState.update { it.copy(activeDialog = null) }
                 audioCache.deleteChapter(intent.book, intent.chapterIndex)
-                _effects.tryEmit(TtsCacheEffect.ShowToast("已删除第${intent.chapterIndex + 1}章音频缓存"))
+                val chapterUi = _uiState.value.books.firstOrNull { it.book == intent.book }
+                    ?.chapters?.firstOrNull { it.chapterIndex == intent.chapterIndex }
+                _effects.tryEmit(
+                    TtsCacheEffect.ShowToast("已删除${ChapterLabels.of(chapterUi?.title, intent.chapterIndex)}音频缓存")
+                )
                 loadAudioCache()
             }
 
@@ -388,8 +393,11 @@ class TtsCacheViewModel : ViewModel() {
                     current = null
                     throw e
                 } catch (e: Exception) {
+                    val itemLabel = runCatching {
+                        dataRepository.chapterLabelOf(item.book, item.chapterIndex)
+                    }.getOrDefault("第${item.chapterIndex + 1}章")
                     AppLog.putAudio(
-                        "【音频缓存】批量合成异常 第${item.chapterIndex + 1}章: ${e.localizedMessage}",
+                        "【音频缓存】批量合成异常 $itemLabel: ${e.localizedMessage}",
                         e,
                     )
                     if (generation == workerGeneration) {
@@ -423,11 +431,10 @@ class TtsCacheViewModel : ViewModel() {
         val cur = current
         val summary = when {
             cur != null -> {
-                val label = books.firstOrNull { it.book == cur.book }
+                val chapterUi = books.firstOrNull { it.book == cur.book }
                     ?.chapters?.firstOrNull { it.chapterIndex == cur.chapterIndex }
-                    ?.progressLabel
-                    .orEmpty()
-                "音频缓存 第${cur.chapterIndex + 1}章 $label".trim()
+                "音频缓存 ${ChapterLabels.of(chapterUi?.title, cur.chapterIndex)} " +
+                    chapterUi?.progressLabel.orEmpty()
             }
 
             books.sumOf { it.waitingCount } > 0 ->

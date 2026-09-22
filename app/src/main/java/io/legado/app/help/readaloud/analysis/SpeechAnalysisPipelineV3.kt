@@ -1,5 +1,6 @@
 package io.legado.app.help.readaloud.analysis
 
+import io.legado.app.utils.ChapterLabels
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.CharacterRecord
@@ -272,6 +273,11 @@ class SpeechAnalysisPipelineV3(
     private val bareExtraSet: Set<String> by lazy { loadWordSet("bare_words.json") }
     private val specialExtraSet: Set<String> by lazy { loadWordSet("special_words.json") }
 
+    /** B19：当前 run 的章节显示名（标题截到章；run 由调度器串行调用，用实例字段免逐层透传） */
+    @Volatile
+    private var chapterLabel: String = ""
+
+
     // ---------------- 主流程 ----------------
 
     suspend fun run(
@@ -285,6 +291,9 @@ class SpeechAnalysisPipelineV3(
     ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
+        // B19：标题映射 → 章节显示名（日志/消息统一用它；内部匹配仍用 index）
+        val titleMap = runCatching { dataRepository.loadChapterTitles(bookName) }.getOrDefault(emptyMap())
+        chapterLabel = ChapterLabels.of(titleMap[chapterIndex], chapterIndex)
         val existing = runCatching {
             chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
         }.getOrNull()
@@ -296,7 +305,7 @@ class SpeechAnalysisPipelineV3(
                 // 存量补写：早期批次未落文件产物；此处幂等补写（已有则跳过）
                 if (bookName.isNotBlank() && !dataRepository.hasChapterScript(bookName, chapterIndex)) {
                     writeFileArtifacts(bookName, chapterIndex, bookUrl, cached)
-                    AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】缓存命中，已补写剧本文件")
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}】缓存命中，已补写剧本文件")
                 }
                 // B17：缓存命中也推进「最近完成解析章」（顺读穿过缓存段不断链）
                 if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
@@ -323,17 +332,17 @@ class SpeechAnalysisPipelineV3(
             isContinuous -> "接上章"
             chapterIndex == 0 -> "首章"
             tailCh < 0 -> "跳读；上次分析=无"
-            tailCh > chapterIndex -> "回跳；上次分析=第${tailCh + 1}章"
-            tailCh == chapterIndex -> "重析；上次分析=第${tailCh + 1}章"
-            else -> "跳读；上次分析=第${tailCh + 1}章"
+            tailCh > chapterIndex -> "回跳；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
+            tailCh == chapterIndex -> "重析；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
+            else -> "跳读；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
         }
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】开始：连续=$isContinuous（$contLabel） 段数=${paragraphs.size}")
+        AppLog.putAnalysis("【分析V3·${chapterLabel}】开始：连续=$isContinuous（$contLabel） 段数=${paragraphs.size}")
 
         // ===== A 话语分析 =====
         val t0 = System.currentTimeMillis()
         val ranges = stageA(paragraphs, cfg, useAi = isContinuous, chapterIndex = chapterIndex)
         if (ranges.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
         }
         var segments = assemble(paragraphs, ranges)
 
@@ -343,7 +352,7 @@ class SpeechAnalysisPipelineV3(
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex) }
+            pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
         } else null
         var usedAi2 = false
         var entries: List<Calibrated> = emptyList()
@@ -355,12 +364,12 @@ class SpeechAnalysisPipelineV3(
                 segments = applyStage2(segments, s2.seqMap)
                 val roleNames = entries.map { it.name }
                 val roleList = if (roleNames.isEmpty()) "" else "：${joinCapped(roleNames)}"
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）$roleList")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）$roleList")
             } else {
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】失败：话语改用默认对话(duihuaA/duihuaB)发声")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】失败：话语改用默认对话(duihuaA/duihuaB)发声")
             }
         } else if (dialogueSegs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】跳过：未配模型队列 → 话语改用默认对话(duihuaA/duihuaB)发声")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】跳过：未配模型队列 → 话语改用默认对话(duihuaA/duihuaB)发声")
         }
 
         // ===== D 历史对比 + 记录库 =====
@@ -369,18 +378,18 @@ class SpeechAnalysisPipelineV3(
         val stageDResult = stageD(segments, entries, records0, chapterIndex, bookName, s4Refs, cfg)
         segments = stageDResult.first
         val recordsUpd = stageDResult.second
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段】完成（${System.currentTimeMillis() - t4}ms）：记录 ${recordsUpd.size} 项")
+        AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】完成（${System.currentTimeMillis() - t4}ms）：记录 ${recordsUpd.size} 项")
 
         // ===== 情绪 join（第4阶段完成后最多再等 joinTimeout；超时先落库） =====
         if (emoJob != null) {
             val emo = withTimeoutOrNull(cfg.emotionJoinTimeoutMs) { emoJob.await() }
             if (emo != null && emo.isNotEmpty()) {
                 segments = applyEmotion(segments, emo)
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
             } else if (emo == null && emoJob.isActive) {
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库（后台结果不写回）")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库（后台结果不写回）")
             } else {
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·情绪】无有效结果，以无情绪剧本落库")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】无有效结果，以无情绪剧本落库")
             }
         }
 
@@ -420,11 +429,11 @@ class SpeechAnalysisPipelineV3(
             )
         }
         runCatching { chapterSpeechGateway.saveAnalysis(analysis, bound) }
-            .onFailure { AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】落库失败: ${it.localizedMessage}", it) }
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
+            .onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】落库失败: ${it.localizedMessage}", it) }
+        AppLog.putAnalysis("【分析V3·${chapterLabel}】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
         // ===== 文件产物：all_clean_text / chapter_cache / book_rev（供角色管理/书籍管理读取） =====
         val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound)
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】剧本文件写入=$fileOk")
+        AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入=$fileOk")
         // B17：完成解析 → 推进「最近完成解析章」（顺读 / 跳读 / 回跳 判定依据）
         if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
         ChapterSpeechAnalysisResult(analysis, bound, false)
@@ -461,6 +470,9 @@ class SpeechAnalysisPipelineV3(
         if (bookUrl.isBlank() || paragraphs.isEmpty()) return@withContext null
         val name = bookName.ifBlank { dataRepository.loadBookName(bookUrl) }
         if (name.isBlank()) return@withContext null
+        // B19：本函数可被播放侧/等待侧直接调用，独立解析显示名（不依赖 run 的字段）
+        val chLabel = runCatching { dataRepository.chapterLabelOf(name, chapterIndex) }
+            .getOrDefault("第${chapterIndex + 1}章")
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val existing = runCatching {
             chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
@@ -472,12 +484,12 @@ class SpeechAnalysisPipelineV3(
         }
         val candidates = dataRepository.loadChapterScriptCandidates(name, bookUrl, chapterIndex)
         if (candidates.isEmpty()) {
-            if (logMiss) AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填：无剧本行")
+            if (logMiss) AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填：无剧本行")
             return@withContext null
         }
         val aligned = candidates.firstNotNullOfOrNull { rows -> ScriptFileBackfill.align(paragraphs, rows) }
         if (aligned == null) {
-            if (logMiss) AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
+            if (logMiss) AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
             return@withContext null
         }
         val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
@@ -494,11 +506,11 @@ class SpeechAnalysisPipelineV3(
         val saved = runCatching { chapterSpeechGateway.saveAnalysis(analysis, segments) }
         if (saved.isFailure) {
             AppLog.putAnalysis(
-                "【分析V3·第${chapterIndex + 1}章】本地剧本回填：${segments.size} 段（回写 DB 失败，本次仍可用）",
+                "【分析V3·${chLabel}】本地剧本回填：${segments.size} 段（回写 DB 失败，本次仍可用）",
                 saved.exceptionOrNull(),
             )
         } else {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】本地剧本回填成功：${segments.size} 段（免重析）")
+            AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填成功：${segments.size} 段（免重析）")
         }
         // B17：回填复用也算完成解析 → 推进「最近完成解析章」
         dataRepository.markChapterResolved(name, chapterIndex)
@@ -523,13 +535,13 @@ class SpeechAnalysisPipelineV3(
             }
         }
         if (!useAi) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第1阶段】本地规则快速识别（首章/非连续）：${local.size} 段话语")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】本地规则快速识别（首章/非连续）：${local.size} 段话语")
             return local
         }
         // AI 路径：选号标注（失败回退本地）
         val refs = runCatching { aiModels.queueRefs("stage1") }.getOrDefault(emptyList())
         if (refs.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
             return local
         }
         val cands = buildParaUnits(paragraphs)
@@ -550,7 +562,7 @@ class SpeechAnalysisPipelineV3(
                 append("=== 待分析文本 ===\n").append(unitsText)
             }
         }
-        val sel = ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "第${chapterIndex + 1}章·第1阶段") { raw ->
+        val sel = ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第1阶段") { raw ->
             validateSelection(raw, unitCounts)
         }
         if (sel != null) {
@@ -563,10 +575,10 @@ class SpeechAnalysisPipelineV3(
                     fromAi.add(SpRange(c.paraIndex, u1.start, u2.end))
                 }
             }
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第1阶段】AI选号成功：${fromAi.size} 段话语")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI选号成功：${fromAi.size} 段话语")
             return fromAi
         }
-        AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第1阶段】AI选号失败 → 回退本地规则：${local.size} 段话语")
+        AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI选号失败 → 回退本地规则：${local.size} 段话语")
         return local
     }
 
@@ -806,7 +818,7 @@ class SpeechAnalysisPipelineV3(
                 append("=== 待分析文本 ===\n").append(user)
             }
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "第${chapterIndex + 1}章·第2阶段") { raw ->
+        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第2阶段") { raw ->
             validateStage2(raw, expectedCount, chapterIndex)
         }
     }
@@ -895,7 +907,7 @@ class SpeechAnalysisPipelineV3(
             if (!byName.containsKey(v)) {
                 val tgt = aliasIndex[v.lowercase()]
                 if (tgt != null) {
-                    AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】seqmap校正：$v → $tgt")
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】seqmap校正：$v → $tgt")
                     sm[n] = tgt
                 } else {
                     errs.add("seqmap中人物「$v」未在characters中定义")
@@ -934,11 +946,11 @@ class SpeechAnalysisPipelineV3(
             if (c.alias.isNotBlank() && isBareClassWord(c.alias)) c.alias = ""
             if (isBareClassWord(c.name)) {
                 if (c.alias.isNotBlank() && !isBareClassWord(c.alias)) {
-                    AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】校准：主名「${c.name}」为裸属词，别名「${c.alias}」上位为主名")
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】校准：主名「${c.name}」为裸属词，别名「${c.alias}」上位为主名")
                     c.name = c.alias
                     c.alias = ""
                 } else {
-                    AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】校准：主名「${c.name}」与别名均为裸属词，降级为路人")
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】校准：主名「${c.name}」与别名均为裸属词，降级为路人")
                     c.roleType = "路人"
                 }
             }
@@ -979,7 +991,7 @@ class SpeechAnalysisPipelineV3(
                     // 序号在前者为主名（意图复刻；原脚本此处疑似笔误，按意图实现）
                     val winner = if (b.minSeq < a.minSeq) b else a
                     val loser = if (winner === a) b else a
-                    AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
                     val toks = aliasTokensOf(winner.alias).toMutableList()
                     if (loser.name != winner.name && loser.name !in toks) toks.add(loser.name)
                     aliasTokensOf(loser.alias).forEach { t ->
@@ -1039,6 +1051,7 @@ class SpeechAnalysisPipelineV3(
         cfg: AnalysisConfigStore.Config,
         refs: List<AiSpeechClient.ModelRef>,
         chapterIndex: Int,
+        label: String,
     ): Map<Int, String>? {
         val head = cfg.emotionPrompt.ifBlank { DEFAULT_EMOTION_PROMPT }
             .replace("%VOCAB%", EMOTIONS.joinToString("/"))
@@ -1052,7 +1065,7 @@ class SpeechAnalysisPipelineV3(
                 append("\n=== 待分析文本 ===\n").append(numbered)
             }
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "第${chapterIndex + 1}章·情绪") { raw ->
+        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "$label·情绪") { raw ->
             validateEmotion(raw, count)
         }
     }
@@ -1141,13 +1154,13 @@ class SpeechAnalysisPipelineV3(
             }
         }
         if (hitLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段】快速命中：${joinCapped(hitLogs)}")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】快速命中：${joinCapped(hitLogs)}")
         }
         if (backLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段】回跳命中：${joinCapped(backLogs)}")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】回跳命中：${joinCapped(backLogs)}")
         }
         if (newLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段】新建：${joinCapped(newLogs)}")
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】新建：${joinCapped(newLogs)}")
         }
 
         pending.forEach { e ->
@@ -1176,11 +1189,11 @@ class SpeechAnalysisPipelineV3(
             if (target != null) {
                 val (fn, desc) = applyMerge(target, e, finalNameOf(e), chapterIndex, bookName)
                 rename[e.name] = fn
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段·长文本匹配】$desc")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段·长文本匹配】$desc")
             } else {
                 val rec = createRecord(recs, e, chapterIndex)
                 rename[e.name] = rec.name
-                AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章·第4阶段·长文本匹配】${e.name} 未命中 → 新建 ${rec.name}")
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段·长文本匹配】${e.name} 未命中 → 新建 ${rec.name}")
             }
         }
 
@@ -1407,7 +1420,7 @@ class SpeechAnalysisPipelineV3(
         return runCatching {
             dataRepository.ensureBookInList(bookName)
             dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(segments))
-        }.onFailure { AppLog.putAnalysis("【分析V3·第${chapterIndex + 1}章】剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
+        }.onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
     }
 
     /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] 前缀（与脚本文件格式一致） */
@@ -1450,7 +1463,7 @@ class SpeechAnalysisPipelineV3(
         val promptFactory = { failHint: String ->
             buildStage4Prompt(cfg.stage4Prompt, roleName, context, candidateDescs, failHint)
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "第${chapterIndex + 1}章·第4阶段") { raw ->
+        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第4阶段") { raw ->
             validateStage4(raw)
         }
     }
@@ -1503,7 +1516,7 @@ class SpeechAnalysisPipelineV3(
      */
     private suspend fun assignVoices(records: List<CharacterRecord>, chapterIndex: Int): List<CharacterRecord> {
         val groups = runCatching { dataRepository.loadActiveVoiceGroups() }.getOrDefault(emptyList())
-        val tag = "第${chapterIndex + 1}章·声线分配"
+        val tag = "${chapterLabel}·声线分配"
 
         fun poolTags(roletype: String): List<String> =
             groups.filter { it.effectiveRoleType() == roletype && it.tags.isNotEmpty() }

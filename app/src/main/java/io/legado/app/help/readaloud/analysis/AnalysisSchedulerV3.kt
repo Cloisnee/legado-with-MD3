@@ -1,5 +1,8 @@
 package io.legado.app.help.readaloud.analysis
 
+import io.legado.app.domain.gateway.ReadAloudSettingsGateway
+import org.koin.core.context.GlobalContext
+import io.legado.app.utils.ChapterLabels
 import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
@@ -12,7 +15,6 @@ import io.legado.app.feature.reader.core.source.ReaderChapterSourceParser
 import io.legado.app.feature.reader.platform.AndroidReaderHtmlSemanticTextResolver
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
-import io.legado.app.help.config.AppConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +61,12 @@ class AnalysisSchedulerV3(
     private var worker: Job? = null
     private var currentBookUrl: String? = null
 
+    /** B19：预加载窗口大小跟随「听书预加载数量」（1..10；默认 2） */
+    private val preloadWindow: Int
+        get() = runCatching {
+            GlobalContext.get().get<ReadAloudSettingsGateway>().currentSettings.audioPreDownloadNum
+        }.getOrDefault(2).coerceIn(1, 10)
+
     // 朗读会话状态（缓存追赶扫掠）
     private var sessionBookUrl: String? = null
     private var sessionAnchor = -1
@@ -95,10 +103,10 @@ class AnalysisSchedulerV3(
         sweepJob = null
     }
 
-    /** 预加载窗口入队：当前章起 ≤10 章（窗口大小跟随「预下载数量」，上限 10） */
+    /** 预加载窗口入队：当前章起 ≤10 章（窗口大小跟随「听书预加载数量」，上限 10） */
     fun enqueueWindow(bookUrl: String, fromIndex: Int, force: Boolean = false) {
         if (bookUrl.isBlank()) return
-        val window = AppConfig.preDownloadNum.coerceIn(1, 10)
+        val window = preloadWindow
         enqueueRange(bookUrl, fromIndex, window, force)
     }
 
@@ -115,7 +123,7 @@ class AnalysisSchedulerV3(
                 val b = sessionBookUrl ?: continue
                 val anchor = sessionAnchor
                 if (anchor >= 0) {
-                    enqueueRange(b, anchor, AppConfig.preDownloadNum.coerceIn(1, 10), force = false)
+                    enqueueRange(b, anchor, preloadWindow, force = false)
                 }
             }
         }
@@ -153,7 +161,15 @@ class AnalysisSchedulerV3(
             if (!scope.isActive) break
             val key = "${task.bookUrl}|${task.chapterIndex}"
             runCatching { process(task) }
-                .onFailure { AppLog.putAnalysis("【分析V3·第${task.chapterIndex + 1}章】调度失败: ${it.localizedMessage}", it) }
+                .onFailure {
+                    val chTitle = runCatching {
+                        bookChapterDao.getChapter(task.bookUrl, task.chapterIndex)?.title
+                    }.getOrNull()
+                    AppLog.putAnalysis(
+                        "【分析V3·${ChapterLabels.of(chTitle, task.chapterIndex)}】调度失败: ${it.localizedMessage}",
+                        it,
+                    )
+                }
             queueMutex.withLock { queued.remove(key) }
         }
     }

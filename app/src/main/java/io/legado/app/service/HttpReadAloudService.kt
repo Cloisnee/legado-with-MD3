@@ -1,5 +1,6 @@
 package io.legado.app.service
 
+import io.legado.app.utils.ChapterLabels
 import android.annotation.SuppressLint
 import android.app.Application
 import android.app.PendingIntent
@@ -279,7 +280,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         super.onPlaybackStateReplaced()
         val chapter = readerReadAloudChapter ?: return
         AppLog.putAudio(
-            "【音频缓存】第${chapter.chapterIndex + 1}章「${chapter.title}」" +
+            "【音频缓存】${ChapterLabels.of(chapter.title, chapter.chapterIndex)}" +
                 "播放队列就绪：${contentList.size}条"
         )
     }
@@ -509,14 +510,17 @@ class HttpReadAloudService : BaseReadAloudService(),
                         }
                     }
                 }
+                val chLabel = readerReadAloudChapter
+                    ?.let { ChapterLabels.of(it.title, it.chapterIndex) }
+                    ?: "第1章"
                 AppLog.putAudio(
-                    "【音频缓存】第${(readerReadAloudChapter?.chapterIndex ?: 0) + 1}章" +
+                    "【音频缓存】$chLabel" +
                         " 缓存检查：新增合成 $chapterNew 条、命中 $chapterHit 条、失败 $chapterFail 条"
                 )
                 // 串行铁律：本章条目全部合成结束后，才启动后续章节预合成。
                 // 两者若并行，会同时调用同一插件引擎（音色插件普遍不耐并发）→ "No data written"。
                 AppLog.putAudio(
-                    "【音频缓存】第${(readerReadAloudChapter?.chapterIndex ?: 0) + 1}章" +
+                    "【音频缓存】$chLabel" +
                         " 条目合成结束，开始预合成后续章节"
                 )
                 launchPreDownload(httpTts)
@@ -576,7 +580,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
             )
         ) {
-            AppLog.putAudio("【音频缓存】跳过预合成 第${chapter.index + 1}章（朗读分析未就绪）")
+            AppLog.putAudio("【音频缓存】跳过预合成 ${ChapterLabels.of(displayTitle, chapter.index)}（朗读分析未就绪）")
             return null
         }
         val plan = buildSpeechPlan(
@@ -659,11 +663,11 @@ class HttpReadAloudService : BaseReadAloudService(),
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, targetIndex) ?: break
                 val prepared = getPreDownloadChapter(book, chapter)
                 if (prepared == null) {
-                    AppLog.putAudio("【音频缓存】跳过预合成 第${targetIndex + 1}章（章节内容未缓存）")
+                    AppLog.putAudio("【音频缓存】跳过预合成 ${ChapterLabels.of(chapter.title, targetIndex)}（章节内容未缓存）")
                     continue
                 }
                 AppLog.putAudio(
-                    "【音频缓存】预合成 第${targetIndex + 1}章「${prepared.chapterTitle}」" +
+                    "【音频缓存】预合成 ${ChapterLabels.of(prepared.chapterTitle, targetIndex)}" +
                         "${prepared.contentList.size}条"
                 )
                 val chapterFailed = synthesizeChapterCues(prepared, httpTts, concurrency)
@@ -717,7 +721,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         val skipped = outcomes.count { it == CueSyncOutcome.Skipped }
         val failedCount = outcomes.count { it == CueSyncOutcome.Failed }
         AppLog.putAudio(
-            "【音频缓存】预合成「${prepared.chapterTitle}」完成：" +
+            "【音频缓存】预合成 ${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)} 完成：" +
                 "新增 $stored、命中 $cached、跳过 $skipped、失败 $failedCount（共 $totalCues 条）"
         )
         failedCount > totalCues / 2

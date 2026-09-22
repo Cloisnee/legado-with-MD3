@@ -34,7 +34,7 @@ data class ReadSettings(
     val bookmarkBadgeSize: Int = 10,
     val pageTouchSlop: Int = 0,
     val sliderVibrator: Boolean = false,
-    val useNewTocSheet: Boolean = false,
+    val useNewTocSheet: Boolean = true,
     val maxLengthWithNoToc: Int = 3000,
     val selectVibrator: Boolean = false,
     val autoChangeSource: Boolean = false,

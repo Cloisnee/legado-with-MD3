@@ -376,7 +376,7 @@ class ReadSettingsRepository(
             bookmarkBadgeSize = compatDsValue(Keys.BookmarkBadgeSize, 10),
             pageTouchSlop = compatDsValue(Keys.PageTouchSlop, 0),
             sliderVibrator = compatDsValue(Keys.SliderVibrator, false),
-            useNewTocSheet = compatDsValue(Keys.UseNewTocSheet, false),
+            useNewTocSheet = compatDsValue(Keys.UseNewTocSheet, true),
             maxLengthWithNoToc = compatDsValue(Keys.MaxLengthWithNoToc, 3000),
             selectVibrator = compatDsValue(Keys.SelectVibrator, false),
             autoChangeSource = compatDsValue(Keys.AutoChangeSource, false),

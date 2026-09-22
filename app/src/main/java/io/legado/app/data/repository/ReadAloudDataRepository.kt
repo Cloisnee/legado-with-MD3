@@ -1,5 +1,6 @@
 package io.legado.app.data.repository
 
+import io.legado.app.utils.ChapterLabels
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import io.legado.app.data.appDb
@@ -1250,6 +1251,13 @@ class ReadAloudDataRepository(private val app: Application) {
             appDb.bookChapterDao.getChapterList(url).associate { it.index to it.title }
         }.getOrDefault(emptyMap())
     }
+
+    /** B19：章节显示名（标题截到「章」；无标题回退 第N+1章）。仅用于外露显示；内部匹配仍用 index。 */
+    suspend fun chapterLabelOf(book: String, chapterIndex: Int): String =
+        runCatching {
+            val title = if (book.isBlank()) null else loadChapterTitles(book)[chapterIndex]
+            ChapterLabels.of(title, chapterIndex)
+        }.getOrDefault("第${chapterIndex + 1}章")
 
     /** 作者（书名 → Room 书表） */
     suspend fun loadBookAuthor(book: String): String = withContext(Dispatchers.IO) {

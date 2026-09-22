@@ -1,5 +1,6 @@
 package io.legado.app.ui.ttssrv
 
+import io.legado.app.utils.ChapterLabels
 import android.app.Application
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -158,8 +159,8 @@ fun BookManageScreen(
     var confirmImportAssets by remember { mutableStateOf(false) }
     var chapterTitles by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
 
-    /** B18：章号显示统一 = 章节标题（内部仍用 chapter index 匹配；无标题时回退 第N章） */
-    fun chLabel(ch: Int): String = chapterTitles[ch]?.takeIf { it.isNotBlank() } ?: "第${ch + 1}章"
+    /** B19：章号显示统一 = 章节显示名（标题截到章；前言类原样；无标题回退 第N章；内部仍用 index 匹配） */
+    fun chLabel(ch: Int): String = ChapterLabels.of(chapterTitles[ch], ch)
 
     fun reloadLines() {
         scope.launch {

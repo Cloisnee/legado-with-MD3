@@ -1,5 +1,6 @@
 package io.legado.app.domain.usecase
 
+import io.legado.app.utils.ChapterLabels
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ChapterSpeechGateway
@@ -47,6 +48,9 @@ class PrepareChapterSpeechPlanUseCase(
     ): List<SpeechPlanItem> {
         if (paragraphs.isEmpty()) return emptyList()
         val overrides = voiceOverrides(bookName, bookUrl, chapterIndex)
+        // B19：章节显示名（标题截到章；内部匹配仍用 index）
+        val chLabel = runCatching { recordsStore.chapterLabelOf(bookName, chapterIndex) }
+            .getOrDefault("第${chapterIndex + 1}章")
 
         // ---- V3 优先：脚本复刻管线产物直接消费（即时出声） ----
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
@@ -110,7 +114,7 @@ class PrepareChapterSpeechPlanUseCase(
             AnalysisConfigStore.Config()
         }
         if (!cfg.fallbackDefaultVoice) {
-            AppLog.putAudio("【音频缓存】第${chapterIndex + 1}章 等待分析就绪（最长 ${cfg.waitAnalysisSec} 秒）…")
+            AppLog.putAudio("【音频缓存】$chLabel 等待分析就绪（最长 ${cfg.waitAnalysisSec} 秒）…")
             val waited = awaitAnalysisReady(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
@@ -137,14 +141,14 @@ class PrepareChapterSpeechPlanUseCase(
                 }
             }
             AppLog.putAudio(
-                "【音频缓存】第${chapterIndex + 1}章 等待分析未就绪（超时），先用默认声线出声" +
+                "【音频缓存】$chLabel 等待分析未就绪（超时），先用默认声线出声" +
                     "（分析完成后重进本章即切换）"
             )
         } else {
             // 快速链：本地规则 v2 先行（先出声不等 AI）
             // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
             AppLog.putAudio(
-                "【音频缓存】第${chapterIndex + 1}章 朗读分析未就绪，先用默认声线出声" +
+                "【音频缓存】$chLabel 朗读分析未就绪，先用默认声线出声" +
                     "（分析完成后重进本章即切换）"
             )
         }

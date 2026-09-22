@@ -21,7 +21,6 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.data.repository.ReadAloudSettingsRepository
-import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
@@ -60,13 +59,12 @@ fun ReadAloudSettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = remember { GlobalContext.get().get<ReadAloudSettingsRepository>() }
-    val readRepo = remember { GlobalContext.get().get<ReadSettingsRepository>() }
     val extRepo = remember {
         TtsServerCenterRepository(context.applicationContext as Application)
     }
 
     var st by remember { mutableStateOf(repo.currentSettings) }
-    var preDownloadNum by remember { mutableStateOf(readRepo.currentSettings.preDownloadNum) }
+    var preDownloadNum by remember { mutableStateOf(st.audioPreDownloadNum) }
     var bgMode by remember {
         mutableStateOf(AppConfigStore.getInt(PreferKey.readAloudPlayerBgMode) ?: ReadAloudBgMode.Blur)
     }
@@ -79,7 +77,7 @@ fun ReadAloudSettingsScreen(
 
     LaunchedEffect(Unit) {
         st = repo.currentSettings
-        preDownloadNum = readRepo.currentSettings.preDownloadNum
+        preDownloadNum = st.audioPreDownloadNum
         bgMode = AppConfigStore.getInt(PreferKey.readAloudPlayerBgMode) ?: ReadAloudBgMode.Blur
         loudness = extRepo.getLoudnessBalance()
         // 多角色开关已移除：默认全开（新分析管线接管）
@@ -321,11 +319,11 @@ fun ReadAloudSettingsScreen(
         title = stringResource(R.string.read_aloud_preload),
         description = stringResource(R.string.read_aloud_preload_summary, preDownloadNum),
         value = preDownloadNum,
-        defaultValue = 10,
+        defaultValue = 2,
         valueRange = 0f..100f,
         onValueChange = { v ->
             preDownloadNum = v
-            scope.launch { readRepo.setPreDownloadNum(v) }
+            update { it.copy(audioPreDownloadNum = v) }
         },
         onDismissRequest = { showPreDownload = false },
     )
