@@ -72,6 +72,7 @@ import io.legado.app.data.repository.ScriptLineRow
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
@@ -370,6 +371,18 @@ fun BookManageScreen(
                     }
                 },
                 bottomContent = {
+                    AnimatedVisibility(
+                        modifier = Modifier.adaptiveHorizontalPadding(),
+                        visible = searchMode,
+                        enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+                        exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
+                    ) {
+                        SearchBar(
+                            query = query,
+                            onQueryChange = { query = it },
+                            placeholder = "搜索本章剧本内容 / 标签",
+                        )
+                    }
                     RoleScriptTabRow(
                         selectedTabIndex = hostTab,
                         onTabSelected = onHostTabSelected,
@@ -528,24 +541,6 @@ fun BookManageScreen(
                     }
 
                 }
-                item(key = "search") {
-                    AnimatedVisibility(
-                        visible = searchMode,
-                        enter = fadeIn(tween(180)) + expandVertically(tween(180)),
-                        exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
-                    ) {
-                        SearchBar(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            query = query,
-                            onQueryChange = { query = it },
-                            placeholder = "搜索本章剧本内容 / 标签",
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                    }
-                }
-
                 if (chapters.isEmpty()) {
                     item(key = "empty") {
                         TinyClickableSettingItem(

@@ -69,6 +69,7 @@ import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
@@ -514,6 +515,18 @@ fun CharacterManageScreen(
                     }
                 },
                 bottomContent = {
+                    AnimatedVisibility(
+                        modifier = Modifier.adaptiveHorizontalPadding(),
+                        visible = searchMode,
+                        enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+                        exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
+                    ) {
+                        SearchBar(
+                            query = query,
+                            onQueryChange = { query = it },
+                            placeholder = "搜索：标签 / 名字 / 性别 / 年龄 / 声线",
+                        )
+                    }
                     RoleScriptTabRow(
                         selectedTabIndex = hostTab,
                         onTabSelected = onHostTabSelected,
@@ -664,24 +677,6 @@ fun CharacterManageScreen(
                 }
 
             }
-            item(key = "search") {
-                AnimatedVisibility(
-                    visible = searchMode,
-                    enter = fadeIn(tween(180)) + expandVertically(tween(180)),
-                    exit = fadeOut(tween(180)) + shrinkVertically(tween(180)),
-                ) {
-                    SearchBar(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        query = query,
-                        onQueryChange = { query = it },
-                        placeholder = "搜索：标签 / 名字 / 性别 / 年龄 / 声线",
-                        shape = RoundedCornerShape(12.dp),
-                    )
-                }
-            }
-
             if (records.isEmpty()) {
                 item(key = "empty") {
                     TinyClickableSettingItem(
