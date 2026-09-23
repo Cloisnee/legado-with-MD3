@@ -67,6 +67,14 @@ class AnalysisSchedulerV3(
             GlobalContext.get().get<ReadAloudSettingsGateway>().currentSettings.audioPreDownloadNum
         }.getOrDefault(2).coerceIn(1, 10)
 
+    /**
+     * B27：分析窗口 = 预加载数量 + 1（当前章起）。
+     *   对齐「预合成后续 N 章」（HttpReadAloudService.preDownloadAudios：当前+1 .. 当前+N）：
+     *   分析覆盖到「当前+N」，保证预合成目标章必已被分析，不再出现「朗读分析未就绪」白等/跳过。
+     */
+    private val analysisWindow: Int
+        get() = preloadWindow + 1
+
     // 朗读会话状态（缓存追赶扫掠）
     private var sessionBookUrl: String? = null
     private var sessionAnchor = -1
@@ -103,10 +111,10 @@ class AnalysisSchedulerV3(
         sweepJob = null
     }
 
-    /** 预加载窗口入队：当前章起 ≤10 章（窗口大小跟随「听书预加载数量」，上限 10） */
+    /** 预加载窗口入队：当前章起 ≤11 章（=「听书预加载数量」+1；覆盖到预合成最远章，见 [analysisWindow]） */
     fun enqueueWindow(bookUrl: String, fromIndex: Int, force: Boolean = false) {
         if (bookUrl.isBlank()) return
-        val window = preloadWindow
+        val window = analysisWindow
         enqueueRange(bookUrl, fromIndex, window, force)
     }
 
@@ -123,7 +131,7 @@ class AnalysisSchedulerV3(
                 val b = sessionBookUrl ?: continue
                 val anchor = sessionAnchor
                 if (anchor >= 0) {
-                    enqueueRange(b, anchor, preloadWindow, force = false)
+                    enqueueRange(b, anchor, analysisWindow, force = false)
                 }
             }
         }

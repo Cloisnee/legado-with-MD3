@@ -1206,13 +1206,20 @@ class ReadAloudDataRepository(private val app: Application) {
         }.getOrDefault(-1)
     }
 
-    /** B17：标记某章完成解析（三条路共用；落盘 <书>/analyze_state.<书>.json） */
+    /**
+     * B17：标记某章完成解析（三条路共用；落盘 <书>/analyze_state.<书>.json）。
+     * B27：单调推进——仅当 [chapterIndex] 大于当前前沿才写。播放期窗口/扫掠任务为乱序执行
+     *   （旧章的缓存命中任务会夹在新章任务之间），原实现会把「最近完成解析章」倒写回旧值，
+     *   导致下一章误判「不连续」（跳读 → 第1阶段降级本地规则）。回滚的前沿回退不经本函数
+     *   （deleteChapterScripts 直写），不受此约束。
+     */
     suspend fun markChapterResolved(book: String, chapterIndex: Int) {
         if (book.isBlank()) return
         withContext(Dispatchers.IO) {
             runCatching {
                 val f = bookFile(book, "analyze_state.$book.json")
                 val o = runCatching { JSONObject(readText(f)) }.getOrDefault(JSONObject())
+                if (chapterIndex <= o.optInt("lastChapter", -1)) return@runCatching
                 o.put("lastChapter", chapterIndex)
                 o.put("updatedAt", System.currentTimeMillis())
                 writeText(f, o.toString())
