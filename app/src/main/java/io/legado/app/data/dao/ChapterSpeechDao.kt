@@ -78,6 +78,14 @@ interface ChapterSpeechDao {
         deleteChapterAnalyses(bookUrl, chapterIndex)
     }
 
+    // ---- B25：章节删除（回滚≥floor 连续尾段；与剧本/缓存/账本/人物同一集合） ----
+
+    @Query("delete from chapter_speech_segments where bookUrl = :bookUrl and chapterIndex >= :floor")
+    suspend fun deleteSegmentsFrom(bookUrl: String, floor: Int)
+
+    @Query("delete from chapter_speech_analysis where bookUrl = :bookUrl and chapterIndex >= :floor")
+    suspend fun deleteAnalysesFrom(bookUrl: String, floor: Int)
+
     // ---- 整本书删除（B10.3·U7：含换源遗留旧 bookUrl 键） ----
 
     @Query("select distinct bookUrl from chapter_speech_analysis")

@@ -104,7 +104,7 @@ import org.koin.core.context.GlobalContext
  *  - 搜索（书源式展开，搜本章剧本内容）· 书籍卡（切换）· 章节卡（章节列表）
  *  - 剧本卡片：前=标签（点=换角色：旁白 / 本章人物 / 历史核心·特殊 / ＋新增人物），后=文本
  *  - 多选换角色（长按进入多选）· 保存=重写剧本+缓存同步+剔除本章合并凭据
- *  - 章节删除：仅删剧本+状态 / 尾部连续章可选【回滚】（人物与合并账本逆向）
+ *  - 章节删除：轻量（剧本/缓存/音频/DB 记录）/ 尾部连续章可选【回滚】（另含人物与合并账本逆向）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -757,8 +757,8 @@ fun BookManageScreen(
             val eligible = target >= tailMin()
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 TinyClickableSettingItem(
-                    title = "仅删剧本+状态",
-                    description = "删除该章剧本与缓存；人物与合并日志不动",
+                    title = "轻量删除（本章）",
+                    description = "删除该章剧本、缓存、音频与分析记录；人物与合并日志不动",
                     onClick = {
                         deleteChapterTarget = null
                         scope.launch {
@@ -772,7 +772,7 @@ fun BookManageScreen(
                 if (eligible) {
                     TinyClickableSettingItem(
                         title = "回滚（恢复本章分析之前）",
-                        description = "删除${chLabel(target)}起（连续尾章）的剧本/缓存/合并账本，并逆向人物出场与合并",
+                        description = "删除${chLabel(target)}起（连续尾章）的剧本、缓存、音频与分析记录/合并账本，并逆向人物出场与合并",
                         onClick = {
                             val set = chapters.filter { it >= target }.toSet()
                             deleteChapterTarget = null

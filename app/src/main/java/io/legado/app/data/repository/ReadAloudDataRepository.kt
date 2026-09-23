@@ -874,10 +874,11 @@ class ReadAloudDataRepository(private val app: Application) {
     }
 
     /**
-     * 删除章节剧本：轻量=剧本+缓存+状态；回滚=另含 合并账本/人物逆向（用于"接续到末尾的连续章"）。
+     * 删除章节剧本：轻量=剧本+缓存+音频+DB 记录；回滚=另含 合并账本/人物逆向（用于"接续到末尾的连续章"）。
      * B22：回滚统一按「≥ min(chapters) 连续尾段」口径清理（缓存/账本/人物与剧本同一集合）；
      *      人物出场逆向不再以「合并账本非空」为门控（无 op 也必须执行，对齐 1.4.x rollbackChaptersFrom）；
      *      并把 analyze_state 分析前沿回退到删除区间之前的最大保留章（连续判定不再指向已回滚章节）。
+     * B25：清理集合补上「DB 分析/分段 + 音频缓存」——原缺失导致点朗读时「缓存命中→存量补写」复活已回滚章节。
      */
     suspend fun deleteChapterScripts(
         book: String,
@@ -886,6 +887,18 @@ class ReadAloudDataRepository(private val app: Application) {
     ): Boolean = withContext(Dispatchers.IO) {
         if (chapters.isEmpty()) return@withContext false
         val floor = chapters.minOrNull() ?: return@withContext false
+        // B25：候选 bookUrl（当前书名 + 表内可归属旧键）；与 deleteBookAssets 同口径，兼容换源遗留
+        val urls = linkedSetOf<String>()
+        runCatching {
+            appDb.bookDao.getBookByName(book)?.bookUrl?.takeIf { it.isNotBlank() }?.let(urls::add)
+        }
+        runCatching {
+            val tableUrls = appDb.chapterSpeechDao.distinctAnalysisBookUrls() +
+                    appDb.chapterSpeechDao.distinctSegmentBookUrls()
+            tableUrls.distinct().forEach { u ->
+                if (u.isNotBlank() && appDb.bookDao.getBook(u)?.name == book) urls.add(u)
+            }
+        }
         val f = bookFile(book, "all_clean_text_$book.txt")
         val txt = readText(f)
         var changed = false
@@ -920,7 +933,10 @@ class ReadAloudDataRepository(private val app: Application) {
                 keys.forEach { key ->
                     val ch = key.split("|").lastOrNull()?.toIntOrNull() ?: return@forEach
                     val hit = if (rollback) ch >= floor else ch in chapters
-                    if (hit) cache.remove(key)
+                    if (hit) {
+                        key.substringBefore('|').takeIf { it.isNotBlank() }?.let(urls::add)
+                        cache.remove(key)
+                    }
                 }
                 writeText(cacheFile, cache.toString())
             }
@@ -934,6 +950,25 @@ class ReadAloudDataRepository(private val app: Application) {
                 if (removed.isNotEmpty()) writeMergeLog(book, kept)
                 rollbackCharacters(book, removed, kept, floor)
             }
+        }
+        // B25：DB 清零（分析/分段）＋音频缓存清理（轻量=所列章节；回滚=≥floor）——
+        // 与剧本/缓存/账本/人物同一集合；原缺失导致点朗读时「缓存命中 → 存量补写」复活已回滚章节。
+        runCatching {
+            urls.forEach { u ->
+                if (rollback) {
+                    appDb.chapterSpeechDao.deleteSegmentsFrom(u, floor)
+                    appDb.chapterSpeechDao.deleteAnalysesFrom(u, floor)
+                } else {
+                    chapters.forEach { ch -> appDb.chapterSpeechDao.deleteChapter(u, ch) }
+                }
+            }
+        }
+        runCatching {
+            audioCache.bookDir(book).listFiles()
+                ?.mapNotNull { it.name.toIntOrNull() }
+                ?.map { it - 1 } // 音频目录名 = chapterIndex + 1
+                ?.filter { ch -> if (rollback) ch >= floor else ch in chapters }
+                ?.forEach { ch -> audioCache.deleteChapter(book, ch) }
         }
         // B17 分析前沿回退：回滚后前沿 = 保留区最大章（原值指向 ≥floor 的已回滚章节会破坏后续「连续」判定）
         if (rollback) {
