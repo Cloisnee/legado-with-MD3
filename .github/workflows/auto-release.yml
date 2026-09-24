@@ -143,6 +143,8 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSIONL: ${{ needs.prepare.outputs.versionL }}
       COMMIT_NUMBER_VAL: ${{ needs.prepare.outputs.commit_number }}
+      # B28：签名密钥存在性（供「Release Apk Sign」门控；secrets 不可直接在 if 中使用，经 env 中转）
+      HAS_SIGNING: ${{ secrets.SIGNING_KEY != '' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -158,7 +160,8 @@ jobs:
           echo "清空18PlusList.txt"
           echo "">$GITHUB_WORKSPACE/app/src/main/assets/18PlusList.txt
       - name: Release Apk Sign
-        if: ${{ github.actor == 'HapeLee' }}
+        # B28：原条件 github.actor == 'HapeLee'（上游作者）；改为「secrets 已配置即签名」，fork/自用可直接启用
+        if: ${{ env.HAS_SIGNING == 'true' }}
         shell: bash
         run: |
           echo "${{ secrets.SIGNING_KEY }}" | base64 -d >"$GITHUB_WORKSPACE/app/my-release-key.jks"

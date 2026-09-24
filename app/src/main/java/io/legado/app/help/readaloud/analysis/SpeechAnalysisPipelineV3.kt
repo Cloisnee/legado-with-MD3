@@ -449,6 +449,11 @@ class SpeechAnalysisPipelineV3(
                 ranges.add(SpRange(p.index, s.first, s.last + 1))
             }
         }
+        // B28：纯符号"话语"转旁白（与 stageA 同规则）
+        val pruned = pruneSymbolOnly(paragraphs, ranges)
+        if (pruned > 0) {
+            AppLog.putAnalysis("【分析V3·快速链】纯符号话语过滤（转旁白）：${pruned} 段")
+        }
         return assemble(paragraphs, ranges)
     }
 
@@ -535,6 +540,11 @@ class SpeechAnalysisPipelineV3(
                 local.add(SpRange(p.index, s.first, s.last + 1))
             }
         }
+        // B28：纯符号"话语"（无汉字/数字/字母）转旁白（静默，不触发重试）
+        val localPruned = pruneSymbolOnly(paragraphs, local)
+        if (localPruned > 0) {
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${localPruned} 段")
+        }
         if (!useAi) {
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】本地规则快速识别（首章/非连续）：${local.size} 段话语")
             return local
@@ -575,6 +585,10 @@ class SpeechAnalysisPipelineV3(
                     val u2 = c.units.getOrNull(b - 1) ?: return@rLoop
                     fromAi.add(SpRange(c.paraIndex, u1.start, u2.end))
                 }
+            }
+            val aiPruned = pruneSymbolOnly(paragraphs, fromAi)
+            if (aiPruned > 0) {
+                AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${aiPruned} 段")
             }
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI选号成功：${fromAi.size} 段话语")
             return fromAi
@@ -693,6 +707,23 @@ class SpeechAnalysisPipelineV3(
     }
 
     // ---------------- 装配 ----------------
+
+    /** B28：第1阶段话语校验——仅由标点/符号构成（无任何汉字/数字/字母）的"话语"不成立 → 转旁白（原地剔除，静默不重试） */
+    private fun pruneSymbolOnly(
+        paragraphs: List<CanonicalSpeechParagraph>,
+        ranges: MutableList<SpRange>,
+    ): Int {
+        val byIdx = paragraphs.associateBy { it.index }
+        val before = ranges.size
+        ranges.removeAll { r ->
+            val pr = byIdx[r.para] ?: return@removeAll true
+            val s = pr.text
+            val st = r.start.coerceIn(0, s.length)
+            val en = r.end.coerceIn(st, s.length)
+            !(st < en && s.substring(st, en).any { it.isLetterOrDigit() })
+        }
+        return before - ranges.size
+    }
 
     private fun assemble(
         paragraphs: List<CanonicalSpeechParagraph>,

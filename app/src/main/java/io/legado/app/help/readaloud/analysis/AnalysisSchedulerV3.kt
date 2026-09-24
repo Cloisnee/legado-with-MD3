@@ -61,11 +61,11 @@ class AnalysisSchedulerV3(
     private var worker: Job? = null
     private var currentBookUrl: String? = null
 
-    /** B19：预加载窗口大小跟随「听书预加载数量」（1..10；默认 2） */
+    /** B19：预加载窗口大小跟随「听书预加载数量」（0..10；默认 2；B28：0=不预分析后续章——analysisWindow=1 仅当前，合成侧为空循环） */
     private val preloadWindow: Int
         get() = runCatching {
             GlobalContext.get().get<ReadAloudSettingsGateway>().currentSettings.audioPreDownloadNum
-        }.getOrDefault(2).coerceIn(1, 10)
+        }.getOrDefault(2).coerceIn(0, 10)
 
     /**
      * B27：分析窗口 = 预加载数量 + 1（当前章起）。
