@@ -146,3 +146,13 @@
 -dontwarn java.lang.management.**
 -dontwarn io.ktor.util.debug.IntellijIdeaDebugDetector
 -keep,allowobfuscation class io.ktor.util.debug.** { *; }
+
+# B29：GSON 反射类 keep（R8 混淆修复，2026-09-24）
+# 病灶实证（正式版 mapping）：ReadAloudEngineSelection 被混淆为 ms.n（字段 engineType→a），
+# GSON 按字段名反射解析失败 → 「朗读引擎」判定失效 → 回落系统 TTS（弹「TTS 初始化失败」且不合成音频）。
+# debug 无 R8 不受影响；以下为经 mapping 对照确认会被改名的 GSON 反射类，必须保持类名/字段名：
+-keep class io.legado.app.domain.model.readaloud.** { *; }
+-keep class io.legado.app.domain.model.ReadingProgress** { *; }
+-keep class io.legado.app.domain.model.CacheableBook** { *; }
+-keep class io.legado.app.domain.model.ContentQualityConfig** { *; }
+-keep class io.legado.app.domain.model.BookSearchScope** { *; }
