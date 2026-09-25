@@ -7,6 +7,7 @@ import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.SpeechRoleType
+import io.legado.app.help.readaloud.analysis.NarratorRoleStrip
 
 class BuildSpeechPlanUseCase(
     private val voiceGateway: ReadAloudVoiceGateway,
@@ -38,6 +39,14 @@ class BuildSpeechPlanUseCase(
             ?: narrator
 
         return segments.map { segment ->
+            // B30：存量防御——历史数据把「旁白」归为角色时，剥夺其角色属性，按真旁白声线处理
+            val effectiveRole = if (segment.roleType != SpeechRoleType.Narrator &&
+                NarratorRoleStrip.isNarratorName(segment.characterName)
+            ) {
+                SpeechRoleType.Narrator
+            } else {
+                segment.roleType
+            }
             val performance = segment.characterId?.let(characterPerformances::get)
             // 角色（男主/女主/男配/女配）绑定的音色，优先级低于角色专属绑定、高于性别兜底
             val roleVoice = performance?.roleSubject()?.let { subject ->
@@ -69,7 +78,7 @@ class BuildSpeechPlanUseCase(
                     else -> null
                 }
                 val overrideVoice = voiceOverrides[segment.characterName]
-                when (segment.roleType) {
+                when (effectiveRole) {
                     SpeechRoleType.Character,
                     SpeechRoleType.Thought -> overrideVoice ?: characterVoice ?: roleVoice ?: genderFallback
                         ?: voiceOverrides[BookVoiceBinding.SUBJECT_UNKNOWN_MALE]
@@ -84,7 +93,7 @@ class BuildSpeechPlanUseCase(
                 emptyList()
             } else {
                 buildList {
-                    if (segment.roleType != SpeechRoleType.Narrator) {
+                    if (effectiveRole != SpeechRoleType.Narrator) {
                         add(roleVoice)
                         add(
                             when (performance?.resolvedGender()) {

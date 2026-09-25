@@ -258,7 +258,11 @@ class SpeechAnalysisPipelineV3(
     private data class TextUnit(val start: Int, val end: Int, val text: String)
     private data class ParaUnits(val paraIndex: Int, val units: List<TextUnit>)
     private data class SpRange(val para: Int, val start: Int, val end: Int)
-    private data class Stage2Payload(val seqMap: Map<Int, String>, val chars: List<Calibrated>)
+    private data class Stage2Payload(
+        val seqMap: Map<Int, String>,
+        val chars: List<Calibrated>,
+        val narratorSeqs: Set<Int> = emptySet(),
+    )
 
     private class Calibrated(
         var name: String,
@@ -325,7 +329,13 @@ class SpeechAnalysisPipelineV3(
         val lockedByKey = lockedOld.associateBy { it.paragraphIndex to it.text }
 
         val cfg = configStore.load()
-        val records0 = dataRepository.loadBookRecords(bookName)
+        // B30：旁白角色历史清理——已存在的「旁白」记录剥夺角色属性（静默；此后按旁白声线合成）
+        val records0Raw = dataRepository.loadBookRecords(bookName)
+        val records0 = records0Raw.filterNot { NarratorRoleStrip.isNarratorName(it.name) }
+        val narratorPurged = records0Raw.size - records0.size
+        if (narratorPurged > 0) {
+            AppLog.putAnalysis("【分析V3·${chapterLabel}】旁白角色清理：移除已有旁白记录 ${narratorPurged} 条")
+        }
         // B17：连续 =「最近一次完成解析的章节 == 上一章」（顺读=接上章；跳读/回跳=false → 第1阶段走本地规则）
         val tailCh = dataRepository.lastResolvedChapter(bookName)
         val isContinuous = tailCh >= 0 && tailCh == chapterIndex - 1
@@ -352,6 +362,8 @@ class SpeechAnalysisPipelineV3(
         val numbered = renderNumbered(segments)
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
+        // B30：情绪编号定序——就地转旁白的段落不参与计数，情绪按「编号时刻」的 (段号, 区间起点) 反查回填
+        val emoSeqIndex = dialogueSegs.mapIndexed { i, s -> (s.paragraphIndex to s.start) to i + 1 }.toMap()
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
             pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
         } else null
@@ -362,10 +374,14 @@ class SpeechAnalysisPipelineV3(
             if (s2 != null) {
                 usedAi2 = true
                 entries = s2.chars
-                segments = applyStage2(segments, s2.seqMap)
+                segments = applyStage2(segments, s2.seqMap, s2.narratorSeqs)
                 val roleNames = entries.map { it.name }
                 val roleList = if (roleNames.isEmpty()) "" else "：${joinCapped(roleNames)}"
                 AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）$roleList")
+                // B30：旁白角色剥离（静默；不判失败、不打回重析）
+                if (s2.narratorSeqs.isNotEmpty()) {
+                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】旁白角色剥离：${s2.narratorSeqs.size} 段转旁白")
+                }
             } else {
                 AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】失败：话语改用默认对话(duihuaA/duihuaB)发声")
             }
@@ -385,7 +401,7 @@ class SpeechAnalysisPipelineV3(
         if (emoJob != null) {
             val emo = withTimeoutOrNull(cfg.emotionJoinTimeoutMs) { emoJob.await() }
             if (emo != null && emo.isNotEmpty()) {
-                segments = applyEmotion(segments, emo)
+                segments = applyEmotion(segments, emo, emoSeqIndex)
                 AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
             } else if (emo == null && emoJob.isActive) {
                 AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库（后台结果不写回）")
@@ -396,7 +412,7 @@ class SpeechAnalysisPipelineV3(
 
         // ===== 声线分配（三池，只吃“已选中”声线库） =====
         val recordsFin = assignVoices(recordsUpd, chapterIndex)
-        if (recordsFin.isNotEmpty()) {
+        if (recordsFin.isNotEmpty() || narratorPurged > 0) {
             dataRepository.saveBookRecords(bookName, recordsFin)
         }
 
@@ -885,7 +901,11 @@ class SpeechAnalysisPipelineV3(
                 }
             }
         }
-        if (arr.isEmpty()) return ValidateOutcome(null, "characters为空")
+        // B30：全旁白退让——characters 为空但 seqmap 全部指向「旁白」时不再判失败（整体转旁白）
+        if (arr.isEmpty()) {
+            val allNarrator = sm.isNotEmpty() && sm.values.all { NarratorRoleStrip.isNarratorName(it) }
+            if (!allNarrator) return ValidateOutcome(null, "characters为空")
+        }
 
         val byName = LinkedHashMap<String, Calibrated>()
         val aliasIndex = HashMap<String, String>()
@@ -941,11 +961,14 @@ class SpeechAnalysisPipelineV3(
                 if (tgt != null) {
                     AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】seqmap校正：$v → $tgt")
                     sm[n] = tgt
-                } else {
+                } else if (!NarratorRoleStrip.isNarratorName(v)) {
                     errs.add("seqmap中人物「$v」未在characters中定义")
                 }
             }
         }
+        // B30：旁白角色剥离——「旁白」不参与定义/引用校验、校准与归一（静默转真旁白，不判失败）
+        byName.entries.removeAll { NarratorRoleStrip.isNarratorName(it.key) }
+        val narratorSeqs = NarratorRoleStrip.narratorSeqs(sm)
         val referenced = sm.values.filter { it.isNotBlank() }.toSet()
         byName.forEach { (name, _) ->
             if (name !in referenced) errs.add("角色「$name」未被任何序号引用")
@@ -961,7 +984,7 @@ class SpeechAnalysisPipelineV3(
         }
         // ⑬ 本地归一（仅核心/特殊参与）
         val normalized = localNormalize(calibrated, sm, chapterIndex)
-        return ValidateOutcome(Stage2Payload(sm.toMap(), normalized))
+        return ValidateOutcome(Stage2Payload(sm.toMap(), normalized, narratorSeqs))
     }
 
     private fun calibrate(c: Calibrated, chapterIndex: Int): Calibrated {
@@ -1050,6 +1073,7 @@ class SpeechAnalysisPipelineV3(
     private fun applyStage2(
         segments: List<ChapterSpeechSegment>,
         seqMap: Map<Int, String>,
+        narratorSeqs: Set<Int> = emptySet(),
     ): List<ChapterSpeechSegment> {
         var n = 0
         return segments.map { s ->
@@ -1057,12 +1081,17 @@ class SpeechAnalysisPipelineV3(
                 s
             } else {
                 n++
-                val name = seqMap[n].orEmpty()
-                if (name.isBlank()) {
-                    s.copy(source = SpeechResolutionSource.Ai)
-                } else {
-                    s.copy(
-                        characterName = name,
+                when {
+                    // B30：旁白角色剥离——剥夺角色属性（名字/归属），就地转真旁白（旁白声线合成）
+                    n in narratorSeqs -> s.copy(
+                        roleType = SpeechRoleType.Narrator,
+                        characterName = "",
+                        characterId = null,
+                        source = SpeechResolutionSource.Ai,
+                    )
+                    seqMap[n].isNullOrBlank() -> s.copy(source = SpeechResolutionSource.Ai)
+                    else -> s.copy(
+                        characterName = seqMap.getValue(n),
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
                         confidence = 0.9f,
@@ -1126,14 +1155,15 @@ class SpeechAnalysisPipelineV3(
     private fun applyEmotion(
         segments: List<ChapterSpeechSegment>,
         emo: Map<Int, String>,
+        seqIndex: Map<Pair<Int, Int>, Int>,
     ): List<ChapterSpeechSegment> {
-        var n = 0
+        // B30：按 (段号, 区间起点) 反查序号——第2阶段就地转旁白的段落不参与计数，避免其余编号错位
         return segments.map { s ->
             if (s.roleType == SpeechRoleType.Narrator) {
                 s
             } else {
-                n++
-                emo[n]?.let { s.copy(emotion = it) } ?: s
+                val n = seqIndex[s.paragraphIndex to s.start]
+                if (n == null) s else emo[n]?.let { s.copy(emotion = it) } ?: s
             }
         }
     }
