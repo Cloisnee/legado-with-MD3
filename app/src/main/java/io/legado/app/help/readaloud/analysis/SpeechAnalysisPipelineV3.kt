@@ -30,10 +30,10 @@ import kotlin.math.abs
 /**
  * 分析管线 V3 —— 复刻自研朗读脚本（重构 1.4.9.x）四阶段流程（第三阶段已按甲方要求去除）：
  *
- *  触发：调度器按“预加载窗口”驱动；连续性（上一章为最近完成解析章）决定第1阶段是否走 AI 选号。
- *  A 话语分析：本地规则 v2（新书首章 / 非连续章 / 队列空 / AI失败 → 快速路径）或 AI 选号
- *    （〖第N段〗+[n] 编号；校验复刻=段号/区间/越界/重叠全量收集→failHint 顺延重试；装配=按号截原文、零改写）。
- *  B 归属+人物：必须走 AI。入参=前情提要+本章〖NN〗〔〕+后续剧情（按完整段落取、上限可配、无人物表）；
+ *  触发：调度器按“预加载窗口”驱动；连续性（上一章为最近完成解析章）决定第1阶段是否走 AI 判定。
+ *  A 话语分析：本地规则 v2（新书首章 / 非连续章 / 队列空 / AI失败 → 快速路径）或 AI 判定（B31：逐项 T/F）
+ *    （〖第N段〗+[n] 编号；校验=段号/全覆盖/长度全量收集→failHint 顺延重试；装配=逐项判定→叙述连T按句收、引号独立、零改写）。
+ *  B 归属+人物：必须走 AI。入参=前情提要+本章 [n]〔〕/[N] 行+后续剧情（按完整段落取、上限可配、无人物表）；
  *    校验复刻（seq 全覆盖、characters 归一化、裸词/特殊词校准、默认男/男青年、路人清别名、本地归一）；
  *    失败不降级旁白：话语改由 默认对话(duihuaA/B) 发声。
  *  D 历史对比：快速命中（名/别名精确）→ 回跳命中 → 同性别±1年龄候选 + 长文本 AI 同判 → 合并（别名并、类型升级）
@@ -81,10 +81,13 @@ class SpeechAnalysisPipelineV3(
         )
 
         private val DEFAULT_STAGE1_PROMPT = """
-你是一名专业的小说文本话语标注员。输入文本已按片段编号，格式为 [序号] 内容。你的任务：通读全文，找出所有属于话语的片段，输出编号区间。
+你是一名专业的小说文本话语标注员。输入文本已按片段编号：每段以〖第N段〗开始，段内片段为 [1][2]…（引号随原文保留）。你的任务：对每一个片段判定 T 或 F：
+- T = 是话语（角色说出口或心里说出的具体内容，含语言性拟声如“啊——！”）；
+- F = 不是话语（旁白叙述、心理概括、引导语、非语言性拟声、纯标点等）。
+
 一、核心判断标准（先记住这一条）
 话语 = 有意识主体用语言形式直接表达的具体内容，必须包含有语义的文字。
-判断一个片段是否属于话语，唯一需要回答的问题是：这个片段里，有没有角色（或拟人化主体）正在“说话”或“心里说话”？如果答案是“有”，就标注；如果只是叙述者在描述、解释、概括，或者只是声音、标点，就不标。
+判断一个片段是否属于话语，唯一需要回答的问题是：这个片段里，有没有角色（或拟人化主体）正在“说话”或“心里说话”？如果答案是“有”，就标 T；如果只是叙述者在描述、解释、概括，或者只是声音、标点，就标 F。
 
 二、话语包括哪些类型
 1. 有声话语：角色说出口的话，包含对白、独白、喊叫、语言性拟声词（如“啊——！”“唉”）。但注意，动物叫声、物体声音不算。
@@ -95,69 +98,69 @@ class SpeechAnalysisPipelineV3(
 三、内心独白判定规则
 内心独白是角色在心里“说”的话，不是叙述者对角色心理的概括。
 判定方法：可发声测试
-把疑似片段加上双引号，想象角色直接说出这句话：如果通顺、像人话、符合角色口吻，就是内心独白；如果像是叙述者在解释状态、形容情绪、做总结，就不是内心独白。
+把疑似片段加上双引号，想象角色直接说出这句话：如果通顺、像人话、符合角色口吻，就是内心独白（T）；如果像是叙述者在解释状态、形容情绪、做总结，就不是（F）。
 典型正例（是内心独白）：①完了，这地方不对劲。②该不会真有脏东西吧？③死渣男，还敢装无辜。④不对，这脚印是新的。
 典型反例（不是内心独白，是心理描写或旁白）：①他感到害怕。②他心中一惊。③他陷入了绝望。④这让他很沮丧。⑤他的后背全是冷汗。
 注意：内心独白可以没有“心想”“暗想”等引导词，直接融入叙述。不要因为一个短句没有引号就忽略它；也不要因为有“心想”就把后面所有内容都当话语，后面可能跟着叙述者的概括。
 
-四、明确排除（严禁标注）
-1. 叙述者的旁白、解释、评论、心理概括。例：他感到很害怕 → 不是话语。
-2. 非语言性拟声词：动物叫声（汪汪、喵）、自然声（哗啦、轰隆）、物体声（砰、咔嚓）、机械声等。例：大狗咆哮：“汪汪汪！” → “汪汪汪”不是话语。
-3. 纯标点片段，即使被引号包裹。例：张三：“……” → 不是话语。
-4. 引导语片段，如“他说：”“心想：”“上面写着：”等，本身不是话语，即使紧邻话语也不标。
+四、明确排除（必须标 F）
+1. 叙述者的旁白、解释、评论、心理概括。例：他感到很害怕 → F。
+2. 非语言性拟声词：动物叫声（汪汪、喵）、自然声（哗啦、轰隆）、物体声（砰、咔嚓）、机械声等。例：大狗咆哮：“汪汪汪！” → “汪汪汪！”标 F。
+3. 纯标点片段，即使被引号包裹。例：张三：“……” → “……”标 F。
+4. 引导语片段，如“他说：”“心想：”“上面写着：”等，本身不是话语，即使紧邻话语也标 F。
 
-五、标注规则
-1. 逐片段检查：该片段是否包含角色直接表达的具体语言文字？是则标，否则不标。
-2. 连续相邻的话语片段合并为一个区间 [起始,结束]；单个片段写 [n] 或 [n,n]。
-3. 按段落输出，无话语的段落直接省略。
-4. 区间按编号顺序排列，互不重叠。
-5. 不确定时：只标注能通过“可发声测试”的片段；测试不通过的一律不标。
+五、判定规则
+1. 逐片段判定：每个片段必须给出一个值（T 或 F），一个都不能漏。
+2. 各片段的值按编号顺序排列成数组；T/F 必须大写。
+3. 全部段落都要输出，包括没有话语的段落（该段全 F）。
+4. 不确定时：宁 F 勿 T——只有能通过“可发声测试”的片段才标 T。
 
 六、输出格式
-只输出纯 JSON，格式如下：{"段落":[{"段号":1,"话语":[[2,2]]},{"段号":2,"话语":[[1,5],[9,9]]}]}
+只输出纯 JSON，格式如下：{"段落":[{"段号":1,"判定":["F","F","F","F"]},{"段号":2,"判定":["T"]}]}
+“判定”数组的长度必须等于该段的片段总数（按编号顺序一一对应）。
 不要输出任何解释、注释或多余文字。
 
 七、示例（务必对照学习）
 示例1：对白+引导语排除
-片段：[1]他愣了一下，[2]说道： [3]“你今天必须给我回去吃饭” [4]雨还在下。
-输出：{"段落":[{"段号":1,"话语":[[3,3]]}]}
+片段：[1]他愣了一下， [2]说道： [3]“你今天必须给我回去吃饭” [4]雨还在下。
+输出：{"段落":[{"段号":1,"判定":["F","F","T","F"]}]}
 示例2：内心独白无引导词，连续片段
 片段：[1]他脚步一顿。 [2]不对， [3]这脚印是新的。 [4]他抬头看向前方。
-输出：{"段落":[{"段号":1,"话语":[[2,3]]}]}
+输出：{"段落":[{"段号":1,"判定":["F","T","T","F"]}]}
 示例3：心理描写，不是话语
 片段：[1]他心里很害怕， [2]后背全是冷汗， [3]腿也软了。
-输出：{}
+输出：{"段落":[{"段号":1,"判定":["F","F","F"]}]}
 示例4：内心独白+心理描写混合
 片段：[1]完了， [2]这次死定了。 [3]他感到一阵绝望。
-输出：{"段落":[{"段号":1,"话语":[[1,2]]}]}
-（[3]是心理描写，不是话语）
+输出：{"段落":[{"段号":1,"判定":["T","T","F"]}]}
+（[3]是心理描写，标 F）
 示例5：非语言拟声排除
 片段：[1]大狗咆哮： [2]“汪汪汪！”
-输出：{}
+输出：{"段落":[{"段号":1,"判定":["F","F"]}]}
 示例6：纯标点排除
 片段：[1]张三： [2]“……”
-输出：{}
+输出：{"段落":[{"段号":1,"判定":["F","F"]}]}
 示例7：书面文字
-片段：[1]他打开信， [2]上面写着： [3]今晚八点，[4]老地方见。
-输出：{"段落":[{"段号":1,"话语":[[3,4]]}]}
+片段：[1]他打开信， [2]上面写着： [3]“今晚八点，老地方见。”
+输出：{"段落":[{"段号":1,"判定":["F","F","T"]}]}
 示例8：语言性拟声词
 片段：[1]她突然 [2]“啊——” [3]地叫了一声。
-输出：{"段落":[{"段号":1,"话语":[[2,2]]}]}
+输出：{"段落":[{"段号":1,"判定":["F","T","F"]}]}
 示例9：带“心想”但后面是概括
 片段：[1]他心里想： [2]这次可能真的要失败。 [3]这让他很沮丧。
-输出：{"段落":[{"段号":1,"话语":[[2,2]]}]}
-（[3]是叙述者评价，不是话语）
+输出：{"段落":[{"段号":1,"判定":["F","T","F"]}]}
+（[3]是叙述者评价，标 F）
 
 八、最后一道检查（防幻觉）
-在输出前，对每个拟标注的区间做一次快速自检：
-- 这个区间里的文字，是角色说出来的话或心里说出来的话吗？
+在输出前，对每个片段做一次快速自检：
+- 这个片段里的文字，是角色说出来的话或心里说出来的话吗？
 - 如果把它用双引号括起来，像角色在说话吗？
 - 它包含具体的字词句，而不是只有声音或标点吗？
-三个问题都回答“是”，才保留；否则删除。
+三个问题都回答“是”，才标 T；否则标 F。
 """.trimIndent()
 
         private val DEFAULT_STAGE2_PROMPT = """
-你是一个小说角色分析专家。下面的小说文本中，〖01〗〖02〗等为话语编号，紧随其后的〔〕内是该话语的原文内容；未编号部分为旁白叙述。
+你是一个小说角色分析专家。下面的小说文本中，[1][2] 等为话语编号，紧随其后的〔〕内是该话语的内容（外层引号已去除）；[N] 开头的行为旁白叙述。
 
 === 步骤1：识别对话【序号】所对应的说话人 ===
 通读全文，了解故事情节、逻辑后，精准识别所有对话【序号】所对应的说话人。
@@ -241,10 +244,10 @@ class SpeechAnalysisPipelineV3(
 """.trimIndent()
 
         private val DEFAULT_EMOTION_PROMPT = """
-你是一个小说对话情绪分析专家。下面的文本中，〖01〗〖02〗等为话语编号，紧随其后的〔〕内是该话语的原文内容，未编号部分为旁白叙述。
+你是一个小说对话情绪分析专家。下面的文本中，[1][2] 等为话语编号，紧随其后的〔〕内是该话语的内容（外层引号已去除）；[N] 开头的行为旁白叙述。
 任务：对每条编号话语，判断说话人发出这句话时的【真实情绪/发声状态】。注意：字面情绪可能与真实情绪相反（反话、冷嘲、压抑、强装镇定、笑里藏刀等），有反差线索时优先判定隐藏情绪；无线索按正常表达判定。
 情绪词必须严格从以下词表选择：%VOCAB%。拿不准时选“平静”。
-输出：纯JSON，格式：{"emotions":{"01":"愤怒","02":"悲伤"}}，键为话语编号、值为情绪词，必须覆盖文本中的每一个编号，禁止输出任何其他文字。
+输出：纯JSON，格式：{"emotions":{"1":"愤怒","2":"悲伤"}}，键为话语编号、值为情绪词，必须覆盖文本中的每一个编号，禁止输出任何其他文字。
 """.trimIndent()
     }
 
@@ -565,7 +568,7 @@ class SpeechAnalysisPipelineV3(
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】本地规则快速识别（首章/非连续）：${local.size} 段话语")
             return local
         }
-        // AI 路径：选号标注（失败回退本地）
+        // AI 路径：逐项判定 T/F（B31；失败回退本地）
         val refs = runCatching { aiModels.queueRefs("stage1") }.getOrDefault(emptyList())
         if (refs.isEmpty()) {
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
@@ -593,23 +596,21 @@ class SpeechAnalysisPipelineV3(
             validateSelection(raw, unitCounts)
         }
         if (sel != null) {
-            val fromAi = ArrayList<SpRange>()
-            cands.forEach candLoop@{ c ->
-                val ranges = sel[c.paraIndex + 1] ?: return@candLoop
-                ranges.forEach rLoop@{ (a, b) ->
-                    val u1 = c.units.getOrNull(a - 1) ?: return@rLoop
-                    val u2 = c.units.getOrNull(b - 1) ?: return@rLoop
-                    fromAi.add(SpRange(c.paraIndex, u1.start, u2.end))
-                }
+            val paras = cands.map { c ->
+                SpeechSelectionAssembly.ParaUnits(
+                    c.paraIndex,
+                    c.units.map { u -> SpeechSelectionAssembly.Unit(u.start, u.end, u.text) },
+                )
             }
-            val aiPruned = pruneSymbolOnly(paragraphs, fromAi)
-            if (aiPruned > 0) {
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${aiPruned} 段")
-            }
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI选号成功：${fromAi.size} 段话语")
+            val asm = SpeechSelectionAssembly.assemble(paras, sel)
+            val fromAi = asm.spans.map { SpRange(it.para, it.start, it.end) }
+            AppLog.putAnalysis(
+                "【分析V3·${chapterLabel}·第1阶段】AI判定：话语 ${fromAi.size} 条" +
+                    "（旁白 ${asm.narratorUnits} 片；保险丝修正 ${asm.fusedColon + asm.fusedSymbol} 条）"
+            )
             return fromAi
         }
-        AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI选号失败 → 回退本地规则：${local.size} 段话语")
+        AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI判定失败 → 回退本地规则：${local.size} 段话语")
         return local
     }
 
@@ -631,16 +632,16 @@ class SpeechAnalysisPipelineV3(
         }
     }
 
-    /** 选号结构校验（复刻脚本 parseAndValidateSelectionResult：全量收集错误 → failHint） */
+    /** 判定结构校验（B31：段号/长度/全覆盖全量收集 → failHint；宽容解析 串/数组/布尔） */
     private fun validateSelection(
         raw: String,
         unitCounts: Map<Int, Int>,
-    ): ValidateOutcome<Map<Int, List<Pair<Int, Int>>>> {
+    ): ValidateOutcome<Map<Int, BooleanArray>> {
         val root = ai.extractJson(raw) ?: return ValidateOutcome(null, "返回不是JSON对象")
         val list = root.optJSONArray("段落") ?: root.optJSONArray("段") ?: root.optJSONArray("paragraphs")
             ?: return ValidateOutcome(null, "缺少段落列表字段")
         val totalParas = unitCounts.size
-        val map = HashMap<Int, List<Pair<Int, Int>>>()
+        val map = HashMap<Int, BooleanArray>()
         val seen = HashSet<Int>()
         val errs = ArrayList<String>()
         for (i in 0 until list.length()) {
@@ -669,57 +670,32 @@ class SpeechAnalysisPipelineV3(
             }
             seen.add(n)
             val maxU = unitCounts[n - 1] ?: 0
-            val utt: Any? = if (item.has("话语")) item.opt("话语")
-            else if (item.has("utterances")) item.opt("utterances") else item.opt("选区")
-            val arr = ArrayList<Pair<Int, Int>>()
-            if (utt == null) {
-                // 无话语
-            } else if (utt is JSONArray) {
-                var lastEnd = 0
-                var bad = false
-                for (j in 0 until utt.length()) {
-                    val x = utt.opt(j)
-                    var a: Int? = null
-                    var b: Int? = null
-                    if (x is JSONArray) {
-                        a = x.opt(0).toString().toIntOrNull()
-                        b = (if (x.length() > 1) x.opt(1) else x.opt(0)).toString().toIntOrNull()
-                    } else {
-                        a = x.toString().toIntOrNull()
-                        b = a
-                    }
-                    if (a == null || b == null) {
-                        errs.add("第${n}段存在无法解析的片段编号")
-                        bad = true
-                        break
-                    }
-                    if (a < 1 || b > maxU) {
-                        errs.add("第${n}段片段编号越界：$a-$b（本段共${maxU}片）")
-                        bad = true
-                        break
-                    }
-                    if (a > b) {
-                        errs.add("第${n}段区间起点大于终点：$a-$b")
-                        bad = true
-                        break
-                    }
-                    if (a <= lastEnd) {
-                        errs.add("第${n}段区间重叠或未按顺序：$a-$b")
-                        bad = true
-                        break
-                    }
-                    lastEnd = b
-                    arr.add(a to b)
-                }
-                if (bad) continue
-            } else {
-                errs.add("第${n}段话语字段类型非法")
+            val rawFlag: Any? = when {
+                item.has("判定") -> item.opt("判定")
+                item.has("flags") -> item.opt("flags")
+                item.has("标记") -> item.opt("标记")
+                else -> null
+            }
+            val flags = SpeechSelectionAssembly.parseFlags(jsonToPlainFlags(rawFlag), maxU)
+            if (flags == null) {
+                errs.add("第${n}段判定缺失或长度不符（本段共${maxU}片）")
                 continue
             }
-            if (arr.isNotEmpty()) map[n] = arr
+            map[n - 1] = flags
+        }
+        // B31：缺段宽容——未出现的段落按“全旁白”处理（只记数，不重试）
+        val missing = unitCounts.count { (para, cnt) -> cnt > 0 && para !in map }
+        if (missing > 0) {
+            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI判定缺段 $missing 个（按全旁白处理）")
         }
         if (errs.isNotEmpty()) return ValidateOutcome(null, errs.joinToString("；"))
         return ValidateOutcome(map)
+    }
+
+    /** JSONArray → 纯 Kotlin 结构（供 [SpeechSelectionAssembly.parseFlags] 宽容解析） */
+    private fun jsonToPlainFlags(v: Any?): Any? = when (v) {
+        is JSONArray -> (0 until v.length()).map { v.opt(it) }
+        else -> v
     }
 
     // ---------------- 装配 ----------------
@@ -759,8 +735,8 @@ class SpeechAnalysisPipelineV3(
                 val re2 = r.end.coerceIn(rs2, p.text.length)
                 val t = p.text.substring(rs2, re2)
                 if (t.isNotBlank()) {
-                    val role = if (thoughtHint(p.text, rs2)) SpeechRoleType.Thought else SpeechRoleType.Character
-                    out.add(seg(p, rs2, re2, t, role))
+                    // B31：心理活动标签（Thought）注入已拔除（云链路待 B32 一并处置；枚举保留兼容老数据）
+                    out.add(seg(p, rs2, re2, t, SpeechRoleType.Character))
                 }
                 cursor = re2
             }
@@ -792,13 +768,7 @@ class SpeechAnalysisPipelineV3(
         source = SpeechResolutionSource.Rule,
     )
 
-    private fun thoughtHint(text: String, spanStart: Int): Boolean {
-        val from = (spanStart - 24).coerceAtLeast(0)
-        val head = text.substring(from, spanStart)
-        return Regex("心想|心道|暗道|想道|暗想|默念").containsMatchIn(head)
-    }
-
-    /** 编号渲染（〖NN〗〔text〕；旁白原样；段间补换行）——发给第2阶段/情绪 */
+    /** 编号渲染（B31：[n]〔content（外层引号已去除）〕/ [N]旁白；一行一项、段间空行）——发给第2阶段/情绪 */
     private fun renderNumbered(segments: List<ChapterSpeechSegment>): String {
         val sb = StringBuilder()
         var n = 0
@@ -806,14 +776,15 @@ class SpeechAnalysisPipelineV3(
         segments.forEach { s ->
             if (lastP != -1 && s.paragraphIndex != lastP) sb.append("\n")
             if (s.roleType == SpeechRoleType.Narrator) {
-                sb.append(s.text)
+                sb.append("[N]").append(s.text)
             } else {
                 n++
-                sb.append("〖").append(n.toString().padStart(2, '0')).append("〗〔").append(s.text).append("〕")
+                sb.append("[").append(n).append("]〔").append(QuoteSpeechRules.unwrapOuterBlock(s.text)).append("〕")
             }
+            sb.append("\n")
             lastP = s.paragraphIndex
         }
-        return sb.toString()
+        return sb.toString().trimEnd('\n')
     }
 
     /** 前情/后续取文：按完整段落取，累计不超过 limit（0..3000），不截断段落 */

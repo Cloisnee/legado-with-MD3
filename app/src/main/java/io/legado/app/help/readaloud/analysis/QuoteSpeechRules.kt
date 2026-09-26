@@ -148,6 +148,21 @@ object QuoteSpeechRules {
         return units
     }
 
+    /** B31：是否为「成对符号块」（首尾恰为一对成对符号；阶段1组装：引号包裹的话语独立成条） */
+    fun isWrappedBlock(text: String): Boolean {
+        if (text.length < 2) return false
+        val close = SPLIT_PAIRS[text.first()] ?: return false
+        return text.last() == close
+    }
+
+    /** B31：显示用——去掉首尾成对符号（未闭合则只去前引号；非包裹块原样返回） */
+    fun unwrapOuterBlock(text: String): String {
+        if (text.length < 2) return text
+        val close = SPLIT_PAIRS[text.first()] ?: return text
+        val body = text.substring(1)
+        return if (body.isNotEmpty() && body.last() == close) body.substring(0, body.length - 1) else body
+    }
+
     // ---------------- 内部 ----------------
 
     private fun matchEnd(text: String, start: Int, open: Char, close: Char): Int {
