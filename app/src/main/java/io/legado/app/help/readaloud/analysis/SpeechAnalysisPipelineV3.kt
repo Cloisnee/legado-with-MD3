@@ -632,7 +632,7 @@ class SpeechAnalysisPipelineV3(
         }
     }
 
-    /** 判定结构校验（B31：段号/长度/全覆盖全量收集 → failHint；宽容解析 串/数组/布尔） */
+    /** 判定结构校验（B31.1：段号/长度/缺段 全量收集 → 带理由 failHint 重试；宽容解析 串/数组/布尔） */
     private fun validateSelection(
         raw: String,
         unitCounts: Map<Int, Int>,
@@ -683,10 +683,12 @@ class SpeechAnalysisPipelineV3(
             }
             map[n - 1] = flags
         }
-        // B31：缺段宽容——未出现的段落按“全旁白”处理（只记数，不重试）
-        val missing = unitCounts.count { (para, cnt) -> cnt > 0 && para !in map }
-        if (missing > 0) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI判定缺段 $missing 个（按全旁白处理）")
+        // B31.1：缺段=校验失败——带理由打回重析（不再宽容转旁白）
+        val missing = unitCounts.filter { (para, cnt) -> cnt > 0 && para !in map }.keys.sorted()
+        if (missing.isNotEmpty()) {
+            val shown = missing.take(8).joinToString("、") { (it + 1).toString() }
+            val tail = if (missing.size > 8) "…等${missing.size}个" else ""
+            errs.add("缺少判定的段落：$shown$tail（每段都必须输出与片段数等长的判定数组）")
         }
         if (errs.isNotEmpty()) return ValidateOutcome(null, errs.joinToString("；"))
         return ValidateOutcome(map)
