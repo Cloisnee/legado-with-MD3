@@ -128,7 +128,7 @@ object AudioSynthClients {
             return downloadAudio(url)
         }
         require(resp.isSuccessful) { "HTTP ${resp.code}" }
-        val bytes = resp.body?.bytes().orEmpty()
+        val bytes = resp.body?.bytes() ?: ByteArray(0)
         require(bytes.isNotEmpty()) { "空响应" }
         return GenResult(bytes, "mp3 ${bytes.size / 1024}KB")
     }
@@ -226,7 +226,7 @@ object AudioSynthClients {
         val ctype = resp.header("Content-Type").orEmpty()
         if (ctype.contains("audio", ignoreCase = true)) {
             require(resp.isSuccessful) { "HTTP ${resp.code}" }
-            val bytes = resp.body?.bytes().orEmpty()
+            val bytes = resp.body?.bytes() ?: ByteArray(0)
             require(bytes.isNotEmpty()) { "空响应" }
             return GenResult(bytes, "mp3 ${bytes.size / 1024}KB")
         }
@@ -254,7 +254,7 @@ object AudioSynthClients {
         if (!resp.isSuccessful) {
             error("HTTP ${resp.code}: ${resp.body?.string()?.take(160).orEmpty()}")
         }
-        val bytes = resp.body?.bytes().orEmpty()
+        val bytes = resp.body?.bytes() ?: ByteArray(0)
         require(bytes.isNotEmpty()) { "空响应" }
         return GenResult(bytes, "mp3 ${bytes.size / 1024}KB")
     }
@@ -292,7 +292,7 @@ object AudioSynthClients {
     private suspend fun downloadAudio(url: String): GenResult {
         val resp = http.newCall(Request.Builder().url(url).build()).await()
         require(resp.isSuccessful) { "音频下载失败 HTTP ${resp.code}" }
-        val bytes = resp.body?.bytes().orEmpty()
+        val bytes = resp.body?.bytes() ?: ByteArray(0)
         require(bytes.isNotEmpty()) { "音频下载为空" }
         return GenResult(bytes, "url 下载 ${bytes.size / 1024}KB")
     }
