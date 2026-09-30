@@ -162,7 +162,7 @@ object TmDemoAssets {
     }
 
     private fun findBgmZip(): File? {
-        val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOAD)
+        val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val direct = File(dlDir, "JRead_BGM_Library_Curated_20260701.zip")
         if (direct.isFile) return direct
         return dlDir.listFiles().orEmpty()
