@@ -306,6 +306,7 @@ fun AudioLibraryScreen(onBack: () -> Unit) {
         isSearch = isSearch,
         isLoading = loading,
     )
+    val dragDisabledMsg = stringResource(R.string.drag_disabled_in_sort_mode)
 
     RuleListScaffold(
         title = "音频库管理",
@@ -423,9 +424,7 @@ fun AudioLibraryScreen(onBack: () -> Unit) {
                     setSort("name_asc")
                     dismiss()
                     scope.launch {
-                        snackbarHostState.showSnackbar(
-                            context.getString(R.string.drag_disabled_in_sort_mode)
-                        )
+                        snackbarHostState.showSnackbar(dragDisabledMsg)
                     }
                 },
             )
@@ -435,9 +434,7 @@ fun AudioLibraryScreen(onBack: () -> Unit) {
                     setSort("name_desc")
                     dismiss()
                     scope.launch {
-                        snackbarHostState.showSnackbar(
-                            context.getString(R.string.drag_disabled_in_sort_mode)
-                        )
+                        snackbarHostState.showSnackbar(dragDisabledMsg)
                     }
                 },
             )
