@@ -489,27 +489,6 @@ class AiModelRepository(private val app: Application) {
         return toAdd.size
     }
 
-    /** B33：拉取音频合成平台的内置模型（按平台模板，已存在则跳过），返回新增数量 */
-    suspend fun pullAudioModels(providerId: String, platform: String): Int {
-        val t = AudioSynthPlatforms.templateOf(platform) ?: return 0
-        val cfg = load()
-        val existing = cfg.models.filter { it.providerId == providerId }.map { it.modelId }.toSet()
-        val toAdd = t.models.filterNot { it.modelId in existing }
-        if (toAdd.isEmpty()) return 0
-        val now = System.currentTimeMillis()
-        val list = cfg.models + toAdd.mapIndexed { i, tm ->
-            AiModelEntry(
-                id = "m_audio_${platform}_${i}_$now",
-                providerId = providerId,
-                name = tm.name,
-                modelId = tm.modelId,
-                enabled = false,
-            )
-        }
-        save(cfg.copy(models = list))
-        return toAdd.size
-    }
-
     /** 批量启用/停用（对应"选中/未选中"） */
     suspend fun setModelsEnabled(ids: Set<String>, enabled: Boolean): Boolean {
         if (ids.isEmpty()) return false

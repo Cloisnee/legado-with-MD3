@@ -170,6 +170,11 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var veKind by remember { mutableStateOf("chat") }
     var vePlatform by remember { mutableStateOf("custom") }
 
+    // B33.2 附：音频合成平台 · 手动添加模型
+    var addModelVendor by remember { mutableStateOf<AiProvider?>(null) }
+    var amModelId by remember { mutableStateOf("") }
+    var amModelName by remember { mutableStateOf("") }
+
     // 模型分配：阶段队列选择上下文
     var expandedStages by remember { mutableStateOf<Set<String>>(emptySet()) }
     var addStageKey by remember { mutableStateOf<String?>(null) }
@@ -394,18 +399,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             }
             reload()
             if (isAudio) {
-                if (vePlatform == AudioSynthPlatforms.PLATFORM_CUSTOM) {
-                    context.toastOnUi("已保存（自定义平台：暂无内置模型模板）")
-                } else {
-                    val n = repo.pullAudioModels(id, vePlatform)
-                    context.toastOnUi(
-                        if (n > 0) {
-                            "已保存，拉取合成模型 $n 个（默认关闭，按需开启）"
-                        } else {
-                            "已保存（合成模型已存在）"
-                        }
-                    )
-                }
+                context.toastOnUi("已保存（模型可长按服务商 →「添加模型」手动添加）")
                 return@launch
             }
             if (isNew) {
@@ -426,18 +420,10 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
+    /** 分析模型：重新拉取厂商模型列表（音频平台请用「添加模型」手动添加） */
     fun refetchModels(p: AiProvider) {
         scope.launch {
             context.toastOnUi("正在重新拉取…")
-            if (p.kind == "audio") {
-                val n = repo.pullAudioModels(p.id, p.platform)
-                context.toastOnUi(
-                    if (n > 0) "拉取完成，新增 $n 个合成模型（默认关闭）"
-                    else "拉取完成：无新增（或自定义平台无模板）"
-                )
-                reload()
-                return@launch
-            }
             repo.fetchProviderModels(p)
                 .onSuccess { list ->
                     val n = repo.addModelsFromProvider(p.id, list)
@@ -445,6 +431,36 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     reload()
                 }
                 .onFailure { context.toastOnUi("拉取失败：${it.localizedMessage}") }
+        }
+    }
+
+    // B33.2 附：音频合成平台「添加模型」（去内置模板后手动添加）
+    fun openAddModel(p: AiProvider) {
+        amModelId = ""
+        amModelName = ""
+        addModelVendor = p
+    }
+
+    fun saveAddModel() {
+        val p = addModelVendor ?: return
+        val mid = amModelId.trim()
+        if (mid.isEmpty()) {
+            context.toastOnUi("请填写模型 ID")
+            return
+        }
+        addModelVendor = null
+        scope.launch {
+            repo.upsertModel(
+                AiModelEntry(
+                    id = "",
+                    providerId = p.id,
+                    name = amModelName.trim().ifBlank { mid },
+                    modelId = mid,
+                    enabled = false,
+                )
+            )
+            context.toastOnUi("已添加：$mid（默认关闭，按需开启）")
+            reload()
         }
     }
 
@@ -707,13 +723,23 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 context.toastOnUi("请只选择一个服务商再编辑")
                             }
                         })
-                        add(ActionItem("重新拉取模型", Icons.Default.Refresh) {
-                            if (selVendors.size == 1 && target != null) {
-                                refetchModels(target)
-                            } else {
-                                context.toastOnUi("请只选择一个服务商再拉取")
-                            }
-                        })
+                        if (target?.kind == "audio") {
+                            add(ActionItem("添加模型", Icons.Default.Add) {
+                                if (selVendors.size == 1 && target != null) {
+                                    openAddModel(target)
+                                } else {
+                                    context.toastOnUi("请只选择一个服务商再添加模型")
+                                }
+                            })
+                        } else {
+                            add(ActionItem("重新拉取模型", Icons.Default.Refresh) {
+                                if (selVendors.size == 1 && target != null) {
+                                    refetchModels(target)
+                                } else {
+                                    context.toastOnUi("请只选择一个服务商再拉取")
+                                }
+                            })
+                        }
                     }
                     if (tab == 0 && libCtx == "model") {
                         add(ActionItem("开启", Icons.Default.Check) { setEnabledForSelected(true) })
@@ -834,7 +860,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                         .map { it.first }.toTypedArray(),
                     entryValues = AudioSynthPlatforms.PLATFORM_LABELS
                         .map { it.second }.toTypedArray(),
-                    description = "内置模板：保存后自动拉取合成模型（默认关闭）",
+                    description = "决定补缺生成与测试的适配方式（模型手动添加）",
                     onValueChange = { vePlatform = it },
                 )
             } else {
@@ -850,11 +876,28 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
             TinyClickableSettingItem(
                 title = when {
-                    veId.isBlank() && veKind == "audio" -> "保存并拉取合成模型"
-                    veId.isBlank() -> "保存并拉取模型"
+                    veId.isBlank() && veKind != "audio" -> "保存并拉取模型"
                     else -> "保存"
                 },
                 onClick = { saveVendor() },
+            )
+        }
+    }
+
+    // ---------------- B33.2 附：音频平台 · 手动添加模型（去内置模板） ----------------
+    AppModalBottomSheet(
+        animateContentSize = false,
+        show = addModelVendor != null,
+        onDismissRequest = { addModelVendor = null },
+        title = "添加模型 · ${addModelVendor?.name.orEmpty()}",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SheetField("模型 ID（如 stepaudio-3-gen-preview）", amModelId) { amModelId = it }
+            SheetField("显示名（留空 = 用模型 ID）", amModelName) { amModelName = it }
+            Spacer(modifier = Modifier.height(8.dp))
+            TinyClickableSettingItem(
+                title = "保存（默认关闭）",
+                onClick = { saveAddModel() },
             )
         }
     }
@@ -1071,7 +1114,7 @@ private fun ModelLibraryPage(
             item {
                 TinyClickableSettingItem(
                     title = "还没有服务商",
-                    description = "点右下角 ＋ 添加（保存后自动拉取模型列表）",
+                    description = "点右下角 ＋ 添加（分析模型自动拉取；音频平台手动添加模型）",
                     onClick = {},
                 )
             }
