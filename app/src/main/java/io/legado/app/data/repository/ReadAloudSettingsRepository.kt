@@ -77,6 +77,12 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 1),
     ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 75),
     ttsMaxRetry = compatDsValue(ReadAloudKeys.TtsMaxRetry, 5),
+    alEnabled = compatDsValue(ReadAloudKeys.AlEnabled, true),
+    alSfxVolume = compatDsValue(ReadAloudKeys.AlSfxVolume, 80).coerceIn(0, 100),
+    alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 35).coerceIn(0, 100),
+    alBgmVolume = compatDsValue(ReadAloudKeys.AlBgmVolume, 25).coerceIn(0, 100),
+    alDucking = compatDsValue(ReadAloudKeys.AlDucking, true),
+    alSfxDensity = compatDsValue(ReadAloudKeys.AlSfxDensity, "mid"),
 )
 
 internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
@@ -108,6 +114,12 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
     PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
     PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.alEnabled to alEnabled,
+    PreferKey.alSfxVolume to alSfxVolume,
+    PreferKey.alAmbVolume to alAmbVolume,
+    PreferKey.alBgmVolume to alBgmVolume,
+    PreferKey.alDucking to alDucking,
+    PreferKey.alSfxDensity to alSfxDensity,
 )
 
 private object ReadAloudKeys {
@@ -142,4 +154,10 @@ private object ReadAloudKeys {
     val PreSynthesisConcurrency = intPreferencesKey(PreferKey.ttsPreSynthesisConcurrency)
     val TtsSynthTimeoutSec = intPreferencesKey(PreferKey.ttsSynthTimeoutSec)
     val TtsMaxRetry = intPreferencesKey(PreferKey.ttsMaxRetry)
+    val AlEnabled = booleanPreferencesKey(PreferKey.alEnabled)
+    val AlSfxVolume = intPreferencesKey(PreferKey.alSfxVolume)
+    val AlAmbVolume = intPreferencesKey(PreferKey.alAmbVolume)
+    val AlBgmVolume = intPreferencesKey(PreferKey.alBgmVolume)
+    val AlDucking = booleanPreferencesKey(PreferKey.alDucking)
+    val AlSfxDensity = stringPreferencesKey(PreferKey.alSfxDensity)
 }

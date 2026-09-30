@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
+import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
@@ -24,6 +25,7 @@ import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.readaloud.audio.TmDemoAssets
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
@@ -93,6 +95,10 @@ fun ReadAloudSettingsScreen(
     var showCleanTime by remember { mutableStateOf(false) }
     var showSynthTimeout by remember { mutableStateOf(false) }
     var showMaxRetry by remember { mutableStateOf(false) }
+    var showAlSfx by remember { mutableStateOf(false) }
+    var showAlAmb by remember { mutableStateOf(false) }
+    var showAlBgm by remember { mutableStateOf(false) }
+    var seedRunning by remember { mutableStateOf(false) }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -259,6 +265,64 @@ fun ReadAloudSettingsScreen(
                 }
             }
             item {
+                SplicedColumnGroup(title = "音效与音乐（四轨）") {
+                    TinySwitchSettingItem(
+                        title = "四轨音效",
+                        description = "在朗读人声之上叠加 BGM / 环境底噪 / 音效 三条音轨（独立音量、自动闪避、场景联动）",
+                        checked = st.alEnabled,
+                        onCheckedChange = { v -> update { it.copy(alEnabled = v) } },
+                    )
+                    if (st.alEnabled) {
+                        TinyClickableSettingItem(
+                            title = "音效音量",
+                            description = "${st.alSfxVolume}%",
+                            onClick = { showAlSfx = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "环境音量",
+                            description = "${st.alAmbVolume}%",
+                            onClick = { showAlAmb = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "BGM 音量",
+                            description = "${st.alBgmVolume}%",
+                            onClick = { showAlBgm = true },
+                        )
+                        TinySwitchSettingItem(
+                            title = "BGM 自动闪避",
+                            description = "有台词出声时自动压低 BGM，空档恢复",
+                            checked = st.alDucking,
+                            onCheckedChange = { v -> update { it.copy(alDucking = v) } },
+                        )
+                        TinyDropdownSettingItem(
+                            title = "音效密度",
+                            selectedValue = st.alSfxDensity,
+                            displayEntries = arrayOf("低", "中", "高"),
+                            entryValues = arrayOf("low", "mid", "high"),
+                            onValueChange = { v -> update { it.copy(alSfxDensity = v) } },
+                        )
+                        TinyClickableSettingItem(
+                            title = if (seedRunning) "正在准备示例素材…" else "准备示例素材（四轨试听用）",
+                            description = "下载示例音效/环境（远程），并从 BGM 库 zip 提取 4 首示例曲到素材库",
+                            onClick = {
+                                if (!seedRunning) {
+                                    seedRunning = true
+                                    scope.launch {
+                                        val msg = runCatching {
+                                            TmDemoAssets.ensureDemoAssets(context.applicationContext) { line ->
+                                                AppLog.putAudio(line)
+                                            }
+                                        }.getOrElse { "示例素材准备失败：${it.localizedMessage}" }
+                                        seedRunning = false
+                                        context.toastOnUi(msg)
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            item {
                 SplicedColumnGroup(title = "其他") {
                     TinyClickableSettingItem(
                         title = stringResource(R.string.sys_tts_config),
@@ -381,5 +445,35 @@ fun ReadAloudSettingsScreen(
         valueRange = 0f..10f,
         onValueChange = { v -> update { it.copy(ttsMaxRetry = v.coerceIn(0, 10)) } },
         onDismissRequest = { showMaxRetry = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlSfx,
+        title = "音效音量",
+        description = "音效轨音量（0–100%）",
+        value = st.alSfxVolume,
+        defaultValue = 80,
+        valueRange = 0f..100f,
+        onValueChange = { v -> update { it.copy(alSfxVolume = v.coerceIn(0, 100)) } },
+        onDismissRequest = { showAlSfx = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlAmb,
+        title = "环境音量",
+        description = "环境底噪轨音量（0–100%）",
+        value = st.alAmbVolume,
+        defaultValue = 35,
+        valueRange = 0f..100f,
+        onValueChange = { v -> update { it.copy(alAmbVolume = v.coerceIn(0, 100)) } },
+        onDismissRequest = { showAlAmb = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlBgm,
+        title = "BGM 音量",
+        description = "背景音乐轨音量（0–100%）",
+        value = st.alBgmVolume,
+        defaultValue = 25,
+        valueRange = 0f..100f,
+        onValueChange = { v -> update { it.copy(alBgmVolume = v.coerceIn(0, 100)) } },
+        onDismissRequest = { showAlBgm = false },
     )
 }

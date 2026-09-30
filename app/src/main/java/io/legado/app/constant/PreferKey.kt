@@ -426,6 +426,13 @@ object PreferKey {
     const val ttsParagraphInterval = "ttsParagraphInterval"
     const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
     const val ttsMaxRetry = "ttsMaxRetry"
+    // B33 四轨（音效/BGM/环境·小闭环）
+    const val alEnabled = "alEnabled"
+    const val alSfxVolume = "alSfxVolume"
+    const val alAmbVolume = "alAmbVolume"
+    const val alBgmVolume = "alBgmVolume"
+    const val alDucking = "alDucking"
+    const val alSfxDensity = "alSfxDensity"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"

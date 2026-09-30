@@ -32,4 +32,17 @@ data class ReadAloudSettings(
     val ttsSynthTimeoutSec: Int = 75,
     /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
     val ttsMaxRetry: Int = 5,
+    // ---- B33 音效/BGM/环境·四轨（2026-09-30 立项；音频小闭环）----
+    /** 四轨总开关（在朗读人声之上叠加 音效/BGM/环境 三条音频轨） */
+    val alEnabled: Boolean = true,
+    /** 音效轨音量（0..100） */
+    val alSfxVolume: Int = 80,
+    /** 环境轨音量（0..100） */
+    val alAmbVolume: Int = 35,
+    /** BGM 轨音量（0..100） */
+    val alBgmVolume: Int = 25,
+    /** BGM 闪避：有台词出声时自动压低 */
+    val alDucking: Boolean = true,
+    /** 音效密度：low / mid / high */
+    val alSfxDensity: String = "mid",
 )

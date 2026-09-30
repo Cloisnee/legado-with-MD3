@@ -66,6 +66,7 @@ import io.legado.app.data.repository.ReadAloudAudioCacheRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.audio.AudioLaneEngine
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
@@ -197,6 +198,38 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val speechPipeline by lazy { GlobalContext.get().get<SpeechAnalysisPipelineV3>() }
     private val analysisConfig by lazy { GlobalContext.get().get<AnalysisConfigStore>() }
 
+    // ---- B33 音效/BGM/环境·四轨（音频小闭环；全部 runCatching 静默降级，不影响原朗读链路）----
+    private var laneEngine: AudioLaneEngine? = null
+
+    private fun laneEngineOrCreate(): AudioLaneEngine? {
+        if (!readAloudSettings.alEnabled) return null
+        laneEngine?.let { return it }
+        return runCatching {
+            AudioLaneEngine(
+                appContext = applicationContext,
+                scope = lifecycleScope,
+                serviceActive = { !pause },
+                voiceActive = { runCatching { exoPlayer.isPlaying }.getOrDefault(false) },
+            ).also {
+                it.applySettings(readAloudSettings)
+                laneEngine = it
+            }
+        }.getOrNull()
+    }
+
+    private fun laneCueInfo(index: Int): AudioLaneEngine.CueInfo? {
+        playbackQueue.cues.getOrNull(index)?.let {
+            return AudioLaneEngine.CueInfo(it.text, it.isChapterTitle, it.emotion)
+        }
+        val text = contentList.getOrNull(index) ?: return null
+        return AudioLaneEngine.CueInfo(text, isChapterTitleAt(index), "")
+    }
+
+    private fun laneCueStarted() {
+        val engine = laneEngineOrCreate() ?: return
+        runCatching { engine.onCue(nowSpeak, laneCueInfo(nowSpeak)) }
+    }
+
     /** B8.6：单次合成超时（秒→毫秒，设置 5–120 秒） */
     private val ttsSynthTimeoutMs: Long
         get() = readAloudSettings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
@@ -224,6 +257,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                 readAloudSettings = it
                 // 全局语速为播放端变速, 设置变化即时生效, 无需重新合成
                 exoPlayer.setPlaybackSpeed(globalPlaybackSpeed)
+                // B33 四轨：音量/开关即时生效
+                runCatching { laneEngine?.applySettings(it) }
             }
         }
         lifecycleScope.launch {
@@ -238,6 +273,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         super.onDestroy()
         downloadTask?.cancel()
         preDownloadJob?.cancel()
+        runCatching { laneEngine?.release() }
+        laneEngine = null
         exoPlayer.release()
         loudnessEnhancer?.release()
         loudnessEnhancer = null
@@ -262,6 +299,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun play() {
         pageChanged = false
         refreshLoudnessFlags()
+        runCatching { laneEngineOrCreate()?.onChapterStarted() }
         exoPlayer.stop()
         if (!requestFocus()) return
         if (contentList.isEmpty()) {
@@ -290,6 +328,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         exoPlayer.stop()
         playIndexJob?.cancel()
         preDownloadJob?.cancel()
+        runCatching { laneEngine?.onStopped() }
     }
 
     // ---------------- B11 响度均衡 ----------------
@@ -1251,6 +1290,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         kotlin.runCatching {
             playIndexJob?.cancel()
             exoPlayer.pause()
+            laneEngine?.onPaused()
         }
     }
 
@@ -1262,6 +1302,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             } else {
                 exoPlayer.play()
                 upPlayPos()
+                laneEngine?.onResumed()
             }
         }
     }
@@ -1320,6 +1361,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                 // B11 响度均衡：缓冲/就绪时兜底应用当前条目增益
                 applyLoudnessGain(exoPlayer.currentMediaItem?.mediaId?.toIntOrNull() ?: 0)
                 upPlayPos()
+                // B33 四轨：首个条目就绪 / 暂停恢复后对账
+                laneCueStarted()
             }
 
             Player.STATE_ENDED -> {
@@ -1369,13 +1412,19 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         // B11 响度均衡：切段即应用该条目的声线增益（含首个条目的 PLAYLIST_CHANGED 转换）
         applyLoudnessGain(mediaItem?.mediaId?.toIntOrNull() ?: 0)
-        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) return
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+            // B33 四轨：章首条目就绪（含换章新队列）
+            laneCueStarted()
+            return
+        }
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
             playErrorNo = 0
         }
         updateNextPos(naturalCompletion = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
         upPlayPos()
         upMediaMetadata(showContent = true)
+        // B33 四轨：切段 → 驱动环境/BGM/音效三条轨（同一 index 幂等）
+        laneCueStarted()
     }
 
     override fun onPlayerError(error: PlaybackException) {
