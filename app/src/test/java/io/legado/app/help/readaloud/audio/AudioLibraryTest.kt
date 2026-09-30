@@ -3,7 +3,13 @@ package io.legado.app.help.readaloud.audio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+/** org.json 为 Android 框架实现：单测走 Robolectric（否则 JVM 下为 Not mocked 桩）。 */
+@RunWith(RobolectricTestRunner::class)
+@Config(application = android.app.Application::class, sdk = [35])
 class AudioLibraryTest {
 
     private fun asset(rel: String, name: String? = null, aliases: List<String> = emptyList()) =
