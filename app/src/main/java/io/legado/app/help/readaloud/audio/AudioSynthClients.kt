@@ -61,13 +61,14 @@ object AudioSynthClients {
         keyword: String,
     ): Result<GenResult> = withContext(Dispatchers.IO) {
         runCatching {
+            val platform = AudioSynthPlatforms.effectivePlatform(provider)
             val base = provider.baseUrl.trim().trimEnd('/').ifBlank {
-                AudioSynthPlatforms.templateOf(provider.platform)?.baseUrl.orEmpty()
+                AudioSynthPlatforms.templateOf(platform)?.baseUrl.orEmpty()
             }
             require(base.isNotBlank()) { "BaseUrl 为空" }
             require(provider.apiKey.isNotBlank()) { "未填写 API Key" }
             val prompt = promptFor(lane, keyword)
-            when (provider.platform) {
+            when (platform) {
                 AudioSynthPlatforms.PLATFORM_STEPFUN ->
                     if (isMusicModel(model.modelId)) {
                         stepfunMusic(base, provider.apiKey, model, prompt)

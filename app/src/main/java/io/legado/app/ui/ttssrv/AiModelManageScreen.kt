@@ -170,11 +170,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var veKind by remember { mutableStateOf("chat") }
     var vePlatform by remember { mutableStateOf("custom") }
 
-    // B33.2 附：音频合成平台 · 手动添加模型
-    var addModelVendor by remember { mutableStateOf<AiProvider?>(null) }
-    var amModelId by remember { mutableStateOf("") }
-    var amModelName by remember { mutableStateOf("") }
-
     // 模型分配：阶段队列选择上下文
     var expandedStages by remember { mutableStateOf<Set<String>>(emptySet()) }
     var addStageKey by remember { mutableStateOf<String?>(null) }
@@ -386,7 +381,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             name = veName.trim(),
             baseUrl = veBase.trim(),
             apiKey = veKey.trim(),
-            protocol = if (isAudio) "openai" else veProtocol,
+            protocol = veProtocol,
             kind = if (isAudio) "audio" else "chat",
             platform = if (isAudio) vePlatform else "",
         )
@@ -398,10 +393,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 return@launch
             }
             reload()
-            if (isAudio) {
-                context.toastOnUi("已保存（模型可长按服务商 →「添加模型」手动添加）")
-                return@launch
-            }
             if (isNew) {
                 context.toastOnUi("已保存，正在拉取模型…")
                 repo.fetchProviderModels(draft.copy(id = id))
@@ -420,7 +411,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    /** 分析模型：重新拉取厂商模型列表（音频平台请用「添加模型」手动添加） */
+    /** 重新拉取厂商模型列表（协议请求，分析/音频平台一致） */
     fun refetchModels(p: AiProvider) {
         scope.launch {
             context.toastOnUi("正在重新拉取…")
@@ -434,43 +425,13 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // B33.2 附：音频合成平台「添加模型」（去内置模板后手动添加）
-    fun openAddModel(p: AiProvider) {
-        amModelId = ""
-        amModelName = ""
-        addModelVendor = p
-    }
-
-    fun saveAddModel() {
-        val p = addModelVendor ?: return
-        val mid = amModelId.trim()
-        if (mid.isEmpty()) {
-            context.toastOnUi("请填写模型 ID")
-            return
-        }
-        addModelVendor = null
-        scope.launch {
-            repo.upsertModel(
-                AiModelEntry(
-                    id = "",
-                    providerId = p.id,
-                    name = amModelName.trim().ifBlank { mid },
-                    modelId = mid,
-                    enabled = false,
-                )
-            )
-            context.toastOnUi("已添加：$mid（默认关闭，按需开启）")
-            reload()
-        }
-    }
-
     fun testOne(m: AiModelEntry, p: AiProvider) {
         testInflight[m.id] = true
         scope.launch {
             val r: Triple<Boolean, Long, String> = if (p.kind == "audio") {
                 // 音频合成平台：走 audio 专属鉴权探测（不产生生成费用）
                 AppLog.putAudio("【合成·测试】${p.name} · ${m.name} → 开始鉴权探测")
-                val pr = AudioSynthPlatforms.probe(p.platform, p.baseUrl, p.apiKey)
+                val pr = AudioSynthPlatforms.probeProvider(p)
                 AppLog.putAudio(
                     "【合成·测试】${p.name} · ${m.name} → " +
                         "${if (pr.ok) "通过" else "失败"}（${pr.message} · ${pr.latencyMs}ms）"
@@ -723,23 +684,13 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 context.toastOnUi("请只选择一个服务商再编辑")
                             }
                         })
-                        if (target?.kind == "audio") {
-                            add(ActionItem("添加模型", Icons.Default.Add) {
-                                if (selVendors.size == 1 && target != null) {
-                                    openAddModel(target)
-                                } else {
-                                    context.toastOnUi("请只选择一个服务商再添加模型")
-                                }
-                            })
-                        } else {
-                            add(ActionItem("重新拉取模型", Icons.Default.Refresh) {
-                                if (selVendors.size == 1 && target != null) {
-                                    refetchModels(target)
-                                } else {
-                                    context.toastOnUi("请只选择一个服务商再拉取")
-                                }
-                            })
-                        }
+                        add(ActionItem("重新拉取模型", Icons.Default.Refresh) {
+                            if (selVendors.size == 1 && target != null) {
+                                refetchModels(target)
+                            } else {
+                                context.toastOnUi("请只选择一个服务商再拉取")
+                            }
+                        })
                     }
                     if (tab == 0 && libCtx == "model") {
                         add(ActionItem("开启", Icons.Default.Check) { setEnabledForSelected(true) })
@@ -852,52 +803,21 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     onValueChange = { veKind = it },
                 )
             }
-            if (veKind == "audio") {
-                TinyDropdownSettingItem(
-                    title = "平台",
-                    selectedValue = vePlatform,
-                    displayEntries = AudioSynthPlatforms.PLATFORM_LABELS
-                        .map { it.first }.toTypedArray(),
-                    entryValues = AudioSynthPlatforms.PLATFORM_LABELS
-                        .map { it.second }.toTypedArray(),
-                    description = "决定补缺生成与测试的适配方式（模型手动添加）",
-                    onValueChange = { vePlatform = it },
-                )
-            } else {
-                TinyDropdownSettingItem(
-                    title = "协议",
-                    selectedValue = veProtocol,
-                    displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
-                    entryValues = arrayOf("openai", "google", "claude"),
-                    description = "决定 拉取模型 / 测试 的请求方式",
-                    onValueChange = { veProtocol = it },
-                )
-            }
+            TinyDropdownSettingItem(
+                title = "协议",
+                selectedValue = veProtocol,
+                displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
+                entryValues = arrayOf("openai", "google", "claude"),
+                description = "决定 拉取模型 / 测试 的请求方式（兼容 OpenAI / Claude / Google）",
+                onValueChange = { veProtocol = it },
+            )
             Spacer(modifier = Modifier.height(8.dp))
             TinyClickableSettingItem(
                 title = when {
-                    veId.isBlank() && veKind != "audio" -> "保存并拉取模型"
+                    veId.isBlank() -> "保存并拉取模型"
                     else -> "保存"
                 },
                 onClick = { saveVendor() },
-            )
-        }
-    }
-
-    // ---------------- B33.2 附：音频平台 · 手动添加模型（去内置模板） ----------------
-    AppModalBottomSheet(
-        animateContentSize = false,
-        show = addModelVendor != null,
-        onDismissRequest = { addModelVendor = null },
-        title = "添加模型 · ${addModelVendor?.name.orEmpty()}",
-    ) {
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            SheetField("模型 ID（如 stepaudio-3-gen-preview）", amModelId) { amModelId = it }
-            SheetField("显示名（留空 = 用模型 ID）", amModelName) { amModelName = it }
-            Spacer(modifier = Modifier.height(8.dp))
-            TinyClickableSettingItem(
-                title = "保存（默认关闭）",
-                onClick = { saveAddModel() },
             )
         }
     }
@@ -1114,7 +1034,7 @@ private fun ModelLibraryPage(
             item {
                 TinyClickableSettingItem(
                     title = "还没有服务商",
-                    description = "点右下角 ＋ 添加（分析模型自动拉取；音频平台手动添加模型）",
+                    description = "点右下角 ＋ 添加（保存后自动拉取模型列表）",
                     onClick = {},
                 )
             }

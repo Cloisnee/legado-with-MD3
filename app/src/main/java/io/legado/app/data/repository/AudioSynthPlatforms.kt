@@ -77,13 +77,18 @@ object AudioSynthPlatforms {
     fun templateOf(platform: String): Template? =
         TEMPLATES.firstOrNull { it.platform == platform }
 
-    /** 平台下拉选项（label / value） */
-    val PLATFORM_LABELS: List<Pair<String, String>> = listOf(
-        "阶跃星辰" to PLATFORM_STEPFUN,
-        "SenseAudio（商汤）" to PLATFORM_SENSEAUDIO,
-        "ElevenLabs" to PLATFORM_ELEVENLABS,
-        "自定义" to PLATFORM_CUSTOM,
-    )
+    /** 运行时判定平台：显式 platform 优先；缺失/自定义时按 BaseUrl 推断（兼容现有种子数据） */
+    fun effectivePlatform(provider: AiProvider): String {
+        val p = provider.platform.trim()
+        if (p.isNotBlank() && p != PLATFORM_CUSTOM) return p
+        val u = provider.baseUrl.lowercase()
+        return when {
+            "stepfun" in u -> PLATFORM_STEPFUN
+            "senseaudio" in u -> PLATFORM_SENSEAUDIO
+            "elevenlabs" in u -> PLATFORM_ELEVENLABS
+            else -> PLATFORM_CUSTOM
+        }
+    }
 
     data class ProbeResult(
         val ok: Boolean,
@@ -158,6 +163,56 @@ object AudioSynthPlatforms {
                 )
             }
         }
+
+    /** 音频模型「测试」：不产生费用的鉴权探测（内置平台走专属端点；其余按协议探测） */
+    suspend fun probeProvider(provider: AiProvider): ProbeResult {
+        val platform = effectivePlatform(provider)
+        if (platform != PLATFORM_CUSTOM) {
+            return probe(platform, provider.baseUrl, provider.apiKey)
+        }
+        return probeByProtocol(provider.protocol, provider.baseUrl, provider.apiKey)
+    }
+
+    private suspend fun probeByProtocol(
+        protocol: String,
+        baseUrl: String,
+        apiKey: String,
+    ): ProbeResult = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        val key = apiKey.trim()
+        if (key.isEmpty()) return@withContext ProbeResult(false, 0L, "未填写 API Key")
+        val base = baseUrl.trim().trimEnd('/')
+        if (base.isBlank()) return@withContext ProbeResult(false, 0L, "BaseUrl 为空")
+        runCatching {
+            val req = when (protocol.lowercase()) {
+                "google" -> Request.Builder()
+                    .url("$base/models?key=$key")
+                    .get()
+                    .build()
+
+                "claude" -> Request.Builder()
+                    .url("$base/models")
+                    .header("x-api-key", key)
+                    .header("anthropic-version", "2023-06-01")
+                    .get()
+                    .build()
+
+                else -> Request.Builder()
+                    .url("$base/models")
+                    .header("Authorization", "Bearer $key")
+                    .get()
+                    .build()
+            }
+            val resp = okHttpClient.newCall(req).await()
+            classify(resp.code, resp.body?.string().orEmpty(), start)
+        }.getOrElse {
+            ProbeResult(
+                false,
+                System.currentTimeMillis() - start,
+                "连接失败：${it.localizedMessage ?: it.javaClass.simpleName}",
+            )
+        }
+    }
 
     private fun classify(code: Int, body: String, start: Long): ProbeResult {
         val latency = System.currentTimeMillis() - start
