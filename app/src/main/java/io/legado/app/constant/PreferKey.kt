@@ -438,6 +438,8 @@ object PreferKey {
     const val alBgmCooldownS = "alBgmCooldownS"
     const val alAmbDwellS = "alAmbDwellS"
     const val alChapterSynthCap = "alChapterSynthCap"
+    // B33.2 · 音频库（排序模式持久化）
+    const val audioLibSortMode = "audioLibSortMode"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"

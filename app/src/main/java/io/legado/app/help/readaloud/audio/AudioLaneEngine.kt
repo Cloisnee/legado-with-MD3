@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.constant.AppLog
@@ -265,9 +266,9 @@ class AudioLaneEngine(
             return
         }
         if (active && lane.keyword != desired) {
-            val file = AudioLibrary.resolveFile(appContext, desired)
-            if (file != null) {
-                lane.playKeyword(desired, file)
+            val resolved = AudioLibrary.resolve(appContext, desired)
+            if (resolved != null) {
+                lane.playKeyword(desired, resolved.file, resolved.asset)
             } else {
                 markMissing(kind, desired)
             }
@@ -276,7 +277,18 @@ class AudioLaneEngine(
         if (active && p.currentMediaItem != null && !p.isPlaying) {
             runCatching { p.play() }
         }
-        approach(p, if (active) target else 0f)
+        // 条目参数（音量/音速/音高）：实时读取（编辑后下一 tick 起生效）
+        val meta = lane.asset?.relPath?.let { rel -> AudioLibrary.metaByRelPath(rel) }
+        val speed = (meta?.speed ?: 1f).coerceIn(0.5f, 2.0f)
+        val pitch = (meta?.pitch ?: 1f).coerceIn(0.5f, 2.0f)
+        runCatching {
+            val cur = p.playbackParameters
+            if (cur.speed != speed || cur.pitch != pitch) {
+                p.playbackParameters = PlaybackParameters(speed, pitch)
+            }
+        }
+        val volume = (if (active) target else 0f) * (meta?.volume ?: 1f)
+        approach(p, volume.coerceIn(0f, 1f))
         if (!active && p.volume <= 0.015f && p.isPlaying) {
             runCatching { p.pause() }
         }
@@ -304,18 +316,22 @@ class AudioLaneEngine(
     }
 
     private fun playSfx(rule: DemoLanes.Rule): Boolean {
-        val file = AudioLibrary.resolveFile(appContext, rule.keyword)
-        if (file == null) {
+        val resolved = AudioLibrary.resolve(appContext, rule.keyword)
+        if (resolved == null) {
             markMissing("音效", rule.keyword)
             return false
         }
-        val path = file.absolutePath
+        val path = resolved.file.absolutePath
+        val fallbackAsset = resolved.asset
         val fire: () -> Unit = {
             val sid = sfxLoaded[path] ?: 0
             if (sid > 0) {
                 runCatching {
-                    val v = (config.sfxVolume * rule.gain).coerceIn(0f, 1f)
-                    ensureSoundPool().play(sid, v, v, 1, 0, 1f)
+                    // 条目参数实时读取（音量；音速×音高 → SoundPool 速率近似）
+                    val meta = AudioLibrary.metaByRelPath(fallbackAsset.relPath) ?: fallbackAsset
+                    val v = (config.sfxVolume * rule.gain * meta.volume).coerceIn(0f, 1f)
+                    val rate = (meta.speed * meta.pitch).coerceIn(0.5f, 2.0f)
+                    ensureSoundPool().play(sid, v, v, 1, 0, rate)
                 }
             }
         }
@@ -399,8 +415,11 @@ class AudioLaneEngine(
             private set
         var keyword: String? = null
             private set
+        var asset: AudioLibrary.AudioAsset? = null
+            private set
 
-        fun playKeyword(kw: String, file: File) {
+        fun playKeyword(kw: String, file: File, asset: AudioLibrary.AudioAsset?) {
+            this.asset = asset
             val p = player ?: ExoPlayer.Builder(appContext).build().also {
                 // 不抢音频焦点：焦点由人声播放器统一管理
                 it.setAudioAttributes(media3AudioAttributes, false)
@@ -421,6 +440,7 @@ class AudioLaneEngine(
 
         fun stopAndClear() {
             keyword = null
+            asset = null
             player?.let { p ->
                 runCatching {
                     p.stop()

@@ -26,6 +26,7 @@ class AudioLibraryTest {
         assertEquals("拟音", AudioLibrary.categoryOf("sfx/拟音/茶杯摆放.mp3"))
         assertEquals("环境声", AudioLibrary.categoryOf("sfx/环境声/客栈大堂.wav"))
         assertEquals("音效", AudioLibrary.categoryOf("sfx/开门.mp3"))
+        assertEquals("导入", AudioLibrary.categoryOf("导入/铜铃轻响.mp3"))
         assertEquals("其他", AudioLibrary.categoryOf("misc/x.mp3"))
     }
 
@@ -46,8 +47,19 @@ class AudioLibraryTest {
     fun `registry 序列化与解析往返一致`() {
         val assets = listOf(
             asset("sfx/拟音/铜铃轻响.mp3", name = "铜铃轻响", aliases = listOf("铃铛"))
-                .copy(source = AudioLibrary.SOURCE_GENERATED, size = 136232, mtime = 1234L),
-            asset("bgm/战斗.m4a", name = "战斗").copy(loop = true),
+                .copy(
+                    source = AudioLibrary.SOURCE_GENERATED,
+                    size = 136232,
+                    mtime = 1234L,
+                    group = "音效组",
+                    pattern = "铃|钟",
+                    replacement = "",
+                    enabled = false,
+                    volume = 1.5f,
+                    speed = 1.2f,
+                    pitch = 0.9f,
+                ),
+            asset("bgm/战斗.m4a", name = "战斗").copy(loop = true, enabled = true),
         )
         val text = AudioLibrary.serializeRegistry(assets)
         val parsed = AudioLibrary.parseRegistry(text)
@@ -58,8 +70,15 @@ class AudioLibraryTest {
         assertEquals(listOf("铃铛"), a?.aliases)
         assertEquals(136232L, a?.size)
         assertEquals(1234L, a?.mtime)
+        assertEquals("音效组", a?.group)
+        assertEquals("铃|钟", a?.pattern)
+        assertEquals(false, a?.enabled)
+        assertEquals(1.5f, a?.volume)
+        assertEquals(1.2f, a?.speed)
+        assertEquals(0.9f, a?.pitch)
         val b = parsed?.get("bgm/战斗.m4a")
         assertEquals(true, b?.loop)
+        assertEquals(true, b?.enabled)
         assertEquals("BGM", b?.category)
     }
 
