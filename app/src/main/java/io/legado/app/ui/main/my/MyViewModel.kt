@@ -33,6 +33,7 @@ sealed class PrefClickEvent {
     object OpenAiAnalysisSettings : PrefClickEvent()
     object OpenAiModelManage : PrefClickEvent()
     object OpenRoleScriptManage : PrefClickEvent()
+    object OpenAudioLibrary : PrefClickEvent()
     object OpenBookSourceManage : PrefClickEvent()
     object OpenHighlightTagRule : PrefClickEvent()
     object OpenAbout : PrefClickEvent()

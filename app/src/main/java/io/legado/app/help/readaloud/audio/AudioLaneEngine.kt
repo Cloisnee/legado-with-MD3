@@ -34,7 +34,7 @@ import kotlin.math.abs
  * - 「自研混音器扩展位」：上层只依赖本类接口；将来升级为 PCM 混音器时替换实现即可，
  *   HttpReadAloudService / 设置 / UI 零改动（见 B33 施工方案 §3）。
  *
- * ⚠ 本批为小闭环：匹配规则 = DemoLanes 少量示例；素材解析 = 文件名关键字（B33.2 起换 registry）。
+ * ⚠ 匹配规则 = DemoLanes 少量示例；素材解析 = AudioLibrary registry 索引（未加载时回退目录直扫）。
  * B33.3c：缺失 → onMissing 回调（自动合成补缺）；闸门（间隔/冷却/驻留）滑条化。
  */
 class AudioLaneEngine(
@@ -265,7 +265,7 @@ class AudioLaneEngine(
             return
         }
         if (active && lane.keyword != desired) {
-            val file = TmDemoAssets.findFile(appContext, desired)
+            val file = AudioLibrary.resolveFile(appContext, desired)
             if (file != null) {
                 lane.playKeyword(desired, file)
             } else {
@@ -304,7 +304,7 @@ class AudioLaneEngine(
     }
 
     private fun playSfx(rule: DemoLanes.Rule): Boolean {
-        val file = TmDemoAssets.findFile(appContext, rule.keyword)
+        val file = AudioLibrary.resolveFile(appContext, rule.keyword)
         if (file == null) {
             markMissing("音效", rule.keyword)
             return false

@@ -385,6 +385,7 @@ internal suspend fun saveGeneratedAudio(
             put("createdAt", System.currentTimeMillis())
         }.toString()
     )
+    runCatching { AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_GENERATED) }
     rel
 }
 

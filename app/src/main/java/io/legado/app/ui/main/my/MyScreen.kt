@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Sell
@@ -234,6 +235,12 @@ fun MyScreen(
                     description = "音色插件 / 配置列表 / 内置引擎",
                     imageVector = Icons.Default.RecordVoiceOver,
                     onClick = { onNavigate(PrefClickEvent.OpenTtsServerCenter) }
+                )
+                ClickableSettingItem(
+                    title = "音频库管理",
+                    description = "音效 / BGM / 环境素材（浏览 · 试听 · 扫描）",
+                    imageVector = Icons.Default.LibraryMusic,
+                    onClick = { onNavigate(PrefClickEvent.OpenAudioLibrary) }
                 )
                 ClickableSettingItem(
                     title = "角色与剧本",

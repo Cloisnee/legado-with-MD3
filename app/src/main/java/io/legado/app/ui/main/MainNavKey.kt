@@ -162,6 +162,9 @@ data object MainRouteAiModelManage : MainRoute
 data object MainRouteRoleScriptManage : MainRoute
 
 @Serializable
+data object MainRouteAudioLibrary : MainRoute
+
+@Serializable
 data class MainRouteScriptReview(
     val bookName: String,
     val bookUrl: String,

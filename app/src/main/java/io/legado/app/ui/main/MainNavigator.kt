@@ -102,6 +102,7 @@ object MainNavigator {
             MainRouteAiModelManage,
             MainRouteAiAnalysisSettings,
             MainRouteRoleScriptManage,
+            MainRouteAudioLibrary,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (

@@ -208,6 +208,7 @@ object TmDemoAssets {
             if (done) {
                 ok++
                 log("【四轨·素材】已下载：${spec.saveRel}")
+                runCatching { AudioLibrary.notifyFileAdded(context, out) }
             } else {
                 fail++
             }
@@ -244,6 +245,7 @@ object TmDemoAssets {
                         if (out.length() > 0) {
                             ok++
                             log("【四轨·素材】已提取：${spec.saveRel}")
+                            runCatching { AudioLibrary.notifyFileAdded(context, out) }
                         } else {
                             fail++
                         }

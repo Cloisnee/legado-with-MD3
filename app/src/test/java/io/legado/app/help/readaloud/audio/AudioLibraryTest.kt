@@ -1,0 +1,65 @@
+package io.legado.app.help.readaloud.audio
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class AudioLibraryTest {
+
+    private fun asset(rel: String, name: String? = null, aliases: List<String> = emptyList()) =
+        AudioLibrary.AudioAsset(
+            name = name ?: rel.substringAfterLast('/').substringBeforeLast('.'),
+            relPath = rel,
+            category = AudioLibrary.categoryOf(rel),
+            aliases = aliases,
+        )
+
+    @Test
+    fun `分类映射按目录层级`() {
+        assertEquals("BGM", AudioLibrary.categoryOf("bgm/战斗.m4a"))
+        assertEquals("拟音", AudioLibrary.categoryOf("sfx/拟音/茶杯摆放.mp3"))
+        assertEquals("环境声", AudioLibrary.categoryOf("sfx/环境声/客栈大堂.wav"))
+        assertEquals("音效", AudioLibrary.categoryOf("sfx/开门.mp3"))
+        assertEquals("其他", AudioLibrary.categoryOf("misc/x.mp3"))
+    }
+
+    @Test
+    fun `解析链顺序 精确优先于别名优先于包含`() {
+        val list = listOf(
+            asset("sfx/拟音/竹林雨夜.mp3"),
+            asset("sfx/拟音/清晨鸟鸣.mp3", name = "清晨鸟鸣", aliases = listOf("鸟鸣", "晨鸟")),
+            asset("sfx/硬音效/客栈大堂钟声.mp3", name = "客栈大堂钟声"),
+        )
+        assertEquals("竹林雨夜", AudioLibrary.lookup(list, "竹林雨夜")?.name)
+        assertEquals("清晨鸟鸣", AudioLibrary.lookup(list, "鸟鸣")?.name)
+        assertEquals("客栈大堂钟声", AudioLibrary.lookup(list, "钟声")?.name)
+        assertNull(AudioLibrary.lookup(list, "不存在的词"))
+    }
+
+    @Test
+    fun `registry 序列化与解析往返一致`() {
+        val assets = listOf(
+            asset("sfx/拟音/铜铃轻响.mp3", name = "铜铃轻响", aliases = listOf("铃铛"))
+                .copy(source = AudioLibrary.SOURCE_GENERATED, size = 136232, mtime = 1234L),
+            asset("bgm/战斗.m4a", name = "战斗").copy(loop = true),
+        )
+        val text = AudioLibrary.serializeRegistry(assets)
+        val parsed = AudioLibrary.parseRegistry(text)
+        assertEquals(2, parsed?.size)
+        val a = parsed?.get("sfx/拟音/铜铃轻响.mp3")
+        assertEquals("铜铃轻响", a?.name)
+        assertEquals(AudioLibrary.SOURCE_GENERATED, a?.source)
+        assertEquals(listOf("铃铛"), a?.aliases)
+        assertEquals(136232L, a?.size)
+        assertEquals(1234L, a?.mtime)
+        val b = parsed?.get("bgm/战斗.m4a")
+        assertEquals(true, b?.loop)
+        assertEquals("BGM", b?.category)
+    }
+
+    @Test
+    fun `损坏的 registry 解析返回空而不是抛出`() {
+        assertNull(AudioLibrary.parseRegistry("{not-json"))
+        assertNull(AudioLibrary.parseRegistry(""))
+    }
+}
