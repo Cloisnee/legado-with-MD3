@@ -31,6 +31,10 @@ data class AiProvider(
     val apiKey: String,
     val protocol: String = "openai",
     val enabled: Boolean = true,
+    /** 类型：chat=分析模型（文本/音频分析）；audio=音频合成平台 */
+    val kind: String = "chat",
+    /** 音频平台类型：stepfun / senseaudio / elevenlabs / custom（kind=audio 时有值） */
+    val platform: String = "",
 )
 
 data class AiModelEntry(
@@ -54,6 +58,15 @@ data class AiStageAssignments(
     val stage2: List<String> = emptyList(),
     val stage4: List<String> = emptyList(),
     val emotion: List<String> = emptyList(),
+    // ---- B33 背景音乐与音效（2026-09-30）----
+    /** 音频导演（判插点）分析模型队列（chat 模型，可多选轮换） */
+    val audioDirector: List<String> = emptyList(),
+    /** 合成 · 音效 模型队列（audio 平台模型，可多选轮换） */
+    val synthSfx: List<String> = emptyList(),
+    /** 合成 · BGM 模型队列 */
+    val synthBgm: List<String> = emptyList(),
+    /** 合成 · 环境底噪 模型队列 */
+    val synthAmb: List<String> = emptyList(),
 )
 
 data class AiModelsConfig(
@@ -70,9 +83,56 @@ class AiModelRepository(private val app: Application) {
     suspend fun load(): AiModelsConfig = withContext(Dispatchers.IO) {
         runCatching {
             val f = file()
-            if (!f.exists()) return@runCatching AiModelsConfig()
-            parse(JSONObject(f.readText().removePrefix("\uFEFF")))
+            if (!f.exists()) {
+                val seeded = seedAudioProviders(AiModelsConfig())
+                save(seeded)
+                return@runCatching seeded
+            }
+            val obj = JSONObject(f.readText().removePrefix("\uFEFF"))
+            if (!obj.optBoolean("audioSeeded", false)) {
+                // B33：首次升级 —— 播种内置音频合成平台（阶跃/SenseAudio/ElevenLabs）
+                val seeded = seedAudioProviders(parse(obj))
+                save(seeded)
+                seeded
+            } else {
+                parse(obj)
+            }
         }.getOrDefault(AiModelsConfig())
+    }
+
+    /** 播种内置音频合成平台（幂等：已存在同 id 平台则跳过） */
+    private fun seedAudioProviders(cfg: AiModelsConfig): AiModelsConfig {
+        val providers = cfg.providers.toMutableList()
+        val models = cfg.models.toMutableList()
+        val now = System.currentTimeMillis()
+        AudioSynthPlatforms.TEMPLATES.forEachIndexed { ti, t ->
+            val pid = "audio_${t.platform}"
+            if (providers.any { it.id == pid }) return@forEachIndexed
+            providers.add(
+                AiProvider(
+                    id = pid,
+                    name = t.name,
+                    baseUrl = t.baseUrl,
+                    apiKey = "",
+                    protocol = "openai",
+                    enabled = true,
+                    kind = "audio",
+                    platform = t.platform,
+                )
+            )
+            t.models.forEachIndexed { mi, tm ->
+                models.add(
+                    AiModelEntry(
+                        id = "m_audio_${t.platform}_${mi}_$ti$now",
+                        providerId = pid,
+                        name = tm.name,
+                        modelId = tm.modelId,
+                        enabled = false,
+                    )
+                )
+            }
+        }
+        return cfg.copy(providers = providers, models = models)
     }
 
     /** B10.4.2·U9：导出原始配置 JSON（模型 + 分配；文件缺失时返回空对象） */
@@ -109,6 +169,8 @@ class AiModelRepository(private val app: Application) {
                         apiKey = p.optString("apiKey"),
                         protocol = p.optString("protocol", "openai").ifBlank { "openai" },
                         enabled = p.optBoolean("enabled", true),
+                        kind = p.optString("kind", "chat").ifBlank { "chat" },
+                        platform = p.optString("platform", ""),
                     )
                 )
             }
@@ -162,6 +224,10 @@ class AiModelRepository(private val app: Application) {
                 stage2 = ids("stage2"),
                 stage4 = ids("stage4"),
                 emotion = ids("emotion"),
+                audioDirector = ids("audioDirector"),
+                synthSfx = ids("synthSfx"),
+                synthBgm = ids("synthBgm"),
+                synthAmb = ids("synthAmb"),
             ),
         )
     }
@@ -174,6 +240,7 @@ class AiModelRepository(private val app: Application) {
                 pArr.put(JSONObject().apply {
                     put("id", p.id); put("name", p.name); put("baseUrl", p.baseUrl)
                     put("apiKey", p.apiKey); put("protocol", p.protocol); put("enabled", p.enabled)
+                    put("kind", p.kind); put("platform", p.platform)
                 })
             }
             o.put("providers", pArr)
@@ -198,7 +265,12 @@ class AiModelRepository(private val app: Application) {
                 put("stage2", JSONArray(cfg.stages.stage2))
                 put("stage4", JSONArray(cfg.stages.stage4))
                 put("emotion", JSONArray(cfg.stages.emotion))
+                put("audioDirector", JSONArray(cfg.stages.audioDirector))
+                put("synthSfx", JSONArray(cfg.stages.synthSfx))
+                put("synthBgm", JSONArray(cfg.stages.synthBgm))
+                put("synthAmb", JSONArray(cfg.stages.synthAmb))
             })
+            o.put("audioSeeded", true)
             val f = file()
             f.parentFile?.mkdirs()
             f.writeText(o.toString())
@@ -230,6 +302,10 @@ class AiModelRepository(private val app: Application) {
                     stage2 = cfg.stages.stage2.filterNot { it in modelIds },
                     stage4 = cfg.stages.stage4.filterNot { it in modelIds },
                     emotion = cfg.stages.emotion.filterNot { it in modelIds },
+                    audioDirector = cfg.stages.audioDirector.filterNot { it in modelIds },
+                    synthSfx = cfg.stages.synthSfx.filterNot { it in modelIds },
+                    synthBgm = cfg.stages.synthBgm.filterNot { it in modelIds },
+                    synthAmb = cfg.stages.synthAmb.filterNot { it in modelIds },
                 ),
             )
         )
@@ -255,6 +331,10 @@ class AiModelRepository(private val app: Application) {
                     stage2 = cfg.stages.stage2.filterNot { it == id },
                     stage4 = cfg.stages.stage4.filterNot { it == id },
                     emotion = cfg.stages.emotion.filterNot { it == id },
+                    audioDirector = cfg.stages.audioDirector.filterNot { it == id },
+                    synthSfx = cfg.stages.synthSfx.filterNot { it == id },
+                    synthBgm = cfg.stages.synthBgm.filterNot { it == id },
+                    synthAmb = cfg.stages.synthAmb.filterNot { it == id },
                 ),
             )
         )
@@ -270,6 +350,10 @@ class AiModelRepository(private val app: Application) {
             "stage2" -> s.copy(stage2 = ids)
             "stage4" -> s.copy(stage4 = ids)
             "emotion" -> s.copy(emotion = ids)
+            "audioDirector" -> s.copy(audioDirector = ids)
+            "synthSfx" -> s.copy(synthSfx = ids)
+            "synthBgm" -> s.copy(synthBgm = ids)
+            "synthAmb" -> s.copy(synthAmb = ids)
             else -> return false
         }
         return save(cfg.copy(stages = newStages))
@@ -398,6 +482,27 @@ class AiModelRepository(private val app: Application) {
                 providerId = providerId,
                 name = name,
                 modelId = name,
+                enabled = false,
+            )
+        }
+        save(cfg.copy(models = list))
+        return toAdd.size
+    }
+
+    /** B33：拉取音频合成平台的内置模型（按平台模板，已存在则跳过），返回新增数量 */
+    suspend fun pullAudioModels(providerId: String, platform: String): Int {
+        val t = AudioSynthPlatforms.templateOf(platform) ?: return 0
+        val cfg = load()
+        val existing = cfg.models.filter { it.providerId == providerId }.map { it.modelId }.toSet()
+        val toAdd = t.models.filterNot { it.modelId in existing }
+        if (toAdd.isEmpty()) return 0
+        val now = System.currentTimeMillis()
+        val list = cfg.models + toAdd.mapIndexed { i, tm ->
+            AiModelEntry(
+                id = "m_audio_${platform}_${i}_$now",
+                providerId = providerId,
+                name = tm.name,
+                modelId = tm.modelId,
                 enabled = false,
             )
         }

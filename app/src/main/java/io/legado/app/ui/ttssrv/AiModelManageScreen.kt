@@ -61,6 +61,7 @@ import io.legado.app.data.repository.AiModelEntry
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiModelsConfig
 import io.legado.app.data.repository.AiProvider
+import io.legado.app.data.repository.AudioSynthPlatforms
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.ActionItem
@@ -122,8 +123,19 @@ private val STAGE_CARDS = listOf(
     "emotion" to "情绪分析",
 )
 
+/** B33 背景音乐与音效：分析（音频导演·判插点）+ 三路合成（音效/BGM/环境底噪），均可多选轮换 */
+private val SOUND_CARDS = listOf(
+    "audioDirector" to "音频导演 · 分析模型",
+    "synthSfx" to "合成 · 音效",
+    "synthBgm" to "合成 · BGM",
+    "synthAmb" to "合成 · 环境底噪",
+)
+
 private fun stageTitle(key: String?): String =
-    STAGE_CARDS.firstOrNull { it.first == key }?.second ?: "阶段"
+    (STAGE_CARDS + SOUND_CARDS).firstOrNull { it.first == key }?.second ?: "阶段"
+
+private fun isSynthStage(key: String?): Boolean =
+    key == "synthSfx" || key == "synthBgm" || key == "synthAmb"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,6 +153,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var selModels by remember { mutableStateOf<Set<String>>(emptySet()) }
     val modelLibListState = rememberLazyListState() // B13：模型库拖选条
     var modelScopeVendor by remember { mutableStateOf<String?>(null) }
+    /** 模型库选择作用域：chat / audio（长按所在分区；全选/反选不越界） */
+    var libScopeKind by remember { mutableStateOf<String?>(null) }
     val expandedVendors = remember { mutableStateMapOf<String, Boolean>() }
     val vendorQueries = remember { mutableStateMapOf<String, String>() }
     val testInflight = remember { mutableStateMapOf<String, Boolean>() }
@@ -152,6 +166,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var veBase by remember { mutableStateOf("") }
     var veKey by remember { mutableStateOf("") }
     var veProtocol by remember { mutableStateOf("openai") }
+    var veKind by remember { mutableStateOf("chat") }
+    var vePlatform by remember { mutableStateOf("custom") }
 
     // 模型分配：阶段队列选择上下文
     var expandedStages by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -183,6 +199,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         selVendors = emptySet()
         selModels = emptySet()
         modelScopeVendor = null
+        libScopeKind = null
         queueCtx = null
         selQueue = emptySet()
     }
@@ -197,6 +214,10 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         "stage2" -> c.stages.stage2
         "stage4" -> c.stages.stage4
         "emotion" -> c.stages.emotion
+        "audioDirector" -> c.stages.audioDirector
+        "synthSfx" -> c.stages.synthSfx
+        "synthBgm" -> c.stages.synthBgm
+        "synthAmb" -> c.stages.synthAmb
         else -> emptyList()
     }
 
@@ -206,11 +227,22 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         val c = cfg ?: return
         when (tab) {
             0 -> when (libCtx) {
-                "vendor" -> selVendors = c.providers.map { it.id }.toSet()
+                "vendor" -> {
+                    val kind = libScopeKind
+                    selVendors = c.providers
+                        .filter { kind == null || it.kind == kind }
+                        .map { it.id }
+                        .toSet()
+                }
                 "model" -> {
                     val pid = modelScopeVendor
+                    val kind = libScopeKind
                     val scope = c.models
-                        .filter { pid == null || it.providerId == pid }
+                        .filter { m ->
+                            (pid == null || m.providerId == pid) &&
+                                (kind == null ||
+                                    c.providers.firstOrNull { it.id == m.providerId }?.kind == kind)
+                        }
                         .map { it.id }
                         .toSet()
                     selModels = selModels + scope
@@ -228,11 +260,23 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         val c = cfg ?: return
         when (tab) {
             0 -> when (libCtx) {
-                "vendor" -> selVendors = c.providers.map { it.id }.toSet() - selVendors
+                "vendor" -> {
+                    val kind = libScopeKind
+                    val scope = c.providers
+                        .filter { kind == null || it.kind == kind }
+                        .map { it.id }
+                        .toSet()
+                    selVendors = scope - selVendors
+                }
                 "model" -> {
                     val pid = modelScopeVendor
+                    val kind = libScopeKind
                     val scope = c.models
-                        .filter { pid == null || it.providerId == pid }
+                        .filter { m ->
+                            (pid == null || m.providerId == pid) &&
+                                (kind == null ||
+                                    c.providers.firstOrNull { it.id == m.providerId }?.kind == kind)
+                        }
                         .map { it.id }
                         .toSet()
                     selModels = (selModels - scope) + (scope - selModels)
@@ -319,6 +363,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         veBase = p?.baseUrl.orEmpty()
         veKey = p?.apiKey.orEmpty()
         veProtocol = p?.protocol ?: "openai"
+        veKind = p?.kind ?: "chat"
+        vePlatform = p?.platform.orEmpty().ifBlank { "custom" }
         vendorSheet = true
     }
 
@@ -328,12 +374,15 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             return
         }
         val isNew = veId.isBlank()
+        val isAudio = veKind == "audio"
         val draft = AiProvider(
             id = veId,
             name = veName.trim(),
             baseUrl = veBase.trim(),
             apiKey = veKey.trim(),
-            protocol = veProtocol,
+            protocol = if (isAudio) "openai" else veProtocol,
+            kind = if (isAudio) "audio" else "chat",
+            platform = if (isAudio) vePlatform else "",
         )
         vendorSheet = false
         scope.launch {
@@ -343,6 +392,21 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 return@launch
             }
             reload()
+            if (isAudio) {
+                if (vePlatform == AudioSynthPlatforms.PLATFORM_CUSTOM) {
+                    context.toastOnUi("已保存（自定义平台：暂无内置模型模板）")
+                } else {
+                    val n = repo.pullAudioModels(id, vePlatform)
+                    context.toastOnUi(
+                        if (n > 0) {
+                            "已保存，拉取合成模型 $n 个（默认关闭，按需开启）"
+                        } else {
+                            "已保存（合成模型已存在）"
+                        }
+                    )
+                }
+                return@launch
+            }
             if (isNew) {
                 context.toastOnUi("已保存，正在拉取模型…")
                 repo.fetchProviderModels(draft.copy(id = id))
@@ -364,6 +428,15 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     fun refetchModels(p: AiProvider) {
         scope.launch {
             context.toastOnUi("正在重新拉取…")
+            if (p.kind == "audio") {
+                val n = repo.pullAudioModels(p.id, p.platform)
+                context.toastOnUi(
+                    if (n > 0) "拉取完成，新增 $n 个合成模型（默认关闭）"
+                    else "拉取完成：无新增（或自定义平台无模板）"
+                )
+                reload()
+                return@launch
+            }
             repo.fetchProviderModels(p)
                 .onSuccess { list ->
                     val n = repo.addModelsFromProvider(p.id, list)
@@ -377,12 +450,19 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     fun testOne(m: AiModelEntry, p: AiProvider) {
         testInflight[m.id] = true
         scope.launch {
-            val r = repo.testModel(m, p)
+            val r: Triple<Boolean, Long, String> = if (p.kind == "audio") {
+                // 音频合成平台：走 audio 专属鉴权探测（不产生生成费用）
+                val pr = AudioSynthPlatforms.probe(p.platform, p.baseUrl, p.apiKey)
+                Triple(pr.ok, pr.latencyMs, pr.message)
+            } else {
+                val tr = repo.testModel(m, p)
+                Triple(tr.ok, tr.latencyMs, tr.message)
+            }
             testInflight.remove(m.id)
-            repo.updateModelTest(m.id, r.ok, r.latencyMs, r.message)
+            repo.updateModelTest(m.id, r.first, r.second, r.third)
             context.toastOnUi(
-                if (r.ok) "✅ ${m.name} 通过 · ${r.latencyMs}ms"
-                else "❌ ${m.name} 异常：${r.message}"
+                if (r.first) "✅ ${m.name} 通过 · ${r.second}ms"
+                else "❌ ${m.name} 异常：${r.third}"
             )
             reload()
         }
@@ -521,6 +601,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     onVendorLongClick = { p ->
                         if (!libActive) {
                             libCtx = "vendor"
+                            libScopeKind = p.kind
                             selVendors = setOf(p.id)
                             selModels = emptySet()
                         } else if (libCtx == "vendor") {
@@ -545,6 +626,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     onModelLongClick = { m ->
                         if (!libActive) {
                             libCtx = "model"
+                            libScopeKind =
+                                cfg?.providers?.firstOrNull { it.id == m.providerId }?.kind ?: "chat"
                             selModels = setOf(m.id)
                             selVendors = emptySet()
                             modelScopeVendor = m.providerId
@@ -644,18 +727,21 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 )
             }
 
-            // B15：厂商选择模式 —— 左侧 60dp 拖选条（拖选厂商大卡片）
+            // B15：厂商选择模式 —— 左侧 60dp 拖选条（拖选厂商大卡片；B33：按分区作用域不越界）
             if (tab == 0 && libCtx == "vendor" && selVendors.isNotEmpty()) {
                 DraggableSelectionHandler(
                     listState = modelLibListState,
-                    items = cfg?.providers.orEmpty(),
+                    items = cfg?.providers.orEmpty()
+                        .filter { libScopeKind == null || it.kind == libScopeKind },
                     selectedIds = selVendors,
                     onSelectionChange = { selVendors = it },
                     idProvider = { it.id },
                     resolveIds = { raw ->
                         val s = raw as? String
                         if (s != null && s.startsWith("vendor_") && !s.startsWith("vendor_search_")) {
-                            setOf(s.removePrefix("vendor_"))
+                            val id0 = s.removePrefix("vendor_")
+                            val kind0 = cfg?.providers?.firstOrNull { it.id == id0 }?.kind
+                            if (libScopeKind == null || kind0 == libScopeKind) setOf(id0) else emptySet()
                         } else {
                             emptySet()
                         }
@@ -666,10 +752,18 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                         .align(Alignment.TopStart),
                 )
             } else if (tab == 0 && libCtx == "model" && selModels.isNotEmpty()) {
-                // B13：模型选择模式 —— 模型行=单条、厂商行=整块
+                // B13：模型选择模式 —— 模型行=单条、厂商行=整块（B33：按分区作用域不越界）
+                fun kindOfModel(id0: String): String? {
+                    val pid0 = cfg?.models?.firstOrNull { it.id == id0 }?.providerId ?: return null
+                    return cfg?.providers?.firstOrNull { it.id == pid0 }?.kind
+                }
+
                 DraggableSelectionHandler(
                     listState = modelLibListState,
-                    items = cfg?.models.orEmpty(),
+                    items = cfg?.models.orEmpty().filter { m ->
+                        libScopeKind == null ||
+                            cfg?.providers?.firstOrNull { it.id == m.providerId }?.kind == libScopeKind
+                    },
                     selectedIds = selModels,
                     onSelectionChange = { selModels = it },
                     idProvider = { it.id },
@@ -677,11 +771,22 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                         val s = raw as? String
                         when {
                             s == null -> emptySet()
-                            s.startsWith("model_") -> setOf(s.removePrefix("model_"))
-                            s.startsWith("vendor_") && !s.startsWith("vendor_search_") ->
-                                cfg?.models.orEmpty()
-                                    .filter { it.providerId == s.removePrefix("vendor_") }
-                                    .map { it.id }.toSet()
+                            s.startsWith("model_") -> {
+                                val id0 = s.removePrefix("model_")
+                                val k = kindOfModel(id0)
+                                if (libScopeKind == null || k == libScopeKind) setOf(id0) else emptySet()
+                            }
+                            s.startsWith("vendor_") && !s.startsWith("vendor_search_") -> {
+                                val pid0 = s.removePrefix("vendor_")
+                                val k = cfg?.providers?.firstOrNull { it.id == pid0 }?.kind
+                                if (libScopeKind == null || k == libScopeKind) {
+                                    cfg?.models.orEmpty()
+                                        .filter { it.providerId == pid0 }
+                                        .map { it.id }.toSet()
+                                } else {
+                                    emptySet()
+                                }
+                            }
                             else -> emptySet()
                         }
                     },
@@ -705,17 +810,44 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             SheetField("名称", veName) { veName = it }
             SheetField("BaseUrl（如 https://api.xxx.com/v1）", veBase) { veBase = it }
             SheetField("API Key", veKey) { veKey = it }
-            TinyDropdownSettingItem(
-                title = "协议",
-                selectedValue = veProtocol,
-                displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
-                entryValues = arrayOf("openai", "google", "claude"),
-                description = "决定 拉取模型 / 测试 的请求方式",
-                onValueChange = { veProtocol = it },
-            )
+            if (veId.isBlank()) {
+                TinyDropdownSettingItem(
+                    title = "类型",
+                    selectedValue = veKind,
+                    displayEntries = arrayOf("分析模型", "音频合成平台"),
+                    entryValues = arrayOf("chat", "audio"),
+                    description = "分析模型=参与文本/音频分析；音频合成平台=缺失素材补缺用",
+                    onValueChange = { veKind = it },
+                )
+            }
+            if (veKind == "audio") {
+                TinyDropdownSettingItem(
+                    title = "平台",
+                    selectedValue = vePlatform,
+                    displayEntries = AudioSynthPlatforms.PLATFORM_LABELS
+                        .map { it.first }.toTypedArray(),
+                    entryValues = AudioSynthPlatforms.PLATFORM_LABELS
+                        .map { it.second }.toTypedArray(),
+                    description = "内置模板：保存后自动拉取合成模型（默认关闭）",
+                    onValueChange = { vePlatform = it },
+                )
+            } else {
+                TinyDropdownSettingItem(
+                    title = "协议",
+                    selectedValue = veProtocol,
+                    displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
+                    entryValues = arrayOf("openai", "google", "claude"),
+                    description = "决定 拉取模型 / 测试 的请求方式",
+                    onValueChange = { veProtocol = it },
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
             TinyClickableSettingItem(
-                title = if (veId.isBlank()) "保存并拉取模型" else "保存",
+                title = when {
+                    veId.isBlank() && veKind == "audio" -> "保存并拉取合成模型"
+                    veId.isBlank() -> "保存并拉取模型"
+                    else -> "保存"
+                },
                 onClick = { saveVendor() },
             )
         }
@@ -739,8 +871,10 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     color = LegadoTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 )
+                val synthTarget = isSynthStage(addKey)
                 var any = false
                 c.providers.forEach { p ->
+                    if (if (synthTarget) p.kind != "audio" else p.kind == "audio") return@forEach
                     val models = c.models.filter { it.providerId == p.id && it.enabled }
                     if (models.isNotEmpty()) {
                         any = true
@@ -790,31 +924,53 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         onDismissRequest = { quotaTarget = null },
         title = "模型设置：${quotaTarget?.name.orEmpty()}",
     ) {
+        val quotaIsAudio = quotaTarget?.let { m ->
+            cfg?.providers?.firstOrNull { it.id == m.providerId }?.kind == "audio"
+        } ?: false
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             SheetField("响应尝试次数（1=只试一次）", qAttempts) { qAttempts = it }
-            SheetField("校验重试次数（0=不重试）", qValidate) { qValidate = it }
+            if (!quotaIsAudio) {
+                SheetField("校验重试次数（0=不重试）", qValidate) { qValidate = it }
+            }
             SheetField("超时（秒）", qTimeoutSec) { qTimeoutSec = it }
-            TinySwitchSettingItem(
-                title = "关闭思考",
-                description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
-                checked = qDisableThinking,
-                onCheckedChange = { qDisableThinking = it },
-            )
+            if (quotaIsAudio) {
+                AppText(
+                    text = "合成平台无「思考 / 内容校验」概念：仅 重试次数 与 超时 生效；不适用流式（按整段文件返回）。",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            } else {
+                TinySwitchSettingItem(
+                    title = "关闭思考",
+                    description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
+                    checked = qDisableThinking,
+                    onCheckedChange = { qDisableThinking = it },
+                )
+            }
             TinyClickableSettingItem(
                 title = "保存",
                 onClick = {
                     val m = quotaTarget ?: return@TinyClickableSettingItem
+                    val isAudio = quotaIsAudio
+                    val attempts = (qAttempts.toIntOrNull() ?: 2).coerceIn(1, 5)
+                    val validate = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5)
+                    val timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
+                        .coerceIn(5L, 600L)) * 1000L
+                    val disableThinking = qDisableThinking
                     quotaTarget = null
                     scope.launch {
-                        repo.upsertModel(
+                        val newM = if (isAudio) {
+                            m.copy(requestAttempts = attempts, timeoutMs = timeoutMs)
+                        } else {
                             m.copy(
-                                requestAttempts = (qAttempts.toIntOrNull() ?: 2).coerceIn(1, 5),
-                                validateRetries = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5),
-                                timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
-                                    .coerceIn(5L, 600L)) * 1000L,
-                                disableThinking = qDisableThinking,
+                                requestAttempts = attempts,
+                                validateRetries = validate,
+                                timeoutMs = timeoutMs,
+                                disableThinking = disableThinking,
                             )
-                        )
+                        }
+                        repo.upsertModel(newM)
                         context.toastOnUi("已保存")
                         reload()
                     }
@@ -914,7 +1070,15 @@ private fun ModelLibraryPage(
                 )
             }
         }
+        var lastVendorKind: String? = null
         config.providers.forEach { p ->
+            val vKind = if (p.kind == "audio") "audio" else "chat"
+            if (vKind != lastVendorKind) {
+                item(key = "sec_$vKind") {
+                    SectionTitle(if (vKind == "audio") "音频合成平台" else "分析模型")
+                }
+                lastVendorKind = vKind
+            }
             item(key = "vendor_${p.id}") {
                 val models = config.models.filter { it.providerId == p.id }
                 val enabledCount = models.count { it.enabled }
@@ -1025,6 +1189,14 @@ private fun ModelLibraryPage(
                     }
                 }
             }
+        }
+        item(key = "sec_image") { SectionTitle("图像生成") }
+        item(key = "image_placeholder") {
+            TinyClickableSettingItem(
+                title = "暂未开放",
+                description = "预留板块，后续版本接入",
+                onClick = {},
+            )
         }
     }
 }
@@ -1248,21 +1420,109 @@ private fun AllocationPage(
             }
         }
 
+        item(key = "section_bgm") {
+            SectionTitle("背景音乐与音效")
+        }
+        SOUND_CARDS.forEach { (key, title) ->
+            val queue = when (key) {
+                "audioDirector" -> config.stages.audioDirector
+                "synthSfx" -> config.stages.synthSfx
+                "synthBgm" -> config.stages.synthBgm
+                else -> config.stages.synthAmb
+            }
+            item(key = "stage_$key") {
+                val expanded = key in expandedStages
+                val rotation by animateFloatAsState(
+                    targetValue = if (expanded) 0f else -90f,
+                    label = "stageArrow",
+                )
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    cornerRadius = 12.dp,
+                    containerColor = LegadoTheme.colorScheme.surfaceContainer,
+                    onClick = { onOpenAddSheet(key) },
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            AppText(
+                                text = title,
+                                style = LegadoTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            AppText(
+                                text = if (queue.isEmpty()) {
+                                    "未配置模型（点卡片添加；失败时走兜底策略）"
+                                } else {
+                                    queue.map { byId[it]?.name ?: it }.joinToString(" → ")
+                                },
+                                style = LegadoTheme.typography.bodySmall,
+                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (queue.isNotEmpty()) {
+                            CountTag(queue.size, queue.size)
+                        }
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (expanded) "收起" else "展开",
+                            modifier = Modifier
+                                .rotate(rotation)
+                                .clickable { onToggleExpand(key) }
+                                .padding(4.dp),
+                        )
+                    }
+                }
+            }
+            if (key in expandedStages) {
+                items(queue, key = { "q_${key}_$it" }) { modelId ->
+                    val m = byId[modelId]
+                    val thisCtx = queueCtx == key
+                    val selected = thisCtx && modelId in selQueue
+                    val index = queue.indexOf(modelId) + 1
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 28.dp, top = 2.dp, bottom = 2.dp),
+                        cornerRadius = 12.dp,
+                        containerColor = if (selected) {
+                            LegadoTheme.colorScheme.secondaryContainer
+                        } else {
+                            LegadoTheme.colorScheme.surfaceContainer
+                        },
+                        onClick = { onQueueItemClick(key, modelId) },
+                        onLongClick = { onQueueItemLongClick(key, modelId) },
+                    ) {
+                        SelectionItemCardContent(
+                            title = "$index. ${m?.name ?: modelId}",
+                            subtitle = m?.let {
+                                if (isSynthStage(key)) {
+                                    "${it.modelId} · 尝试${it.requestAttempts} · ${it.timeoutMs / 1000}s"
+                                } else {
+                                    "${it.modelId} · 尝试${it.requestAttempts}/校验${it.validateRetries} · ${it.timeoutMs / 1000}s"
+                                }
+                            },
+                            inSelectionMode = thisCtx,
+                            isSelected = selected,
+                        )
+                    }
+                }
+            }
+        }
+
         item(key = "section_image") {
             SectionTitle("图像生成")
         }
         item(key = "image_placeholder") {
-            TinyClickableSettingItem(
-                title = "暂未开放",
-                description = "预留板块，后续版本接入",
-                onClick = {},
-            )
-        }
-
-        item(key = "section_bgm") {
-            SectionTitle("背景音乐与音效")
-        }
-        item(key = "bgm_placeholder") {
             TinyClickableSettingItem(
                 title = "暂未开放",
                 description = "预留板块，后续版本接入",

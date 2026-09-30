@@ -1,11 +1,7 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -25,7 +21,6 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
-import io.legado.app.data.repository.AudioSynthConfigRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
@@ -37,8 +32,6 @@ import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.SplicedColumnGroup
-import io.legado.app.ui.widget.components.button.ToggleChip
-import io.legado.app.ui.widget.components.settingItem.InputSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
@@ -70,26 +63,6 @@ fun ReadAloudSettingsScreen(
     val repo = remember { GlobalContext.get().get<ReadAloudSettingsRepository>() }
     val extRepo = remember {
         TtsServerCenterRepository(context.applicationContext as Application)
-    }
-    val synthRepo = remember {
-        AudioSynthConfigRepository(context.applicationContext as Application)
-    }
-
-    var synthCfg by remember { mutableStateOf<AudioSynthConfigRepository.Config?>(null) }
-
-    LaunchedEffect(Unit) {
-        synthCfg = runCatching { synthRepo.load() }.getOrNull()
-    }
-
-    fun updateProvider(
-        id: String,
-        transform: (AudioSynthConfigRepository.ProviderConfig) -> AudioSynthConfigRepository.ProviderConfig,
-    ) {
-        val cur = synthCfg ?: return
-        val old = cur.providers[id] ?: return
-        val next = cur.copy(providers = cur.providers + (id to transform(old)))
-        synthCfg = next
-        scope.launch { runCatching { synthRepo.save(next) } }
     }
 
     var st by remember { mutableStateOf(repo.currentSettings) }
@@ -350,97 +323,12 @@ fun ReadAloudSettingsScreen(
                 }
             }
             item {
-                SplicedColumnGroup(title = "音频合成平台（AI 补缺）") {
+                SplicedColumnGroup(title = "音频合成平台") {
                     TinyClickableSettingItem(
-                        title = "用途说明",
-                        description = "本地库缺失时按轨调用 AI 平台合成补缺（B33.3 接线）。Key 仅存本机；先「测试连接」再启用。",
+                        title = "已移至「AI 模型管理 → 模型库」",
+                        description = "音频合成平台（阶跃/SenseAudio/ElevenLabs）现于模型管理页统一配置；本页不再重复。",
                         onClick = {},
                     )
-                    val cfg = synthCfg
-                    if (cfg == null) {
-                        TinyClickableSettingItem(title = "加载中…", onClick = {})
-                    } else {
-                        AudioSynthConfigRepository.PROVIDERS.forEach { def ->
-                            val p = cfg.providers[def.id] ?: return@forEach
-                            TinySwitchSettingItem(
-                                title = def.name,
-                                description = def.note,
-                                checked = p.enabled,
-                                onCheckedChange = { v ->
-                                    updateProvider(def.id) { it.copy(enabled = v) }
-                                },
-                            )
-                            if (p.enabled) {
-                                InputSettingItem(
-                                    title = "API Key",
-                                    value = p.apiKey,
-                                    defaultValue = "",
-                                    onConfirm = { v ->
-                                        updateProvider(def.id) { it.copy(apiKey = v.trim()) }
-                                    },
-                                )
-                                InputSettingItem(
-                                    title = if (def.defaultModelB.isBlank()) "音效模型" else "音效/环境模型",
-                                    value = p.modelA,
-                                    defaultValue = def.defaultModelA,
-                                    onConfirm = { v ->
-                                        updateProvider(def.id) {
-                                            it.copy(modelA = v.trim().ifBlank { def.defaultModelA })
-                                        }
-                                    },
-                                )
-                                if (def.defaultModelB.isNotBlank()) {
-                                    InputSettingItem(
-                                        title = "BGM 模型",
-                                        value = p.modelB,
-                                        defaultValue = def.defaultModelB,
-                                        onConfirm = { v ->
-                                            updateProvider(def.id) {
-                                                it.copy(modelB = v.trim().ifBlank { def.defaultModelB })
-                                            }
-                                        },
-                                    )
-                                }
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    AudioSynthConfigRepository.LANE_LABELS.forEach { (lane, label) ->
-                                        ToggleChip(
-                                            label = label,
-                                            selected = lane in p.lanes,
-                                            onToggle = {
-                                                updateProvider(def.id) {
-                                                    it.copy(
-                                                        lanes = if (lane in it.lanes) {
-                                                            it.lanes - lane
-                                                        } else {
-                                                            it.lanes + lane
-                                                        },
-                                                    )
-                                                }
-                                            },
-                                        )
-                                    }
-                                }
-                                TinyClickableSettingItem(
-                                    title = "测试连接",
-                                    description = "只探测 Key/连通，不产生生成费用",
-                                    onClick = {
-                                        scope.launch {
-                                            val msg = runCatching {
-                                                synthRepo.testConnection(def.id, p)
-                                            }.getOrElse { "测试失败：${it.localizedMessage}" }
-                                            context.toastOnUi("${def.name}：$msg")
-                                            AppLog.putAudio("【音频合成】测试 ${def.name}：$msg")
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    }
                 }
             }
             item {

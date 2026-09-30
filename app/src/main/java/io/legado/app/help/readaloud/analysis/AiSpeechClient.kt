@@ -342,7 +342,12 @@ suspend fun AiModelRepository.queueRefs(key: String): List<AiSpeechClient.ModelR
         "stage1" -> cfg.stages.stage1
         "stage2" -> cfg.stages.stage2
         "stage4" -> cfg.stages.stage4
-        else -> cfg.stages.emotion
+        "emotion" -> cfg.stages.emotion
+        "audioDirector" -> cfg.stages.audioDirector
+        "synthSfx" -> cfg.stages.synthSfx
+        "synthBgm" -> cfg.stages.synthBgm
+        "synthAmb" -> cfg.stages.synthAmb
+        else -> emptyList()
     }
     return ids.mapNotNull { id -> cfg.models.firstOrNull { it.id == id && it.enabled } }
         .mapNotNull { m ->
