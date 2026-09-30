@@ -213,6 +213,10 @@ class HttpReadAloudService : BaseReadAloudService(),
             ).also {
                 it.applySettings(readAloudSettings)
                 laneEngine = it
+                AppLog.putAudio(
+                    "【四轨】引擎就绪：音效 ${readAloudSettings.alSfxVolume}% · 环境 ${readAloudSettings.alAmbVolume}%" +
+                        " · BGM ${readAloudSettings.alBgmVolume}% · 闪避 ${if (readAloudSettings.alDucking) "开" else "关"}"
+                )
             }
         }.getOrNull()
     }

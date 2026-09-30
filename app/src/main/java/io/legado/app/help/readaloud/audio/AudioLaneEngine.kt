@@ -156,6 +156,9 @@ class AudioLaneEngine(
                 if (desiredAmbience == null || now - ambienceDwellAt >= ambMinDwellMs) {
                     desiredAmbience = rule.keyword
                     ambienceDwellAt = now
+                    AppLog.putAudio("【四轨】#$index 环境→${rule.keyword}")
+                } else {
+                    AppLog.putAudio("【四轨】#$index 环境=${rule.keyword}（驻留未到，跳过）")
                 }
             }
         }
@@ -169,13 +172,19 @@ class AudioLaneEngine(
                     desiredBgm = bgmRule.keyword
                     bgmHoldRemaining = bgmRule.holdCues.coerceAtLeast(1)
                     lastBgmByKeyword[bgmRule.keyword] = now
+                    AppLog.putAudio("【四轨】#$index BGM=${bgmRule.keyword}（持续 ${bgmHoldRemaining} 行）")
+                } else {
+                    AppLog.putAudio("【四轨】#$index BGM=${bgmRule.keyword}（冷却中，跳过）")
                 }
             } else if (bgmRule.holdCues > 0) {
                 bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmRule.holdCues)
             }
         } else if (desiredBgm != null) {
             bgmHoldRemaining--
-            if (bgmHoldRemaining <= 0) desiredBgm = null
+            if (bgmHoldRemaining <= 0) {
+                AppLog.putAudio("【四轨】#$index BGM 到期淡出（${desiredBgm}）")
+                desiredBgm = null
+            }
         }
 
         // 3) 音效：密度闸门（单条最多 1 个 + 全局间隔 + 素材冷却）
@@ -184,7 +193,11 @@ class AudioLaneEngine(
                 val now = System.currentTimeMillis()
                 lastSfxAt = now
                 lastSfxByKeyword[rule.keyword] = now
-                playSfx(rule)
+                if (playSfx(rule)) {
+                    AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}")
+                }
+            } else {
+                AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}（密度闸门跳过）")
             }
         }
     }
@@ -293,11 +306,11 @@ class AudioLaneEngine(
         return true
     }
 
-    private fun playSfx(rule: DemoLanes.Rule) {
+    private fun playSfx(rule: DemoLanes.Rule): Boolean {
         val file = TmDemoAssets.findFile(appContext, rule.keyword)
         if (file == null) {
             markMissing("音效", rule.keyword)
-            return
+            return false
         }
         val path = file.absolutePath
         val fire: () -> Unit = {
@@ -320,20 +333,28 @@ class AudioLaneEngine(
             }
         }
         val loaded = sfxLoaded[path]
-        when {
-            loaded != null && loaded > 0 -> delayedFire()
-            loaded != null -> Unit // 已判定不可用（静默跳过）
-            sfxLoading.contains(path) -> sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
+        return when {
+            loaded != null && loaded > 0 -> {
+                delayedFire()
+                true
+            }
+            loaded != null -> false // 已判定不可用（静默跳过）
+            sfxLoading.contains(path) -> {
+                sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
+                true
+            }
             else -> {
                 val pool = ensureSoundPool()
                 val id = runCatching { pool.load(path, 1) }.getOrDefault(0)
                 if (id == 0) {
                     sfxLoaded[path] = 0
-                    return
+                    false
+                } else {
+                    sfxLoading.add(path)
+                    sfxById[id] = path
+                    sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
+                    true
                 }
-                sfxLoading.add(path)
-                sfxById[id] = path
-                sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
             }
         }
     }
@@ -362,7 +383,7 @@ class AudioLaneEngine(
     private fun markMissing(kind: String, keyword: String) {
         val key = "$kind|$keyword"
         if (missingLogged.add(key)) {
-            AppLog.putAudio("【四轨】$kind 素材缺失：$keyword（朗读设置 → 音效与音乐 → 准备示例素材）")
+            AppLog.putAudio("【四轨·缺失】$kind「$keyword」不在库中（可先“准备示例素材”；B33.3 起可自动合成补缺）")
         }
     }
 
