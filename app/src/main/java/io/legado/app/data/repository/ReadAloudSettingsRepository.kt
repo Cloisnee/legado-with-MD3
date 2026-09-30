@@ -10,12 +10,24 @@ import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.config.compatDsInt
 import io.legado.app.help.config.compatDsString
 import io.legado.app.help.config.compatDsValue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
+
+    private val migrateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // B33.3c：旧「音效密度」一次性迁移（读侧另有回退兜底，双保险）
+        migrateScope.launch { runCatching { migrateLegacySfxDensity() } }
+    }
 
     override val currentSettings: ReadAloudSettings
         get() = AppConfigStore.preferences.toReadAloudSettings()
@@ -38,6 +50,24 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
         const val DEFAULT_INTERFACE_CLASSIC = "classic"
         const val DEFAULT_INTERFACE_PLAYER = "player"
         val AVAILABLE_INTERFACES = setOf(DEFAULT_INTERFACE_CLASSIC, DEFAULT_INTERFACE_PLAYER)
+
+        /** B33.3c：旧「音效密度」一次性迁移（写新键 + 清旧键；失败静默，读侧回退兜底） */
+        private suspend fun migrateLegacySfxDensity() {
+            val prefs = AppConfigStore.preferences
+            val legacy = prefs.compatDsString(LEGACY_KEY_AL_SFX_DENSITY) ?: return
+            if (prefs.compatDsInt(PreferKey.alSfxMinGapS) == null) {
+                val mapped = densityMappedValues(legacy)
+                AppConfigStore.putAll(
+                    mapOf(
+                        PreferKey.alSfxMinGapS to mapped[0],
+                        PreferKey.alSfxCooldownS to mapped[1],
+                        PreferKey.alBgmCooldownS to mapped[2],
+                        PreferKey.alAmbDwellS to mapped[3],
+                    )
+                )
+            }
+            AppConfigStore.remove(LEGACY_KEY_AL_SFX_DENSITY)
+        }
     }
 }
 
@@ -82,7 +112,16 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 35).coerceIn(0, 100),
     alBgmVolume = compatDsValue(ReadAloudKeys.AlBgmVolume, 25).coerceIn(0, 100),
     alDucking = compatDsValue(ReadAloudKeys.AlDucking, true),
-    alSfxDensity = compatDsValue(ReadAloudKeys.AlSfxDensity, "mid"),
+    // B33.3c：新闸门键未写过时，回退映射旧「音效密度」（low/mid/high → 数值档）
+    alSfxMinGapS = (compatDsInt(PreferKey.alSfxMinGapS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[0]).coerceIn(0, 30),
+    alSfxCooldownS = (compatDsInt(PreferKey.alSfxCooldownS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[1]).coerceIn(0, 300),
+    alBgmCooldownS = (compatDsInt(PreferKey.alBgmCooldownS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[2]).coerceIn(0, 600),
+    alAmbDwellS = (compatDsInt(PreferKey.alAmbDwellS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[3]).coerceIn(0, 120),
+    alChapterSynthCap = compatDsValue(ReadAloudKeys.AlChapterSynthCap, 10).coerceIn(0, 50),
 )
 
 internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
@@ -119,7 +158,11 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.alAmbVolume to alAmbVolume,
     PreferKey.alBgmVolume to alBgmVolume,
     PreferKey.alDucking to alDucking,
-    PreferKey.alSfxDensity to alSfxDensity,
+    PreferKey.alSfxMinGapS to alSfxMinGapS,
+    PreferKey.alSfxCooldownS to alSfxCooldownS,
+    PreferKey.alBgmCooldownS to alBgmCooldownS,
+    PreferKey.alAmbDwellS to alAmbDwellS,
+    PreferKey.alChapterSynthCap to alChapterSynthCap,
 )
 
 private object ReadAloudKeys {
@@ -159,5 +202,22 @@ private object ReadAloudKeys {
     val AlAmbVolume = intPreferencesKey(PreferKey.alAmbVolume)
     val AlBgmVolume = intPreferencesKey(PreferKey.alBgmVolume)
     val AlDucking = booleanPreferencesKey(PreferKey.alDucking)
-    val AlSfxDensity = stringPreferencesKey(PreferKey.alSfxDensity)
+    val AlSfxMinGapS = intPreferencesKey(PreferKey.alSfxMinGapS)
+    val AlSfxCooldownS = intPreferencesKey(PreferKey.alSfxCooldownS)
+    val AlBgmCooldownS = intPreferencesKey(PreferKey.alBgmCooldownS)
+    val AlAmbDwellS = intPreferencesKey(PreferKey.alAmbDwellS)
+    val AlChapterSynthCap = intPreferencesKey(PreferKey.alChapterSynthCap)
+}
+
+// ---- B33.3c：旧「音效密度」一次性迁移支持 ----
+
+private const val LEGACY_KEY_AL_SFX_DENSITY = "alSfxDensity"
+
+private val AL_DENSITY_BASE = intArrayOf(6, 60, 150, 25)
+
+/** 旧密度档 → 新四闸门（最小间隔 / 音效冷却 / BGM 冷却 / 环境驻留） */
+private fun densityMappedValues(density: String?): IntArray = when (density?.lowercase()) {
+    "low" -> intArrayOf(12, 90, 225, 37)
+    "high" -> intArrayOf(3, 45, 112, 18)
+    else -> AL_DENSITY_BASE
 }

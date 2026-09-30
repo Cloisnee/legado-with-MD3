@@ -35,6 +35,7 @@ import kotlin.math.abs
  *   HttpReadAloudService / 设置 / UI 零改动（见 B33 施工方案 §3）。
  *
  * ⚠ 本批为小闭环：匹配规则 = DemoLanes 少量示例；素材解析 = 文件名关键字（B33.2 起换 registry）。
+ * B33.3c：缺失 → onMissing 回调（自动合成补缺）；闸门（间隔/冷却/驻留）滑条化。
  */
 class AudioLaneEngine(
     private val appContext: Context,
@@ -43,6 +44,8 @@ class AudioLaneEngine(
     private val serviceActive: () -> Boolean,
     /** 人声音频当前正在出声（BGM 闪避判定用） */
     private val voiceActive: () -> Boolean,
+    /** B33.3c：素材缺失上报（kind=音效/环境/BGM；接自动合成补缺队列） */
+    private val onMissing: (String, String) -> Unit = { _, _ -> },
 ) {
 
     data class CueInfo(
@@ -57,7 +60,11 @@ class AudioLaneEngine(
         val ambVolume: Float = 0.35f,
         val bgmVolume: Float = 0.25f,
         val ducking: Boolean = true,
-        val sfxDensity: String = "mid",
+        /** B33.3c 闸门（秒 → ms，applySettings 换算） */
+        val sfxMinGapMs: Long = 6_000L,
+        val sfxCooldownMs: Long = 60_000L,
+        val bgmCooldownMs: Long = 150_000L,
+        val ambMinDwellMs: Long = 25_000L,
     )
 
     /** media3 版音频属性（ExoPlayer 轨用） */
@@ -74,9 +81,6 @@ class AudioLaneEngine(
 
     /** 闪避系数：有人声时 BGM 压到 40%（≈ 0.12/0.30 的工业口径，见施工方案 §5） */
     private val duckFactor = 0.40f
-
-    /** 环境切换最短驻留（防场景词抖动导致频繁换底） */
-    private val ambMinDwellMs = 25_000L
 
     private var config = LaneConfig()
 
@@ -115,8 +119,10 @@ class AudioLaneEngine(
             ambVolume = settings.alAmbVolume.coerceIn(0, 100) / 100f,
             bgmVolume = settings.alBgmVolume.coerceIn(0, 100) / 100f,
             ducking = settings.alDucking,
-            sfxDensity = settings.alSfxDensity.lowercase()
-                .takeIf { it == "low" || it == "mid" || it == "high" } ?: "mid",
+            sfxMinGapMs = settings.alSfxMinGapS.coerceIn(0, 30) * 1000L,
+            sfxCooldownMs = settings.alSfxCooldownS.coerceIn(0, 300) * 1000L,
+            bgmCooldownMs = settings.alBgmCooldownS.coerceIn(0, 600) * 1000L,
+            ambMinDwellMs = settings.alAmbDwellS.coerceIn(0, 120) * 1000L,
         )
         if (!config.enabled) resetAll()
     }
@@ -153,7 +159,7 @@ class AudioLaneEngine(
         DemoLanes.match(DemoLanes.Lane.AMBIENCE, text)?.let { rule ->
             if (rule.keyword != desiredAmbience) {
                 val now = System.currentTimeMillis()
-                if (desiredAmbience == null || now - ambienceDwellAt >= ambMinDwellMs) {
+                if (desiredAmbience == null || now - ambienceDwellAt >= config.ambMinDwellMs) {
                     desiredAmbience = rule.keyword
                     ambienceDwellAt = now
                     AppLog.putAudio("【四轨】#$index 环境→${rule.keyword}")
@@ -168,7 +174,7 @@ class AudioLaneEngine(
         if (bgmRule != null) {
             if (bgmRule.keyword != desiredBgm) {
                 val now = System.currentTimeMillis()
-                if (now - (lastBgmByKeyword[bgmRule.keyword] ?: 0L) >= bgmRule.cooldownMs) {
+                if (now - (lastBgmByKeyword[bgmRule.keyword] ?: 0L) >= config.bgmCooldownMs) {
                     desiredBgm = bgmRule.keyword
                     bgmHoldRemaining = bgmRule.holdCues.coerceAtLeast(1)
                     lastBgmByKeyword[bgmRule.keyword] = now
@@ -189,7 +195,7 @@ class AudioLaneEngine(
 
         // 3) 音效：密度闸门（单条最多 1 个 + 全局间隔 + 素材冷却）
         DemoLanes.match(DemoLanes.Lane.SFX, text)?.let { rule ->
-            if (allowSfx(rule)) {
+            if (allowSfx(rule.keyword)) {
                 val now = System.currentTimeMillis()
                 lastSfxAt = now
                 lastSfxByKeyword[rule.keyword] = now
@@ -197,7 +203,7 @@ class AudioLaneEngine(
                     AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}")
                 }
             } else {
-                AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}（密度闸门跳过）")
+                AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}（闸门跳过）")
             }
         }
     }
@@ -289,20 +295,11 @@ class AudioLaneEngine(
 
     // ---------------------------------------------------------------- sfx
 
-    private fun allowSfx(rule: DemoLanes.Rule): Boolean {
+    /** B33.3c：闸门滑条化（全局最小间隔 + 同素材冷却；0=不限） */
+    private fun allowSfx(keyword: String): Boolean {
         val now = System.currentTimeMillis()
-        val minGapMs = when (config.sfxDensity) {
-            "low" -> 12_000L
-            "high" -> 3_000L
-            else -> 6_000L
-        }
-        if (now - lastSfxAt < minGapMs) return false
-        val cooldown = when (config.sfxDensity) {
-            "low" -> (rule.cooldownMs * 1.5f).toLong()
-            "high" -> (rule.cooldownMs * 0.75f).toLong()
-            else -> rule.cooldownMs
-        }
-        if (now - (lastSfxByKeyword[rule.keyword] ?: 0L) < cooldown) return false
+        if (now - lastSfxAt < config.sfxMinGapMs) return false
+        if (now - (lastSfxByKeyword[keyword] ?: 0L) < config.sfxCooldownMs) return false
         return true
     }
 
@@ -383,7 +380,8 @@ class AudioLaneEngine(
     private fun markMissing(kind: String, keyword: String) {
         val key = "$kind|$keyword"
         if (missingLogged.add(key)) {
-            AppLog.putAudio("【四轨·缺失】$kind「$keyword」不在库中（可先“准备示例素材”；B33.3 起可自动合成补缺）")
+            AppLog.putAudio("【四轨·缺失】$kind「$keyword」不在库中")
+            runCatching { onMissing(kind, keyword) }
         }
     }
 

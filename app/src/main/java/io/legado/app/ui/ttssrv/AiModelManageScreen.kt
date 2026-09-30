@@ -57,6 +57,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelEntry
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiModelsConfig
@@ -452,7 +453,12 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         scope.launch {
             val r: Triple<Boolean, Long, String> = if (p.kind == "audio") {
                 // 音频合成平台：走 audio 专属鉴权探测（不产生生成费用）
+                AppLog.putAudio("【合成·测试】${p.name} · ${m.name} → 开始鉴权探测")
                 val pr = AudioSynthPlatforms.probe(p.platform, p.baseUrl, p.apiKey)
+                AppLog.putAudio(
+                    "【合成·测试】${p.name} · ${m.name} → " +
+                        "${if (pr.ok) "通过" else "失败"}（${pr.message} · ${pr.latencyMs}ms）"
+                )
                 Triple(pr.ok, pr.latencyMs, pr.message)
             } else {
                 val tr = repo.testModel(m, p)

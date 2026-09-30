@@ -43,6 +43,15 @@ data class ReadAloudSettings(
     val alBgmVolume: Int = 25,
     /** BGM 闪避：有台词出声时自动压低 */
     val alDucking: Boolean = true,
-    /** 音效密度：low / mid / high */
-    val alSfxDensity: String = "mid",
+    // ---- B33.3c：补缺闸门「滑条」（替代旧「音效密度」低/中/高；旧值一次性迁移）----
+    /** 音效最小间隔（秒，0–30） */
+    val alSfxMinGapS: Int = 6,
+    /** 音效同素材冷却（秒，0–300） */
+    val alSfxCooldownS: Int = 60,
+    /** BGM 同素材冷却（秒，0–600） */
+    val alBgmCooldownS: Int = 150,
+    /** 环境底噪最短驻留（秒，0–120） */
+    val alAmbDwellS: Int = 25,
+    /** 每章自动补缺上限（条，0–50；0=关闭自动补缺） */
+    val alChapterSynthCap: Int = 10,
 )

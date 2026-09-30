@@ -67,6 +67,7 @@ import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
+import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
@@ -201,6 +202,24 @@ class HttpReadAloudService : BaseReadAloudService(),
     // ---- B33 音效/BGM/环境·四轨（音频小闭环；全部 runCatching 静默降级，不影响原朗读链路）----
     private var laneEngine: AudioLaneEngine? = null
 
+    // ---- B33.3c 缺失音频自动合成队列（串行补缺；随服务生命周期启停）----
+    private var synthQueue: AudioSynthQueue? = null
+
+    private fun synthQueueOrCreate(): AudioSynthQueue? = runCatching {
+        synthQueue ?: AudioSynthQueue(
+            appContext = applicationContext,
+            scope = lifecycleScope,
+            settings = { readAloudSettings },
+            chapterKey = {
+                runCatching {
+                    val bookUrl = ReadBook.book?.bookUrl.orEmpty()
+                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                    "$bookUrl|$idx"
+                }.getOrDefault("default")
+            },
+        ).also { synthQueue = it }
+    }.getOrNull()
+
     private fun laneEngineOrCreate(): AudioLaneEngine? {
         if (!readAloudSettings.alEnabled) return null
         laneEngine?.let { return it }
@@ -210,6 +229,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 scope = lifecycleScope,
                 serviceActive = { !pause },
                 voiceActive = { runCatching { exoPlayer.isPlaying }.getOrDefault(false) },
+                onMissing = { kind, keyword -> synthQueueOrCreate()?.enqueue(kind, keyword) },
             ).also {
                 it.applySettings(readAloudSettings)
                 laneEngine = it
@@ -279,6 +299,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         preDownloadJob?.cancel()
         runCatching { laneEngine?.release() }
         laneEngine = null
+        runCatching { synthQueue?.release() }
+        synthQueue = null
         exoPlayer.release()
         loudnessEnhancer?.release()
         loudnessEnhancer = null

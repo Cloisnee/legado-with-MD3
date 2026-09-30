@@ -37,8 +37,6 @@ object DemoLanes {
         val delayMs: Long = 0L,
         /** BGM：持续多少个剧本行后淡出（其余轨忽略） */
         val holdCues: Int = 0,
-        /** 同素材再次触发的静默窗口（毫秒） */
-        val cooldownMs: Long = 60_000L,
     )
 
     val rules: List<Rule> = listOf(
@@ -59,10 +57,10 @@ object DemoLanes {
         Rule(Lane.SFX, Regex("(喝茶|饮茶|呷了一口|品了一口|茶水)"), "喝茶", delayMs = 150),
 
         // —— BGM（关键场景起乐；holdCues≈持续行数，之后自动淡出）——
-        Rule(Lane.BGM, Regex("(战斗|厮杀|交战|杀意|生死相搏|混战|动手)"), "战斗", holdCues = 20, cooldownMs = 150_000L),
-        Rule(Lane.BGM, Regex("(紧张|危机|危险|杀机|不对劲|剑拔弩张|阴森|压迫)"), "紧张", holdCues = 14, cooldownMs = 150_000L),
-        Rule(Lane.BGM, Regex("(温柔|回忆|往事|曾经|思念|重逢|喜欢)"), "温柔", holdCues = 14, cooldownMs = 150_000L),
-        Rule(Lane.BGM, Regex("(灵气|仙门|宗门|御剑|修真|仙气|秘境)"), "仙侠紧张", holdCues = 14, cooldownMs = 150_000L),
+        Rule(Lane.BGM, Regex("(战斗|厮杀|交战|杀意|生死相搏|混战|动手)"), "战斗", holdCues = 20),
+        Rule(Lane.BGM, Regex("(紧张|危机|危险|杀机|不对劲|剑拔弩张|阴森|压迫)"), "紧张", holdCues = 14),
+        Rule(Lane.BGM, Regex("(温柔|回忆|往事|曾经|思念|重逢|喜欢)"), "温柔", holdCues = 14),
+        Rule(Lane.BGM, Regex("(灵气|仙门|宗门|御剑|修真|仙气|秘境)"), "仙侠紧张", holdCues = 14),
     )
 
     fun match(lane: Lane, text: String): Rule? =
@@ -145,11 +143,16 @@ object TmDemoAssets {
     fun libRoot(context: Context): File =
         File(File(TtsDirProvider.baseDir(context), "data"), "audio_lib")
 
+    /** 可识别的音频扩展名（B33.3c：过滤 .json sidecar 等非音频文件，防误命中） */
+    private val AUDIO_EXTS = setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")
+
     /** 在库内按文件名找素材（精确名优先，其次包含匹配；B33.2 换 registry 检索） */
     fun findFile(context: Context, keyword: String): File? {
         val root = libRoot(context)
         if (!root.exists()) return null
-        val files = walkFiles(root, 0).toList()
+        val files = walkFiles(root, 0)
+            .filter { it.extension.lowercase() in AUDIO_EXTS }
+            .toList()
         return files.firstOrNull { it.nameWithoutExtension == keyword }
             ?: files.firstOrNull { it.name.contains(keyword, ignoreCase = true) }
     }

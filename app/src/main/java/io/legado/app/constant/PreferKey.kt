@@ -432,7 +432,12 @@ object PreferKey {
     const val alAmbVolume = "alAmbVolume"
     const val alBgmVolume = "alBgmVolume"
     const val alDucking = "alDucking"
-    const val alSfxDensity = "alSfxDensity"
+    // B33.3c：补缺闸门滑条（替代旧「音效密度」低/中/高；旧键 alSfxDensity 一次性迁移后废弃）
+    const val alSfxMinGapS = "alSfxMinGapS"
+    const val alSfxCooldownS = "alSfxCooldownS"
+    const val alBgmCooldownS = "alBgmCooldownS"
+    const val alAmbDwellS = "alAmbDwellS"
+    const val alChapterSynthCap = "alChapterSynthCap"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"

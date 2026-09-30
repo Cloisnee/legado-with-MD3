@@ -25,6 +25,7 @@ import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.audio.TmDemoAssets
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
@@ -98,7 +99,13 @@ fun ReadAloudSettingsScreen(
     var showAlSfx by remember { mutableStateOf(false) }
     var showAlAmb by remember { mutableStateOf(false) }
     var showAlBgm by remember { mutableStateOf(false) }
+    var showAlMinGap by remember { mutableStateOf(false) }
+    var showAlSfxCd by remember { mutableStateOf(false) }
+    var showAlBgmCd by remember { mutableStateOf(false) }
+    var showAlAmbDwell by remember { mutableStateOf(false) }
+    var showAlChapCap by remember { mutableStateOf(false) }
     var seedRunning by remember { mutableStateOf(false) }
+    var synthTesting by remember { mutableStateOf(false) }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -294,12 +301,30 @@ fun ReadAloudSettingsScreen(
                             checked = st.alDucking,
                             onCheckedChange = { v -> update { it.copy(alDucking = v) } },
                         )
-                        TinyDropdownSettingItem(
-                            title = "音效密度",
-                            selectedValue = st.alSfxDensity,
-                            displayEntries = arrayOf("低", "中", "高"),
-                            entryValues = arrayOf("low", "mid", "high"),
-                            onValueChange = { v -> update { it.copy(alSfxDensity = v) } },
+                        TinyClickableSettingItem(
+                            title = "音效最小间隔",
+                            description = "${st.alSfxMinGapS} 秒",
+                            onClick = { showAlMinGap = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "音效同素材冷却",
+                            description = "${st.alSfxCooldownS} 秒",
+                            onClick = { showAlSfxCd = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "BGM 冷却",
+                            description = "${st.alBgmCooldownS} 秒",
+                            onClick = { showAlBgmCd = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "环境驻留",
+                            description = "${st.alAmbDwellS} 秒",
+                            onClick = { showAlAmbDwell = true },
+                        )
+                        TinyClickableSettingItem(
+                            title = "每章自动补缺上限",
+                            description = if (st.alChapterSynthCap <= 0) "已关闭" else "${st.alChapterSynthCap} 条",
+                            onClick = { showAlChapCap = true },
                         )
                         TinyClickableSettingItem(
                             title = if (seedRunning) "正在准备示例素材…" else "准备示例素材（四轨试听用）",
@@ -314,6 +339,22 @@ fun ReadAloudSettingsScreen(
                                             }
                                         }.getOrElse { "示例素材准备失败：${it.localizedMessage}" }
                                         seedRunning = false
+                                        context.toastOnUi(msg)
+                                    }
+                                }
+                            },
+                        )
+                        TinyClickableSettingItem(
+                            title = if (synthTesting) "正在合成…" else "合成测试（生成「铜铃轻响」）",
+                            description = "用真实合成队列生成一条音效 → 入库 → 验证「缺失→补缺」闭环",
+                            onClick = {
+                                if (!synthTesting) {
+                                    synthTesting = true
+                                    scope.launch {
+                                        val msg = runCatching {
+                                            AudioSynthQueue.selfTest(context.applicationContext, "铜铃轻响")
+                                        }.getOrElse { "合成测试失败：${it.localizedMessage}" }
+                                        synthTesting = false
                                         context.toastOnUi(msg)
                                     }
                                 }
@@ -484,5 +525,55 @@ fun ReadAloudSettingsScreen(
         valueRange = 0f..100f,
         onValueChange = { v -> update { it.copy(alBgmVolume = v.coerceIn(0, 100)) } },
         onDismissRequest = { showAlBgm = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlMinGap,
+        title = "音效最小间隔",
+        description = "两条音效之间的全局最小间隔（0–30 秒）",
+        value = st.alSfxMinGapS,
+        defaultValue = 6,
+        valueRange = 0f..30f,
+        onValueChange = { v -> update { it.copy(alSfxMinGapS = v.coerceIn(0, 30)) } },
+        onDismissRequest = { showAlMinGap = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlSfxCd,
+        title = "音效同素材冷却",
+        description = "同一音效再次触发的静默窗口（0–300 秒）",
+        value = st.alSfxCooldownS,
+        defaultValue = 60,
+        valueRange = 0f..300f,
+        onValueChange = { v -> update { it.copy(alSfxCooldownS = v.coerceIn(0, 300)) } },
+        onDismissRequest = { showAlSfxCd = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlBgmCd,
+        title = "BGM 冷却",
+        description = "同一 BGM 再次起乐的冷却窗口（0–600 秒）",
+        value = st.alBgmCooldownS,
+        defaultValue = 150,
+        valueRange = 0f..600f,
+        onValueChange = { v -> update { it.copy(alBgmCooldownS = v.coerceIn(0, 600)) } },
+        onDismissRequest = { showAlBgmCd = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlAmbDwell,
+        title = "环境驻留",
+        description = "环境底噪切换的最短驻留（0–120 秒）",
+        value = st.alAmbDwellS,
+        defaultValue = 25,
+        valueRange = 0f..120f,
+        onValueChange = { v -> update { it.copy(alAmbDwellS = v.coerceIn(0, 120)) } },
+        onDismissRequest = { showAlAmbDwell = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showAlChapCap,
+        title = "每章自动补缺上限",
+        description = "每章自动合成补缺的最大条数（0=关闭，0–50）",
+        value = st.alChapterSynthCap,
+        defaultValue = 10,
+        valueRange = 0f..50f,
+        onValueChange = { v -> update { it.copy(alChapterSynthCap = v.coerceIn(0, 50)) } },
+        onDismissRequest = { showAlChapCap = false },
     )
 }

@@ -8,14 +8,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 34 键写映射逐字段对应`() {
+    fun `朗读设置 38 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 34 键读映射逐字段对应`() {
+    fun `朗读设置 38 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -65,11 +65,23 @@ class ReadAloudSettingsMappingTest {
         val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
 
     }
+
+    @Test
+    fun `旧音效密度档回退映射到新闸门键`() {
+        val settings = mapOf(LEGACY_AL_SFX_DENSITY to "low").toTestPreferences().toReadAloudSettings()
+
+        assertEquals(12, settings.alSfxMinGapS)
+        assertEquals(90, settings.alSfxCooldownS)
+        assertEquals(225, settings.alBgmCooldownS)
+        assertEquals(37, settings.alAmbDwellS)
+        assertEquals(10, settings.alChapterSynthCap)
+    }
 }
 
 private const val CAPSULE_OFFSET_X = "read_aloud_capsule_offset_x"
 private const val CAPSULE_OFFSET_Y = "read_aloud_capsule_offset_y"
 private const val MEDIA_BUTTON_PER_NEXT = "mediaButtonPerNext"
+private const val LEGACY_AL_SFX_DENSITY = "alSfxDensity"
 
 private fun readAloudMappingSamples(): List<ReadAloudSettings> {
     val base = ReadAloudSettings(
@@ -92,7 +104,11 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         alAmbVolume = 32,
         alBgmVolume = 23,
         alDucking = false,
-        alSfxDensity = "high",
+        alSfxMinGapS = 5,
+        alSfxCooldownS = 55,
+        alBgmCooldownS = 145,
+        alAmbDwellS = 21,
+        alChapterSynthCap = 9,
     )
     return listOf(
         base,
@@ -112,7 +128,7 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(useMultiSpeaker = false),
         base.copy(alEnabled = true),
         base.copy(alDucking = true),
-        base.copy(alSfxDensity = "low"),
+        base.copy(alSfxMinGapS = 0, alChapterSynthCap = 0),
     )
 }
 
@@ -150,5 +166,9 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.alAmbVolume to alAmbVolume,
     PreferKey.alBgmVolume to alBgmVolume,
     PreferKey.alDucking to alDucking,
-    PreferKey.alSfxDensity to alSfxDensity,
+    PreferKey.alSfxMinGapS to alSfxMinGapS,
+    PreferKey.alSfxCooldownS to alSfxCooldownS,
+    PreferKey.alBgmCooldownS to alBgmCooldownS,
+    PreferKey.alAmbDwellS to alAmbDwellS,
+    PreferKey.alChapterSynthCap to alChapterSynthCap,
 )
