@@ -80,13 +80,13 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
  * 点击多选 + 顶栏选中动画 + 底部操作条（开启/禁用/置顶/置底/导出选中/删除）。
  */
 @Composable
-fun AudioLibraryRouteScreen(onBackClick: () -> Unit) {
-    AudioLibraryScreen(onBack = onBackClick)
+fun AudioLibraryRouteScreen(onBackClick: () -> Unit, onNavigateToRemote: () -> Unit) {
+    AudioLibraryScreen(onBack = onBackClick, onNavigateToRemote = onNavigateToRemote)
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AudioLibraryScreen(onBack: () -> Unit) {
+fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -403,6 +403,13 @@ fun AudioLibraryScreen(onBack: () -> Unit) {
                     dismiss()
                 },
             )
+            RoundDropdownMenuItem(
+                text = "远程下载",
+                onClick = {
+                    onNavigateToRemote()
+                    dismiss()
+                },
+            )
             PillDivider()
             RoundDropdownMenuItem(
                 text = stringResource(R.string.sort_old_first),
@@ -481,6 +488,10 @@ fun AudioLibraryScreen(onBack: () -> Unit) {
                             append(ui.groupLabel)
                             if (ui.pattern.isNotBlank()) {
                                 append(" · ").append(ui.pattern)
+                            }
+                            when (ui.source) {
+                                AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
+                                AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
                         },
                         isEnabled = ui.enabled,

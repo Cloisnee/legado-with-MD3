@@ -32,6 +32,7 @@ object AudioLibrary {
 
     const val SOURCE_LOCAL = "local"
     const val SOURCE_GENERATED = "generated"
+    const val SOURCE_REMOTE = "remote"
 
     private val AUDIO_EXTS = setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")
 
@@ -503,8 +504,17 @@ object AudioLibrary {
         runCatching { file.relativeTo(TmDemoAssets.libRoot(context)).path.replace(File.separatorChar, '/') }
             .getOrDefault(file.name)
 
-    private fun sniffSource(file: File): String =
-        if (File(file.parentFile, file.nameWithoutExtension + ".json").isFile) SOURCE_GENERATED else SOURCE_LOCAL
+    private fun sniffSource(file: File): String {
+        val side = File(file.parentFile, file.nameWithoutExtension + ".json")
+        if (!side.isFile) return SOURCE_LOCAL
+        return runCatching {
+            val libSource = JSONObject(side.readText().removePrefix("\uFEFF")).optString("libSource")
+            when (libSource) {
+                SOURCE_REMOTE -> SOURCE_REMOTE
+                else -> SOURCE_GENERATED
+            }
+        }.getOrDefault(SOURCE_GENERATED)
+    }
 
     private fun scanInternal(context: Context, old: Map<String, AudioAsset>): Map<String, AudioAsset> {
         val root = TmDemoAssets.libRoot(context)
