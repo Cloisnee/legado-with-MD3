@@ -8,14 +8,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 28 键写映射逐字段对应`() {
+    fun `朗读设置 34 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 28 键读映射逐字段对应`() {
+    fun `朗读设置 34 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -87,6 +87,12 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         ttsPreSynthesisConcurrency = 7,
         ttsSynthTimeoutSec = 45,
         ttsMaxRetry = 6,
+        alEnabled = false,
+        alSfxVolume = 71,
+        alAmbVolume = 32,
+        alBgmVolume = 23,
+        alDucking = false,
+        alSfxDensity = "high",
     )
     return listOf(
         base,
@@ -104,6 +110,9 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(finishCurrentChapterAfterTimer = true),
         base.copy(ttsFollowSys = false),
         base.copy(useMultiSpeaker = false),
+        base.copy(alEnabled = true),
+        base.copy(alDucking = true),
+        base.copy(alSfxDensity = "low"),
     )
 }
 
@@ -136,4 +145,10 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
     PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
     PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.alEnabled to alEnabled,
+    PreferKey.alSfxVolume to alSfxVolume,
+    PreferKey.alAmbVolume to alAmbVolume,
+    PreferKey.alBgmVolume to alBgmVolume,
+    PreferKey.alDucking to alDucking,
+    PreferKey.alSfxDensity to alSfxDensity,
 )
