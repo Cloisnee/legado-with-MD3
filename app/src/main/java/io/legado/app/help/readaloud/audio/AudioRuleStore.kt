@@ -67,6 +67,16 @@ object AudioRuleStore {
 
         fun namesOfSound(soundId: String): List<String> =
             soundById[soundId]?.names.orEmpty()
+
+        /** 名称/别名 → soundId（惰性反查表；扫描与回填用） */
+        fun soundIdByName(name: String): String {
+            val idx = nameIndex ?: buildMap {
+                soundById.values.forEach { m -> m.names.forEach { n -> putIfAbsent(n, m.soundId) } }
+            }.also { nameIndex = it }
+            return idx[name.trim()].orEmpty()
+        }
+
+        private var nameIndex: Map<String, String>? = null
     }
 
     // ------------------------------------------------------------ 常量 / 状态
@@ -123,9 +133,11 @@ object AudioRuleStore {
                 if (loaded != null) {
                     data = loaded
                     runCatching {
-                        AudioLibrary.backfillFromRules(context.applicationContext) { sid ->
-                            loaded.namesOfSound(sid)
-                        }
+                        AudioLibrary.backfillFromRules(
+                            context.applicationContext,
+                            { sid -> loaded.namesOfSound(sid) },
+                            { name -> loaded.soundIdByName(name) },
+                        )
                     }.onSuccess { n ->
                         if (n > 0) AppLog.putAudio("【四轨·规则】素材别名回填 $n 条")
                     }

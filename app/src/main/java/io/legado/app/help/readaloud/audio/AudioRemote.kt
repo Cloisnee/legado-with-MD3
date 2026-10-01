@@ -186,24 +186,14 @@ object AudioRemoteCatalog {
             tmp.copyTo(out, overwrite = true)
             tmp.delete()
         }
-        runCatching {
-            File(out.parentFile, out.nameWithoutExtension + ".json").writeText(
-                JSONObject().apply {
-                    put("libSource", AudioLibrary.SOURCE_REMOTE)
-                    put("soundId", sound.soundId)
-                    if (sound.aliases.isNotEmpty()) put("aliases", JSONArray(sound.aliases))
-                    put("pack", sound.pack)
-                    put("name", sound.name)
-                    put("category", sound.category)
-                    put("categoryName", sound.categoryName)
-                    put("subType", sound.subType)
-                    put("assetPath", sound.assetPath)
-                    put("sha256", sound.sha256)
-                    put("createdAt", System.currentTimeMillis())
-                }.toString()
-            )
-        }
-        AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_REMOTE)
+        // B33.2c：不再写 sidecar——元数据经统一入口并入 _meta/<类>.json
+        AudioLibrary.notifyFileAdded(
+            context,
+            out,
+            AudioLibrary.SOURCE_REMOTE,
+            sound.soundId,
+            sound.aliases,
+        )
         out
     }
 

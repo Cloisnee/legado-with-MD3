@@ -1203,6 +1203,14 @@ fun MainActivity.mainEntryProvider(
         io.legado.app.ui.ttssrv.AudioLibraryRouteScreen(
             onBackClick = { onNavigateBack() },
             onNavigateToRemote = { onNavigateToRoute(MainRouteAudioRemote) },
+            onNavigateToEdit = { id -> onNavigateToRoute(MainRouteAudioEdit(id)) },
+        )
+    }
+
+    entry<MainRouteAudioEdit> { route ->
+        io.legado.app.ui.ttssrv.AudioEditRouteScreen(
+            assetId = route.assetId,
+            onBackClick = { onNavigateBack() },
         )
     }
 

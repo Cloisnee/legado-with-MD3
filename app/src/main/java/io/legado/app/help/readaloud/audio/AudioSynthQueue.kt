@@ -169,7 +169,6 @@ class AudioSynthQueue(
                     val rel = saveGeneratedAudio(
                         appContext, task.lane, task.keyword, gen.bytes,
                         source = "${provider.name}/${model.name}",
-                        prompt = AudioSynthClients.promptFor(task.lane, task.keyword),
                     )
                     markDone(task, rel, "${provider.name}/${model.name}")
                     AppLog.putAudio("【合成】完成：${task.lane.label}「${task.keyword}」← ${provider.name}（${gen.detail}）")
@@ -216,7 +215,7 @@ class AudioSynthQueue(
 
     // ------------------------------------------------------------ 状态持久化
 
-    private fun file(): File = File(TtsDirProvider.baseDir(appContext), "_store/audio_missing.json")
+    private fun file(): File = missingFile(appContext)
 
     private suspend fun ensureLoaded() {
         if (loaded) return
@@ -311,6 +310,82 @@ class AudioSynthQueue(
         /** 在途任务视为滞留的超时（服务重启兜底；超过后可重新入队） */
         private const val STALE_INFLIGHT_MS = 15 * 60 * 1000L
 
+        // ---------------- B33.2c · 缺失清单（管理面板用） ----------------
+
+        /** 缺失清单行（lane=队列枚举名 AMB/SFX/BGM） */
+        data class MissingRow(
+            val lane: String,
+            val keyword: String,
+            val status: String,
+            val source: String,
+            val lastError: String,
+            val updatedAt: Long,
+        )
+
+        /** 读取 `_store/audio_missing.json` 全部条目 */
+        suspend fun missingRows(context: Context): List<MissingRow> = withContext(Dispatchers.IO) {
+            runCatching {
+                val f = missingFile(context)
+                if (!f.isFile) return@runCatching emptyList()
+                val entries = JSONObject(f.readText().removePrefix("\uFEFF")).optJSONObject("entries")
+                    ?: return@runCatching emptyList()
+                buildList {
+                    val keys = entries.keys()
+                    while (keys.hasNext()) {
+                        val o = entries.optJSONObject(keys.next()) ?: continue
+                        add(
+                            MissingRow(
+                                lane = o.optString("lane"),
+                                keyword = o.optString("keyword"),
+                                status = o.optString("status"),
+                                source = o.optString("source"),
+                                lastError = o.optString("lastError").trim(),
+                                updatedAt = o.optLong("updatedAt"),
+                            )
+                        )
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
+
+        /** 重试：失败/完成 → pending、清冷却（回放命中章节即可再入队补缺） */
+        suspend fun retryMissing(context: Context, lane: String, keyword: String): Boolean =
+            editMissing(context) { entries ->
+                val o = entries.optJSONObject("$lane|$keyword") ?: return@editMissing false
+                o.put("status", "pending")
+                o.put("updatedAt", 0L)
+                o.put("lastError", "")
+                true
+            }
+
+        /** 移除缺失记录 */
+        suspend fun removeMissing(context: Context, lane: String, keyword: String): Boolean =
+            editMissing(context) { entries -> entries.remove("$lane|$keyword") != null }
+
+        private fun missingFile(context: Context): File =
+            File(TtsDirProvider.baseDir(context), "_store/audio_missing.json")
+
+        /** 原子编辑条目表（返回 false=未变更不落盘） */
+        private suspend fun editMissing(
+            context: Context,
+            mutate: (JSONObject) -> Boolean,
+        ): Boolean = withContext(Dispatchers.IO) {
+            runCatching {
+                val f = missingFile(context)
+                if (!f.isFile) return@runCatching false
+                val root = JSONObject(f.readText().removePrefix("\uFEFF"))
+                val entries = root.optJSONObject("entries") ?: JSONObject()
+                if (!mutate(entries)) return@runCatching false
+                val tmp = File(f.parentFile, f.name + ".tmp")
+                tmp.writeText(root.toString())
+                if (!tmp.renameTo(f)) {
+                    tmp.copyTo(f, overwrite = true)
+                    tmp.delete()
+                }
+                true
+            }.getOrDefault(false)
+        }
+
         /**
          * 「合成测试」：用真实派单链路生成一条音效（默认「铜铃轻响」）并入库。
          * 返回可直接展示的结果文案（成功含来源与落库路径）。
@@ -334,7 +409,6 @@ class AudioSynthQueue(
                             saveGeneratedAudio(
                                 app, lane, keyword, gen.bytes,
                                 source = "${ref.provider.name}/${ref.model.name}",
-                                prompt = AudioSynthClients.promptFor(lane, keyword),
                             )
                         }.getOrElse { "入库失败：${it.localizedMessage}" }
                         val sec = (System.currentTimeMillis() - started) / 1000.0
@@ -363,7 +437,6 @@ internal suspend fun saveGeneratedAudio(
     keyword: String,
     bytes: ByteArray,
     source: String,
-    prompt: String,
 ): String = withContext(Dispatchers.IO) {
     val root = TmDemoAssets.libRoot(context)
     val name = sanitizeGeneratedName(keyword)
@@ -378,16 +451,7 @@ internal suspend fun saveGeneratedAudio(
             tmp.delete()
         }
     }
-    File(out.parentFile, "$name.json").writeText(
-        JSONObject().apply {
-            put("keyword", keyword)
-            put("lane", lane.name)
-            put("source", source)
-            put("prompt", prompt)
-            put("bytes", bytes.size)
-            put("createdAt", System.currentTimeMillis())
-        }.toString()
-    )
+    // B33.2c：不再写 sidecar；来源由登记入口统一写入 _meta/<类>.json
     runCatching { AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_GENERATED) }
     rel
 }

@@ -2,6 +2,8 @@ package io.legado.app.help.readaloud.audio
 
 import android.content.Context
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.PreferKey
+import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioRuleStore.RuleData
 
 /**
@@ -176,8 +178,13 @@ object AudioRuleEngine {
             if (hits.size >= MAX_INTENT_HITS) break
             val intent = data.intents.getOrNull(ii) ?: continue
             if (laneForType(intent.type) != lane) continue
+            // B33.2c：18+ 分类开关（关=按 tagFilters 排除；开=不排除）
+            val adultEnabled = runCatching {
+                AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true
+            }.getOrDefault(false)
+            val excluded = if (adultEnabled) emptySet() else data.excludedSoundIds
             val sids = data.soundIdsByIntent[intent.id].orEmpty()
-                .filter { it.isNotBlank() && it !in data.excludedSoundIds }
+                .filter { it.isNotBlank() && it !in excluded }
             if (sids.isEmpty()) continue
             val names = LinkedHashSet<String>()
             sids.forEach { sid ->

@@ -19,18 +19,17 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,11 +50,11 @@ import io.legado.app.R
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
+import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
-import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
@@ -84,13 +83,25 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
  * 点击多选 + 顶栏选中动画 + 底部操作条（开启/禁用/置顶/置底/导出选中/删除）。
  */
 @Composable
-fun AudioLibraryRouteScreen(onBackClick: () -> Unit, onNavigateToRemote: () -> Unit) {
-    AudioLibraryScreen(onBack = onBackClick, onNavigateToRemote = onNavigateToRemote)
+fun AudioLibraryRouteScreen(
+    onBackClick: () -> Unit,
+    onNavigateToRemote: () -> Unit,
+    onNavigateToEdit: (String) -> Unit,
+) {
+    AudioLibraryScreen(
+        onBack = onBackClick,
+        onNavigateToRemote = onNavigateToRemote,
+        onNavigateToEdit = onNavigateToEdit,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) {
+fun AudioLibraryScreen(
+    onBack: () -> Unit,
+    onNavigateToRemote: () -> Unit = {},
+    onNavigateToEdit: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -107,12 +118,16 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
     var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var localOrder by remember { mutableStateOf<List<AudioLibrary.AudioAsset>?>(null) }
-    var editTarget by remember { mutableStateOf<AudioLibrary.AudioAsset?>(null) }
-    var paramsOpen by remember { mutableStateOf(false) }
     var playingId by remember { mutableStateOf<String?>(null) }
     var previewPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
     var previewEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
     var showImportPicker by remember { mutableStateOf(false) }
+    var moveSheet by remember { mutableStateOf(false) }
+    var moveTarget by remember { mutableStateOf<String?>(null) }
+    var moveNewGroup by remember { mutableStateOf("") }
+    var generatedOnly by remember { mutableStateOf(false) }
+    var missingSheet by remember { mutableStateOf(false) }
+    var missingRows by remember { mutableStateOf<List<AudioSynthQueue.MissingRow>>(emptyList()) }
 
     val inSelectionMode = selectedIds.isNotEmpty()
 
@@ -192,7 +207,8 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
             rescanning = false
             r.onSuccess { s ->
                 reload()
-                snackbarHostState.showSnackbar("扫描完成：共 ${s.total} 条（新增 ${s.added} · 移除 ${s.removed}）")
+                val extra = if (s.merged > 0) " · 合并重复 ${s.merged}" else ""
+                snackbarHostState.showSnackbar("扫描完成：共 ${s.total} 条（新增 ${s.added} · 移除 ${s.removed}$extra）")
             }.onFailure {
                 snackbarHostState.showSnackbar("扫描失败：${it.localizedMessage}")
             }
@@ -249,12 +265,15 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         localOrder = null
     }
 
-    val shownItems = remember(allAssets, selectedCategory, searchKey, sortMode, localOrder) {
+    val shownItems = remember(allAssets, selectedCategory, searchKey, sortMode, localOrder, generatedOnly) {
         val local = localOrder
         if (local != null) {
             local
         } else {
             var list = allAssets
+            if (generatedOnly) {
+                list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
+            }
             selectedCategory?.let { c -> list = list.filter { it.category == c } }
             val q = searchKey.trim()
             if (q.isNotEmpty()) {
@@ -375,6 +394,14 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                 },
             ),
             ActionItem(
+                text = "移动音频",
+                onClick = {
+                    moveTarget = null
+                    moveNewGroup = ""
+                    moveSheet = true
+                },
+            ),
+            ActionItem(
                 text = "导出选中",
                 onClick = { exportLauncher.launch("audio_lib_export.zip") },
             ),
@@ -413,6 +440,23 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                 text = "远程下载",
                 onClick = {
                     onNavigateToRemote()
+                    dismiss()
+                },
+            )
+            RoundDropdownMenuItem(
+                text = "缺失清单",
+                onClick = {
+                    dismiss()
+                    scope.launch {
+                        missingRows = AudioSynthQueue.missingRows(context.applicationContext)
+                        missingSheet = true
+                    }
+                },
+            )
+            RoundDropdownMenuItem(
+                text = if (generatedOnly) "显示全部条目" else "只看生成产物",
+                onClick = {
+                    generatedOnly = !generatedOnly
                     dismiss()
                 },
             )
@@ -492,12 +536,13 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                         title = ui.name,
                         subtitle = buildString {
                             append(ui.groupLabel)
-                            if (ui.pattern.isNotBlank()) {
-                                append(" · ").append(ui.pattern)
-                            }
                             when (ui.source) {
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
+                            }
+                            if (ui.pattern.isNotBlank()) {
+                                append(" · 规则：").append(ui.pattern.take(16))
+                                if (ui.pattern.length > 16) append("…")
                             }
                         },
                         isEnabled = ui.enabled,
@@ -521,7 +566,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                                 reload()
                             }
                         },
-                        onClickEdit = { editTarget = ui },
+                        onClickEdit = { onNavigateToEdit(ui.id) },
                         trailingAction = {
                             SmallPlainButton(
                                 onClick = { togglePreview(ui) },
@@ -551,6 +596,57 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         }
     }
 
+    AudioMissingSheet(
+        show = missingSheet,
+        rows = missingRows,
+        onRetry = { row ->
+            scope.launch {
+                AudioSynthQueue.retryMissing(context.applicationContext, row.lane, row.keyword)
+                missingRows = AudioSynthQueue.missingRows(context.applicationContext)
+                snackbarHostState.showSnackbar("已重置：${row.keyword}（回放命中章节即可再补缺）")
+            }
+        },
+        onRemove = { row ->
+            scope.launch {
+                AudioSynthQueue.removeMissing(context.applicationContext, row.lane, row.keyword)
+                missingRows = AudioSynthQueue.missingRows(context.applicationContext)
+            }
+        },
+        onDismiss = { missingSheet = false },
+    )
+
+    AudioMoveSheet(
+        show = moveSheet,
+        count = selectedIds.size,
+        groups = allAssets.map { it.group }.filter { it.isNotBlank() }.distinct().sorted(),
+        target = moveTarget,
+        newGroup = moveNewGroup,
+        onTargetChange = { moveTarget = it },
+        onNewGroupChange = { moveNewGroup = it },
+        onDismiss = { moveSheet = false },
+        onConfirm = {
+            val chosen = moveTarget
+            val newName = moveNewGroup.trim()
+            if (chosen == null && newName.isBlank()) {
+                scope.launch { snackbarHostState.showSnackbar("请先选择分组（或输入新分组名）") }
+            } else {
+                val dest = newName.ifBlank { chosen.orEmpty() }
+                val ids = selectedIds.filterIsInstance<String>().toSet()
+                moveSheet = false
+                scope.launch {
+                    val ok = runCatching {
+                        AudioLibrary.setGroup(context.applicationContext, ids, dest)
+                    }.getOrDefault(false)
+                    selectedIds = emptySet()
+                    reload()
+                    snackbarHostState.showSnackbar(
+                        if (ok) "已移动到：${dest.ifBlank { "默认（同分类）" }}" else "未发生变更"
+                    )
+                }
+            }
+        },
+    )
+
     FilePickerSheet(
         show = showImportPicker,
         onDismissRequest = { showImportPicker = false },
@@ -562,35 +658,6 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         allowExtensions = arrayOf("zip", "mp3", "m4a", "wav", "ogg", "flac", "aac"),
     )
 
-    AudioEditSheet(
-        show = editTarget != null,
-        asset = editTarget,
-        onDismiss = { editTarget = null },
-        onParamsClick = { paramsOpen = true },
-        onSave = { updated ->
-            editTarget = null
-            scope.launch {
-                AudioLibrary.updateAsset(context.applicationContext, updated)
-                reload()
-                snackbarHostState.showSnackbar("已保存")
-            }
-        },
-    )
-
-    AudioParamsSheet(
-        show = paramsOpen,
-        asset = editTarget,
-        onDismiss = { paramsOpen = false },
-        onSave = { updated ->
-            paramsOpen = false
-            editTarget = updated // 防止随后「编辑保存」用旧对象覆盖参数
-            scope.launch {
-                AudioLibrary.updateAsset(context.applicationContext, updated)
-                reload()
-                snackbarHostState.showSnackbar("参数已保存（播放中实时生效）")
-            }
-        },
-    )
 }
 
 /** 「全部」页类聚合顺序（BGM → 环境声 → 音效） */
@@ -617,212 +684,6 @@ private fun ensurePreviewEnhancer(
     return e
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AudioEditSheet(
-    show: Boolean,
-    asset: AudioLibrary.AudioAsset?,
-    onDismiss: () -> Unit,
-    onParamsClick: () -> Unit,
-    onSave: (AudioLibrary.AudioAsset) -> Unit,
-) {
-    var name by remember(show, asset) { mutableStateOf(asset?.name.orEmpty()) }
-    var group by remember(show, asset) { mutableStateOf(asset?.group.orEmpty()) }
-    var pattern by remember(show, asset) { mutableStateOf(asset?.pattern.orEmpty()) }
-    var tagDesc by remember(show, asset) { mutableStateOf(asset?.tagDesc.orEmpty()) }
-    var isRegex by remember(show, asset) { mutableStateOf(asset?.isRegex ?: true) }
-    var scopeTitle by remember(show, asset) { mutableStateOf(asset?.scopeTitle ?: false) }
-    var scopeContent by remember(show, asset) { mutableStateOf(asset?.scopeContent ?: true) }
-
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismiss,
-        title = "编辑音频",
-    ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 120.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                AppTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = "名称",
-                    backgroundColor = LegadoTheme.colorScheme.surfaceInput,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AppTextField(
-                        value = group,
-                        onValueChange = { group = it },
-                        label = "分组",
-                        placeholder = { AppText("默认（同分类）") },
-                        backgroundColor = LegadoTheme.colorScheme.surfaceInput,
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                    )
-                    MediumPlainButton(
-                        onClick = onParamsClick,
-                        icon = Icons.Default.Settings,
-                        contentDescription = "音频参数",
-                    )
-                }
-                AppTextField(
-                    value = pattern,
-                    onValueChange = { pattern = it },
-                    label = "匹配规则",
-                    placeholder = { AppText("留空=由库级规则驱动；支持正则/字面") },
-                    backgroundColor = LegadoTheme.colorScheme.surfaceInput,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                CheckboxItem(
-                    title = "使用正则（关=字面包含）",
-                    checked = isRegex,
-                    onCheckedChange = { isRegex = it },
-                )
-                CheckboxItem(
-                    title = "应用于标题",
-                    checked = scopeTitle,
-                    onCheckedChange = { scopeTitle = it },
-                )
-                CheckboxItem(
-                    title = "应用于正文",
-                    checked = scopeContent,
-                    onCheckedChange = { scopeContent = it },
-                )
-                AppTextField(
-                    value = tagDesc,
-                    onValueChange = { tagDesc = it },
-                    label = "标签描述",
-                    placeholder = { AppText("插入标签的说明 / 合成描述（默认同素材名）") },
-                    backgroundColor = LegadoTheme.colorScheme.surfaceInput,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            AppFloatingActionButton(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                onClick = {
-                    asset?.let { base ->
-                        onSave(
-                            base.copy(
-                                name = name.trim().ifBlank { base.name },
-                                group = group.trim(),
-                                pattern = pattern.trim(),
-                                tagDesc = tagDesc.trim(),
-                                isRegex = isRegex,
-                                scopeTitle = scopeTitle,
-                                scopeContent = scopeContent,
-                            )
-                        )
-                    }
-                },
-                tooltipText = "保存",
-                icon = Icons.Default.Save,
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AudioParamsSheet(
-    show: Boolean,
-    asset: AudioLibrary.AudioAsset?,
-    onDismiss: () -> Unit,
-    onSave: (AudioLibrary.AudioAsset) -> Unit,
-) {
-    var volume by remember(show, asset) { mutableFloatStateOf(asset?.volume ?: 1f) }
-    var speed by remember(show, asset) { mutableFloatStateOf(asset?.speed ?: 1f) }
-    var pitch by remember(show, asset) { mutableFloatStateOf(asset?.pitch ?: 1f) }
-
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismiss,
-        title = "音频参数 · ${asset?.name.orEmpty()}",
-    ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .padding(bottom = 96.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                ParamSlider(
-                    title = "音量",
-                    valueText = "${(volume * 100).toInt()}%",
-                    value = volume,
-                    range = 0f..2f,
-                ) { volume = it }
-                ParamSlider(
-                    title = "音速",
-                    valueText = "%.2f".format(speed),
-                    value = speed,
-                    range = 0.5f..2f,
-                ) { speed = it }
-                ParamSlider(
-                    title = "音高",
-                    valueText = "%.2f".format(pitch),
-                    value = pitch,
-                    range = 0.5f..2f,
-                ) { pitch = it }
-                AppText(
-                    text = "只影响该条素材（朗读设置里的轨道音量仍照常生效）；播放中实时生效。",
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            AppFloatingActionButton(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                onClick = {
-                    asset?.let { base ->
-                        onSave(base.copy(volume = volume, speed = speed, pitch = pitch))
-                    }
-                },
-                tooltipText = "保存",
-                icon = Icons.Default.Save,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ParamSlider(
-    title: String,
-    valueText: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            AppText(text = title, style = LegadoTheme.typography.bodyMedium)
-            AppText(
-                text = valueText,
-                style = LegadoTheme.typography.labelMedium,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = range,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-
 private data class AudioLibUiState(
     override val items: List<AudioLibrary.AudioAsset> = emptyList(),
     override val selectedIds: Set<Any> = emptySet(),
@@ -830,3 +691,142 @@ private data class AudioLibUiState(
     override val isSearch: Boolean = false,
     override val isLoading: Boolean = false,
 ) : ListUiState<AudioLibrary.AudioAsset>
+
+/** B33.2c · 缺失清单（读取 _store/audio_missing.json；「重试」=重置冷却） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioMissingSheet(
+    show: Boolean,
+    rows: List<AudioSynthQueue.MissingRow>,
+    onRetry: (AudioSynthQueue.MissingRow) -> Unit,
+    onRemove: (AudioSynthQueue.MissingRow) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AppModalBottomSheet(
+        show = show,
+        onDismissRequest = onDismiss,
+        title = "缺失清单：${rows.size} 条",
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (rows.isEmpty()) {
+                AppText(
+                    text = "暂无缺失记录（播放中解析不到素材、且触发过补缺的会出现在这里）",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            rows.sortedByDescending { it.updatedAt }.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        AppText(text = row.keyword, style = LegadoTheme.typography.bodyMedium)
+                        AppText(
+                            text = buildString {
+                                append(
+                                    when (row.lane) {
+                                        "AMB" -> "环境"
+                                        "BGM" -> "BGM"
+                                        else -> "音效"
+                                    }
+                                )
+                                append(" · ").append(row.status)
+                                if (row.source.isNotBlank()) append(" · ").append(row.source)
+                                if (row.lastError.isNotBlank()) {
+                                    append(" · ").append(row.lastError.take(24))
+                                }
+                            },
+                            style = LegadoTheme.typography.labelSmall,
+                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                        )
+                    }
+                    SmallPlainButton(
+                        onClick = { onRetry(row) },
+                        icon = AppIcons.Replay,
+                        contentDescription = "重试（清冷却）",
+                    )
+                    SmallPlainButton(
+                        onClick = { onRemove(row) },
+                        icon = Icons.Default.Delete,
+                        contentDescription = "删除记录",
+                    )
+                }
+            }
+        }
+    }
+}
+/** B33.2c · 批量「移动音频」到分组（复刻「移动声线」交互：选项卡片 + 新建） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioMoveSheet(
+    show: Boolean,
+    count: Int,
+    groups: List<String>,
+    target: String?,
+    newGroup: String,
+    onTargetChange: (String?) -> Unit,
+    onNewGroupChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AppModalBottomSheet(
+        show = show,
+        onDismissRequest = onDismiss,
+        title = "移动音频：$count 条",
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AppText(
+                text = "移动到哪个分组",
+                style = LegadoTheme.typography.labelMedium,
+                color = LegadoTheme.colorScheme.onSurfaceVariant,
+            )
+            CheckboxItem(
+                title = "默认（同分类）",
+                checked = target == "",
+                onCheckedChange = { onTargetChange("") },
+            )
+            groups.forEach { g ->
+                CheckboxItem(
+                    title = g,
+                    checked = target == g,
+                    onCheckedChange = { onTargetChange(g) },
+                )
+            }
+            AppTextField(
+                value = newGroup,
+                onValueChange = {
+                    onNewGroupChange(it)
+                    if (it.isNotBlank()) onTargetChange(null)
+                },
+                label = "或新建分组",
+                placeholder = { AppText("输入新分组名") },
+                backgroundColor = LegadoTheme.colorScheme.surfaceInput,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            MediumPlainButton(
+                onClick = onConfirm,
+                modifier = Modifier.fillMaxWidth(),
+                icon = Icons.Default.Check,
+                text = "移动",
+                contentDescription = "移动",
+            )
+        }
+    }
+}

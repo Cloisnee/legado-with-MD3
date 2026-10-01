@@ -168,6 +168,9 @@ data object MainRouteAudioLibrary : MainRoute
 data object MainRouteAudioRemote : MainRoute
 
 @Serializable
+data class MainRouteAudioEdit(val assetId: String) : MainRoute
+
+@Serializable
 data class MainRouteScriptReview(
     val bookName: String,
     val bookUrl: String,

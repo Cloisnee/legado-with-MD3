@@ -20,7 +20,7 @@ import java.util.zip.ZipOutputStream
 /**
  * B33.2 · 音频素材库（registry 索引 + 解析链 + 库管理）。
  *
- * - 索引文件：`<数据根>/data/audio_lib/registry.json`（唯一索引，随库目录走，重启不丢）；
+ * - 索引文件（B33.2c 聚合）：`<数据根>/data/audio_lib/_meta/{bgm,ambience,sfx}.json` 每类一份（无 sidecar、无 registry.json；旧文件忽略）；
  * - 条目模型：名称 / 分组 / 匹配规则（正则·字面 / 标题·正文）/ 标签描述 / 启用开关 / 音量·音速·音高 / 分类 / 来源；
  * - 解析链（引擎 / 试听共用）：精确名 → 别名 → 包含匹配（停用条目不参与）；
  *   未命中回退目录直扫（并自动补登）；
@@ -78,6 +78,8 @@ object AudioLibrary {
         val total: Int,
         val added: Int,
         val removed: Int,
+        /** B33.2c：同名同类被合并的重复条数 */
+        val merged: Int = 0,
     )
 
     data class ImportSummary(val ok: Int, val skipped: Int, val fail: Int)
@@ -88,6 +90,10 @@ object AudioLibrary {
 
     /** 解析负缓存（关键字 → 上次未命中时间；新文件落库 / 重扫时清除） */
     private val missCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** B33.2c：最近一次扫描合并的同名重复条数（rescan 用） */
+    @Volatile
+    private var lastMergeCount = 0
 
     /** 内存索引快照（null = 未加载；加载后整 Map 替换，保证跨线程读安全） */
     @Volatile
@@ -165,11 +171,11 @@ object AudioLibrary {
             missCache[kw] = now
             return null
         }
-        val asset = registerFile(context, f, sniffSource(f)) ?: AudioAsset(
+        val asset = registerFile(context, f, SOURCE_LOCAL) ?: AudioAsset(
             name = f.nameWithoutExtension,
             relPath = relOf(context, f),
             category = categoryOf(relOf(context, f)),
-            source = sniffSource(f),
+            source = SOURCE_LOCAL,
         )
         missCache.remove(kw)
         return ResolvedAsset(asset, f)
@@ -191,14 +197,28 @@ object AudioLibrary {
         lock.withLock {
             if (loaded) return
             withContext(Dispatchers.IO) {
-                val f = registryFile(context)
-                val parsed = if (f.isFile) {
-                    parseRegistry(f.readText().removePrefix("\uFEFF"))
-                } else {
-                    null
+                val merged = LinkedHashMap<String, AudioAsset>()
+                var anyMeta = false
+                listOf("BGM", "环境声", "音效").forEach { cat ->
+                    val f = File(metaDir(context), categoryFileName(cat))
+                    if (f.isFile) {
+                        anyMeta = true
+                        parseRegistry(f.readText().removePrefix("\uFEFF"))?.let { merged.putAll(it) }
+                    }
                 }
-                index = parsed ?: scanInternal(context, emptyMap())
-                if (parsed == null) persist(context, index.orEmpty().values)
+                if (anyMeta) {
+                    index = merged
+                } else {
+                    // 无聚合文件：一次性导入旧 registry.json（若有），否则全量扫描；随后按类别拆分落盘
+                    val legacy = legacyRegistryFile(context)
+                    val parsedLegacy = if (legacy.isFile) {
+                        parseRegistry(legacy.readText().removePrefix("\uFEFF"))
+                    } else {
+                        null
+                    }
+                    index = parsedLegacy ?: scanInternal(context, emptyMap())
+                    persist(context, index.orEmpty().values)
+                }
             }
             loaded = true
         }
@@ -220,18 +240,29 @@ object AudioLibrary {
                 total = fresh.size,
                 added = fresh.keys.count { it !in old },
                 removed = old.keys.count { it !in fresh },
+                merged = lastMergeCount,
             )
         }
     }
 
     /** 合成产物 / 示例素材 / 导入落库登记（未加载时跳过，等首扫接管） */
-    fun notifyFileAdded(context: Context, file: File, source: String = SOURCE_LOCAL) {
+    fun notifyFileAdded(
+        context: Context,
+        file: File,
+        source: String = SOURCE_LOCAL,
+        soundId: String = "",
+        aliases: List<String> = emptyList(),
+    ) {
         missCache.clear()
-        registerFile(context, file, source)
+        registerFile(context, file, source, soundId, aliases)
     }
 
-    /** B33.3d：规则表就绪后回填素材元数据（sidecar 的 soundId/别名 + 规则表的名称别名），只补不覆盖 */
-    suspend fun backfillFromRules(context: Context, namesOf: (String) -> List<String>): Int {
+    /** B33.3d/2c：规则表就绪后回填（名称→soundId 反查 + soundId→名称/别名），只补不覆盖 */
+    suspend fun backfillFromRules(
+        context: Context,
+        namesOf: (String) -> List<String>,
+        sidOfName: (String) -> String = { "" },
+    ): Int {
         ensureLoaded(context)
         return withContext(Dispatchers.IO) {
             lock.withLock {
@@ -241,24 +272,16 @@ object AudioLibrary {
                 cur.values.forEach { a ->
                     var soundId = a.soundId
                     var aliases = a.aliases
-                    if (a.zipRel.isBlank() && (soundId.isBlank() || aliases.isEmpty())) {
-                        val meta = runCatching { sidecarMetaOf(fileOf(context, a)) }.getOrNull()
-                        if (soundId.isBlank()) {
-                            meta?.soundId?.takeIf { it.isNotBlank() }?.let { soundId = it }
-                        }
-                        if (aliases.isEmpty()) {
-                            val fromRules = if (soundId.isNotBlank()) {
-                                runCatching { namesOf(soundId) }.getOrDefault(emptyList())
-                            } else {
-                                emptyList()
-                            }
-                            aliases = (fromRules + meta?.aliases.orEmpty())
-                                .asSequence()
-                                .filter { it.isNotBlank() && it != a.name }
-                                .distinct()
-                                .take(12)
-                                .toList()
-                        }
+                    if (soundId.isBlank()) {
+                        soundId = runCatching { sidOfName(a.name) }.getOrDefault("")
+                    }
+                    if (aliases.isEmpty() && soundId.isNotBlank()) {
+                        aliases = runCatching { namesOf(soundId) }.getOrDefault(emptyList())
+                            .asSequence()
+                            .filter { it.isNotBlank() && it != a.name }
+                            .distinct()
+                            .take(12)
+                            .toList()
                     }
                     if (soundId != a.soundId || aliases != a.aliases) {
                         next[a.id] = a.copy(soundId = soundId, aliases = aliases)
@@ -296,6 +319,27 @@ object AudioLibrary {
             val cur = index ?: return@withLock false
             index = cur.mapValues { (k, v) -> if (k in ids) v.copy(enabled = enabled) else v }
             persist(context, index.orEmpty().values)
+            true
+        }
+    }
+
+    /** B33.2c · 批量移动分组（group 字段；空串=默认（同分类）） */
+    suspend fun setGroup(context: Context, ids: Set<String>, group: String): Boolean = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext false
+        lock.withLock {
+            val cur = index ?: return@withLock false
+            var changed = false
+            val next = cur.mapValues { (k, v) ->
+                if (k in ids && v.group != group) {
+                    changed = true
+                    v.copy(group = group)
+                } else {
+                    v
+                }
+            }
+            if (!changed) return@withLock false
+            index = next
+            persist(context, next.values)
             true
         }
     }
@@ -599,39 +643,35 @@ object AudioLibrary {
 
     // ------------------------------------------------------------ 内部
 
-    private fun registryFile(context: Context): File =
+    private fun metaDir(context: Context): File =
+        File(TmDemoAssets.libRoot(context), "_meta")
+
+    private fun categoryFileName(category: String): String = when (category) {
+        "BGM" -> "bgm.json"
+        "环境声" -> "ambience.json"
+        else -> "sfx.json"
+    }
+
+    /** 旧版 registry.json（仅一次性导入兜底；用户可删除） */
+    private fun legacyRegistryFile(context: Context): File =
         File(TmDemoAssets.libRoot(context), "registry.json")
 
     private fun relOf(context: Context, file: File): String =
         runCatching { file.relativeTo(TmDemoAssets.libRoot(context)).path.replace(File.separatorChar, '/') }
             .getOrDefault(file.name)
 
-    /** sidecar 元数据（B33.3d：source + soundId + aliases ——「文件自带规则」） */
-    internal class SidecarMeta(
-        val source: String,
-        val soundId: String,
-        val aliases: List<String>,
-    )
-
-    internal fun sidecarMetaOf(file: File): SidecarMeta? {
-        val side = File(file.parentFile, file.nameWithoutExtension + ".json")
-        if (!side.isFile) return null
-        return runCatching {
-            val o = JSONObject(side.readText().removePrefix("\uFEFF"))
-            val src = when (o.optString("libSource")) {
-                SOURCE_REMOTE -> SOURCE_REMOTE
-                else -> SOURCE_GENERATED
-            }
-            SidecarMeta(
-                source = src,
-                soundId = o.optString("soundId").trim(),
-                aliases = o.optJSONArray("aliases").toStringList(),
-            )
-        }.getOrNull()
+    /** B33.2c：无 sidecar 后，按名称在规则声音表反查（soundId + 别名），尽力恢复联动 */
+    private fun recoverByName(name: String): Pair<String, List<String>> {
+        val data = AudioRuleStore.current() ?: return "" to emptyList()
+        val sid = runCatching { data.soundIdByName(name) }.getOrDefault("")
+        if (sid.isBlank()) return "" to emptyList()
+        val aliases = data.namesOfSound(sid)
+            .asSequence()
+            .filter { it.isNotBlank() && it != name }
+            .take(8)
+            .toList()
+        return sid to aliases
     }
-
-    private fun sniffSource(file: File): String =
-        sidecarMetaOf(file)?.source ?: SOURCE_LOCAL
 
     private fun scanInternal(context: Context, old: Map<String, AudioAsset>): Map<String, AudioAsset> {
         val root = TmDemoAssets.libRoot(context)
@@ -641,21 +681,41 @@ object AudioLibrary {
         walkAudio(root).forEach { f ->
             val rel = f.relativeTo(root).path.replace(File.separatorChar, '/')
             val prev = prevByRel[rel]
-            val meta = sidecarMetaOf(f)
+            val recovered = if (prev == null) recoverByName(f.nameWithoutExtension) else "" to emptyList()
             val asset = (prev ?: AudioAsset(
                 name = f.nameWithoutExtension,
                 relPath = rel,
                 category = categoryOf(rel),
-                source = meta?.source ?: SOURCE_LOCAL,
+                source = SOURCE_LOCAL,
             )).copy(
                 size = f.length(),
                 mtime = f.lastModified(),
-                soundId = prev?.soundId?.takeIf { it.isNotBlank() } ?: meta?.soundId.orEmpty(),
-                aliases = prev?.aliases?.takeIf { it.isNotEmpty() } ?: meta?.aliases.orEmpty(),
+                soundId = prev?.soundId?.takeIf { it.isNotBlank() } ?: recovered.first,
+                aliases = prev?.aliases?.takeIf { it.isNotEmpty() } ?: recovered.second,
             )
             map[asset.id] = asset
         }
-        return map
+        // B33.2c：同名同类去重合并（保留首个；并集 soundId/别名；不删除文件）
+        val byKey = HashMap<String, String>()
+        val deduped = LinkedHashMap<String, AudioAsset>()
+        var mergedCount = 0
+        map.values.forEach { a ->
+            val key = "${a.category}|${a.name}"
+            val keptId = byKey[key]
+            if (keptId == null) {
+                byKey[key] = a.id
+                deduped[a.id] = a
+            } else {
+                mergedCount++
+                val kept = deduped[keptId] ?: return@forEach
+                deduped[keptId] = kept.copy(
+                    soundId = kept.soundId.ifBlank { a.soundId },
+                    aliases = (kept.aliases + a.aliases).distinct(),
+                )
+            }
+        }
+        lastMergeCount = mergedCount
+        return deduped
     }
 
     private fun walkAudio(dir: File, depth: Int = 0): Sequence<File> {
@@ -669,35 +729,41 @@ object AudioLibrary {
         }
     }
 
-    private fun registerFile(context: Context, file: File, source: String): AudioAsset? {
+    private fun registerFile(
+        context: Context,
+        file: File,
+        source: String,
+        soundId: String = "",
+        aliases: List<String> = emptyList(),
+    ): AudioAsset? {
         val cur = index ?: return null
         if (!file.isFile) return null
         val root = TmDemoAssets.libRoot(context)
         val rel = runCatching { file.relativeTo(root).path.replace(File.separatorChar, '/') }
             .getOrNull()?.takeIf { it.isNotBlank() && !it.startsWith("..") } ?: return null
-        val meta = sidecarMetaOf(file)
         val existing = cur.values.firstOrNull { it.relPath == rel }
         if (existing != null) {
             val updated = existing.copy(
                 size = file.length(),
                 mtime = file.lastModified(),
-                soundId = existing.soundId.ifBlank { meta?.soundId.orEmpty() },
-                aliases = existing.aliases.takeIf { it.isNotEmpty() } ?: meta?.aliases.orEmpty(),
+                soundId = existing.soundId.ifBlank { soundId },
+                aliases = existing.aliases.takeIf { it.isNotEmpty() } ?: aliases,
             )
             if (updated == existing) return existing
             index = cur + (updated.id to updated)
             scheduleSave(context.applicationContext)
             return updated
         }
+        val recovered = if (soundId.isBlank()) recoverByName(file.nameWithoutExtension) else "" to emptyList()
         val asset = AudioAsset(
             name = file.nameWithoutExtension,
             relPath = rel,
             category = categoryOf(rel),
-            source = source.ifBlank { meta?.source ?: SOURCE_LOCAL },
+            source = source.ifBlank { SOURCE_LOCAL },
             size = file.length(),
             mtime = file.lastModified(),
-            soundId = meta?.soundId.orEmpty(),
-            aliases = meta?.aliases.orEmpty(),
+            soundId = soundId.ifBlank { recovered.first },
+            aliases = aliases.takeIf { it.isNotEmpty() } ?: recovered.second,
         )
         index = cur + (asset.id to asset)
         scheduleSave(context.applicationContext)
@@ -729,13 +795,20 @@ object AudioLibrary {
 
     private fun persist(context: Context, assets: Collection<AudioAsset>) {
         runCatching {
-            val f = registryFile(context)
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(serializeRegistry(assets))
-            if (!tmp.renameTo(f)) {
-                tmp.copyTo(f, overwrite = true)
-                tmp.delete()
+            val dir = metaDir(context)
+            dir.mkdirs()
+            val grouped = LinkedHashMap<String, MutableList<AudioAsset>>()
+            assets.forEach { a ->
+                grouped.getOrPut(categoryFileName(a.category)) { mutableListOf() }.add(a)
+            }
+            listOf("bgm.json", "ambience.json", "sfx.json").forEach { name ->
+                val f = File(dir, name)
+                val tmp = File(dir, "$name.tmp")
+                tmp.writeText(serializeRegistry(grouped[name].orEmpty()))
+                if (!tmp.renameTo(f)) {
+                    tmp.copyTo(f, overwrite = true)
+                    tmp.delete()
+                }
             }
         }
     }

@@ -28,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import io.legado.app.constant.PreferKey
+import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
 import io.legado.app.help.readaloud.audio.AudioRemoteDownloader
@@ -43,6 +45,7 @@ import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.lazylist.FastScrollLazyColumn
 import io.legado.app.ui.widget.components.list.ListScaffold
 import io.legado.app.ui.widget.components.list.ListUiState
+import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
@@ -81,8 +84,13 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
 
     val inSelectionMode = selectedIds.isNotEmpty()
 
-    // 18+ 等 defaultEnabled=false 的包默认不出现（后续「分类开关」批次再放开）
-    val visiblePacks = remember(packs) { packs.filter { it.defaultEnabled } }
+    // B33.2c：18+ 等 defaultEnabled=false 的包受「18+ 内容」开关控制（默认关闭）
+    var adultEnabled by remember {
+        mutableStateOf(runCatching { AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true }.getOrDefault(false))
+    }
+    val visiblePacks = remember(packs, adultEnabled) {
+        packs.filter { it.defaultEnabled || adultEnabled }
+    }
 
     fun reloadLocalNames() {
         scope.launch {
@@ -220,6 +228,24 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                         color = LegadoTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     )
+                }
+                val hiddenAdultCount = packs.count { !it.defaultEnabled }
+                if (hiddenAdultCount > 0 || adultEnabled) {
+                    item(key = "adult_toggle") {
+                        TinyClickableSettingItem(
+                            title = if (adultEnabled) {
+                                "隐藏 18+ 内容"
+                            } else {
+                                "显示 18+ 内容（$hiddenAdultCount 个包）"
+                            },
+                            description = "默认关闭；开启后远程库与音效规则层同步生效",
+                            onClick = {
+                                val v = !adultEnabled
+                                adultEnabled = v
+                                AppConfigStore.putBoolean(PreferKey.audioAdultEnabled, v)
+                            },
+                        )
+                    }
                 }
                 items(shown, key = { it.soundId }) { s ->
                     SelectionItemCard(

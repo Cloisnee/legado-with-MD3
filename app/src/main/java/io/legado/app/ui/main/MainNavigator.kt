@@ -105,6 +105,18 @@ object MainNavigator {
                 }
             }
 
+            is MainRouteAudioEdit -> {
+                // 音频库的二级页面（编辑）：从库内进入时叠栈，返回直接回库内页
+                if (currentRoute == MainRouteAudioLibrary) {
+                    backStack.add(route)
+                } else {
+                    backStack.clear()
+                    backStack.add(MainRouteHome)
+                    backStack.add(MainRouteAudioLibrary)
+                    backStack.add(route)
+                }
+            }
+
             MainRouteImportLocal,
             MainRouteImportRemote,
             is MainRouteCache,
