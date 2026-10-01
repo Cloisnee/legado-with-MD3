@@ -114,7 +114,7 @@ class PrepareChapterSpeechPlanUseCase(
             AnalysisConfigStore.Config()
         }
         if (!cfg.fallbackDefaultVoice) {
-            AppLog.putAudio("【音频缓存】$chLabel 等待分析就绪（最长 ${cfg.waitAnalysisSec} 秒）…")
+            AppLog.putAudio("【音频缓存·音效与背景音·第${chapterIndex + 1}章】等待分析就绪（最长 ${cfg.waitAnalysisSec}s）")
             val waited = awaitAnalysisReady(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,

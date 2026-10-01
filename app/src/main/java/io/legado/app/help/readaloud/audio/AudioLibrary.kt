@@ -48,7 +48,6 @@ object AudioLibrary {
         val size: Long = 0L,
         val mtime: Long = 0L,
         /** 编辑字段（B33.2 音频库 UI / B33.3e 规则实装） */
-        val group: String = "",
         val pattern: String = "",
         /** 标签描述（原「替换为」更名：插入标签文案 / 合成描述，默认同素材名） */
         val tagDesc: String = "",
@@ -69,7 +68,6 @@ object AudioLibrary {
         val entry: String = "",
     ) {
         val id: String get() = if (zipRel.isBlank()) relPath else "$zipRel#$entry"
-        val groupLabel: String get() = group.ifBlank { category }
     }
 
     data class ResolvedAsset(val asset: AudioAsset, val file: File)
@@ -327,23 +325,65 @@ object AudioLibrary {
         }
     }
 
-    /** B33.2c · 批量移动分组（group 字段；空串=默认（同分类）） */
-    suspend fun setGroup(context: Context, ids: Set<String>, group: String): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * B33.3c-附3 · 移动到固有分组（音效 / BGM / 环境声）：
+     * 文件实际搬迁到对应目录（`bgm/`、`sfx/环境声/`、`sfx/音效/`），同名冲突加 `_2` 后缀，索引随迁。
+     */
+    suspend fun setCategory(context: Context, ids: Set<String>, category: String): Boolean = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext false
         lock.withLock {
             val cur = index ?: return@withLock false
+            val root = TmDemoAssets.libRoot(context)
             var changed = false
-            val next = cur.mapValues { (k, v) ->
-                if (k in ids && v.group != group) {
-                    changed = true
-                    v.copy(group = group)
-                } else {
-                    v
+            val next = LinkedHashMap<String, AudioAsset>(cur.size)
+            cur.values.forEach { a ->
+                if (a.id !in ids || a.category == category || a.zipRel.isNotBlank()) {
+                    next[a.id] = a
+                    return@forEach
                 }
+                val targetFolder = when (category) {
+                    "BGM" -> "bgm"
+                    "环境声" -> "sfx/环境声"
+                    else -> "sfx/音效"
+                }
+                val src = File(root, a.relPath)
+                if (!src.isFile) {
+                    next[a.id] = a
+                    return@forEach
+                }
+                val fileName = a.relPath.substringAfterLast('/')
+                val base = fileName.substringBeforeLast('.')
+                val ext = fileName.substringAfterLast('.', "")
+                var targetName = fileName
+                var dst = File(root, "$targetFolder/$targetName")
+                var n = 2
+                while (dst.exists()) {
+                    targetName = if (ext.isEmpty()) "${base}_$n" else "${base}_$n.$ext"
+                    dst = File(root, "$targetFolder/$targetName")
+                    n++
+                }
+                val ok = runCatching {
+                    dst.parentFile?.mkdirs()
+                    if (src.renameTo(dst)) {
+                        true
+                    } else {
+                        src.copyTo(dst, overwrite = false)
+                        src.delete()
+                        true
+                    }
+                }.getOrDefault(false)
+                if (!ok) {
+                    next[a.id] = a
+                    return@forEach
+                }
+                changed = true
+                val newRel = "$targetFolder/$targetName"
+                next[newRel] = a.copy(relPath = newRel, category = category)
             }
             if (!changed) return@withLock false
             index = next
             persist(context, next.values)
+            missCache.clear()
             true
         }
     }
@@ -536,7 +576,6 @@ object AudioLibrary {
                                 put("name", a.name)
                                 put("relPath", a.relPath)
                                 put("category", a.category)
-                                put("group", a.group)
                                 put("pattern", a.pattern)
                                 put("tagDesc", a.tagDesc)
                                 put("isRegex", a.isRegex)
@@ -593,7 +632,6 @@ object AudioLibrary {
                 aliases = o.optJSONArray("aliases").toStringList(),
                 size = o.optLong("size", 0L),
                 mtime = o.optLong("mtime", 0L),
-                group = o.optString("group"),
                 pattern = o.optString("pattern"),
                 tagDesc = o.optString("tagDesc"),
                 isRegex = o.optBoolean("isRegex", true),
@@ -623,7 +661,6 @@ object AudioLibrary {
                 if (a.aliases.isNotEmpty()) put("aliases", JSONArray(a.aliases))
                 put("size", a.size)
                 put("mtime", a.mtime)
-                if (a.group.isNotBlank()) put("group", a.group)
                 if (a.pattern.isNotBlank()) put("pattern", a.pattern)
                 if (a.tagDesc.isNotBlank()) put("tagDesc", a.tagDesc)
                 if (!a.isRegex) put("isRegex", false)
@@ -680,22 +717,29 @@ object AudioLibrary {
     private fun scanInternal(context: Context, old: Map<String, AudioAsset>): Map<String, AudioAsset> {
         val root = TmDemoAssets.libRoot(context)
         root.mkdirs()
-        val prevByRel = old.values.associateBy { it.relPath }
-        val map = LinkedHashMap<String, AudioAsset>()
+        val pending = LinkedHashMap<String, File>()
         walkAudio(root).forEach { f ->
             val rel = f.relativeTo(root).path.replace(File.separatorChar, '/')
-            val prev = prevByRel[rel]
-            val recovered = if (prev == null) recoverByName(f.nameWithoutExtension) else "" to emptyList()
-            val asset = (prev ?: AudioAsset(
+            pending[rel] = f
+        }
+        // B33.3c-附3：保留既有顺序（新的在前=入库顺序倒序）；新文件按 mtime 升序追加到尾部
+        val map = LinkedHashMap<String, AudioAsset>()
+        old.values.forEach { p ->
+            val f = pending.remove(p.relPath) ?: return@forEach
+            map[p.id] = p.copy(size = f.length(), mtime = f.lastModified())
+        }
+        pending.values.sortedBy { it.lastModified() }.forEach { f ->
+            val rel = f.relativeTo(root).path.replace(File.separatorChar, '/')
+            val recovered = recoverByName(f.nameWithoutExtension)
+            val asset = AudioAsset(
                 name = f.nameWithoutExtension,
                 relPath = rel,
                 category = categoryOf(rel),
                 source = SOURCE_LOCAL,
-            )).copy(
                 size = f.length(),
                 mtime = f.lastModified(),
-                soundId = prev?.soundId?.takeIf { it.isNotBlank() } ?: recovered.first,
-                aliases = prev?.aliases?.takeIf { it.isNotEmpty() } ?: recovered.second,
+                soundId = recovered.first,
+                aliases = recovered.second,
             )
             map[asset.id] = asset
         }

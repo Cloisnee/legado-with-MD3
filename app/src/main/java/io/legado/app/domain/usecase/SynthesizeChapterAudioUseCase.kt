@@ -47,18 +47,17 @@ class SynthesizeChapterAudioUseCase(
         chapterIndex: Int,
         onProgress: suspend (processed: Int, total: Int) -> Unit = { _, _ -> },
     ): Result = withContext(Dispatchers.IO) {
-        // B19：章节显示名（标题截到章）
-        val chLabel = runCatching { dataRepository.chapterLabelOf(book, chapterIndex) }
-            .getOrDefault("第${chapterIndex + 1}章")
+        // B19：章节显示名（B33.3c-附3：统一「第 N 章」前缀格式）
+        val chLabel = "第${chapterIndex + 1}章"
         val lines = dataRepository.loadChapterScript(book, chapterIndex)
         if (lines.isEmpty()) {
-            AppLog.putAudio("【音频缓存】批量合成 $chLabel 跳过：本章暂无本地剧本")
+            AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章暂无本地剧本")
             return@withContext Result(0, 0, 0)
         }
         // 声线目录（Room 镜像表）可能尚未同步（典型：刚清过应用数据）→ 先补写，否则会全部跳过
         runCatching { syncTtsServerVoices() }
         AppLog.putAudio(
-            "【音频缓存】批量合成 $chLabel 开始（剧本 ${lines.size} 条）"
+            "【音频缓存·$chLabel】批量合成开始（剧本 ${lines.size} 条）"
         )
         val settings = settingsGateway.currentSettings
         val speechRate = ReadAloudAudioCacheKeys.speechRateScale(
@@ -150,7 +149,7 @@ class SynthesizeChapterAudioUseCase(
             while (!outcome.ok && retried < maxRetry) {
                 retried++
                 AppLog.putAudio(
-                    "【音频缓存】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
+                    "【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
                 )
                 delay(500)
                 outcome = synthesizer.synthesize(voice.engineId, voice.speakerId, text, file, timeoutMs)
@@ -158,7 +157,7 @@ class SynthesizeChapterAudioUseCase(
             if (outcome.ok) {
                 done++
                 AppLog.putAudio(
-                    "【音频缓存】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
+                    "【音频缓存·$chLabel】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
                         " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}"
                 )
                 // B11 响度均衡：学习该声线响度（异步；失败静默）
@@ -167,14 +166,14 @@ class SynthesizeChapterAudioUseCase(
                 failed++
                 runCatching { file.delete() }
                 AppLog.putAudio(
-                    "【音频缓存】批量合成失败 $chLabel #$index ${row.speaker}:" +
+                    "【音频缓存·$chLabel】批量合成失败 #$index ${row.speaker}:" +
                         " ${outcome.reason}（已重试 $retried 次） | ${text.take(24)}"
                 )
             }
             onProgress(done + failed + skipped, total)
         }
         AppLog.putAudio(
-            "【音频缓存】批量合成 $chLabel 完成：新增/命中 $done，失败 $failed，" +
+            "【音频缓存·$chLabel】批量合成完成：新增/命中 $done，失败 $failed，" +
                 "跳过 $skipped（无声线 $skippedNoVoice / 非内置引擎 $skippedOtherEngine）"
         )
         Result(done, failed, skipped)

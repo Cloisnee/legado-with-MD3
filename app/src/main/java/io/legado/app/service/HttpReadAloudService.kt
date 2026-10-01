@@ -1,6 +1,5 @@
 package io.legado.app.service
 
-import io.legado.app.utils.ChapterLabels
 import android.annotation.SuppressLint
 import android.app.Application
 import android.app.PendingIntent
@@ -345,8 +344,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         super.onPlaybackStateReplaced()
         val chapter = readerReadAloudChapter ?: return
         AppLog.putAudio(
-            "【音频缓存】${ChapterLabels.of(chapter.title, chapter.chapterIndex)}" +
-                "播放队列就绪：${contentList.size}条"
+            "【音频缓存·第${chapter.chapterIndex + 1}章】播放队列就绪：${contentList.size}条"
         )
     }
 
@@ -458,7 +456,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val speakText = text.replace(AppPattern.notReadAloudRegex, "")
                     val cueLabel = cueLabel(index, routedVoice)
                     if (speakText.isEmpty()) {
-                        AppLog.putAudio("【音频缓存】空文本→静音占位 $cueLabel | ${snippet(text)}")
+                        AppLog.putAudio("【音频缓存·${chapterTag()}】空文本→静音占位 $cueLabel | ${snippet(text)}")
                     } else if (!cacheFile.isValidAudio()) {
                         val t0 = System.currentTimeMillis()
                         val failReason = runCatching {
@@ -522,7 +520,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                             when (it) {
                                 is CancellationException -> Unit
                                 else -> {
-                                    AppLog.putAudio("【音频缓存】合成异常，已暂停朗读: ${it.localizedMessage}", it)
+                                    AppLog.putAudio("【音频缓存·${chapterTag()}】合成异常，已暂停朗读: ${it.localizedMessage}", it)
                                     pauseReadAloud()
                                 }
                             }
@@ -531,7 +529,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         if (failReason == null) {
                             chapterNew++
                             AppLog.putAudio(
-                                "【音频缓存】已缓存 $cueLabel " +
+                                "【音频缓存·${chapterTag()}】已缓存 $cueLabel " +
                                     "${cacheFile.length() / 1024}KB " +
                                     "${System.currentTimeMillis() - t0}ms | ${snippet(speakText)}"
                             )
@@ -541,7 +539,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                             // 失败不落缓存（避免「失败」被当成「已合成」）；播放时用临时静音占位
                             runCatching { cacheFile.delete() }
                             AppLog.putAudio(
-                                "【音频缓存】合成失败→静音占位 $cueLabel: $failReason | ${snippet(speakText)}"
+                                "【音频缓存·${chapterTag()}】合成失败→静音占位 $cueLabel: $failReason | ${snippet(speakText)}"
                             )
                         }
                     } else {
@@ -576,18 +574,13 @@ class HttpReadAloudService : BaseReadAloudService(),
                         }
                     }
                 }
-                val chLabel = readerReadAloudChapter
-                    ?.let { ChapterLabels.of(it.title, it.chapterIndex) }
-                    ?: "第1章"
                 AppLog.putAudio(
-                    "【音频缓存】$chLabel" +
-                        " 缓存检查：新增合成 $chapterNew 条、命中 $chapterHit 条、失败 $chapterFail 条"
+                    "【音频缓存·${chapterTag()}】缓存检查：新增合成 $chapterNew 条、命中 $chapterHit 条、失败 $chapterFail 条"
                 )
                 // 串行铁律：本章条目全部合成结束后，才启动后续章节预合成。
                 // 两者若并行，会同时调用同一插件引擎（音色插件普遍不耐并发）→ "No data written"。
                 AppLog.putAudio(
-                    "【音频缓存】$chLabel" +
-                        " 条目合成结束，开始预合成后续章节"
+                    "【音频缓存·${chapterTag()}】条目合成结束，开始预合成后续章节"
                 )
                 launchPreDownload(httpTts)
             }
@@ -646,7 +639,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
             )
         ) {
-            AppLog.putAudio("【音频缓存】跳过预合成 ${ChapterLabels.of(displayTitle, chapter.index)}（朗读分析未就绪）")
+            AppLog.putAudio("【音频缓存·第${chapter.index + 1}章】跳过预合成（朗读分析未就绪）")
             return null
         }
         val plan = buildSpeechPlan(
@@ -729,12 +722,11 @@ class HttpReadAloudService : BaseReadAloudService(),
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, targetIndex) ?: break
                 val prepared = getPreDownloadChapter(book, chapter)
                 if (prepared == null) {
-                    AppLog.putAudio("【音频缓存】跳过预合成 ${ChapterLabels.of(chapter.title, targetIndex)}（章节内容未缓存）")
+                    AppLog.putAudio("【音频缓存·第${targetIndex + 1}章】跳过预合成（章节内容未缓存）")
                     continue
                 }
                 AppLog.putAudio(
-                    "【音频缓存】预合成 ${ChapterLabels.of(prepared.chapterTitle, targetIndex)}" +
-                        "${prepared.contentList.size}条"
+                    "【音频缓存·第${targetIndex + 1}章】预合成 ${prepared.contentList.size}条"
                 )
                 val chapterFailed = synthesizeChapterCues(prepared, httpTts, concurrency)
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
@@ -787,7 +779,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         val skipped = outcomes.count { it == CueSyncOutcome.Skipped }
         val failedCount = outcomes.count { it == CueSyncOutcome.Failed }
         AppLog.putAudio(
-            "【音频缓存】预合成 ${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)} 完成：" +
+            "【音频缓存·第${prepared.chapterIndex + 1}章】预合成完成：" +
                 "新增 $stored、命中 $cached、跳过 $skipped、失败 $failedCount（共 $totalCues 条）"
         )
         failedCount > totalCues / 2
@@ -813,15 +805,15 @@ class HttpReadAloudService : BaseReadAloudService(),
         while (n < maxRetry) {
             n++
             AppLog.putAudio(
-                "【音频缓存】预合成失败，第 $n/$maxRetry 次重试 $label: ${result.reason} | ${snippet(content)}"
+                "【音频缓存·第${prepared.chapterIndex + 1}章】预合成失败，第 $n/$maxRetry 次重试 $label: ${result.reason} | ${snippet(content)}"
             )
             delay(500)
             result = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
             if (result.outcome != CueSyncOutcome.Failed) return result.outcome
         }
         AppLog.putAudio(
-            "【音频缓存】预合成失败（已重试 $n 次后放弃）$label" +
-                " | ${prepared.chapterTitle} | ${snippet(content)} | ${result.reason}"
+            "【音频缓存·第${prepared.chapterIndex + 1}章】预合成失败（已重试 $n 次后放弃）$label" +
+                " | ${snippet(content)} | ${result.reason}"
         )
         return result.outcome
     }
@@ -934,7 +926,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     }
                     val speakText = text.replace(AppPattern.notReadAloudRegex, "")
                     if (speakText.isEmpty()) {
-                        AppLog.putAudio("【音频缓存】空文本→静音占位 | ${snippet(speakText)}")
+                        AppLog.putAudio("【音频缓存·${chapterTag()}】空文本→静音占位 | ${snippet(speakText)}")
                     }
                     val itemHttpTts = httpTtsForCue(index, httpTts)
                     val fileName = streamCacheKey(text, itemHttpTts)
@@ -1220,6 +1212,10 @@ class HttpReadAloudService : BaseReadAloudService(),
     private fun cueLabel(index: Int, voice: ReadAloudVoice): String =
         "#$index " + voice.speakerId.ifBlank { voice.displayName }
 
+    /** B33.3c-附3：音频缓存日志章节前缀（第 N 章；N = index+1） */
+    private fun chapterTag(): String =
+        readerReadAloudChapter?.let { "第${it.chapterIndex + 1}章" } ?: "第?章"
+
     /** 音频日志中的文本摘要（单行、截断） */
     private fun snippet(text: String, max: Int = 24): String {
         val oneLine = text.replace(Regex("\\s+"), " ").trim()
@@ -1242,7 +1238,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         while (n < maxRetry) {
             n++
             AppLog.putAudio(
-                "【音频缓存】合成失败，第 $n/$maxRetry 次重试 $label: $reason | ${snippet(text)}"
+                "【音频缓存·${chapterTag()}】合成失败，第 $n/$maxRetry 次重试 $label: $reason | ${snippet(text)}"
             )
             delay(500)
             reason = attempt()
@@ -1468,7 +1464,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun onPlayerError(error: PlaybackException) {
         super.onPlayerError(error)
         AppLog.putAudio(
-            "【音频缓存】播放失败已跳过本条 #$nowSpeak: ${error.localizedMessage} | " +
+            "【音频缓存·${chapterTag()}】播放失败已跳过本条 #$nowSpeak: ${error.localizedMessage} | " +
                 snippet(contentList.getOrNull(nowSpeak).orEmpty()),
             error,
         )

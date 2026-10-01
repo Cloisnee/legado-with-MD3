@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,10 +22,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -56,17 +59,16 @@ import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
-import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
-import io.legado.app.ui.widget.components.checkBox.CheckboxItem
 import io.legado.app.ui.widget.components.divider.PillDivider
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.lazylist.FastScrollLazyColumn
 import io.legado.app.ui.widget.components.list.ListUiState
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
@@ -125,7 +127,6 @@ fun AudioLibraryScreen(
     var showImportPicker by remember { mutableStateOf(false) }
     var moveSheet by remember { mutableStateOf(false) }
     var moveTarget by remember { mutableStateOf<String?>(null) }
-    var moveNewGroup by remember { mutableStateOf("") }
     var generatedOnly by remember { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
@@ -282,7 +283,7 @@ fun AudioLibraryScreen(
                     a.name.contains(q, ignoreCase = true) ||
                         a.pattern.contains(q, ignoreCase = true) ||
                         a.tagDesc.contains(q, ignoreCase = true) ||
-                        a.groupLabel.contains(q, ignoreCase = true)
+                        a.category.contains(q, ignoreCase = true)
                 }
             }
             val sorted = when (sortMode) {
@@ -398,7 +399,6 @@ fun AudioLibraryScreen(
                 text = "移动音频",
                 onClick = {
                     moveTarget = null
-                    moveNewGroup = ""
                     moveSheet = true
                 },
             ),
@@ -536,7 +536,7 @@ fun AudioLibraryScreen(
                         onMoveItem = { from, to -> moveLocal(from, to) },
                         title = ui.name,
                         subtitle = buildString {
-                            append(ui.groupLabel)
+                            append(ui.category)
                             when (ui.source) {
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
@@ -619,30 +619,23 @@ fun AudioLibraryScreen(
     AudioMoveSheet(
         show = moveSheet,
         count = selectedIds.size,
-        groups = allAssets.map { it.group }.filter { it.isNotBlank() }.distinct().sorted(),
         target = moveTarget,
-        newGroup = moveNewGroup,
         onTargetChange = { moveTarget = it },
-        onNewGroupChange = { moveNewGroup = it },
         onDismiss = { moveSheet = false },
         onConfirm = {
-            val chosen = moveTarget
-            val newName = moveNewGroup.trim()
-            if (chosen == null && newName.isBlank()) {
-                scope.launch { snackbarHostState.showSnackbar("请先选择分组（或输入新分组名）") }
+            val dest = moveTarget
+            if (dest == null) {
+                scope.launch { snackbarHostState.showSnackbar("请先选择目标分组") }
             } else {
-                val dest = newName.ifBlank { chosen.orEmpty() }
                 val ids = selectedIds.filterIsInstance<String>().toSet()
                 moveSheet = false
                 scope.launch {
                     val ok = runCatching {
-                        AudioLibrary.setGroup(context.applicationContext, ids, dest)
+                        AudioLibrary.setCategory(context.applicationContext, ids, dest)
                     }.getOrDefault(false)
                     selectedIds = emptySet()
                     reload()
-                    snackbarHostState.showSnackbar(
-                        if (ok) "已移动到：${dest.ifBlank { "默认（同分类）" }}" else "未发生变更"
-                    )
+                    snackbarHostState.showSnackbar(if (ok) "已移动到：$dest" else "未发生变更")
                 }
             }
         },
@@ -765,20 +758,18 @@ private fun AudioMissingSheet(
         }
     }
 }
-/** B33.2c · 批量「移动音频」到分组（复刻「移动声线」交互：选项卡片 + 新建） */
+/** B33.3c-附3 · 批量「移动音频」到固有分组（音效 / BGM / 环境声；下拉选择 + 移动） */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AudioMoveSheet(
     show: Boolean,
     count: Int,
-    groups: List<String>,
     target: String?,
-    newGroup: String,
     onTargetChange: (String?) -> Unit,
-    onNewGroupChange: (String) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    var expanded by remember(show) { mutableStateOf(false) }
     AppModalBottomSheet(
         show = show,
         onDismissRequest = onDismiss,
@@ -787,40 +778,46 @@ private fun AudioMoveSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            AppText(
-                text = "移动到哪个分组",
-                style = LegadoTheme.typography.labelMedium,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-            )
-            CheckboxItem(
-                title = "默认（同分类）",
-                checked = target == "",
-                onCheckedChange = { onTargetChange("") },
-            )
-            groups.forEach { g ->
-                CheckboxItem(
-                    title = g,
-                    checked = target == g,
-                    onCheckedChange = { onTargetChange(g) },
-                )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = true }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AppText(
+                        text = if (target == null) "选择目标分组" else "分组：$target",
+                        style = LegadoTheme.typography.bodyMedium,
+                        color = if (target == null) {
+                            LegadoTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            LegadoTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = LegadoTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                RoundDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    listOf("音效", "BGM", "环境声").forEach { g ->
+                        RoundDropdownMenuItem(
+                            text = g,
+                            onClick = {
+                                onTargetChange(g)
+                                expanded = false
+                            },
+                        )
+                    }
+                }
             }
-            AppTextField(
-                value = newGroup,
-                onValueChange = {
-                    onNewGroupChange(it)
-                    if (it.isNotBlank()) onTargetChange(null)
-                },
-                label = "或新建分组",
-                placeholder = { AppText("输入新分组名") },
-                backgroundColor = LegadoTheme.colorScheme.surfaceInput,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
             MediumPlainButton(
                 onClick = onConfirm,
                 modifier = Modifier.fillMaxWidth(),

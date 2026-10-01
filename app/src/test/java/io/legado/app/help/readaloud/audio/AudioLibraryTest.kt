@@ -53,7 +53,6 @@ class AudioLibraryTest {
                     source = AudioLibrary.SOURCE_GENERATED,
                     size = 136232,
                     mtime = 1234L,
-                    group = "音效组",
                     pattern = "铃|钟",
                     tagDesc = "铜铃轻响音效",
                     scopeTitle = true,
@@ -74,7 +73,6 @@ class AudioLibraryTest {
         assertEquals(listOf("铃铛"), a?.aliases)
         assertEquals(136232L, a?.size)
         assertEquals(1234L, a?.mtime)
-        assertEquals("音效组", a?.group)
         assertEquals("铃|钟", a?.pattern)
         assertEquals("铜铃轻响音效", a?.tagDesc)
         assertEquals(true, a?.isRegex)

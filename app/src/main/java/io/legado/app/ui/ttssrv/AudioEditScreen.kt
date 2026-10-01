@@ -22,8 +22,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.animateFloatingActionButton
 import androidx.compose.runtime.Composable
@@ -42,7 +46,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.legado.app.help.readaloud.audio.AudioLibrary
-import io.legado.app.ui.replace.edit.GroupSelector
 import io.legado.app.ui.replace.edit.QuickInputBar
 import io.legado.app.ui.replace.edit.keyboardAsState
 import io.legado.app.ui.theme.LegadoTheme
@@ -50,6 +53,7 @@ import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.button.ToggleChip
+import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
@@ -88,11 +92,10 @@ private enum class EditField { Name, Group, Pattern, TagDesc }
 fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var asset by remember { mutableStateOf<AudioLibrary.AudioAsset?>(null) }
-    var allGroups by remember { mutableStateOf<List<String>>(emptyList()) }
     var ready by remember { mutableStateOf(false) }
 
     var name by remember { mutableStateOf("") }
-    var group by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("音效") }
     var pattern by remember { mutableStateOf("") }
     var tagDesc by remember { mutableStateOf("") }
     var isRegex by remember { mutableStateOf(true) }
@@ -114,13 +117,12 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
         }
         asset = a
         name = a.name
-        group = a.group
+        category = a.category
         pattern = a.pattern
         tagDesc = a.tagDesc
         isRegex = a.isRegex
         scopeTitle = a.scopeTitle
         scopeContent = a.scopeContent
-        allGroups = list.map { it.group }.filter { it.isNotBlank() }.distinct().sorted()
         ready = true
     }
 
@@ -132,7 +134,6 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                     app,
                     base.copy(
                         name = name.trim().ifBlank { base.name },
-                        group = group.trim(),
                         pattern = pattern.trim(),
                         tagDesc = tagDesc.trim(),
                         isRegex = isRegex,
@@ -140,6 +141,9 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                         scopeContent = scopeContent,
                     ),
                 )
+                if (category != base.category) {
+                    AudioLibrary.setCategory(app, setOf(base.id), category)
+                }
             }
             app.toastOnUi("已保存")
             onBack()
@@ -149,7 +153,7 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
     fun copyRule() {
         val json = JSONObject().apply {
             put("name", name)
-            put("group", group)
+            put("category", category)
             put("pattern", pattern)
             put("tagDesc", tagDesc)
             put("isRegex", isRegex)
@@ -168,7 +172,7 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
             return
         }
         name = o.optString("name", name)
-        group = o.optString("group", group)
+        category = o.optString("category", o.optString("group", category))
         pattern = o.optString("pattern", pattern)
         tagDesc = o.optString("tagDesc", tagDesc)
         isRegex = o.optBoolean("isRegex", isRegex)
@@ -286,12 +290,11 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                         .onFocusChanged { if (it.isFocused) activeField = EditField.Name },
                     singleLine = true,
                 )
-                GroupSelector(
-                    currentGroup = group,
-                    allGroups = allGroups,
-                    onGroupChange = { group = it },
-                    onManageClick = { paramsOpen = true },
-                    backgroundColor = LegadoTheme.colorScheme.surfaceInput,
+                FixedGroupSelector(
+                    current = category,
+                    options = listOf("音效", "BGM", "环境声"),
+                    onSelect = { category = it },
+                    onParamsClick = { paramsOpen = true },
                 )
                 AppTextField(
                     value = pattern,
@@ -357,6 +360,56 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
             }
         },
     )
+}
+
+/** B33.3c-附3 · 固有分组选择（音效 / BGM / 环境声；下拉 + 齿轮→音频参数，不含新建） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FixedGroupSelector(
+    current: String,
+    options: List<String>,
+    onSelect: (String) -> Unit,
+    onParamsClick: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = !expanded },
+            modifier = Modifier.weight(1f),
+        ) {
+            AppTextField(
+                value = current,
+                onValueChange = {},
+                readOnly = true,
+                label = "分组",
+                backgroundColor = LegadoTheme.colorScheme.surfaceInput,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(
+                        ExposedDropdownMenuAnchorType.PrimaryEditable,
+                        true,
+                    ),
+            )
+            RoundDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { g ->
+                    RoundDropdownMenuItem(
+                        text = g,
+                        onClick = {
+                            onSelect(g)
+                            expanded = false
+                        },
+                    )
+                }
+            }
+        }
+        MediumPlainButton(
+            onClick = onParamsClick,
+            icon = Icons.Default.Settings,
+            contentDescription = "音频参数",
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

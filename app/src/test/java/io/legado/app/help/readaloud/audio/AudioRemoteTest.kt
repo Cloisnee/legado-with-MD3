@@ -108,4 +108,43 @@ class AudioRemoteTest {
         val r = AudioRemoteCatalog.search(list, "万箭齐发")
         assertEquals(listOf("b", "a", "c"), r.map { it.soundId })
     }
+
+    @Test
+    fun `远程匹配 分层：精确优先·长度最接近·环境契合优先`() {
+        fun s(id: String, name: String, category: String = "sfx", categoryName: String = "") =
+            AudioRemoteCatalog.RemoteSound(
+                soundId = id,
+                name = name,
+                category = category,
+                categoryName = categoryName,
+            )
+
+        // 精确（归一化后相等）优先于包含
+        assertEquals(
+            "zhong",
+            AudioRemoteMatcher.pick(
+                listOf(s("zhong", "钟声"), s("sanlian", "三连钟声")),
+                "钟声",
+                SynthLane.SFX,
+            )?.soundId,
+        )
+        // 包含：与标签长度差最小者优先（打雷 vs 电闪雷鸣）
+        assertEquals(
+            "dalei",
+            AudioRemoteMatcher.pick(
+                listOf(s("dalei", "打雷"), s("dian", "电闪雷鸣")),
+                "雷声",
+                SynthLane.SFX,
+            )?.soundId,
+        )
+        // 环境声轨：既在环境分组又含「环境」字 → 优于普通精确匹配
+        assertEquals(
+            "env1",
+            AudioRemoteMatcher.pick(
+                listOf(s("x", "雨夜"), s("env1", "雨夜环境", category = "scene", categoryName = "环境声")),
+                "雨夜",
+                SynthLane.AMB,
+            )?.soundId,
+        )
+    }
 }
