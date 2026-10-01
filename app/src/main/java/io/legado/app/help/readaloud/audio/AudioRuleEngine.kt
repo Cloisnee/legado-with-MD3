@@ -92,7 +92,7 @@ object AudioRuleEngine {
                     UserRule(laneOfAsset(a), a.name, null, p, a.scopeTitle, a.scopeContent)
                 }
                 if (rule == null && invalidPatternLogged.add("${a.name}|$p")) {
-                    AppLog.putAudio("【四轨·规则】正则无效已跳过：${a.name}（$p）")
+                    AppLog.putAudio("【音效与背景音】正则无效已跳过：${a.name}（$p）")
                 }
                 rule
             }

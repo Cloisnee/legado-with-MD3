@@ -69,7 +69,7 @@ object AudioRemoteAuto {
  */
 internal object AudioRemoteMatcher {
 
-    private val SOFT_SUFFIXES = listOf("音效", "声效", "声音", "声", "音")
+    private val SOFT_SUFFIXES = listOf("音效", "声效")
 
     private fun norm(raw: String): String {
         var t = raw.trim()

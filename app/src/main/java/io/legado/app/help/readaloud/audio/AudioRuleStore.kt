@@ -139,7 +139,7 @@ object AudioRuleStore {
                             { name -> loaded.soundIdByName(name) },
                         )
                     }.onSuccess { n ->
-                        if (n > 0) AppLog.putAudio("【四轨·规则】素材别名回填 $n 条")
+                        if (n > 0) AppLog.putAudio("【音效与背景音】素材别名回填 $n 条")
                     }
                 }
             } finally {
@@ -165,7 +165,7 @@ object AudioRuleStore {
         val intentText = readText(dir, FILE_INTENT)
         val mapText = readText(dir, FILE_MAP)
         if (intentText == null || mapText == null) {
-            AppLog.putAudio("【四轨·规则】规则未就绪（拉取失败且无缓存），暂用内置示例规则")
+            AppLog.putAudio("【音效与背景音】规则未就绪（拉取失败且无缓存），暂用内置示例规则")
             return@withContext null
         }
         val intents = parseIntents(intentText) ?: return@withContext null
@@ -175,7 +175,7 @@ object AudioRuleStore {
         val excluded = readText(dir, FILE_TAGS)?.let { parseTagFilters(it) }.orEmpty()
         val rd = buildData(intents, soundIdsByIntent, soundById, aliasRules, excluded, origin)
         AppLog.putAudio(
-            "【四轨·规则】已加载：意图 ${rd.intentCount} · 别名 ${aliasRules.size} · 声音 ${soundById.size}（$origin）"
+            "【音效与背景音】已加载：意图 ${rd.intentCount} · 别名 ${aliasRules.size} · 声音 ${soundById.size}（$origin）"
         )
         rd
     }
@@ -201,7 +201,7 @@ object AudioRuleStore {
                 }
             }.onSuccess { ok++ }.onFailure { fail++ }
         }
-        if (fail > 0) AppLog.putAudio("【四轨·规则】拉取完成：成功 $ok · 失败 $fail")
+        if (fail > 0) AppLog.putAudio("【音效与背景音】拉取完成：成功 $ok · 失败 $fail")
         if (ok > 0) {
             runCatching {
                 File(dir, "meta.json").writeText(

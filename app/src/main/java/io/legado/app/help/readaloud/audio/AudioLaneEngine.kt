@@ -114,8 +114,9 @@ class AudioLaneEngine(
 
     private var lastCueIndex: Int = -1
 
-    /** B33.4 前置：章首预扫描去重（chapterKey 集合） */
-    private val prescanned = HashSet<String>()
+    /** B33.4-前置：当前章「第N章」标签（日志前缀）与静默标志（预合成完成的章播放时静默） */
+    private var chapterLabel: String = ""
+    private var quietChapter: Boolean = false
 
     /** 循环轨解析失败的重试闸门（防每 tick 扫描；文件落库后自动接上） */
     private var ambMissRetryAt: Long = 0L
@@ -151,9 +152,11 @@ class AudioLaneEngine(
     }
 
     /** 换章/重新播放：全轨淡出重置（新章的行会在 onCue 里重新驱动） */
-    fun onChapterStarted() {
+    fun onChapterStarted(label: String? = null, quiet: Boolean = false) {
         resetAll()
         lastCueIndex = -1
+        if (label != null) chapterLabel = label
+        quietChapter = quiet
     }
 
     /** 暂停——ticker 会依据 serviceActive 自动压低；此处仅加速一次对账 */
@@ -196,9 +199,9 @@ class AudioLaneEngine(
                     desiredAmbience = keyword
                     ambienceDwellAt = now
                     ambMissRetryAt = 0L
-                    AppLog.putAudio("【四轨】#$index 环境→$keyword（${pick.hit.source.label}）")
+                    laneLog(index, "环境→$keyword（${pick.hit.source.label}）")
                 } else {
-                    AppLog.putAudio("【四轨】#$index 环境=$keyword（驻留未到，跳过）")
+                    laneLog(index, "环境=$keyword（驻留未到，跳过）")
                 }
             }
         }
@@ -214,9 +217,9 @@ class AudioLaneEngine(
                     bgmHoldRemaining = bgmPick.hit.holdCues.coerceAtLeast(1)
                     lastBgmByKeyword[keyword] = now
                     bgmMissRetryAt = 0L
-                    AppLog.putAudio("【四轨】#$index BGM=$keyword（持续 ${bgmHoldRemaining} 行 · ${bgmPick.hit.source.label}）")
+                    laneLog(index, "BGM=$keyword（持续 ${bgmHoldRemaining} 行 · ${bgmPick.hit.source.label}）")
                 } else {
-                    AppLog.putAudio("【四轨】#$index BGM=$keyword（冷却中，跳过）")
+                    laneLog(index, "BGM=$keyword（冷却中，跳过）")
                 }
             } else if (bgmPick.hit.holdCues > 0) {
                 bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmPick.hit.holdCues)
@@ -224,7 +227,7 @@ class AudioLaneEngine(
         } else if (desiredBgm != null) {
             bgmHoldRemaining--
             if (bgmHoldRemaining <= 0) {
-                AppLog.putAudio("【四轨】#$index BGM 到期淡出（${desiredBgm}）")
+                laneLog(index, "BGM 到期淡出（${desiredBgm}）")
                 desiredBgm = null
             }
         }
@@ -237,44 +240,12 @@ class AudioLaneEngine(
                 lastSfxAt = now
                 lastSfxByKeyword[keyword] = now
                 if (playSfx(pick)) {
-                    AppLog.putAudio("【四轨】#$index 音效=$keyword（${pick.hit.source.label}）")
+                    laneLog(index, "音效=$keyword（${pick.hit.source.label}）")
                 }
             } else {
-                AppLog.putAudio("【四轨】#$index 音效=$keyword（闸门跳过）")
+                laneLog(index, "音效=$keyword（闸门跳过）")
             }
         }
-    }
-
-    /**
-     * B33.4 前置 · 章首预扫描：对本章全部文本行先跑一遍规则层，
-     * 缺失即刻上报（进入 远程→合成 补缺链），不再等朗读逐行触达。
-     */
-    fun prescanChapter(chapterKey: String, texts: List<String>) {
-        if (!config.enabled || chapterKey.isBlank() || texts.isEmpty()) return
-        if (!prescanned.add(chapterKey)) return
-        scope.launch {
-            val misses = runCatching {
-                withContext(Dispatchers.Default) {
-                    buildList {
-                        texts.forEach { raw ->
-                            val text = raw.trim()
-                            if (text.length < 2) return@forEach
-                            for (lane in listOf(DemoLanes.Lane.SFX, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.BGM)) {
-                                val pick = AudioRuleEngine.pick(appContext, lane, text) ?: continue
-                                if (pick.resolved == null) add(kindOf(lane) to pick.hit.label)
-                            }
-                        }
-                    }.distinct()
-                }
-            }.getOrDefault(emptyList())
-            misses.forEach { (kind, label) -> markMissing(kind, label) }
-        }
-    }
-
-    private fun kindOf(lane: DemoLanes.Lane): String = when (lane) {
-        DemoLanes.Lane.AMBIENCE -> "环境"
-        DemoLanes.Lane.BGM -> "BGM"
-        else -> "音效"
     }
 
     fun release() {
@@ -504,9 +475,19 @@ class AudioLaneEngine(
     private fun markMissing(kind: String, keyword: String) {
         val key = "$kind|$keyword"
         if (missingLogged.add(key)) {
-            AppLog.putAudio("【四轨·缺失】$kind「$keyword」不在库中")
+            if (!quietChapter) {
+                AppLog.putAudio("【音效与背景音${chapterSuffix()}】缺失 $kind「$keyword」")
+            }
             runCatching { onMissing(kind, keyword) }
         }
+    }
+
+    private fun chapterSuffix(): String = if (chapterLabel.isBlank()) "" else "·$chapterLabel"
+
+    /** 章级四轨日志（预合成完成的章静默；格式：【音效与背景音·第N章】#i ×××） */
+    private fun laneLog(index: Int, msg: String) {
+        if (quietChapter) return
+        AppLog.putAudio("【音效与背景音${chapterSuffix()}】#$index $msg")
     }
 
     private fun resetAll() {

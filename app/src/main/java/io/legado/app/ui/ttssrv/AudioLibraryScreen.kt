@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,12 +21,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -63,6 +60,7 @@ import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
+import io.legado.app.ui.widget.components.card.TextCard
 import io.legado.app.ui.widget.components.divider.PillDivider
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.icon.AppIcons
@@ -73,6 +71,7 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
@@ -758,7 +757,7 @@ private fun AudioMissingSheet(
         }
     }
 }
-/** B33.3c-附3 · 批量「移动音频」到固有分组（音效 / BGM / 环境声；下拉选择 + 移动） */
+/** B33.3c-附3 · 批量「移动音频」到固有分组（复刻「移动声线·一级分组」卡片：卡片+右侧标签+点击下拉） */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AudioMoveSheet(
@@ -769,7 +768,7 @@ private fun AudioMoveSheet(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    var expanded by remember(show) { mutableStateOf(false) }
+    var open by remember(show) { mutableStateOf(false) }
     AppModalBottomSheet(
         show = show,
         onDismissRequest = onDismiss,
@@ -783,36 +782,29 @@ private fun AudioMoveSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { expanded = true }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppText(
-                        text = if (target == null) "选择目标分组" else "分组：$target",
-                        style = LegadoTheme.typography.bodyMedium,
-                        color = if (target == null) {
-                            LegadoTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            LegadoTheme.colorScheme.onSurface
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = null,
-                        tint = LegadoTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                RoundDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                TinySettingItem(
+                    title = "目标分组",
+                    trailingContent = {
+                        TextCard(
+                            text = target ?: "请选择",
+                            backgroundColor = LegadoTheme.colorScheme.surfaceContainerHigh,
+                            contentColor = if (target == null) {
+                                LegadoTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                LegadoTheme.colorScheme.onSurface
+                            },
+                        )
+                    },
+                    onClick = { open = true },
+                )
+                RoundDropdownMenu(expanded = open, onDismissRequest = { open = false }) { dismiss ->
                     listOf("音效", "BGM", "环境声").forEach { g ->
                         RoundDropdownMenuItem(
                             text = g,
+                            isSelected = g == target,
                             onClick = {
+                                dismiss()
                                 onTargetChange(g)
-                                expanded = false
                             },
                         )
                     }

@@ -65,6 +65,7 @@ import io.legado.app.data.repository.ReadAloudAudioCacheRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.audio.AudioChapterPrelude
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
@@ -219,6 +220,18 @@ class HttpReadAloudService : BaseReadAloudService(),
         ).also { synthQueue = it }
     }.getOrNull()
 
+    // ---- B33.4-前置：「音效与背景音」章节预合成闭环（统计/远程/合成/总结 + 静默章） ----
+    private var audioPrelude: AudioChapterPrelude? = null
+
+    private fun audioPreludeOrCreate(): AudioChapterPrelude? = runCatching {
+        audioPrelude ?: AudioChapterPrelude(
+            appContext = applicationContext,
+            scope = lifecycleScope,
+            queue = { synthQueueOrCreate() },
+            enabled = { readAloudSettings.alEnabled },
+        ).also { audioPrelude = it }
+    }.getOrNull()
+
     private fun laneEngineOrCreate(): AudioLaneEngine? {
         if (!readAloudSettings.alEnabled) return null
         laneEngine?.let { return it }
@@ -233,7 +246,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 it.applySettings(readAloudSettings)
                 laneEngine = it
                 AppLog.putAudio(
-                    "【四轨】引擎就绪：音效 ${readAloudSettings.alSfxVolume}% · 环境 ${readAloudSettings.alAmbVolume}%" +
+                    "【音效与背景音】引擎就绪：音效 ${readAloudSettings.alSfxVolume}% · 环境 ${readAloudSettings.alAmbVolume}%" +
                         " · BGM ${readAloudSettings.alBgmVolume}% · 闪避 ${if (readAloudSettings.alDucking) "开" else "关"}"
                 )
             }
@@ -352,6 +365,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         exoPlayer.stop()
         playIndexJob?.cancel()
         preDownloadJob?.cancel()
+        runCatching { audioPrelude?.finishChapter() }
         runCatching { laneEngine?.onStopped() }
     }
 
@@ -730,6 +744,13 @@ class HttpReadAloudService : BaseReadAloudService(),
                 )
                 val chapterFailed = synthesizeChapterCues(prepared, httpTts, concurrency)
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
+                // B33.4-前置：本章人声完成 → 音效/背景音预合成（远程→合成），全部到终态才进入下一章（同步闸门）
+                runCatching {
+                    audioPreludeOrCreate()?.prepareAhead(
+                        chapterKey = "${book.bookUrl}|$targetIndex",
+                        texts = prepared.queue.cues.map { it.text },
+                    )
+                }
             }
         } catch (e: Exception) {
             AppLog.putAudio("听书预下载异常: ${e.localizedMessage}", e)
@@ -1436,17 +1457,19 @@ class HttpReadAloudService : BaseReadAloudService(),
         applyLoudnessGain(mediaItem?.mediaId?.toIntOrNull() ?: 0)
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
             // B33 四轨：章首条目就绪（含换章新队列）
-            // B33.4 前置：章首预扫描——缺失尽早进补缺链（远程→合成），不必等朗读逐行触达
+            // B33.4-前置：章标签/静默章设置 + 预合成闭环开章（剧本统计→远程命中→入队，不再等逐行触达）
             runCatching {
-                val engine = laneEngineOrCreate()
-                if (engine != null) {
-                    val key = runCatching {
-                        val bookUrl = ReadBook.book?.bookUrl.orEmpty()
-                        val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
-                        "$bookUrl|$idx"
-                    }.getOrDefault("")
-                    engine.prescanChapter(key, playbackQueue.cues.map { it.text })
-                }
+                val ck = runCatching {
+                    val bookUrl = ReadBook.book?.bookUrl.orEmpty()
+                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                    "$bookUrl|$idx"
+                }.getOrDefault("")
+                val prelude = audioPreludeOrCreate()
+                laneEngineOrCreate()?.onChapterStarted(
+                    label = chapterTag(),
+                    quiet = prelude?.isPreparedAhead(ck) == true,
+                )
+                prelude?.startChapter(ck, playbackQueue.cues.map { it.text })
             }
             laneCueStarted()
             return

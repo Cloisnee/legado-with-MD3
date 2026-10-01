@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,6 +62,8 @@ class AudioSynthQueue(
         var fileRel: String = "",
         var source: String = "",
         var updatedAt: Long = 0L,
+        /** B33.4-前置：条目归属章（bookUrl|chapterIndex；预合成章用显式键） */
+        var chapterKey: String = "",
     )
 
     private val lock = Mutex()
@@ -90,12 +93,12 @@ class AudioSynthQueue(
         }
     }
 
-    /** 缺失上报入口（由四轨引擎回调；非挂起、不阻塞播放） */
-    fun enqueue(kind: String, keyword: String) {
+    /** 缺失上报入口（由四轨引擎/预合成闭环回调；非挂起、不阻塞播放）；chapterKey=预合成章显式键 */
+    fun enqueue(kind: String, keyword: String, chapterKey: String? = null) {
         val lane = SynthLane.ofKind(kind) ?: return
         val kw = keyword.trim()
         if (kw.isEmpty()) return
-        scope.launch { enqueueInternal(lane, kw) }
+        scope.launch { enqueueInternal(lane, kw, chapterKey) }
     }
 
     fun release() {
@@ -105,7 +108,7 @@ class AudioSynthQueue(
 
     // ------------------------------------------------------------ 入队与限流
 
-    private suspend fun enqueueInternal(lane: SynthLane, kw: String) {
+    private suspend fun enqueueInternal(lane: SynthLane, kw: String, ckOverride: String? = null) {
         ensureLoaded()
         val refs = runCatching { repo.queueRefs(lane.assignKey) }.getOrDefault(emptyList())
         lock.withLock {
@@ -113,7 +116,13 @@ class AudioSynthQueue(
             val now = now()
             entries[key]?.let { e ->
                 when (e.status) {
-                    "done" -> return
+                    "done" -> {
+                        // B33.4-前置：done 但文件已被删（清库重来/手动清理）→ 视同缺失，重新走补缺链
+                        val f = if (e.fileRel.isNotBlank()) {
+                            runCatching { File(TmDemoAssets.libRoot(appContext), e.fileRel) }.getOrNull()
+                        } else null
+                        if (f != null && f.isFile && f.length() > 0L) return
+                    }
                     "pending", "running" -> if (now - e.updatedAt < STALE_INFLIGHT_MS) return
                     "failed" -> if (now - e.updatedAt < FAIL_COOLDOWN_MS) return
                 }
@@ -127,13 +136,13 @@ class AudioSynthQueue(
                 logSkipOnce(key, "${lane.label}「$kw」缺失（自动补缺已关闭）")
                 return
             }
-            val ck = chapterKey().ifBlank { "default" }
+            val ck = (ckOverride ?: chapterKey()).ifBlank { "default" }
             val used = chapterCounts[ck] ?: 0
             if (used >= cap) {
                 logSkipOnce(key, "${lane.label}「$kw」缺失（本章补缺已达上限 $cap）")
                 return
             }
-            val entry = Entry(lane, kw, "pending", updatedAt = now)
+            val entry = Entry(lane, kw, "pending", updatedAt = now, chapterKey = ck)
             entries[key] = entry
             chapterCounts[ck] = used + 1
             queue.trySend(entry)
@@ -256,6 +265,7 @@ class AudioSynthQueue(
                     fileRel = o.optString("file"),
                     source = o.optString("source"),
                     updatedAt = o.optLong("updatedAt", 0L),
+                    chapterKey = o.optString("chapterKey"),
                 )
             }
             val chaptersObj = root.optJSONObject("chapters") ?: JSONObject()
@@ -296,6 +306,7 @@ class AudioSynthQueue(
                 put("file", e.fileRel)
                 put("source", e.source)
                 put("updatedAt", e.updatedAt)
+                if (e.chapterKey.isNotBlank()) put("chapterKey", e.chapterKey)
             })
         }
         root.put("entries", entriesObj)
@@ -308,6 +319,25 @@ class AudioSynthQueue(
     // ------------------------------------------------------------ 工具
 
     private fun keyOf(lane: SynthLane, keyword: String): String = "${lane.name}|$keyword"
+
+    /** B33.4-前置：某章是否仍有在途条目（pending/running） */
+    private fun chapterBusy(chapterKey: String): Boolean =
+        entries.values.any { it.chapterKey == chapterKey && (it.status == "pending" || it.status == "running") }
+
+    /** 等待某章全部合成条目到终态（done/failed）；超时返回 false */
+    suspend fun awaitChapterIdle(chapterKey: String, timeoutMs: Long): Boolean {
+        if (chapterKey.isBlank()) return true
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!lock.withLock { chapterBusy(chapterKey) }) return true
+            delay(500)
+        }
+        return !lock.withLock { chapterBusy(chapterKey) }
+    }
+
+    /** 某条目当前状态（""=未入队；供预合成总结统计） */
+    fun entryStatus(lane: SynthLane, keyword: String): String =
+        runCatching { entries["${lane.name}|$keyword"]?.status.orEmpty() }.getOrDefault("")
 
     private fun logSkipOnce(key: String, reason: String) {
         if (skipLogged.add(key)) AppLog.putAudio("【合成】跳过：$reason")
