@@ -21,7 +21,7 @@ import java.io.File
 
 /** B33.3c · 合成轨（落库目录 / 分配键 / 展示名） */
 enum class SynthLane(val label: String, val folderRel: String, val assignKey: String) {
-    SFX("音效", "sfx/拟音", "synthSfx"),
+    SFX("音效", "sfx/音效", "synthSfx"),
     AMB("环境", "sfx/环境声", "synthAmb"),
     BGM("BGM", "bgm", "synthBgm");
 

@@ -90,4 +90,35 @@ class AudioRuleEngineTest {
         assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = true, isNonContiguous = true))
         assertFalse(AudioFallbackPolicy.shouldUseRules(hasPlan = true))
     }
+
+    @Test
+    fun `自定规则 正则与字面 及 标题正文范围`() {
+        val mk = { name: String, pattern: String, isRegex: Boolean, sT: Boolean, sC: Boolean, cat: String ->
+            AudioLibrary.AudioAsset(
+                name = name,
+                relPath = "sfx/x/$name.mp3",
+                category = cat,
+                pattern = pattern,
+                isRegex = isRegex,
+                scopeTitle = sT,
+                scopeContent = sC,
+            )
+        }
+        val rules = AudioRuleEngine.compileUserRules(
+            listOf(
+                mk("雨夜庭院", "(细雨|雨夜)", true, false, true, "环境声"),
+                mk("战斗鼓", "战鼓", false, true, false, "音效"),
+                mk("已停用", "雨", true, false, true, "音效").copy(enabled = false),
+            )
+        )
+        assertEquals(2, rules.size)
+        val rain = rules.first { it.name == "雨夜庭院" }
+        assertTrue(rain.matches("这是一个雨夜", isTitle = false))
+        assertFalse(rain.matches("雨夜庭院", isTitle = true))
+        assertEquals(DemoLanes.Lane.AMBIENCE, rain.lane)
+        val drum = rules.first { it.name == "战斗鼓" }
+        assertTrue(drum.matches("敲响战鼓", isTitle = true))
+        assertFalse(drum.matches("敲响战鼓", isTitle = false))
+        assertEquals(DemoLanes.Lane.SFX, drum.lane)
+    }
 }

@@ -1,7 +1,11 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -33,6 +37,8 @@ import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.SplicedColumnGroup
+import io.legado.app.ui.widget.components.checkBox.CheckboxItem
+import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
@@ -104,6 +110,7 @@ fun ReadAloudSettingsScreen(
     var showAlBgmCd by remember { mutableStateOf(false) }
     var showAlAmbDwell by remember { mutableStateOf(false) }
     var showAlChapCap by remember { mutableStateOf(false) }
+    var showAlAmbExcl by remember { mutableStateOf(false) }
     var seedRunning by remember { mutableStateOf(false) }
     var synthTesting by remember { mutableStateOf(false) }
 
@@ -300,6 +307,15 @@ fun ReadAloudSettingsScreen(
                             description = "有台词出声时自动压低 BGM，空档恢复",
                             checked = st.alDucking,
                             onCheckedChange = { v -> update { it.copy(alDucking = v) } },
+                        )
+                        TinyClickableSettingItem(
+                            title = "BGM 起乐时环境",
+                            description = when (st.alBgmAmbExclusive) {
+                                2 -> "暂停环境底噪（BGM 结束恢复）"
+                                1 -> "压低环境底噪到 30%"
+                                else -> "不处理（两轨各自独立）"
+                            },
+                            onClick = { showAlAmbExcl = true },
                         )
                         TinyClickableSettingItem(
                             title = "音效最小间隔",
@@ -576,4 +592,48 @@ fun ReadAloudSettingsScreen(
         onValueChange = { v -> update { it.copy(alChapterSynthCap = v.coerceIn(0, 50)) } },
         onDismissRequest = { showAlChapCap = false },
     )
+    AlAmbExclusiveSheet(
+        show = showAlAmbExcl,
+        current = st.alBgmAmbExclusive,
+        onSelect = { v ->
+            update { it.copy(alBgmAmbExclusive = v) }
+            showAlAmbExcl = false
+        },
+        onDismiss = { showAlAmbExcl = false },
+    )
+}
+
+/** B33.3e · 「BGM 起乐时环境」三态选择（不处理 / 压低 / 暂停） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AlAmbExclusiveSheet(
+    show: Boolean,
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AppModalBottomSheet(
+        show = show,
+        onDismissRequest = onDismiss,
+        title = "BGM 起乐时环境",
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                0 to "不处理（两轨各自独立）",
+                1 to "压低（环境衰减到 30%）",
+                2 to "暂停（BGM 结束后恢复）",
+            ).forEach { (value, label) ->
+                CheckboxItem(
+                    title = label,
+                    checked = current == value,
+                    onCheckedChange = { onSelect(value) },
+                )
+            }
+        }
+    }
 }

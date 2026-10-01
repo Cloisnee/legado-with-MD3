@@ -54,4 +54,6 @@ data class ReadAloudSettings(
     val alAmbDwellS: Int = 25,
     /** 每章自动补缺上限（条，0–50；0=关闭自动补缺） */
     val alChapterSynthCap: Int = 10,
+    /** B33.3e：BGM 起乐时环境让位（0=不处理 / 1=压低到 30% / 2=暂停） */
+    val alBgmAmbExclusive: Int = 1,
 )

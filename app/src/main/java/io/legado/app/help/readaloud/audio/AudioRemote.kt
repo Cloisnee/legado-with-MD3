@@ -261,31 +261,9 @@ object AudioRemoteCatalog {
         }
     }.getOrNull()
 
-    private val FOLDER_BY_CATEGORY = mapOf(
-        "scene" to "sfx/环境声",
-        "emotion" to "sfx/主观声",
-        "strong_sfx" to "sfx/硬音效",
-        "micro_sfx" to "sfx/拟音",
-        "medium_sfx" to "sfx/拟音",
-        "transition" to "sfx/拟音",
-    )
-
-    private val FOLDER_BY_CATEGORY_NAME = mapOf(
-        "环境声" to "sfx/环境声",
-        "戏内声源" to "sfx/戏内声源",
-        "主观恐惧" to "sfx/主观声",
-        "人体反应" to "sfx/拟音",
-        "恐怖器物" to "sfx/硬音效",
-        "灵异鬼怪" to "sfx/主观声",
-        "民俗心理" to "sfx/主观声",
-        "事件链" to "sfx/拟音",
-    )
-
-    /** 落库目录：优先按包内中文分类名，其次按英文 category，兜底 拟音 */
+    /** 落库目录（B33.3e 收敛）：环境类 → `sfx/环境声`；其余音效 → `sfx/音效` */
     internal fun folderOf(sound: RemoteSound): String =
-        FOLDER_BY_CATEGORY_NAME[sound.categoryName]
-            ?: FOLDER_BY_CATEGORY[sound.category]
-            ?: "sfx/拟音"
+        if (sound.category == "scene" || sound.categoryName == "环境声") "sfx/环境声" else "sfx/音效"
 
     /** 落库文件名：中文名纯净文件名 + 源扩展名（mp3/wav…） */
     internal fun fileNameOf(sound: RemoteSound): String {

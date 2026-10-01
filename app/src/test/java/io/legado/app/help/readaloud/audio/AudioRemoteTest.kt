@@ -46,23 +46,29 @@ class AudioRemoteTest {
     }
 
     @Test
-    fun `落库目录映射 优先中文分类名`() {
+    fun `落库目录 环境类收敛到环境声 其余统一音效`() {
         assertEquals(
             "sfx/环境声",
             AudioRemoteCatalog.folderOf(AudioRemoteCatalog.RemoteSound(category = "scene")),
         )
         assertEquals(
-            "sfx/硬音效",
+            "sfx/环境声",
+            AudioRemoteCatalog.folderOf(
+                AudioRemoteCatalog.RemoteSound(category = "sfx", categoryName = "环境声")
+            ),
+        )
+        assertEquals(
+            "sfx/音效",
             AudioRemoteCatalog.folderOf(AudioRemoteCatalog.RemoteSound(category = "strong_sfx")),
         )
         assertEquals(
-            "sfx/戏内声源",
+            "sfx/音效",
             AudioRemoteCatalog.folderOf(
                 AudioRemoteCatalog.RemoteSound(category = "sfx", categoryName = "戏内声源")
             ),
         )
         assertEquals(
-            "sfx/拟音",
+            "sfx/音效",
             AudioRemoteCatalog.folderOf(AudioRemoteCatalog.RemoteSound()),
         )
     }

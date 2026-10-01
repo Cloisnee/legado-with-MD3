@@ -61,6 +61,7 @@ import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
+import io.legado.app.ui.widget.components.checkBox.CheckboxItem
 import io.legado.app.ui.widget.components.divider.PillDivider
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.icon.AppIcons
@@ -79,7 +80,7 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /**
  * B33.2 · 音频库管理（对齐原版「替换净化」范式）：
- * 顶栏：搜索 / 重新扫描 / ⋮（导入 · 排序）；分组多栏；卡片（试听 · 编辑 · 开关）；
+ * 顶栏：搜索 / 重新扫描 / ⋮（导入 · 排序）；四栏（全部 / BGM / 环境声 / 音效）；卡片（试听 · 编辑 · 开关）；
  * 点击多选 + 顶栏选中动画 + 底部操作条（开启/禁用/置顶/置底/导出选中/删除）。
  */
 @Composable
@@ -104,7 +105,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
     var isSearch by remember { mutableStateOf(false) }
     var searchKey by remember { mutableStateOf("") }
     var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
-    var selectedGroup by remember { mutableStateOf<String?>(null) }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
     var localOrder by remember { mutableStateOf<List<AudioLibrary.AudioAsset>?>(null) }
     var editTarget by remember { mutableStateOf<AudioLibrary.AudioAsset?>(null) }
     var paramsOpen by remember { mutableStateOf(false) }
@@ -240,42 +241,39 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         },
     )
 
-    val tabGroups = remember(allAssets) { allAssets.map { it.groupLabel }.distinct().sorted() }
-    val tabTitles = remember(tabGroups) { listOf("全部") + tabGroups }
-    val selectedTabIndex = selectedGroup?.let(tabTitles::indexOf)?.takeIf { it >= 0 } ?: 0
+    // B33.3e：固定四栏（全部 / BGM / 环境声 / 音效）
+    val tabTitles = listOf("全部", "BGM", "环境声", "音效")
+    val selectedTabIndex = selectedCategory?.let(tabTitles::indexOf)?.takeIf { it >= 0 } ?: 0
 
-    LaunchedEffect(tabGroups, selectedGroup) {
-        if (selectedGroup != null && selectedGroup !in tabGroups) {
-            selectedGroup = null
-        }
-    }
-    LaunchedEffect(selectedGroup, searchKey, sortMode) {
+    LaunchedEffect(selectedCategory, searchKey, sortMode) {
         localOrder = null
     }
 
-    val shownItems = remember(allAssets, selectedGroup, searchKey, sortMode, localOrder) {
+    val shownItems = remember(allAssets, selectedCategory, searchKey, sortMode, localOrder) {
         val local = localOrder
         if (local != null) {
             local
         } else {
             var list = allAssets
-            selectedGroup?.let { g -> list = list.filter { it.groupLabel == g } }
+            selectedCategory?.let { c -> list = list.filter { it.category == c } }
             val q = searchKey.trim()
             if (q.isNotEmpty()) {
                 list = list.filter { a ->
                     a.name.contains(q, ignoreCase = true) ||
                         a.pattern.contains(q, ignoreCase = true) ||
-                        a.replacement.contains(q, ignoreCase = true) ||
+                        a.tagDesc.contains(q, ignoreCase = true) ||
                         a.groupLabel.contains(q, ignoreCase = true)
                 }
             }
-            when (sortMode) {
+            val sorted = when (sortMode) {
                 "asc" -> list
                 "desc" -> list.reversed()
                 "name_asc" -> list.sortedBy { it.name.lowercase() }
                 "name_desc" -> list.sortedByDescending { it.name.lowercase() }
                 else -> list
             }
+            // 「全部」按类聚合（BGM → 环境声 → 音效；稳定排序，类内保留排序结果）
+            if (selectedCategory == null) sorted.sortedBy { categoryRankOf(it.category) } else sorted
         }
     }
 
@@ -398,7 +396,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                     tabTitles = tabTitles,
                     selectedTabIndex = selectedTabIndex,
                     onTabSelected = { index ->
-                        selectedGroup = if (index == 0) null else tabTitles.getOrNull(index)
+                        selectedCategory = if (index == 0) null else tabTitles.getOrNull(index)
                     },
                 )
             }
@@ -595,6 +593,13 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
     )
 }
 
+/** 「全部」页类聚合顺序（BGM → 环境声 → 音效） */
+private fun categoryRankOf(category: String): Int = when (category) {
+    "BGM" -> 0
+    "环境声" -> 1
+    else -> 2
+}
+
 @androidx.annotation.OptIn(UnstableApi::class)
 private fun ensurePreviewEnhancer(
     player: ExoPlayer,
@@ -624,7 +629,10 @@ private fun AudioEditSheet(
     var name by remember(show, asset) { mutableStateOf(asset?.name.orEmpty()) }
     var group by remember(show, asset) { mutableStateOf(asset?.group.orEmpty()) }
     var pattern by remember(show, asset) { mutableStateOf(asset?.pattern.orEmpty()) }
-    var replacement by remember(show, asset) { mutableStateOf(asset?.replacement.orEmpty()) }
+    var tagDesc by remember(show, asset) { mutableStateOf(asset?.tagDesc.orEmpty()) }
+    var isRegex by remember(show, asset) { mutableStateOf(asset?.isRegex ?: true) }
+    var scopeTitle by remember(show, asset) { mutableStateOf(asset?.scopeTitle ?: false) }
+    var scopeContent by remember(show, asset) { mutableStateOf(asset?.scopeContent ?: true) }
 
     AppModalBottomSheet(
         show = show,
@@ -667,15 +675,30 @@ private fun AudioEditSheet(
                     value = pattern,
                     onValueChange = { pattern = it },
                     label = "匹配规则",
-                    placeholder = { AppText("关键词或正则（后续批次接入规则引擎）") },
+                    placeholder = { AppText("留空=由库级规则驱动；支持正则/字面") },
                     backgroundColor = LegadoTheme.colorScheme.surfaceInput,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                CheckboxItem(
+                    title = "使用正则（关=字面包含）",
+                    checked = isRegex,
+                    onCheckedChange = { isRegex = it },
+                )
+                CheckboxItem(
+                    title = "应用于标题",
+                    checked = scopeTitle,
+                    onCheckedChange = { scopeTitle = it },
+                )
+                CheckboxItem(
+                    title = "应用于正文",
+                    checked = scopeContent,
+                    onCheckedChange = { scopeContent = it },
+                )
                 AppTextField(
-                    value = replacement,
-                    onValueChange = { replacement = it },
-                    label = "替换为",
-                    placeholder = { AppText("预留字段") },
+                    value = tagDesc,
+                    onValueChange = { tagDesc = it },
+                    label = "标签描述",
+                    placeholder = { AppText("插入标签的说明 / 合成描述（默认同素材名）") },
                     backgroundColor = LegadoTheme.colorScheme.surfaceInput,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -691,7 +714,10 @@ private fun AudioEditSheet(
                                 name = name.trim().ifBlank { base.name },
                                 group = group.trim(),
                                 pattern = pattern.trim(),
-                                replacement = replacement.trim(),
+                                tagDesc = tagDesc.trim(),
+                                isRegex = isRegex,
+                                scopeTitle = scopeTitle,
+                                scopeContent = scopeContent,
                             )
                         )
                     }

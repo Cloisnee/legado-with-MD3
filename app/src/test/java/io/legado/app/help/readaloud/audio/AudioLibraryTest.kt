@@ -21,13 +21,15 @@ class AudioLibraryTest {
         )
 
     @Test
-    fun `分类映射按目录层级`() {
+    fun `分类收敛 全部四栏判定`() {
         assertEquals("BGM", AudioLibrary.categoryOf("bgm/战斗.m4a"))
-        assertEquals("拟音", AudioLibrary.categoryOf("sfx/拟音/茶杯摆放.mp3"))
+        assertEquals("BGM", AudioLibrary.categoryOf("bgm/古风/战斗.m4a"))
         assertEquals("环境声", AudioLibrary.categoryOf("sfx/环境声/客栈大堂.wav"))
+        assertEquals("音效", AudioLibrary.categoryOf("sfx/拟音/茶杯摆放.mp3"))
+        assertEquals("音效", AudioLibrary.categoryOf("sfx/硬音效/开门.mp3"))
         assertEquals("音效", AudioLibrary.categoryOf("sfx/开门.mp3"))
-        assertEquals("导入", AudioLibrary.categoryOf("导入/铜铃轻响.mp3"))
-        assertEquals("其他", AudioLibrary.categoryOf("misc/x.mp3"))
+        assertEquals("音效", AudioLibrary.categoryOf("导入/铜铃轻响.mp3"))
+        assertEquals("音效", AudioLibrary.categoryOf("misc/x.mp3"))
     }
 
     @Test
@@ -53,13 +55,15 @@ class AudioLibraryTest {
                     mtime = 1234L,
                     group = "音效组",
                     pattern = "铃|钟",
-                    replacement = "",
+                    tagDesc = "铜铃轻响音效",
+                    scopeTitle = true,
                     enabled = false,
                     volume = 1.5f,
                     speed = 1.2f,
                     pitch = 0.9f,
                 ),
-            asset("bgm/战斗.m4a", name = "战斗").copy(loop = true, enabled = true),
+            asset("bgm/战斗.m4a", name = "战斗")
+                .copy(enabled = true, pattern = "战斗", scopeContent = false),
         )
         val text = AudioLibrary.serializeRegistry(assets)
         val parsed = AudioLibrary.parseRegistry(text)
@@ -72,12 +76,17 @@ class AudioLibraryTest {
         assertEquals(1234L, a?.mtime)
         assertEquals("音效组", a?.group)
         assertEquals("铃|钟", a?.pattern)
+        assertEquals("铜铃轻响音效", a?.tagDesc)
+        assertEquals(true, a?.isRegex)
+        assertEquals(true, a?.scopeTitle)
+        assertEquals(true, a?.scopeContent)
         assertEquals(false, a?.enabled)
         assertEquals(1.5f, a?.volume)
         assertEquals(1.2f, a?.speed)
         assertEquals(0.9f, a?.pitch)
         val b = parsed?.get("bgm/战斗.m4a")
-        assertEquals(true, b?.loop)
+        assertEquals("战斗", b?.pattern)
+        assertEquals(false, b?.scopeContent)
         assertEquals(true, b?.enabled)
         assertEquals("BGM", b?.category)
     }

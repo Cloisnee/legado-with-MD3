@@ -21,7 +21,7 @@ import java.util.zip.ZipOutputStream
  * B33.2 · 音频素材库（registry 索引 + 解析链 + 库管理）。
  *
  * - 索引文件：`<数据根>/data/audio_lib/registry.json`（唯一索引，随库目录走，重启不丢）；
- * - 条目模型：名称 / 分组 / 匹配规则 / 替换为 / 启用开关 / 音量·音速·音高 / 分类 / 来源；
+ * - 条目模型：名称 / 分组 / 匹配规则（正则·字面 / 标题·正文）/ 标签描述 / 启用开关 / 音量·音速·音高 / 分类 / 来源；
  * - 解析链（引擎 / 试听共用）：精确名 → 别名 → 包含匹配（停用条目不参与）；
  *   未命中回退目录直扫（并自动补登）；
  * - 导入：单个/多个音频文件、zip 包（流式解包；zip 内部保留 sfx/、bgm/ 结构，其余落 `导入/`）；
@@ -45,17 +45,19 @@ object AudioLibrary {
         val category: String,
         val source: String = SOURCE_LOCAL,
         val aliases: List<String> = emptyList(),
-        val tags: List<String> = emptyList(),
         val size: Long = 0L,
         val mtime: Long = 0L,
-        val durationMs: Long = 0L,
-        val loop: Boolean = false,
-        val gain: Float = 1f,
-        val hash: String = "",
-        /** 编辑字段（B33.2 音频库 UI） */
+        /** 编辑字段（B33.2 音频库 UI / B33.3e 规则实装） */
         val group: String = "",
         val pattern: String = "",
-        val replacement: String = "",
+        /** 标签描述（原「替换为」更名：插入标签文案 / 合成描述，默认同素材名） */
+        val tagDesc: String = "",
+        /** 匹配规则是否按正则解释（关=字面包含） */
+        val isRegex: Boolean = true,
+        /** 匹配规则作用范围：章标题 */
+        val scopeTitle: Boolean = false,
+        /** 匹配规则作用范围：正文 */
+        val scopeContent: Boolean = true,
         val enabled: Boolean = true,
         val volume: Float = 1f,
         val speed: Float = 1f,
@@ -488,7 +490,10 @@ object AudioLibrary {
                                 put("category", a.category)
                                 put("group", a.group)
                                 put("pattern", a.pattern)
-                                put("replacement", a.replacement)
+                                put("tagDesc", a.tagDesc)
+                                put("isRegex", a.isRegex)
+                                put("scopeTitle", a.scopeTitle)
+                                put("scopeContent", a.scopeContent)
                                 put("enabled", a.enabled)
                                 put("volume", a.volume.toDouble())
                                 put("speed", a.speed.toDouble())
@@ -514,15 +519,13 @@ object AudioLibrary {
         return assets.firstOrNull { it.name.contains(kw, ignoreCase = true) }
     }
 
+    /** B33.3e 分类收敛：bgm/→BGM；sfx/环境声/→环境声；其余（含导入）→音效 */
     internal fun categoryOf(relPath: String): String {
         val parts = relPath.split('/')
         return when {
-            parts.isEmpty() -> "其他"
-            parts[0] == "bgm" -> "BGM"
-            parts[0] == "sfx" && parts.size >= 3 -> parts[1]
-            parts[0] == "sfx" -> "音效"
-            parts[0] == "导入" -> "导入"
-            else -> "其他"
+            parts.getOrNull(0) == "bgm" -> "BGM"
+            parts.getOrNull(0) == "sfx" && parts.getOrNull(1) == "环境声" -> "环境声"
+            else -> "音效"
         }
     }
 
@@ -540,16 +543,14 @@ object AudioLibrary {
                 category = o.optString("category").ifBlank { categoryOf(rel) },
                 source = o.optString("source").ifBlank { SOURCE_LOCAL },
                 aliases = o.optJSONArray("aliases").toStringList(),
-                tags = o.optJSONArray("tags").toStringList(),
                 size = o.optLong("size", 0L),
                 mtime = o.optLong("mtime", 0L),
-                durationMs = o.optLong("durationMs", 0L),
-                loop = o.optBoolean("loop", false),
-                gain = o.optDouble("gain", 1.0).toFloat(),
-                hash = o.optString("hash"),
                 group = o.optString("group"),
                 pattern = o.optString("pattern"),
-                replacement = o.optString("replacement"),
+                tagDesc = o.optString("tagDesc"),
+                isRegex = o.optBoolean("isRegex", true),
+                scopeTitle = o.optBoolean("scopeTitle", false),
+                scopeContent = o.optBoolean("scopeContent", true),
                 enabled = o.optBoolean("enabled", true),
                 volume = o.optDouble("volume", 1.0).toFloat(),
                 speed = o.optDouble("speed", 1.0).toFloat(),
@@ -572,16 +573,14 @@ object AudioLibrary {
                 put("category", a.category)
                 put("source", a.source)
                 if (a.aliases.isNotEmpty()) put("aliases", JSONArray(a.aliases))
-                if (a.tags.isNotEmpty()) put("tags", JSONArray(a.tags))
                 put("size", a.size)
                 put("mtime", a.mtime)
-                if (a.durationMs > 0) put("durationMs", a.durationMs)
-                if (a.loop) put("loop", true)
-                if (a.gain != 1f) put("gain", a.gain.toDouble())
-                if (a.hash.isNotBlank()) put("hash", a.hash)
                 if (a.group.isNotBlank()) put("group", a.group)
                 if (a.pattern.isNotBlank()) put("pattern", a.pattern)
-                if (a.replacement.isNotBlank()) put("replacement", a.replacement)
+                if (a.tagDesc.isNotBlank()) put("tagDesc", a.tagDesc)
+                if (!a.isRegex) put("isRegex", false)
+                if (a.scopeTitle) put("scopeTitle", true)
+                if (!a.scopeContent) put("scopeContent", false)
                 if (!a.enabled) put("enabled", false)
                 if (a.volume != 1f) put("volume", a.volume.toDouble())
                 if (a.speed != 1f) put("speed", a.speed.toDouble())

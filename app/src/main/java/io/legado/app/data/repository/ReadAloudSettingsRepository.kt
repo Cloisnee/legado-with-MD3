@@ -112,6 +112,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 35).coerceIn(0, 100),
     alBgmVolume = compatDsValue(ReadAloudKeys.AlBgmVolume, 25).coerceIn(0, 100),
     alDucking = compatDsValue(ReadAloudKeys.AlDucking, true),
+    alBgmAmbExclusive = compatDsValue(ReadAloudKeys.AlBgmAmbExclusive, 1).coerceIn(0, 2),
     // B33.3c：新闸门键未写过时，回退映射旧「音效密度」（low/mid/high → 数值档）
     alSfxMinGapS = (compatDsInt(PreferKey.alSfxMinGapS)
         ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[0]).coerceIn(0, 30),
@@ -158,6 +159,7 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.alAmbVolume to alAmbVolume,
     PreferKey.alBgmVolume to alBgmVolume,
     PreferKey.alDucking to alDucking,
+    PreferKey.alBgmAmbExclusive to alBgmAmbExclusive,
     PreferKey.alSfxMinGapS to alSfxMinGapS,
     PreferKey.alSfxCooldownS to alSfxCooldownS,
     PreferKey.alBgmCooldownS to alBgmCooldownS,
@@ -202,6 +204,7 @@ private object ReadAloudKeys {
     val AlAmbVolume = intPreferencesKey(PreferKey.alAmbVolume)
     val AlBgmVolume = intPreferencesKey(PreferKey.alBgmVolume)
     val AlDucking = booleanPreferencesKey(PreferKey.alDucking)
+    val AlBgmAmbExclusive = intPreferencesKey(PreferKey.alBgmAmbExclusive)
     val AlSfxMinGapS = intPreferencesKey(PreferKey.alSfxMinGapS)
     val AlSfxCooldownS = intPreferencesKey(PreferKey.alSfxCooldownS)
     val AlBgmCooldownS = intPreferencesKey(PreferKey.alBgmCooldownS)

@@ -1,10 +1,11 @@
 package io.legado.app.help.readaloud.audio
 
 import android.content.Context
+import io.legado.app.constant.AppLog
 import io.legado.app.help.readaloud.audio.AudioRuleStore.RuleData
 
 /**
- * B33.3d · 音效规则层（兜底驱动）匹配器。
+ * B33.3d · 音效规则层（兜底驱动）匹配器；B33.3e：条目「匹配规则」实装（正则/字面 + 标题/正文范围）。
  *
  * 候选优先级：**用户自定规则**（素材「匹配规则」字段） > **内置示例规则**（DemoLanes） > **CNB 意图规则**（AC 匹配）。
  * 命中后沿「soundId → 别名 → 名称」解析到本地库素材；全部无法解析 → 返回最优候选交给引擎走「缺失 → 合成」。
@@ -40,27 +41,60 @@ object AudioRuleEngine {
     private const val MAX_INTENT_HITS = 6
     private const val USER_RULES_TTL_MS = 30_000L
 
+    /** 用户 BGM 规则默认持续行数（命中后持续 N 行淡出） */
+    private const val USER_BGM_HOLD_CUES = 15
+
     // ------------------------------------------------------------ 用户自定规则（素材「匹配规则」字段）
 
-    private class UserRule(val lane: DemoLanes.Lane, val regex: Regex, val name: String)
+    /** 单条自定规则（正则或字面；标题/正文范围） */
+    internal class UserRule(
+        val lane: DemoLanes.Lane,
+        val name: String,
+        val regex: Regex?,
+        val literal: String?,
+        val scopeTitle: Boolean,
+        val scopeContent: Boolean,
+    ) {
+        fun matches(text: String, isTitle: Boolean): Boolean {
+            if (isTitle && !scopeTitle) return false
+            if (!isTitle && !scopeContent) return false
+            return if (regex != null) regex.containsMatchIn(text) else text.contains(literal.orEmpty())
+        }
+    }
 
     @Volatile private var userRulesAt = 0L
 
     @Volatile private var userRules: List<UserRule> = emptyList()
 
+    private val invalidPatternLogged = HashSet<String>()
+
     private fun userRules(): List<UserRule> {
         val now = System.currentTimeMillis()
         if (now - userRulesAt < USER_RULES_TTL_MS) return userRules
         userRulesAt = now
-        userRules = AudioLibrary.snapshot()
-            .filter { it.enabled && it.pattern.isNotBlank() }
-            .mapNotNull { a ->
-                runCatching { Regex(a.pattern) }
-                    .getOrNull()
-                    ?.let { rx -> UserRule(laneOfAsset(a), rx, a.name) }
-            }
+        userRules = compileUserRules(AudioLibrary.snapshot())
         return userRules
     }
+
+    /** 由素材「匹配规则」字段编译规则（正则无效时跳过并记一次日志） */
+    internal fun compileUserRules(assets: List<AudioLibrary.AudioAsset>): List<UserRule> =
+        assets.asSequence()
+            .filter { it.enabled && it.pattern.isNotBlank() }
+            .mapNotNull { a ->
+                val p = a.pattern.trim()
+                val rule = if (a.isRegex) {
+                    runCatching { Regex(p) }.getOrNull()?.let {
+                        UserRule(laneOfAsset(a), a.name, it, null, a.scopeTitle, a.scopeContent)
+                    }
+                } else {
+                    UserRule(laneOfAsset(a), a.name, null, p, a.scopeTitle, a.scopeContent)
+                }
+                if (rule == null && invalidPatternLogged.add("${a.name}|$p")) {
+                    AppLog.putAudio("【四轨·规则】正则无效已跳过：${a.name}（$p）")
+                }
+                rule
+            }
+            .toList()
 
     internal fun laneOfAsset(asset: AudioLibrary.AudioAsset): DemoLanes.Lane = when (asset.category) {
         "BGM" -> DemoLanes.Lane.BGM
@@ -73,9 +107,9 @@ object AudioRuleEngine {
 
     // ------------------------------------------------------------ 匹配
 
-    /** 返回可播（已解析）或待补缺的最优命中；无命中返回 null */
-    fun pick(context: Context, lane: DemoLanes.Lane, text: String): Picked? {
-        val candidates = candidates(lane, text)
+    /** 返回可播（已解析）或待补缺的最优命中；无命中返回 null。isTitle=章标题行（仅自定规则参与） */
+    fun pick(context: Context, lane: DemoLanes.Lane, text: String, isTitle: Boolean = false): Picked? {
+        val candidates = candidates(lane, text, isTitle)
         if (candidates.isEmpty()) return null
         var first: Picked? = null
         for (h in candidates) {
@@ -86,22 +120,25 @@ object AudioRuleEngine {
         return first
     }
 
-    internal fun candidates(lane: DemoLanes.Lane, text: String): List<Hit> {
+    internal fun candidates(lane: DemoLanes.Lane, text: String, isTitle: Boolean = false): List<Hit> {
         if (text.isBlank()) return emptyList()
         val out = ArrayList<Hit>(8)
-        // 1) 用户自定规则（数量少，直接跑）
+        // 1) 用户自定规则（数量少，直接跑；标题行只收「应用于标题」的）
         for (u in userRules()) {
-            if (u.lane == lane && u.regex.containsMatchIn(text)) {
-                out.add(
-                    Hit(
-                        lane = lane, source = Source.USER,
-                        keywords = listOf(u.name), soundIds = emptyList(),
-                        gain = 0.8f, delayMs = 0L, holdCues = 0, label = u.name,
-                    )
+            if (u.lane != lane || !u.matches(text, isTitle)) continue
+            out.add(
+                Hit(
+                    lane = lane, source = Source.USER,
+                    keywords = listOf(u.name), soundIds = emptyList(),
+                    gain = 0.8f, delayMs = 0L,
+                    holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
+                    label = u.name,
                 )
-                if (out.size >= MAX_CANDIDATES) return out
-            }
+            )
+            if (out.size >= MAX_CANDIDATES) return out
         }
+        // 章标题行只认用户显式规则（示例/意图层不参与）
+        if (isTitle) return out
         // 2) 内置示例规则
         DemoLanes.match(lane, text)?.let { r ->
             out.add(

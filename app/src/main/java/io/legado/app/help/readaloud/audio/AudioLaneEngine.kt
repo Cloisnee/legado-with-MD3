@@ -70,6 +70,8 @@ class AudioLaneEngine(
         val sfxCooldownMs: Long = 60_000L,
         val bgmCooldownMs: Long = 150_000L,
         val ambMinDwellMs: Long = 25_000L,
+        /** B33.3e：BGM 起乐时环境让位（0=不处理 / 1=压低到30% / 2=暂停） */
+        val ambExclusive: Int = 1,
     )
 
     /** media3 版音频属性（ExoPlayer 轨用） */
@@ -138,6 +140,7 @@ class AudioLaneEngine(
             sfxCooldownMs = settings.alSfxCooldownS.coerceIn(0, 300) * 1000L,
             bgmCooldownMs = settings.alBgmCooldownS.coerceIn(0, 600) * 1000L,
             ambMinDwellMs = settings.alAmbDwellS.coerceIn(0, 120) * 1000L,
+            ambExclusive = settings.alBgmAmbExclusive.coerceIn(0, 2),
         )
         if (!config.enabled) resetAll()
     }
@@ -164,14 +167,23 @@ class AudioLaneEngine(
 
     /** 当前剧本行（段）开始。index 与播放队列 / 音频缓存同一套序号；同一 index 幂等。 */
     fun onCue(index: Int, cue: CueInfo?) {
-        if (!config.enabled || cue == null || cue.isChapterTitle) return
+        if (!config.enabled || cue == null) return
+        if (cue.isChapterTitle) {
+            // B33.3e：章标题行只走「应用于标题」的自定规则（不占正文行游标）
+            if (cue.text.isNotBlank()) driveCue(index, cue.text, isTitle = true)
+            return
+        }
         if (index == lastCueIndex) return
         lastCueIndex = index
         val text = cue.text
         if (text.isBlank()) return
+        driveCue(index, text, isTitle = false)
+    }
 
+    /** 三类轨命中驱动（正文行 / 章标题共用；isTitle 时仅「应用于标题」的自定规则参与） */
+    private fun driveCue(index: Int, text: String, isTitle: Boolean) {
         // 1) 环境：命中新场景 → 切换（最短驻留防抖）；规则层 = 自定 > 示例 > CNB 意图
-        AudioRuleEngine.pick(appContext, DemoLanes.Lane.AMBIENCE, text)?.let { pick ->
+        AudioRuleEngine.pick(appContext, DemoLanes.Lane.AMBIENCE, text, isTitle)?.let { pick ->
             val keyword = pick.resolved?.asset?.name ?: pick.hit.label
             if (keyword != desiredAmbience) {
                 val now = System.currentTimeMillis()
@@ -187,7 +199,7 @@ class AudioLaneEngine(
         }
 
         // 2) BGM：命中 → 起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
-        val bgmPick = AudioRuleEngine.pick(appContext, DemoLanes.Lane.BGM, text)
+        val bgmPick = AudioRuleEngine.pick(appContext, DemoLanes.Lane.BGM, text, isTitle)
         if (bgmPick != null) {
             val keyword = bgmPick.resolved?.asset?.name ?: bgmPick.hit.label
             if (keyword != desiredBgm) {
@@ -213,7 +225,7 @@ class AudioLaneEngine(
         }
 
         // 3) 音效：密度闸门（单条最多 1 个 + 全局间隔 + 素材冷却）
-        AudioRuleEngine.pick(appContext, DemoLanes.Lane.SFX, text)?.let { pick ->
+        AudioRuleEngine.pick(appContext, DemoLanes.Lane.SFX, text, isTitle)?.let { pick ->
             val keyword = pick.resolved?.asset?.name ?: pick.hit.label
             if (allowSfx(keyword)) {
                 val now = System.currentTimeMillis()
@@ -247,11 +259,18 @@ class AudioLaneEngine(
         val active = serviceActive()
         val voice = voiceActive()
 
-        // 环境轨：目标 = 轨音量；暂停/停播 → 0
+        // 环境轨：目标 = 轨音量；暂停/停播 → 0；BGM 起乐时按互斥档让位
+        val bgmAudible = desiredBgm != null && (bgmLane.player?.volume ?: 0f) > 0.02f
+        val ambExclusiveFactor = when {
+            !bgmAudible -> 1f
+            config.ambExclusive == 2 -> 0f
+            config.ambExclusive == 1 -> 0.3f
+            else -> 1f
+        }
         driveLane(
             lane = ambLane,
             desired = desiredAmbience,
-            target = if (active) config.ambVolume else 0f,
+            target = if (active) config.ambVolume * ambExclusiveFactor else 0f,
             active = active,
             kind = "环境",
         )
@@ -316,7 +335,8 @@ class AudioLaneEngine(
         val volume = (if (active) target else 0f) * (meta?.volume ?: 1f)
         approach(p, volume.coerceIn(0f, 1f))
         applyLoopBoost(lane, p, volume)
-        if (!active && p.volume <= 0.015f && p.isPlaying) {
+        // 暂停 / 互斥让位到静音时挂起播放器（恢复由上方 play() 逻辑拉起）
+        if (volume <= 0.015f && p.volume <= 0.015f && p.isPlaying) {
             runCatching { p.pause() }
         }
     }
