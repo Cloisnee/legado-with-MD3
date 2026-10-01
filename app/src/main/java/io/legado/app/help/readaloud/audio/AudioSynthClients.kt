@@ -51,12 +51,18 @@ object AudioSynthClients {
 
     /**
      * 生成提示词（Gen 用方括号描述；Music 为 caption）。
-     * 注意：描述尽量短——部分模型会把长句“念出来”，只留关键词可显著降低概率。
+     * 注意：描述尽量短——部分模型会把长句“念出来”，只留关键词可显著降低概率；
+     * B33.3d：去掉规则来源名称的「音效/声效」尾缀（如「下雨声音效」→「[下雨声 环境]」）。
      */
-    fun promptFor(lane: SynthLane, keyword: String): String = when (lane) {
-        SynthLane.SFX -> "[$keyword]"
-        SynthLane.AMB -> "[$keyword 环境]"
-        SynthLane.BGM -> "$keyword 氛围，纯器乐配乐，无人声"
+    fun promptFor(lane: SynthLane, keyword: String): String {
+        val k = keyword.trim().let { raw ->
+            raw.removeSuffix("音效").removeSuffix("声效").trim().ifBlank { raw }
+        }
+        return when (lane) {
+            SynthLane.SFX -> "[$k]"
+            SynthLane.AMB -> "[$k 环境]"
+            SynthLane.BGM -> "$k 氛围，纯器乐配乐，无人声"
+        }
     }
 
     /** 按平台生成一条音频；成功返回 mp3 字节。 */

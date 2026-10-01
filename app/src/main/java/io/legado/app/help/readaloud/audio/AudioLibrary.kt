@@ -36,6 +36,9 @@ object AudioLibrary {
 
     private val AUDIO_EXTS = setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")
 
+    /** 解析负缓存 TTL（ms）：防热路径对未命中关键字重复深扫 */
+    private const val MISS_TTL_MS = 30_000L
+
     data class AudioAsset(
         val name: String,
         val relPath: String,
@@ -57,6 +60,8 @@ object AudioLibrary {
         val volume: Float = 1f,
         val speed: Float = 1f,
         val pitch: Float = 1f,
+        /** B33.3d：远程 soundId（sidecar 自带；规则层 → 素材直连） */
+        val soundId: String = "",
         /** 预留（B33.2b zip 直读）：zip 文件相对路径 + 条目名 */
         val zipRel: String = "",
         val entry: String = "",
@@ -78,6 +83,9 @@ object AudioLibrary {
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
     private val saveLock = Mutex()
+
+    /** 解析负缓存（关键字 → 上次未命中时间；新文件落库 / 重扫时清除） */
+    private val missCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** 内存索引快照（null = 未加载；加载后整 Map 替换，保证跨线程读安全） */
     @Volatile
@@ -102,24 +110,66 @@ object AudioLibrary {
     fun metaByRelPath(relPath: String): AudioAsset? =
         index?.values?.firstOrNull { it.relPath == relPath }
 
+    /** 同步快照（规则层构建「用户自定规则」用） */
+    fun snapshot(): List<AudioAsset> = index?.values?.toList().orEmpty()
+
+    @Volatile
+    private var bySidCache: Map<String, AudioAsset>? = null
+
+    @Volatile
+    private var bySidCacheSrc: Map<String, AudioAsset>? = null
+
+    /** B33.3d：soundId → 素材（惰性构建，随 index 引用变化失效） */
+    private fun assetBySoundId(soundId: String): AudioAsset? {
+        val cur = index ?: return null
+        if (bySidCacheSrc !== cur) {
+            val map = HashMap<String, AudioAsset>()
+            cur.values.forEach { a ->
+                if (a.enabled && a.soundId.isNotBlank()) map.putIfAbsent(a.soundId, a)
+            }
+            bySidCache = map
+            bySidCacheSrc = cur
+        }
+        return bySidCache?.get(soundId)
+    }
+
+    /** 规则层解析：按 soundId 直连已入库素材（sidecar 自带 soundId） */
+    fun resolveBySoundId(context: Context, soundId: String): ResolvedAsset? {
+        if (soundId.isBlank()) return null
+        val asset = assetBySoundId(soundId) ?: return null
+        if (asset.zipRel.isNotBlank()) return null
+        val f = fileOf(context, asset)
+        return if (f.isFile) ResolvedAsset(asset, f) else null
+    }
+
     /** 引擎热路径：同步解析为「条目 + 文件」（停用条目不参与；未加载时回退目录直扫） */
     fun resolve(context: Context, keyword: String): ResolvedAsset? {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return null
         if (index == null) warmUp(context)
         index?.let { snap ->
-            val hit = lookup(snap.values.filter { it.enabled }, keyword)
+            val hit = lookup(snap.values.filter { it.enabled }, kw)
             if (hit != null && hit.zipRel.isBlank()) {
                 val f = fileOf(context, hit)
                 if (f.isFile) return ResolvedAsset(hit, f)
             }
         }
+        // 负缓存：TTL 内不重复深扫（合成/下载落库会即时清除）
+        val now = System.currentTimeMillis()
+        val lastMiss = missCache[kw]
+        if (lastMiss != null && now - lastMiss < MISS_TTL_MS) return null
         // 兜底：目录直扫（覆盖尚未入册的新文件；命中后自动补登）
-        val f = TmDemoAssets.findFile(context, keyword) ?: return null
+        val f = TmDemoAssets.findFile(context, kw) ?: run {
+            missCache[kw] = now
+            return null
+        }
         val asset = registerFile(context, f, sniffSource(f)) ?: AudioAsset(
             name = f.nameWithoutExtension,
             relPath = relOf(context, f),
             category = categoryOf(relOf(context, f)),
             source = sniffSource(f),
         )
+        missCache.remove(kw)
         return ResolvedAsset(asset, f)
     }
 
@@ -162,6 +212,7 @@ object AudioLibrary {
                 .forEach { z -> fresh[z.id] = z }
             index = fresh
             persist(context, fresh.values)
+            missCache.clear()
             loaded = true
             ScanResult(
                 total = fresh.size,
@@ -173,7 +224,55 @@ object AudioLibrary {
 
     /** 合成产物 / 示例素材 / 导入落库登记（未加载时跳过，等首扫接管） */
     fun notifyFileAdded(context: Context, file: File, source: String = SOURCE_LOCAL) {
+        missCache.clear()
         registerFile(context, file, source)
+    }
+
+    /** B33.3d：规则表就绪后回填素材元数据（sidecar 的 soundId/别名 + 规则表的名称别名），只补不覆盖 */
+    suspend fun backfillFromRules(context: Context, namesOf: (String) -> List<String>): Int {
+        ensureLoaded(context)
+        return withContext(Dispatchers.IO) {
+            lock.withLock {
+                val cur = index ?: return@withLock 0
+                var changed = 0
+                val next = LinkedHashMap<String, AudioAsset>(cur.size)
+                cur.values.forEach { a ->
+                    var soundId = a.soundId
+                    var aliases = a.aliases
+                    if (a.zipRel.isBlank() && (soundId.isBlank() || aliases.isEmpty())) {
+                        val meta = runCatching { sidecarMetaOf(fileOf(context, a)) }.getOrNull()
+                        if (soundId.isBlank()) {
+                            meta?.soundId?.takeIf { it.isNotBlank() }?.let { soundId = it }
+                        }
+                        if (aliases.isEmpty()) {
+                            val fromRules = if (soundId.isNotBlank()) {
+                                runCatching { namesOf(soundId) }.getOrDefault(emptyList())
+                            } else {
+                                emptyList()
+                            }
+                            aliases = (fromRules + meta?.aliases.orEmpty())
+                                .asSequence()
+                                .filter { it.isNotBlank() && it != a.name }
+                                .distinct()
+                                .take(12)
+                                .toList()
+                        }
+                    }
+                    if (soundId != a.soundId || aliases != a.aliases) {
+                        next[a.id] = a.copy(soundId = soundId, aliases = aliases)
+                        changed++
+                    } else {
+                        next[a.id] = a
+                    }
+                }
+                if (changed > 0) {
+                    index = next
+                    persist(context, next.values)
+                    missCache.clear()
+                }
+                changed
+            }
+        }
     }
 
     /** 更新单个条目（编辑保存：名称 / 分组 / 规则 / 参数等） */
@@ -183,6 +282,7 @@ object AudioLibrary {
             if (asset.id !in cur) return@withLock false
             index = cur + (asset.id to asset)
             persist(context, index.orEmpty().values)
+            missCache.clear()
             true
         }
     }
@@ -224,6 +324,7 @@ object AudioLibrary {
             val next = cur.filterKeys { it !in removedIds }
             index = next
             persist(context, next.values)
+            missCache.clear()
             removedIds.size
         }
     }
@@ -453,6 +554,7 @@ object AudioLibrary {
                 volume = o.optDouble("volume", 1.0).toFloat(),
                 speed = o.optDouble("speed", 1.0).toFloat(),
                 pitch = o.optDouble("pitch", 1.0).toFloat(),
+                soundId = o.optString("soundId"),
                 zipRel = o.optString("zipRel"),
                 entry = o.optString("entry"),
             )
@@ -484,6 +586,7 @@ object AudioLibrary {
                 if (a.volume != 1f) put("volume", a.volume.toDouble())
                 if (a.speed != 1f) put("speed", a.speed.toDouble())
                 if (a.pitch != 1f) put("pitch", a.pitch.toDouble())
+                if (a.soundId.isNotBlank()) put("soundId", a.soundId)
                 if (a.zipRel.isNotBlank()) put("zipRel", a.zipRel)
                 if (a.entry.isNotBlank()) put("entry", a.entry)
             })
@@ -504,17 +607,32 @@ object AudioLibrary {
         runCatching { file.relativeTo(TmDemoAssets.libRoot(context)).path.replace(File.separatorChar, '/') }
             .getOrDefault(file.name)
 
-    private fun sniffSource(file: File): String {
+    /** sidecar 元数据（B33.3d：source + soundId + aliases ——「文件自带规则」） */
+    internal class SidecarMeta(
+        val source: String,
+        val soundId: String,
+        val aliases: List<String>,
+    )
+
+    internal fun sidecarMetaOf(file: File): SidecarMeta? {
         val side = File(file.parentFile, file.nameWithoutExtension + ".json")
-        if (!side.isFile) return SOURCE_LOCAL
+        if (!side.isFile) return null
         return runCatching {
-            val libSource = JSONObject(side.readText().removePrefix("\uFEFF")).optString("libSource")
-            when (libSource) {
+            val o = JSONObject(side.readText().removePrefix("\uFEFF"))
+            val src = when (o.optString("libSource")) {
                 SOURCE_REMOTE -> SOURCE_REMOTE
                 else -> SOURCE_GENERATED
             }
-        }.getOrDefault(SOURCE_GENERATED)
+            SidecarMeta(
+                source = src,
+                soundId = o.optString("soundId").trim(),
+                aliases = o.optJSONArray("aliases").toStringList(),
+            )
+        }.getOrNull()
     }
+
+    private fun sniffSource(file: File): String =
+        sidecarMetaOf(file)?.source ?: SOURCE_LOCAL
 
     private fun scanInternal(context: Context, old: Map<String, AudioAsset>): Map<String, AudioAsset> {
         val root = TmDemoAssets.libRoot(context)
@@ -524,14 +642,17 @@ object AudioLibrary {
         walkAudio(root).forEach { f ->
             val rel = f.relativeTo(root).path.replace(File.separatorChar, '/')
             val prev = prevByRel[rel]
+            val meta = sidecarMetaOf(f)
             val asset = (prev ?: AudioAsset(
                 name = f.nameWithoutExtension,
                 relPath = rel,
                 category = categoryOf(rel),
-                source = sniffSource(f),
+                source = meta?.source ?: SOURCE_LOCAL,
             )).copy(
                 size = f.length(),
                 mtime = f.lastModified(),
+                soundId = prev?.soundId?.takeIf { it.isNotBlank() } ?: meta?.soundId.orEmpty(),
+                aliases = prev?.aliases?.takeIf { it.isNotEmpty() } ?: meta?.aliases.orEmpty(),
             )
             map[asset.id] = asset
         }
@@ -555,10 +676,16 @@ object AudioLibrary {
         val root = TmDemoAssets.libRoot(context)
         val rel = runCatching { file.relativeTo(root).path.replace(File.separatorChar, '/') }
             .getOrNull()?.takeIf { it.isNotBlank() && !it.startsWith("..") } ?: return null
+        val meta = sidecarMetaOf(file)
         val existing = cur.values.firstOrNull { it.relPath == rel }
         if (existing != null) {
-            if (existing.size == file.length() && existing.mtime == file.lastModified()) return existing
-            val updated = existing.copy(size = file.length(), mtime = file.lastModified())
+            val updated = existing.copy(
+                size = file.length(),
+                mtime = file.lastModified(),
+                soundId = existing.soundId.ifBlank { meta?.soundId.orEmpty() },
+                aliases = existing.aliases.takeIf { it.isNotEmpty() } ?: meta?.aliases.orEmpty(),
+            )
+            if (updated == existing) return existing
             index = cur + (updated.id to updated)
             scheduleSave(context.applicationContext)
             return updated
@@ -567,9 +694,11 @@ object AudioLibrary {
             name = file.nameWithoutExtension,
             relPath = rel,
             category = categoryOf(rel),
-            source = source,
+            source = source.ifBlank { meta?.source ?: SOURCE_LOCAL },
             size = file.length(),
             mtime = file.lastModified(),
+            soundId = meta?.soundId.orEmpty(),
+            aliases = meta?.aliases.orEmpty(),
         )
         index = cur + (asset.id to asset)
         scheduleSave(context.applicationContext)

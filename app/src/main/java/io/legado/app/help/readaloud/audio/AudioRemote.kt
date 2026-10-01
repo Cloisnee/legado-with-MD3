@@ -191,6 +191,7 @@ object AudioRemoteCatalog {
                 JSONObject().apply {
                     put("libSource", AudioLibrary.SOURCE_REMOTE)
                     put("soundId", sound.soundId)
+                    if (sound.aliases.isNotEmpty()) put("aliases", JSONArray(sound.aliases))
                     put("pack", sound.pack)
                     put("name", sound.name)
                     put("category", sound.category)

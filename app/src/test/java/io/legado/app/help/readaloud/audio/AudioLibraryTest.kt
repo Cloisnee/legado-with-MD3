@@ -87,4 +87,19 @@ class AudioLibraryTest {
         assertNull(AudioLibrary.parseRegistry("{not-json"))
         assertNull(AudioLibrary.parseRegistry(""))
     }
+
+    @Test
+    fun `注册表 序列化与解析含 soundId 与别名（sidecar 自带规则）`() {
+        val a = AudioLibrary.AudioAsset(
+            name = "林鸟惊飞音效",
+            relPath = "sfx/环境声/林鸟惊飞音效.mp3",
+            category = "环境声",
+            soundId = "bird_call_02",
+            aliases = listOf("林鸟惊飞", "林鸟惊飞音效"),
+        )
+        val parsed = AudioLibrary.parseRegistry(AudioLibrary.serializeRegistry(listOf(a)))
+        val item = parsed?.values?.firstOrNull()
+        assertEquals("bird_call_02", item?.soundId)
+        assertEquals(listOf("林鸟惊飞", "林鸟惊飞音效"), item?.aliases)
+    }
 }

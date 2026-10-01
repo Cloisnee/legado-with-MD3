@@ -38,7 +38,8 @@ import kotlin.math.log10
  * - 「自研混音器扩展位」：上层只依赖本类接口；将来升级为 PCM 混音器时替换实现即可，
  *   HttpReadAloudService / 设置 / UI 零改动（见 B33 施工方案 §3）。
  *
- * ⚠ 匹配规则 = DemoLanes 少量示例；素材解析 = AudioLibrary registry 索引（未加载时回退目录直扫）。
+ * 匹配层（B33.3d）：[AudioRuleEngine] —— 用户自定规则 > 内置示例（DemoLanes） > CNB 意图规则（AC）；
+ * 素材解析 = AudioLibrary registry 索引（soundId 直连 / 名称链；未加载时回退目录直扫）。
  * B33.3c：缺失 → onMissing 回调（自动合成补缺）；闸门（间隔/冷却/驻留）滑条化。
  */
 class AudioLaneEngine(
@@ -109,6 +110,16 @@ class AudioLaneEngine(
 
     private var lastCueIndex: Int = -1
 
+    /** 循环轨解析失败的重试闸门（防每 tick 扫描；文件落库后自动接上） */
+    private var ambMissRetryAt: Long = 0L
+    private var bgmMissRetryAt: Long = 0L
+
+    init {
+        // B33.3d：规则数据预热（失败静默回退示例规则）+ 素材库索引预热
+        runCatching { AudioRuleStore.warmUp(appContext) }
+        runCatching { AudioLibrary.warmUp(appContext) }
+    }
+
     private val ticker: Job = scope.launch {
         while (isActive) {
             runCatching { tick() }
@@ -159,35 +170,39 @@ class AudioLaneEngine(
         val text = cue.text
         if (text.isBlank()) return
 
-        // 1) 环境：命中新场景 → 切换（最短驻留防抖）
-        DemoLanes.match(DemoLanes.Lane.AMBIENCE, text)?.let { rule ->
-            if (rule.keyword != desiredAmbience) {
+        // 1) 环境：命中新场景 → 切换（最短驻留防抖）；规则层 = 自定 > 示例 > CNB 意图
+        AudioRuleEngine.pick(appContext, DemoLanes.Lane.AMBIENCE, text)?.let { pick ->
+            val keyword = pick.resolved?.asset?.name ?: pick.hit.label
+            if (keyword != desiredAmbience) {
                 val now = System.currentTimeMillis()
                 if (desiredAmbience == null || now - ambienceDwellAt >= config.ambMinDwellMs) {
-                    desiredAmbience = rule.keyword
+                    desiredAmbience = keyword
                     ambienceDwellAt = now
-                    AppLog.putAudio("【四轨】#$index 环境→${rule.keyword}")
+                    ambMissRetryAt = 0L
+                    AppLog.putAudio("【四轨】#$index 环境→$keyword（${pick.hit.source.label}）")
                 } else {
-                    AppLog.putAudio("【四轨】#$index 环境=${rule.keyword}（驻留未到，跳过）")
+                    AppLog.putAudio("【四轨】#$index 环境=$keyword（驻留未到，跳过）")
                 }
             }
         }
 
         // 2) BGM：命中 → 起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
-        val bgmRule = DemoLanes.match(DemoLanes.Lane.BGM, text)
-        if (bgmRule != null) {
-            if (bgmRule.keyword != desiredBgm) {
+        val bgmPick = AudioRuleEngine.pick(appContext, DemoLanes.Lane.BGM, text)
+        if (bgmPick != null) {
+            val keyword = bgmPick.resolved?.asset?.name ?: bgmPick.hit.label
+            if (keyword != desiredBgm) {
                 val now = System.currentTimeMillis()
-                if (now - (lastBgmByKeyword[bgmRule.keyword] ?: 0L) >= config.bgmCooldownMs) {
-                    desiredBgm = bgmRule.keyword
-                    bgmHoldRemaining = bgmRule.holdCues.coerceAtLeast(1)
-                    lastBgmByKeyword[bgmRule.keyword] = now
-                    AppLog.putAudio("【四轨】#$index BGM=${bgmRule.keyword}（持续 ${bgmHoldRemaining} 行）")
+                if (now - (lastBgmByKeyword[keyword] ?: 0L) >= config.bgmCooldownMs) {
+                    desiredBgm = keyword
+                    bgmHoldRemaining = bgmPick.hit.holdCues.coerceAtLeast(1)
+                    lastBgmByKeyword[keyword] = now
+                    bgmMissRetryAt = 0L
+                    AppLog.putAudio("【四轨】#$index BGM=$keyword（持续 ${bgmHoldRemaining} 行 · ${bgmPick.hit.source.label}）")
                 } else {
-                    AppLog.putAudio("【四轨】#$index BGM=${bgmRule.keyword}（冷却中，跳过）")
+                    AppLog.putAudio("【四轨】#$index BGM=$keyword（冷却中，跳过）")
                 }
-            } else if (bgmRule.holdCues > 0) {
-                bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmRule.holdCues)
+            } else if (bgmPick.hit.holdCues > 0) {
+                bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmPick.hit.holdCues)
             }
         } else if (desiredBgm != null) {
             bgmHoldRemaining--
@@ -198,16 +213,17 @@ class AudioLaneEngine(
         }
 
         // 3) 音效：密度闸门（单条最多 1 个 + 全局间隔 + 素材冷却）
-        DemoLanes.match(DemoLanes.Lane.SFX, text)?.let { rule ->
-            if (allowSfx(rule.keyword)) {
+        AudioRuleEngine.pick(appContext, DemoLanes.Lane.SFX, text)?.let { pick ->
+            val keyword = pick.resolved?.asset?.name ?: pick.hit.label
+            if (allowSfx(keyword)) {
                 val now = System.currentTimeMillis()
                 lastSfxAt = now
-                lastSfxByKeyword[rule.keyword] = now
-                if (playSfx(rule)) {
-                    AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}")
+                lastSfxByKeyword[keyword] = now
+                if (playSfx(pick)) {
+                    AppLog.putAudio("【四轨】#$index 音效=$keyword（${pick.hit.source.label}）")
                 }
             } else {
-                AppLog.putAudio("【四轨】#$index 音效=${rule.keyword}（闸门跳过）")
+                AppLog.putAudio("【四轨】#$index 音效=$keyword（闸门跳过）")
             }
         }
     }
@@ -269,11 +285,18 @@ class AudioLaneEngine(
             return
         }
         if (active && lane.keyword != desired) {
-            val resolved = AudioLibrary.resolve(appContext, desired)
-            if (resolved != null) {
-                lane.playKeyword(desired, resolved.file, resolved.asset)
-            } else {
-                markMissing(kind, desired)
+            val now = System.currentTimeMillis()
+            val retryAt = if (kind == "BGM") bgmMissRetryAt else ambMissRetryAt
+            if (now >= retryAt) {
+                val resolved = AudioLibrary.resolve(appContext, desired)
+                if (resolved != null) {
+                    lane.playKeyword(desired, resolved.file, resolved.asset)
+                    if (kind == "BGM") bgmMissRetryAt = 0L else ambMissRetryAt = 0L
+                } else {
+                    // 解析失败：10s 内不重复扫描；文件（合成/下载）落库后自动接上
+                    if (kind == "BGM") bgmMissRetryAt = now + MISS_RETRY_MS else ambMissRetryAt = now + MISS_RETRY_MS
+                    markMissing(kind, desired)
+                }
             }
         }
         val p = lane.player ?: return
@@ -335,10 +358,10 @@ class AudioLaneEngine(
         return true
     }
 
-    private fun playSfx(rule: DemoLanes.Rule): Boolean {
-        val resolved = AudioLibrary.resolve(appContext, rule.keyword)
+    private fun playSfx(pick: AudioRuleEngine.Picked): Boolean {
+        val resolved = pick.resolved ?: AudioRuleEngine.resolveHit(appContext, pick.hit)
         if (resolved == null) {
-            markMissing("音效", rule.keyword)
+            markMissing("音效", pick.hit.label)
             return false
         }
         val path = resolved.file.absolutePath
@@ -349,16 +372,16 @@ class AudioLaneEngine(
                 runCatching {
                     // 条目参数实时读取（音量；音速×音高 → SoundPool 速率近似）
                     val meta = AudioLibrary.metaByRelPath(fallbackAsset.relPath) ?: fallbackAsset
-                    val v = (config.sfxVolume * rule.gain * meta.volume).coerceIn(0f, 1f)
+                    val v = (config.sfxVolume * pick.hit.gain * meta.volume).coerceIn(0f, 1f)
                     val rate = (meta.speed * meta.pitch).coerceIn(0.5f, 2.0f)
                     ensureSoundPool().play(sid, v, v, 1, 0, rate)
                 }
             }
         }
         val delayedFire: () -> Unit = {
-            if (rule.delayMs > 0) {
+            if (pick.hit.delayMs > 0) {
                 scope.launch {
-                    delay(rule.delayMs)
+                    delay(pick.hit.delayMs)
                     fire()
                 }
             } else {
@@ -425,6 +448,8 @@ class AudioLaneEngine(
         desiredAmbience = null
         desiredBgm = null
         bgmHoldRemaining = 0
+        ambMissRetryAt = 0L
+        bgmMissRetryAt = 0L
         bgmLane.stopAndClear()
         ambLane.stopAndClear()
     }
@@ -477,5 +502,10 @@ class AudioLaneEngine(
             enhancer?.let { runCatching { it.release() } }
             enhancer = null
         }
+    }
+
+    private companion object {
+        /** 循环轨解析失败重试间隔（ms） */
+        const val MISS_RETRY_MS = 10_000L
     }
 }
