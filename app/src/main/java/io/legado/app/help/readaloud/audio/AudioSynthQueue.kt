@@ -312,18 +312,8 @@ class AudioSynthQueue(
 
         // ---------------- B33.2c · 缺失清单（管理面板用） ----------------
 
-        /** 缺失清单行（lane=队列枚举名 AMB/SFX/BGM） */
-        data class MissingRow(
-            val lane: String,
-            val keyword: String,
-            val status: String,
-            val source: String,
-            val lastError: String,
-            val updatedAt: Long,
-        )
-
         /** 读取 `_store/audio_missing.json` 全部条目 */
-        suspend fun missingRows(context: Context): List<MissingRow> = withContext(Dispatchers.IO) {
+        suspend fun missingRows(context: Context): List<AudioMissingRow> = withContext(Dispatchers.IO) {
             runCatching {
                 val f = missingFile(context)
                 if (!f.isFile) return@runCatching emptyList()
@@ -334,7 +324,7 @@ class AudioSynthQueue(
                     while (keys.hasNext()) {
                         val o = entries.optJSONObject(keys.next()) ?: continue
                         add(
-                            MissingRow(
+                            AudioMissingRow(
                                 lane = o.optString("lane"),
                                 keyword = o.optString("keyword"),
                                 status = o.optString("status"),
@@ -458,3 +448,13 @@ internal suspend fun saveGeneratedAudio(
 
 internal fun sanitizeGeneratedName(keyword: String): String =
     keyword.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_").trim().take(60).ifBlank { "未命名" }
+
+/** B33.2c · 缺失清单行（lane=队列枚举名 AMB/SFX/BGM；供管理面板） */
+data class AudioMissingRow(
+    val lane: String,
+    val keyword: String,
+    val status: String,
+    val source: String,
+    val lastError: String,
+    val updatedAt: Long,
+)

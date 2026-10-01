@@ -50,6 +50,7 @@ import io.legado.app.R
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
+import io.legado.app.help.readaloud.audio.AudioMissingRow
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -127,7 +128,7 @@ fun AudioLibraryScreen(
     var moveNewGroup by remember { mutableStateOf("") }
     var generatedOnly by remember { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
-    var missingRows by remember { mutableStateOf<List<AudioSynthQueue.MissingRow>>(emptyList()) }
+    var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
 
     val inSelectionMode = selectedIds.isNotEmpty()
 
@@ -697,9 +698,9 @@ private data class AudioLibUiState(
 @Composable
 private fun AudioMissingSheet(
     show: Boolean,
-    rows: List<AudioSynthQueue.MissingRow>,
-    onRetry: (AudioSynthQueue.MissingRow) -> Unit,
-    onRemove: (AudioSynthQueue.MissingRow) -> Unit,
+    rows: List<AudioMissingRow>,
+    onRetry: (AudioMissingRow) -> Unit,
+    onRemove: (AudioMissingRow) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AppModalBottomSheet(
