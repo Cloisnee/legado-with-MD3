@@ -15,10 +15,12 @@ import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.constant.AppLog
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.log10
@@ -111,6 +113,9 @@ class AudioLaneEngine(
     private val missingLogged = HashSet<String>()
 
     private var lastCueIndex: Int = -1
+
+    /** B33.4 前置：章首预扫描去重（chapterKey 集合） */
+    private val prescanned = HashSet<String>()
 
     /** 循环轨解析失败的重试闸门（防每 tick 扫描；文件落库后自动接上） */
     private var ambMissRetryAt: Long = 0L
@@ -240,6 +245,38 @@ class AudioLaneEngine(
         }
     }
 
+    /**
+     * B33.4 前置 · 章首预扫描：对本章全部文本行先跑一遍规则层，
+     * 缺失即刻上报（进入 远程→合成 补缺链），不再等朗读逐行触达。
+     */
+    fun prescanChapter(chapterKey: String, texts: List<String>) {
+        if (!config.enabled || chapterKey.isBlank() || texts.isEmpty()) return
+        if (!prescanned.add(chapterKey)) return
+        scope.launch {
+            val misses = runCatching {
+                withContext(Dispatchers.Default) {
+                    buildList {
+                        texts.forEach { raw ->
+                            val text = raw.trim()
+                            if (text.length < 2) return@forEach
+                            for (lane in listOf(DemoLanes.Lane.SFX, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.BGM)) {
+                                val pick = AudioRuleEngine.pick(appContext, lane, text) ?: continue
+                                if (pick.resolved == null) add(kindOf(lane) to pick.hit.label)
+                            }
+                        }
+                    }.distinct()
+                }
+            }.getOrDefault(emptyList())
+            misses.forEach { (kind, label) -> markMissing(kind, label) }
+        }
+    }
+
+    private fun kindOf(lane: DemoLanes.Lane): String = when (lane) {
+        DemoLanes.Lane.AMBIENCE -> "环境"
+        DemoLanes.Lane.BGM -> "BGM"
+        else -> "音效"
+    }
+
     fun release() {
         ticker.cancel()
         bgmLane.release()
@@ -298,8 +335,8 @@ class AudioLaneEngine(
         val player = lane.player
         if (desired == null) {
             if (player != null) {
-                approach(player, 0f)
-                if (player.volume <= 0.015f) lane.stopAndClear()
+                lane.forEachPlayer { approach(it, 0f) }
+                if ((lane.player?.volume ?: 0f) <= 0.015f) lane.stopAndClear()
             }
             return
         }
@@ -322,21 +359,30 @@ class AudioLaneEngine(
         if (active && p.currentMediaItem != null && !p.isPlaying) {
             runCatching { p.play() }
         }
-        // 条目参数（音量/音速/音高）：实时读取（编辑后下一 tick 起生效）
+        // 条目参数（音量/音速/音高）：实时读取（编辑后下一 tick 起生效）；双播放器同步
         val meta = lane.asset?.relPath?.let { rel -> AudioLibrary.metaByRelPath(rel) }
         val speed = (meta?.speed ?: 1f).coerceIn(0.5f, 2.0f)
         val pitch = (meta?.pitch ?: 1f).coerceIn(0.5f, 2.0f)
-        runCatching {
-            val cur = p.playbackParameters
+        lane.forEachPlayer { pl ->
+            val cur = pl.playbackParameters
             if (cur.speed != speed || cur.pitch != pitch) {
-                p.playbackParameters = PlaybackParameters(speed, pitch)
+                pl.playbackParameters = PlaybackParameters(speed, pitch)
             }
         }
         val volume = (if (active) target else 0f) * (meta?.volume ?: 1f)
-        approach(p, volume.coerceIn(0f, 1f))
-        applyLoopBoost(lane, p, volume)
+        val base = volume.coerceIn(0f, 1f)
+
+        // B33.4 前置：循环交叉淡化（双播放器无缝衔接；时长未知/过短时退化为单曲循环）
+        val fade = lane.advanceCrossfade(allow = active && base > 0.02f)
+        if (fade != null) {
+            lane.setVolumesDirect(base * (1f - fade), base * fade)
+            applyLoopBoost(lane, p, base)
+            return
+        }
+        approach(p, base)
+        applyLoopBoost(lane, p, base)
         // 暂停 / 互斥让位到静音时挂起播放器（恢复由上方 play() 逻辑拉起）
-        if (volume <= 0.015f && p.volume <= 0.015f && p.isPlaying) {
+        if (base <= 0.015f && p.volume <= 0.015f && p.isPlaying) {
             runCatching { p.pause() }
         }
     }
@@ -352,16 +398,15 @@ class AudioLaneEngine(
         player.volume = (current + step).coerceIn(0f, 1f)
     }
 
-    /** 超 100% 音量：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB） */
+    /** 超 100% 音量：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB；按播放器各持一个） */
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, volume: Float) {
         runCatching {
+            val e = lane.enhancerFor(player)
             if (volume <= 1.001f) {
-                lane.enhancer?.enabled = false
+                e.enabled = false
                 return
             }
-            val e = lane.enhancer
-                ?: LoudnessEnhancer(player.audioSessionId).also { lane.enhancer = it }
             val gainDb = (20.0 * log10(volume.toDouble())).coerceIn(0.0, 12.0)
             e.setTargetGain((gainDb * 100).toInt())
             e.enabled = true
@@ -474,58 +519,154 @@ class AudioLaneEngine(
         ambLane.stopAndClear()
     }
 
-    /** 单条 loop 轨（环境/BGM 共用）：1 个 ExoPlayer，单曲循环，音量由 ticker 逼近 */
+    /** 单条 loop 轨（环境/BGM 共用）：双播放器交叉淡化循环（≈1.2s 重叠），音量由 ticker 逼近 */
     private inner class LoopLane {
-        var player: ExoPlayer? = null
-            private set
         var keyword: String? = null
             private set
         var asset: AudioLibrary.AudioAsset? = null
             private set
-        var enhancer: LoudnessEnhancer? = null
+        private var playerA: ExoPlayer? = null
+        private var playerB: ExoPlayer? = null
+        private var activeIsA = true
+        private var crossfading = false
+        private var fileUri: Uri? = null
+        private var lastCrossPos = -1L
+        private val enhancers = HashMap<ExoPlayer, LoudnessEnhancer>()
+
+        /** 当前出声（主）播放器 */
+        val player: ExoPlayer? get() = if (activeIsA) playerA else playerB
+
+        private val standby: ExoPlayer? get() = if (activeIsA) playerB else playerA
+
+        fun forEachPlayer(block: (ExoPlayer) -> Unit) {
+            playerA?.let { runCatching { block(it) } }
+            playerB?.let { runCatching { block(it) } }
+        }
+
+        fun setVolumesDirect(activeVol: Float, standbyVol: Float) {
+            player?.let { runCatching { it.volume = activeVol.coerceIn(0f, 1f) } }
+            standby?.let { runCatching { it.volume = standbyVol.coerceIn(0f, 1f) } }
+        }
+
+        fun enhancerFor(pl: ExoPlayer): LoudnessEnhancer =
+            enhancers[pl] ?: LoudnessEnhancer(pl.audioSessionId).also { enhancers[pl] = it }
 
         fun playKeyword(kw: String, file: File, asset: AudioLibrary.AudioAsset?) {
             this.asset = asset
-            val p = player ?: ExoPlayer.Builder(appContext).build().also {
-                // 不抢音频焦点：焦点由人声播放器统一管理
-                it.setAudioAttributes(media3AudioAttributes, false)
-                it.repeatMode = Player.REPEAT_MODE_ONE
-                it.volume = 0f
-                player = it
-            }
-            if (keyword != kw || p.currentMediaItem == null) {
-                runCatching { p.stop() }
-                p.clearMediaItems()
-                p.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
-                p.volume = 0f
-                p.prepare()
+            if (playerA == null) playerA = buildPlayer()
+            if (playerB == null) playerB = buildPlayer()
+            val a = playerA ?: return
+            if (keyword != kw || a.currentMediaItem == null) {
+                runCatching {
+                    playerA?.stop()
+                    playerA?.clearMediaItems()
+                    playerB?.stop()
+                    playerB?.clearMediaItems()
+                }
+                activeIsA = true
+                crossfading = false
+                lastCrossPos = -1L
+                fileUri = Uri.fromFile(file)
+                runCatching {
+                    a.setMediaItem(MediaItem.fromUri(fileUri!!))
+                    a.volume = 0f
+                    a.prepare()
+                }
                 keyword = kw
             }
+            val p = player ?: return
             if (!p.isPlaying) runCatching { p.play() }
+        }
+
+        /**
+         * 交叉淡化推进；返回 0..1 的交接进度（非 null=正在交叉）。
+         * allow=false（暂停/静音）时取消交叉；时长未知或过短（<2×淡化窗）时退化为单曲循环。
+         */
+        fun advanceCrossfade(allow: Boolean): Float? {
+            val a = player ?: return null
+            val b = standby ?: return null
+            if (!allow || keyword == null || fileUri == null) {
+                if (crossfading) {
+                    crossfading = false
+                    runCatching { b.stop(); b.clearMediaItems() }
+                }
+                lastCrossPos = -1L
+                return null
+            }
+            val dur = runCatching { a.duration }.getOrDefault(C.TIME_UNSET)
+            if (dur == C.TIME_UNSET || dur < CROSSFADE_MS * 2) return null
+            val pos = runCatching { a.currentPosition }.getOrDefault(0L)
+            if (!crossfading) {
+                if (pos >= dur - CROSSFADE_MS) {
+                    val ok = runCatching {
+                        b.stop()
+                        b.clearMediaItems()
+                        b.setMediaItem(MediaItem.fromUri(fileUri!!))
+                        b.seekTo(0)
+                        b.volume = 0f
+                        b.prepare()
+                        b.play()
+                        true
+                    }.getOrDefault(false)
+                    if (ok) {
+                        crossfading = true
+                        lastCrossPos = pos
+                    }
+                }
+                return null
+            }
+            // 交叉中：主播放器（REPEAT_ONE）循环回绕 → 交接完成，备胎升任主播放器
+            if (pos < lastCrossPos) {
+                runCatching { a.stop(); a.clearMediaItems() }
+                activeIsA = !activeIsA
+                crossfading = false
+                lastCrossPos = -1L
+                return null
+            }
+            lastCrossPos = pos
+            return ((pos - (dur - CROSSFADE_MS)).toFloat() / CROSSFADE_MS).coerceIn(0f, 1f)
+        }
+
+        private fun buildPlayer(): ExoPlayer = ExoPlayer.Builder(appContext).build().also {
+            // 不抢音频焦点：焦点由人声播放器统一管理
+            it.setAudioAttributes(media3AudioAttributes, false)
+            it.repeatMode = Player.REPEAT_MODE_ONE
+            it.volume = 0f
         }
 
         fun stopAndClear() {
             keyword = null
             asset = null
-            player?.let { p ->
+            crossfading = false
+            lastCrossPos = -1L
+            fileUri = null
+            forEachPlayer { p ->
                 runCatching {
                     p.stop()
                     p.clearMediaItems()
+                    p.volume = 0f
                 }
             }
+            enhancers.values.forEach { runCatching { it.enabled = false } }
         }
 
         fun release() {
-            player?.let { runCatching { it.release() } }
-            player = null
+            forEachPlayer { p -> runCatching { p.release() } }
+            playerA = null
+            playerB = null
             keyword = null
-            enhancer?.let { runCatching { it.release() } }
-            enhancer = null
+            asset = null
+            crossfading = false
+            enhancers.values.forEach { runCatching { it.release() } }
+            enhancers.clear()
         }
     }
 
     private companion object {
         /** 循环轨解析失败重试间隔（ms） */
         const val MISS_RETRY_MS = 10_000L
+
+        /** 循环交叉淡化时长（ms） */
+        const val CROSSFADE_MS = 1_200L
     }
 }

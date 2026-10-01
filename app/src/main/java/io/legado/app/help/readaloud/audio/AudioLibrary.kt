@@ -118,6 +118,10 @@ object AudioLibrary {
     fun metaByRelPath(relPath: String): AudioAsset? =
         index?.values?.firstOrNull { it.relPath == relPath }
 
+    /** 当前索引中某相对路径的来源（""=未入册） */
+    fun sourceOfRelPath(relPath: String): String =
+        index?.values?.firstOrNull { it.relPath == relPath }?.source.orEmpty()
+
     /** 同步快照（规则层构建「用户自定规则」用） */
     fun snapshot(): List<AudioAsset> = index?.values?.toList().orEmpty()
 
@@ -743,11 +747,18 @@ object AudioLibrary {
             .getOrNull()?.takeIf { it.isNotBlank() && !it.startsWith("..") } ?: return null
         val existing = cur.values.firstOrNull { it.relPath == rel }
         if (existing != null) {
+            // B33.4 前置：远程版本优先——远程下载可覆盖「合成产物」的来源与别名
+            val upgradedSource = if (source == SOURCE_REMOTE && existing.source != SOURCE_REMOTE) {
+                SOURCE_REMOTE
+            } else {
+                existing.source
+            }
             val updated = existing.copy(
                 size = file.length(),
                 mtime = file.lastModified(),
                 soundId = existing.soundId.ifBlank { soundId },
-                aliases = existing.aliases.takeIf { it.isNotEmpty() } ?: aliases,
+                aliases = (existing.aliases + aliases).distinct(),
+                source = upgradedSource,
             )
             if (updated == existing) return existing
             index = cur + (updated.id to updated)

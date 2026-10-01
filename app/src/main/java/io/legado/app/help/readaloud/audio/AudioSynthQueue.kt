@@ -151,6 +151,18 @@ class AudioSynthQueue(
             task.updatedAt = now()
         }
         save()
+        // B33.4 前置：补缺链第二环——远程库自动补缺（免费；不需要合成模型）
+        val remoteFile = runCatching {
+            AudioRemoteAuto.tryFetch(appContext, task.lane, task.keyword)
+        }.getOrNull()
+        if (remoteFile != null) {
+            val rel = runCatching {
+                remoteFile.relativeTo(TmDemoAssets.libRoot(appContext)).path.replace(File.separatorChar, '/')
+            }.getOrDefault(remoteFile.name)
+            markDone(task, rel, "远程库")
+            AppLog.putAudio("【合成】完成：${task.lane.label}「${task.keyword}」← 远程库（${remoteFile.name}）")
+            return
+        }
         val refs = runCatching { repo.queueRefs(task.lane.assignKey) }.getOrDefault(emptyList())
         if (refs.isEmpty()) {
             markFailed(task, "无可用合成模型")

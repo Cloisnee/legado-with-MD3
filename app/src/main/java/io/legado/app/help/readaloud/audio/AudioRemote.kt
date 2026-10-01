@@ -148,8 +148,12 @@ object AudioRemoteCatalog {
         val root = TmDemoAssets.libRoot(context)
         val name = fileNameOf(sound)
         val out = File(File(root, folderOf(sound)), name)
-        if (out.isFile && out.length() > 0L) {
-            AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_REMOTE)
+        val relPath = runCatching { out.relativeTo(root).path.replace(File.separatorChar, '/') }
+            .getOrNull().orEmpty()
+        val existingSource = if (relPath.isBlank()) "" else AudioLibrary.sourceOfRelPath(relPath)
+        if (out.isFile && out.length() > 0L && existingSource != AudioLibrary.SOURCE_GENERATED) {
+            // 已存在（远程/历史等）：直接复用；仅当现有文件是「合成产物」时才用远程版本替换
+            AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_REMOTE, sound.soundId, sound.aliases)
             return@withContext out
         }
         out.parentFile?.mkdirs()

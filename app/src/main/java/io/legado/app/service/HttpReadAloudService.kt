@@ -1440,6 +1440,18 @@ class HttpReadAloudService : BaseReadAloudService(),
         applyLoudnessGain(mediaItem?.mediaId?.toIntOrNull() ?: 0)
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
             // B33 四轨：章首条目就绪（含换章新队列）
+            // B33.4 前置：章首预扫描——缺失尽早进补缺链（远程→合成），不必等朗读逐行触达
+            runCatching {
+                val engine = laneEngineOrCreate()
+                if (engine != null) {
+                    val key = runCatching {
+                        val bookUrl = ReadBook.book?.bookUrl.orEmpty()
+                        val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                        "$bookUrl|$idx"
+                    }.getOrDefault("")
+                    engine.prescanChapter(key, playbackQueue.cues.map { it.text })
+                }
+            }
             laneCueStarted()
             return
         }

@@ -95,7 +95,7 @@ object AudioSynthClients {
                     isAudioGenModel(model.modelId) ->
                         senseAudioGenerate(base, provider.apiKey, model, prompt)
 
-                    else -> senseSfx(base, provider.apiKey, model, prompt)
+                    else -> senseSfx(base, provider.apiKey, model, lane, keyword)
                 }
 
                 AudioSynthPlatforms.PLATFORM_ELEVENLABS ->
@@ -228,16 +228,33 @@ object AudioSynthClients {
 
     // ------------------------------------------------------------ SenseAudio / ElevenLabs
 
+    /**
+     * 商汤 SFX 提示词（按官方指南）：用「具体声音名称」（如 关门声），不要方括号与抽象描述。
+     * 例：「推开音效」→「推开声」；「钟声」保持「钟声」。
+     */
+    private fun senseTextFor(lane: SynthLane, keyword: String): String {
+        var k = keyword.trim().removeSuffix("音效").removeSuffix("声效").trim().ifBlank { keyword.trim() }
+        val soundish = k.endsWith("声") || k.endsWith("音") || k.endsWith("响") || k.endsWith("语")
+        if (!soundish) k = "${k}声"
+        return if (lane == SynthLane.AMB) "$k，环境声" else k
+    }
+
     /** SenseAudio 音效（/v1/sound-effects/generations）：同步出 1~4 条变体，取第一条可用 audio_url 下载 */
     private suspend fun senseSfx(
         base: String,
         key: String,
         model: AiModelEntry,
-        prompt: String,
+        lane: SynthLane,
+        keyword: String,
     ): GenResult {
         val body = JSONObject().apply {
             put("model", model.modelId)
-            put("text", prompt)
+            put("text", senseTextFor(lane, keyword))
+            if (lane == SynthLane.SFX) {
+                // 音效＝短频快：固定 5 秒（1~10s；智能时长会到 ~11s 偏长）
+                put("smart_duration", false)
+                put("duration_seconds", 5)
+            }
         }.toString()
         val req = Request.Builder()
             .url(AudioSynthPlatforms.endpoint(base, "/v1/sound-effects/generations"))
