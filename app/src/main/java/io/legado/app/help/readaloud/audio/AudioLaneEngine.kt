@@ -548,6 +548,7 @@ class AudioLaneEngine(
             standby?.let { runCatching { it.volume = standbyVol.coerceIn(0f, 1f) } }
         }
 
+        @androidx.annotation.OptIn(UnstableApi::class)
         fun enhancerFor(pl: ExoPlayer): LoudnessEnhancer =
             enhancers[pl] ?: LoudnessEnhancer(pl.audioSessionId).also { enhancers[pl] = it }
 
