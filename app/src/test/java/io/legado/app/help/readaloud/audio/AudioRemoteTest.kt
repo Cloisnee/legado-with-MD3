@@ -128,12 +128,12 @@ class AudioRemoteTest {
                 SynthLane.SFX,
             )?.soundId,
         )
-        // 包含：与标签长度差最小者优先（打雷 vs 电闪雷鸣）
+        // 包含：与标签长度差最小者优先（三连钟声 vs 山寺钟声大作）
         assertEquals(
-            "dalei",
+            "sanlian",
             AudioRemoteMatcher.pick(
-                listOf(s("dalei", "打雷"), s("dian", "电闪雷鸣")),
-                "雷声",
+                listOf(s("dian", "山寺钟声大作"), s("sanlian", "三连钟声")),
+                "钟声",
                 SynthLane.SFX,
             )?.soundId,
         )
