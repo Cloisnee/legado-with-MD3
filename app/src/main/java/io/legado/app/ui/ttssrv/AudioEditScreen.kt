@@ -85,7 +85,7 @@ fun AudioEditRouteScreen(assetId: String, onBackClick: () -> Unit) {
     )
 }
 
-private enum class EditField { Name, Group, Pattern, TagDesc }
+private enum class EditField { Name, Pattern, TagDesc }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -266,7 +266,6 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                     onInsert = { text ->
                         when (activeField) {
                             EditField.Name -> name += text
-                            EditField.Group -> group += text
                             EditField.Pattern -> pattern += text
                             EditField.TagDesc -> tagDesc += text
                         }
