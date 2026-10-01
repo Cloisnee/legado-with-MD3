@@ -183,6 +183,9 @@ class AudioSynthQueue(
                 return
             }
             lastError = result.exceptionOrNull()?.localizedMessage ?: "未知错误"
+            if (index < refs.lastIndex) {
+                AppLog.putAudio("【合成】未中：${task.lane.label}「${task.keyword}」← ${provider.name}（$lastError）")
+            }
         }
         val failMsg = lastError.ifBlank { "全部合成模型失败" }
         markFailed(task, failMsg)

@@ -16,9 +16,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
  *  - 「保存并拉取模型」：按平台模板生成合成模型条目（ai_models.json 的 models）；
  *  - 「测试」：音频专用鉴权探测（不产生生成费用；401=Key 无效，其余=连通）。
  *
- * 平台口径（2026-09-30 实探）：
+ * 平台口径（2026-09-30 实探；2026-10-01 修正 SenseAudio 端点与 A1）：
  *  - stepfun    阶跃：Gen（音效/环境）限免 + Music（BGM）限免
- *  - senseaudio 商汤：SFX 0.08 元/组（1~4 条变体）+ Music 0.5 元/首
+ *  - senseaudio 商汤：SFX 0.08 元/组（1~4 条变体） + Music 2.0 0.5 元/首 + A1 音频生成 ≈0.017 元/秒
  *  - elevenlabs 海外：SFX 50 次/月、≤30s
  */
 object AudioSynthPlatforms {
@@ -46,7 +46,7 @@ object AudioSynthPlatforms {
         Template(
             platform = PLATFORM_STEPFUN,
             name = "阶跃星辰 StepAudio",
-            baseUrl = "https://api.stepfun.com",
+            baseUrl = "https://api.stepfun.com/v1",
             models = listOf(
                 TemplateModel("stepaudio-3-gen-preview", "StepAudio 3 Gen（音效/环境）", "限时免费"),
                 TemplateModel("stepaudio-3-music-preview", "StepAudio 3 Music（BGM）", "限时免费"),
@@ -56,17 +56,18 @@ object AudioSynthPlatforms {
         Template(
             platform = PLATFORM_SENSEAUDIO,
             name = "SenseAudio（商汤）",
-            baseUrl = "https://api.senseaudio.cn",
+            baseUrl = "https://api.senseaudio.cn/v1",
             models = listOf(
                 TemplateModel("senseaudio-sfx-1.0-260626", "SenseAudio SFX（音效/环境）", "0.08 元/组"),
                 TemplateModel("senseaudio-music-2.0-260626", "SenseAudio Music（BGM）", "0.5 元/首"),
+                TemplateModel("senseaudio-a1", "SenseAudio A1（全轨编排生成）", "≈0.017 元/秒"),
             ),
-            note = "音效 0.08 元/组（一组 1~4 条）、BGM 0.5 元/首；代金券可抵",
+            note = "音效 0.08 元/组（1~4 变体）、Music 0.5 元/首、A1 全轨生成 ≈0.017 元/秒",
         ),
         Template(
             platform = PLATFORM_ELEVENLABS,
             name = "ElevenLabs（海外备选）",
-            baseUrl = "https://api.elevenlabs.io",
+            baseUrl = "https://api.elevenlabs.io/v1",
             models = listOf(
                 TemplateModel("eleven_text_to_sound_v2", "ElevenLabs SFX（音效）", "50 次/月、≤30s"),
             ),
@@ -89,6 +90,27 @@ object AudioSynthPlatforms {
             else -> PLATFORM_CUSTOM
         }
     }
+
+    /**
+     * 端点拼接（BaseUrl 归一）：允许 BaseUrl 带或不带版本段（`/v1`）——
+     * 例：`https://api.stepfun.com/v1` + `/v1/audio/generate` → `https://api.stepfun.com/v1/audio/generate`（不产生 `v1/v1` 双段）；
+     * 路径版本与 Base 版本不一致时（如 Music 走 `/v2/…`）以路径为准。
+     */
+    fun endpoint(baseUrl: String, path: String): String {
+        var b = baseUrl.trim().trimEnd('/')
+        val p = path.trimStart('/')
+        val head = p.substringBefore('/')
+        val last = b.substringAfterLast('/')
+        b = when {
+            head.isNotBlank() && b.endsWith("/$head") -> b.removeSuffix("/$head")
+            isVersionSegment(head) && isVersionSegment(last) -> b.removeSuffix("/$last")
+            else -> b
+        }
+        return if (b.isBlank()) "/$p" else "$b/$p"
+    }
+
+    private fun isVersionSegment(s: String): Boolean =
+        s.length >= 2 && s[0] == 'v' && s.drop(1).all { it.isDigit() }
 
     data class ProbeResult(
         val ok: Boolean,
@@ -121,7 +143,7 @@ object AudioSynthPlatforms {
                     PLATFORM_STEPFUN -> {
                         // 查询一个不存在的任务：不会创建任务、不产生费用
                         val req = Request.Builder()
-                            .url("$base/v1/audio/music/query")
+                            .url(endpoint(base, "/v1/audio/music/query"))
                             .addHeader("Authorization", "Bearer $key")
                             .post("{\"task_id\":\"probe-not-exist\"}".toRequestBody(JSON_TYPE))
                             .build()
@@ -131,7 +153,7 @@ object AudioSynthPlatforms {
 
                     PLATFORM_SENSEAUDIO -> {
                         val req = Request.Builder()
-                            .url("$base/v1/sound-effects/generations")
+                            .url(endpoint(base, "/v1/sound-effects/generations"))
                             .addHeader("Authorization", "Bearer $key")
                             .post("{}".toRequestBody(JSON_TYPE))
                             .build()
@@ -141,7 +163,7 @@ object AudioSynthPlatforms {
 
                     PLATFORM_ELEVENLABS -> {
                         val req = Request.Builder()
-                            .url("$base/v1/user")
+                            .url(endpoint(base, "/v1/user"))
                             .addHeader("xi-api-key", key)
                             .get()
                             .build()
