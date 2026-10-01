@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.R
 import io.legado.app.constant.PreferKey
@@ -170,15 +171,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                 asset.pitch.coerceIn(0.5f, 2.0f),
             )
             // 超 100%：LoudnessEnhancer 补增益（≤ +12dB）
-            val e = previewEnhancer
-                ?: LoudnessEnhancer(player.audioSessionId).also { previewEnhancer = it }
-            if (asset.volume > 1.001f) {
-                val gainDb = (20.0 * log10(asset.volume.toDouble())).coerceIn(0.0, 12.0)
-                e.setTargetGain((gainDb * 100).toInt())
-                e.enabled = true
-            } else {
-                e.enabled = false
-            }
+            previewEnhancer = ensurePreviewEnhancer(player, asset.volume, previewEnhancer)
             player.prepare()
             player.play()
         }
@@ -600,6 +593,23 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
             }
         },
     )
+}
+
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun ensurePreviewEnhancer(
+    player: ExoPlayer,
+    volume: Float,
+    current: LoudnessEnhancer?,
+): LoudnessEnhancer {
+    val e = current ?: LoudnessEnhancer(player.audioSessionId)
+    if (volume > 1.001f) {
+        val gainDb = (20.0 * log10(volume.toDouble())).coerceIn(0.0, 12.0)
+        e.setTargetGain((gainDb * 100).toInt())
+        e.enabled = true
+    } else {
+        e.enabled = false
+    }
+    return e
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

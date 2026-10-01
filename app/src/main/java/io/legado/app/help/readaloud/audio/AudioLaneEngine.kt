@@ -10,6 +10,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.constant.AppLog
 import io.legado.app.domain.model.settings.ReadAloudSettings
@@ -309,6 +310,7 @@ class AudioLaneEngine(
     }
 
     /** 超 100% 音量：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB） */
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, volume: Float) {
         runCatching {
             if (volume <= 1.001f) {
