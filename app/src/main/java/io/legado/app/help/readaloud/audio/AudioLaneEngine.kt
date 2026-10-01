@@ -3,6 +3,7 @@ package io.legado.app.help.readaloud.audio
 import android.content.Context
 import android.media.AudioAttributes as PlatformAudioAttributes
 import android.media.SoundPool
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
 import androidx.media3.common.C
@@ -19,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.log10
 
 /**
  * B33 · 四轨音频引擎（音频小闭环版）。
@@ -289,6 +291,7 @@ class AudioLaneEngine(
         }
         val volume = (if (active) target else 0f) * (meta?.volume ?: 1f)
         approach(p, volume.coerceIn(0f, 1f))
+        applyLoopBoost(lane, p, volume)
         if (!active && p.volume <= 0.015f && p.isPlaying) {
             runCatching { p.pause() }
         }
@@ -303,6 +306,21 @@ class AudioLaneEngine(
         }
         val step = if (target > current) 0.08f else -0.08f
         player.volume = (current + step).coerceIn(0f, 1f)
+    }
+
+    /** 超 100% 音量：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB） */
+    private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, volume: Float) {
+        runCatching {
+            if (volume <= 1.001f) {
+                lane.enhancer?.enabled = false
+                return
+            }
+            val e = lane.enhancer
+                ?: LoudnessEnhancer(player.audioSessionId).also { lane.enhancer = it }
+            val gainDb = (20.0 * log10(volume.toDouble())).coerceIn(0.0, 12.0)
+            e.setTargetGain((gainDb * 100).toInt())
+            e.enabled = true
+        }
     }
 
     // ---------------------------------------------------------------- sfx
@@ -417,6 +435,7 @@ class AudioLaneEngine(
             private set
         var asset: AudioLibrary.AudioAsset? = null
             private set
+        var enhancer: LoudnessEnhancer? = null
 
         fun playKeyword(kw: String, file: File, asset: AudioLibrary.AudioAsset?) {
             this.asset = asset
@@ -453,6 +472,8 @@ class AudioLaneEngine(
             player?.let { runCatching { it.release() } }
             player = null
             keyword = null
+            enhancer?.let { runCatching { it.release() } }
+            enhancer = null
         }
     }
 }

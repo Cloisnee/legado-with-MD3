@@ -46,10 +46,13 @@ object AudioSynthClients {
             .build()
     }
 
-    /** 生成提示词（Gen 用方括号描述音效/环境；Music 为 caption 描述） */
+    /**
+     * 生成提示词（Gen 用方括号描述；Music 为 caption）。
+     * 注意：描述尽量短——部分模型会把长句“念出来”，只留关键词可显著降低概率。
+     */
     fun promptFor(lane: SynthLane, keyword: String): String = when (lane) {
-        SynthLane.SFX -> "[$keyword] 写实音效，短促单发，干净，无背景音乐、无对白"
-        SynthLane.AMB -> "[$keyword] 环境底噪，持续场景氛围声，无音乐、无对白"
+        SynthLane.SFX -> "[$keyword]"
+        SynthLane.AMB -> "[$keyword 环境]"
         SynthLane.BGM -> "$keyword 氛围，纯器乐配乐，无人声"
     }
 

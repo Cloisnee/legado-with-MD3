@@ -1,14 +1,14 @@
 package io.legado.app.ui.ttssrv
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
@@ -27,7 +27,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
@@ -35,8 +34,13 @@ import io.legado.app.help.readaloud.audio.AudioRemoteDownloader
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
+import io.legado.app.ui.widget.components.ActionItem
+import io.legado.app.ui.widget.components.DraggableSelectionHandler
+import io.legado.app.ui.widget.components.SelectionActions
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
+import io.legado.app.ui.widget.components.card.SelectionItemCard
 import io.legado.app.ui.widget.components.icon.AppIcons
+import io.legado.app.ui.widget.components.lazylist.FastScrollLazyColumn
 import io.legado.app.ui.widget.components.list.ListScaffold
 import io.legado.app.ui.widget.components.list.ListUiState
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
@@ -45,8 +49,8 @@ import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import kotlinx.coroutines.launch
 
 /**
- * B33.2b · 远程素材库（CNB 墨听/JRead 索引包：核心音效 / 恐怖惊悚）。
- * 浏览与搜索索引 → 点条目流式下载落库（分类目录 + 中文名 + sidecar）。
+ * B33.2b · 远程素材库（CNB 墨听/JRead 索引包：核心音效 / 恐怖惊悚 / matrix24）。
+ * 浏览与搜索索引；点击卡片进入多选（原版选中动画 + 左侧滑动多选），下载走按钮 / 「下载选中」。
  */
 @Composable
 fun AudioRemoteRouteScreen(onBackClick: () -> Unit) {
@@ -59,6 +63,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
 
     var packs by remember { mutableStateOf<List<AudioRemoteCatalog.RemotePack>>(emptyList()) }
     var packError by remember { mutableStateOf<String?>(null) }
@@ -71,7 +76,10 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     var query by remember { mutableStateOf("") }
     var isSearch by remember { mutableStateOf(false) }
     var localNames by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
     val jobStates by AudioRemoteDownloader.states.collectAsState()
+
+    val inSelectionMode = selectedIds.isNotEmpty()
 
     // 18+ 等 defaultEnabled=false 的包默认不出现（后续「分类开关」批次再放开）
     val visiblePacks = remember(packs) { packs.filter { it.defaultEnabled } }
@@ -112,6 +120,10 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         }
     }
 
+    fun enqueue(sound: AudioRemoteCatalog.RemoteSound) {
+        AudioRemoteDownloader.enqueue(context.applicationContext, sound)
+    }
+
     LaunchedEffect(Unit) {
         loadManifest()
         reloadLocalNames()
@@ -133,6 +145,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
 
     val uiState = RemoteLibUiState(
         items = shown,
+        selectedIds = selectedIds,
         searchKey = query,
         isSearch = isSearch,
         isLoading = loadingIndex,
@@ -155,6 +168,22 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                 contentDescription = "刷新远程目录",
             )
         },
+        selectionActions = SelectionActions(
+            onClearSelection = { selectedIds = emptySet() },
+            onSelectAll = { selectedIds = shown.map { it.soundId }.toSet() },
+            onSelectInvert = {
+                selectedIds = shown.map { it.soundId }.toSet() - selectedIds
+            },
+            primaryAction = ActionItem(text = "下载选中", icon = Icons.Default.Download) {
+                val picked = shown.filter { it.soundId in selectedIds }
+                picked.forEach { enqueue(it) }
+                scope.launch {
+                    snackbarHostState.showSnackbar("已加入下载队列：${picked.size} 条")
+                }
+                selectedIds = emptySet()
+            },
+            secondaryActions = emptyList(),
+        ),
         bottomContent = {
             if (visiblePacks.size > 1) {
                 AppTabRow(
@@ -167,35 +196,79 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         },
         snackbarHostState = snackbarHostState,
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = adaptiveContentPadding(
-                top = padding.calculateTopPadding(),
-                bottom = 120.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item {
-                val status = when {
-                    packError != null -> packError
-                    loadingIndex -> indexStatus.ifBlank { "正在载入索引…" }
-                    indexError != null -> indexError
-                    loadedPackId != null -> "索引就绪：共 ${sounds.size} 条 · 点条目下载（已下载自动标注）"
-                    else -> "正在准备…"
+        Box(modifier = Modifier.fillMaxSize()) {
+            FastScrollLazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = adaptiveContentPadding(
+                    top = padding.calculateTopPadding(),
+                    bottom = 120.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    val status = when {
+                        packError != null -> packError
+                        loadingIndex -> indexStatus.ifBlank { "正在载入索引…" }
+                        indexError != null -> indexError
+                        loadedPackId != null -> "索引就绪：共 ${sounds.size} 条 · 点卡片进多选，点右侧按钮下载"
+                        else -> "正在准备…"
+                    }
+                    AppText(
+                        text = status.toString(),
+                        style = LegadoTheme.typography.labelSmall,
+                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
                 }
-                AppText(
-                    text = status.toString(),
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                )
+                items(shown, key = { it.soundId }) { s ->
+                    SelectionItemCard(
+                        title = s.name,
+                        subtitle = buildString {
+                            if (s.categoryName.isNotBlank()) {
+                                append(s.categoryName)
+                            } else {
+                                append(s.category.ifBlank { s.pack })
+                            }
+                            if (s.subType.isNotBlank()) {
+                                append(" · ").append(s.subType)
+                            }
+                        },
+                        isSelected = selectedIds.contains(s.soundId),
+                        inSelectionMode = inSelectionMode,
+                        onToggleSelection = {
+                            selectedIds = if (selectedIds.contains(s.soundId)) {
+                                selectedIds - s.soundId
+                            } else {
+                                selectedIds + s.soundId
+                            }
+                        },
+                        trailingAction = if (inSelectionMode) {
+                            null
+                        } else {
+                            {
+                                RemoteDownloadAction(
+                                    state = jobStates[s.soundId],
+                                    inLibrary = localNames.contains(s.name),
+                                    onDownload = { enqueue(s) },
+                                )
+                            }
+                        },
+                        contentDescription = s.name,
+                    )
+                }
             }
-            items(shown, key = { it.soundId }) { s ->
-                RemoteSoundRow(
-                    sound = s,
-                    state = jobStates[s.soundId],
-                    inLibrary = localNames.contains(s.name),
-                    onDownload = { AudioRemoteDownloader.enqueue(context.applicationContext, s) },
+            if (inSelectionMode) {
+                DraggableSelectionHandler(
+                    listState = listState,
+                    items = shown,
+                    selectedIds = selectedIds,
+                    onSelectionChange = { selectedIds = it },
+                    idProvider = { it.soundId },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(60.dp)
+                        .align(Alignment.TopStart),
                 )
             }
         }
@@ -203,42 +276,12 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun RemoteSoundRow(
-    sound: AudioRemoteCatalog.RemoteSound,
+private fun RemoteDownloadAction(
     state: AudioRemoteDownloader.State?,
     inLibrary: Boolean,
     onDownload: () -> Unit,
 ) {
-    val idle = state == null && !inLibrary
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = idle) { onDownload() }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            AppText(
-                text = sound.name,
-                style = LegadoTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            AppText(
-                text = buildString {
-                    if (sound.categoryName.isNotBlank()) {
-                        append(sound.categoryName)
-                    } else {
-                        append(sound.category.ifBlank { sound.pack })
-                    }
-                    if (sound.subType.isNotBlank()) {
-                        append(" · ").append(sound.subType)
-                    }
-                },
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+    Row(verticalAlignment = Alignment.CenterVertically) {
         when {
             state is AudioRemoteDownloader.State.Failed -> {
                 AppText(

@@ -1,5 +1,6 @@
 package io.legado.app.ui.ttssrv
 
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -71,6 +72,7 @@ import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
+import kotlin.math.log10
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -107,6 +109,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
     var paramsOpen by remember { mutableStateOf(false) }
     var playingId by remember { mutableStateOf<String?>(null) }
     var previewPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
+    var previewEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
     var showImportPicker by remember { mutableStateOf(false) }
 
     val inSelectionMode = selectedIds.isNotEmpty()
@@ -124,6 +127,8 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         onDispose {
             previewPlayer?.release()
             previewPlayer = null
+            previewEnhancer?.let { runCatching { it.release() } }
+            previewEnhancer = null
         }
     }
 
@@ -164,6 +169,16 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
                 asset.speed.coerceIn(0.5f, 2.0f),
                 asset.pitch.coerceIn(0.5f, 2.0f),
             )
+            // 超 100%：LoudnessEnhancer 补增益（≤ +12dB）
+            val e = previewEnhancer
+                ?: LoudnessEnhancer(player.audioSessionId).also { previewEnhancer = it }
+            if (asset.volume > 1.001f) {
+                val gainDb = (20.0 * log10(asset.volume.toDouble())).coerceIn(0.0, 12.0)
+                e.setTargetGain((gainDb * 100).toInt())
+                e.enabled = true
+            } else {
+                e.enabled = false
+            }
             player.prepare()
             player.play()
         }
@@ -577,6 +592,7 @@ fun AudioLibraryScreen(onBack: () -> Unit, onNavigateToRemote: () -> Unit = {}) 
         onDismiss = { paramsOpen = false },
         onSave = { updated ->
             paramsOpen = false
+            editTarget = updated // 防止随后「编辑保存」用旧对象覆盖参数
             scope.launch {
                 AudioLibrary.updateAsset(context.applicationContext, updated)
                 reload()

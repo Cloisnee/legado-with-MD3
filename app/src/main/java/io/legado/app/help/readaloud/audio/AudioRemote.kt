@@ -30,8 +30,11 @@ import java.util.concurrent.TimeUnit
  */
 object AudioRemoteCatalog {
 
-    const val MANIFEST_URL =
-        "https://cnb.cool/applecabal/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json"
+    /** 清单来源：优先自家 fork（Cloisnee），失败回退上游 */
+    private val MANIFEST_URLS = listOf(
+        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json",
+        "https://cnb.cool/applecabal/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json",
+    )
 
     data class RemotePack(
         val id: String = "",
@@ -83,7 +86,7 @@ object AudioRemoteCatalog {
                 val text = if (!forceRefresh && f.isFile) {
                     f.readText().removePrefix("\uFEFF")
                 } else {
-                    val fresh = runCatching { fetchText(MANIFEST_URL) }.getOrElse { e ->
+                    val fresh = runCatching { fetchManifestText() }.getOrElse { e ->
                         if (f.isFile) f.readText().removePrefix("\uFEFF") else throw e
                     }
                     runCatching {
@@ -314,6 +317,14 @@ object AudioRemoteCatalog {
     }
 
     // ------------------------------------------------------------ 内部
+
+    private suspend fun fetchManifestText(): String {
+        var last: Throwable? = null
+        for (url in MANIFEST_URLS) {
+            runCatching { return fetchText(url) }.onFailure { last = it }
+        }
+        throw last ?: IllegalStateException("远程清单不可用")
+    }
 
     private suspend fun fetchText(url: String): String {
         val req = Request.Builder()
