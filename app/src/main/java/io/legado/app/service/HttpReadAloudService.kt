@@ -594,7 +594,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 // 串行铁律：本章条目全部合成结束后，才启动后续章节预合成。
                 // 两者若并行，会同时调用同一插件引擎（音色插件普遍不耐并发）→ "No data written"。
                 AppLog.putAudio(
-                    "【音频缓存·${chapterTag()}】条目合成结束，开始预合成后续章节"
+                    "【音频缓存·音效与背景音·${chapterTag()}】条目合成结束，开始预合成后续章节"
                 )
                 launchPreDownload(httpTts)
             }
@@ -734,9 +734,16 @@ class HttpReadAloudService : BaseReadAloudService(),
                 }
                 val targetIndex = currentIdx + i
                 val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, targetIndex) ?: break
-                val prepared = getPreDownloadChapter(book, chapter)
+                // B33.4a：计划就绪即预热——未就绪不再一次性跳过，改为限时等待（每 30s 重查，最长 5 分钟）
+                var prepared = getPreDownloadChapter(book, chapter)
+                var waitedMs = 0L
+                while (prepared == null && waitedMs < 5 * 60_000L) {
+                    delay(30_000)
+                    waitedMs += 30_000
+                    prepared = getPreDownloadChapter(book, chapter)
+                }
                 if (prepared == null) {
-                    AppLog.putAudio("【音频缓存·第${targetIndex + 1}章】跳过预合成（章节内容未缓存）")
+                    AppLog.putAudio("【音频缓存·第${targetIndex + 1}章】跳过预合成（等待分析就绪超时）")
                     continue
                 }
                 AppLog.putAudio(

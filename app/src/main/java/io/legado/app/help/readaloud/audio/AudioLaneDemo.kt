@@ -63,9 +63,7 @@ object DemoLanes {
         Rule(Lane.BGM, Regex("(灵气|仙门|宗门|御剑|修真|仙气|秘境)"), "仙侠紧张", holdCues = 14),
     )
 
-    fun match(lane: Lane, text: String): Rule? =
-        rules.firstOrNull { it.lane == lane && it.pattern.containsMatchIn(text) }
-}
+    }
 
 object TmDemoAssets {
 

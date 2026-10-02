@@ -126,6 +126,8 @@ class AudioLaneEngine(
         // B33.3d：规则数据预热（失败静默回退示例规则）+ 素材库索引预热
         runCatching { AudioRuleStore.warmUp(appContext) }
         runCatching { AudioLibrary.warmUp(appContext) }
+        // B33.4a：内置规则包预热（mingwuyan 音效 / 环境·BGM 词典）
+        runCatching { AudioBuiltinRules.warmUp(appContext) }
     }
 
     private val ticker: Job = scope.launch {

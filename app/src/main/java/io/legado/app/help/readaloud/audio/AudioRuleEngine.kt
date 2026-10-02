@@ -9,7 +9,7 @@ import io.legado.app.help.readaloud.audio.AudioRuleStore.RuleData
 /**
  * B33.3d · 音效规则层（兜底驱动）匹配器；B33.3e：条目「匹配规则」实装（正则/字面 + 标题/正文范围）。
  *
- * 候选优先级：**用户自定规则**（素材「匹配规则」字段） > **内置示例规则**（DemoLanes） > **CNB 意图规则**（AC 匹配）。
+ * 候选优先级：**条目规则**（素材「匹配规则」字段，含内置规则「命中即回填」） > **内置规则包**（mingwuyan 音效 / 环境·BGM 词典） > **CNB 意图规则**（AC 匹配）。
  * 命中后沿「soundId → 别名 → 名称」解析到本地库素材；全部无法解析 → 返回最优候选交给引擎走「缺失 → 合成」。
  *
  * 与引擎的契约：[AudioLaneEngine] 每行调用 [pick]，拿到「已解析的素材」或「待补缺的展示名」。
@@ -18,7 +18,7 @@ object AudioRuleEngine {
 
     enum class Source(val label: String) {
         USER("自定规则"),
-        SEED("示例规则"),
+        BUILTIN("内置规则"),
         INTENT("意图规则"),
     }
 
@@ -141,13 +141,15 @@ object AudioRuleEngine {
         }
         // 章标题行只认用户显式规则（示例/意图层不参与）
         if (isTitle) return out
-        // 2) 内置示例规则
-        DemoLanes.match(lane, text)?.let { r ->
+        // 2) 内置规则包（mingwuyan 音效 / 环境·BGM 词典；示例规则已退役）
+        AudioBuiltinRules.hit(lane, text)?.let { r ->
             out.add(
                 Hit(
-                    lane = lane, source = Source.SEED,
-                    keywords = listOf(r.keyword), soundIds = emptyList(),
-                    gain = r.gain, delayMs = r.delayMs, holdCues = r.holdCues, label = r.keyword,
+                    lane = lane, source = Source.BUILTIN,
+                    keywords = listOf(r.label), soundIds = emptyList(),
+                    gain = 0.8f, delayMs = 0L,
+                    holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
+                    label = r.label,
                 )
             )
         }
@@ -207,6 +209,15 @@ object AudioRuleEngine {
     // ------------------------------------------------------------ 解析到本地素材
 
     fun resolveHit(context: Context, hit: Hit): AudioLibrary.ResolvedAsset? {
+        val resolved = resolveHitInner(context, hit)
+        // B33.4a：内置规则命中且解析成功 → 命中即回填（合并正则写入条目「匹配规则」）
+        if (resolved != null && hit.source == Source.BUILTIN) {
+            runCatching { AudioBuiltinRules.tryBackfill(context, hit.lane, hit.label, resolved.asset) }
+        }
+        return resolved
+    }
+
+    private fun resolveHitInner(context: Context, hit: Hit): AudioLibrary.ResolvedAsset? {
         // 1) soundId 直连（下载条目 sidecar 自带 soundId）
         for (sid in hit.soundIds) {
             AudioLibrary.resolveBySoundId(context, sid)?.let { return it }

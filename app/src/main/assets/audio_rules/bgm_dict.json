@@ -1,0 +1,82 @@
+{
+ "schemaVersion": 1,
+ "kind": "bgm_dict",
+ "rules": [
+  {
+   "label": "bgm_addon_0067_common_battle_epic_high_战斗BOSS高燃",
+   "pattern": "(战斗|厮杀|交战|交手|混战|恶战|搏杀|血战|激战|动手了|动手打|大打出手|战个|战意|杀气腾腾)"
+  },
+  {
+   "label": "common_daily_tension_mid_loop_忧虑坐立不安一",
+   "pattern": "(紧张|危机|危险|不对劲|压迫感|剑拔弩张|杀气|一触即发)"
+  },
+  {
+   "label": "bgm_addon_0054_suspense_chase_tense_high_追逐暗潮紧张",
+   "pattern": "(紧张.*追逐|追逐|逃亡|追兵|逃命|穷追不舍|紧追)"
+  },
+  {
+   "label": "bgm_addon_0001_common_rain_night_warm_low_温柔雨景舒缓",
+   "pattern": "(温柔|回忆|往事|思念|重逢|柔情)"
+  },
+  {
+   "label": "bgm_addon_0005_common_funeral_sad_low_悲伤安魂舒缓",
+   "pattern": "(悲伤|悲痛|哀悼|葬礼|诀别|去世|牺牲|恸哭|泪如雨下)"
+  },
+  {
+   "label": "bgm_addon_0044_suspense_night_empty_mystery_medium_悬疑满月紧张",
+   "pattern": "(悬疑|推理|侦查|线索|案情|谜团|诡异|调查)"
+  },
+  {
+   "label": "bgm_addon_0028_horror_indoor_quiet_horror_low_HauntedDesolat",
+   "pattern": "(恐怖|阴森|毛骨悚然|不寒而栗|鬼影|阴风|悚然)"
+  },
+  {
+   "label": "xianxia_ancient_ethereal_mid_loop_仙侠古风唯美仙乐云宫",
+   "pattern": "(仙侠|修仙|灵气|御剑|飞升|仙门|元婴|炼丹|灵石)"
+  },
+  {
+   "label": "wuxia_ancient_heroic_high_loop_古风客栈棋武侠热血史诗恢",
+   "pattern": "(古风.*(战斗|厮杀|大战)|武侠|江湖.*(仇杀|大战)|剑光|刀光剑影|武林)"
+  },
+  {
+   "label": "古风_烟雨_权谋_恢弘_武侠_热血_震撼_史诗",
+   "pattern": "(史诗|恢弘|权谋|大战在即|磅礴|气势磅礴)"
+  },
+  {
+   "label": "古风_凄凉_伤感_抒情_回忆_离别_虐恋_悲情",
+   "pattern": "(凄凉|孤寂|落寞|萧瑟|流离|漂泊)"
+  },
+  {
+   "label": "现代_写字楼_酒吧_钟声_浪漫_表白_静谧_婚礼",
+   "pattern": "(浪漫|表白|求婚|婚礼|洞房|甜蜜.*(恋爱|约会)|怦然心动)"
+  },
+  {
+   "label": "现代_派对_地铁_键盘_小号_和声_温馨_约会",
+   "pattern": "(温馨|甜蜜|约会|嬉闹|甜宠)"
+  },
+  {
+   "label": "古风_过场_轻缓_日常_市井_山水_文雅_清新",
+   "pattern": "(日常|过场|从容|闲适|轻快.*(日子|生活)|平静生活)"
+  },
+  {
+   "label": "古风_客栈_山门_重奏_鸟鸣声_搞笑_喜剧_诙谐",
+   "pattern": "(搞笑|诙谐|喜剧|滑稽|打趣|逗趣)"
+  },
+  {
+   "label": "bgm_addon_0051_urban_night_empty_ethereal_low_空灵都市夜色舒缓",
+   "pattern": "(霓虹|都市夜色|车流|夜生活|酒吧街)"
+  },
+  {
+   "label": "未来_高科技_自动化_震撼_紧张_史诗_热血",
+   "pattern": "(未来|科技|机械|机甲|赛博|自动化|飞船.*(巡航|跃迁))"
+  },
+  {
+   "label": "民国_长衫_报馆_琵琶_钟声_推理_诡异_氛围",
+   "pattern": "(民国|租界|洋楼|弄堂)"
+  },
+  {
+   "label": "历史_丝绸之路_宫殿_尺八_雨声_舒缓_山水",
+   "pattern": "(历史|朝代|盛唐|大唐|丝绸之路|王朝)"
+  }
+ ]
+}

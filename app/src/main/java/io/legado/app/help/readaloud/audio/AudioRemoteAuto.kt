@@ -32,9 +32,11 @@ object AudioRemoteAuto {
                 for (pack in packs) {
                     val list = runCatching { AudioRemoteCatalog.sounds(context, pack) }.getOrDefault(emptyList())
                     if (list.isEmpty()) continue
-                    val hit = AudioRemoteMatcher.pick(list, kw, lane) ?: continue
+                    // B33.4a 口径：按标签/分组过滤候选池——音效/环境声/BGM 各自只在对应类内选
+                    val pool = list.filter { laneBucket(it) == bucketOf(lane) }
+                    if (pool.isEmpty()) continue
+                    val hit = AudioRemoteMatcher.pick(pool, kw, lane) ?: continue
                     val file = runCatching { AudioRemoteCatalog.download(context, hit) }.getOrNull() ?: continue
-                    AppLog.putAudio("【合成】远程补缺：$kw → ${hit.name}（${pack.label}）")
                     return@withContext file
                 }
                 null
@@ -42,14 +44,35 @@ object AudioRemoteAuto {
         }
     }
 
+    /** 远程条目 → 三分类（0=环境声 1=BGM 2=音效；与音频库落库口径一致） */
+    internal fun laneBucket(s: AudioRemoteCatalog.RemoteSound): Int {
+        val cat = s.category.lowercase()
+        val cn = s.categoryName
+        val sub = s.subType.lowercase()
+        val tags = s.tags.map { it.lowercase() }
+        val bgm = cat == "bgm" || cat.startsWith("bgm") || cn.contains("bgm", ignoreCase = true) ||
+            tags.any { it == "bgm" || it.startsWith("bgm") }
+        if (bgm) return 1
+        val env = cn.contains("环境") || cat == "scene" || cat.startsWith("scene") ||
+            sub == "amb" || sub == "ambience" ||
+            tags.any { it == "scene" || it == "amb" || it == "ambience" || it == "environment" }
+        return if (env) 0 else 2
+    }
+
+    private fun bucketOf(lane: SynthLane): Int = when (lane) {
+        SynthLane.AMB -> 0
+        SynthLane.BGM -> 1
+        SynthLane.SFX -> 2
+    }
+
     private fun orderPacks(
         lane: SynthLane,
         packs: List<AudioRemoteCatalog.RemotePack>,
     ): List<AudioRemoteCatalog.RemotePack> {
         val preferred = when (lane) {
-            SynthLane.AMB -> listOf("matrix24", "core")
-            SynthLane.BGM -> listOf("matrix24", "core")
-            SynthLane.SFX -> listOf("core", "matrix24")
+            SynthLane.AMB -> listOf("matrix24", "horror_thriller_v1", "core")
+            SynthLane.BGM -> listOf("bgm")
+            SynthLane.SFX -> listOf("mingwuyan", "core", "matrix24")
         }
         return packs.sortedBy { p ->
             preferred.indexOf(p.id).let { if (it >= 0) it else preferred.size }

@@ -146,7 +146,6 @@ class AudioSynthQueue(
             entries[key] = entry
             chapterCounts[ck] = used + 1
             queue.trySend(entry)
-            AppLog.putAudio("【合成】入队：${lane.label}「$kw」（本章 ${used + 1}/$cap）")
         }
         save()
     }
@@ -169,7 +168,6 @@ class AudioSynthQueue(
                 remoteFile.relativeTo(TmDemoAssets.libRoot(appContext)).path.replace(File.separatorChar, '/')
             }.getOrDefault(remoteFile.name)
             markDone(task, rel, "远程库")
-            AppLog.putAudio("【合成】完成：${task.lane.label}「${task.keyword}」← 远程库（${remoteFile.name}）")
             return
         }
         val refs = runCatching { repo.queueRefs(task.lane.assignKey) }.getOrDefault(emptyList())
@@ -181,8 +179,6 @@ class AudioSynthQueue(
         refs.forEachIndexed { index, ref ->
             val provider = ref.provider
             val model = ref.model
-            val head = if (index > 0) "换阵" else "开始"
-            AppLog.putAudio("【合成】$head：${task.lane.label}「${task.keyword}」→ ${provider.name}/${model.name}")
             val result = AudioSynthClients.generate(provider, model, task.lane, task.keyword)
             val gen = result.getOrNull()
             if (gen != null) {
@@ -192,26 +188,18 @@ class AudioSynthQueue(
                         source = "${provider.name}/${model.name}",
                     )
                     markDone(task, rel, "${provider.name}/${model.name}")
-                    AppLog.putAudio("【合成】完成：${task.lane.label}「${task.keyword}」← ${provider.name}（${gen.detail}）")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     val msg = e.localizedMessage ?: "入库失败"
                     markFailed(task, msg)
-                    AppLog.putAudio("【合成】入库失败：${task.lane.label}「${task.keyword}」（$msg）")
                 }
                 return
             }
             lastError = result.exceptionOrNull()?.localizedMessage ?: "未知错误"
-            if (index < refs.lastIndex) {
-                AppLog.putAudio("【合成】未中：${task.lane.label}「${task.keyword}」← ${provider.name}（$lastError）")
-            }
         }
         val failMsg = lastError.ifBlank { "全部合成模型失败" }
         markFailed(task, failMsg)
-        AppLog.putAudio(
-            "【合成】失败：${task.lane.label}「${task.keyword}」→ $failMsg（冷却 ${FAIL_COOLDOWN_MS / 60_000} 分钟）"
-        )
     }
 
     private suspend fun markDone(task: Entry, fileRel: String, source: String) {
@@ -339,8 +327,9 @@ class AudioSynthQueue(
     fun entryStatus(lane: SynthLane, keyword: String): String =
         runCatching { entries["${lane.name}|$keyword"]?.status.orEmpty() }.getOrDefault("")
 
+    /** 日志 v3：跳过原因仅记录去重集合（散行静默），由章节总结统一呈现 */
     private fun logSkipOnce(key: String, reason: String) {
-        if (skipLogged.add(key)) AppLog.putAudio("【合成】跳过：$reason")
+        skipLogged.add(key)
     }
 
     private fun now(): Long = System.currentTimeMillis()

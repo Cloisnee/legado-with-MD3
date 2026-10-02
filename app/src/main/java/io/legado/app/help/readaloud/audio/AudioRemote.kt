@@ -42,6 +42,8 @@ object AudioRemoteCatalog {
         val indexUrl: String = "",
         val soundCount: Int = 0,
         val defaultEnabled: Boolean = true,
+        /** B33.4a：18+ 等远程规则包地址（随包拉取；可空） */
+        val rulesUrl: String = "",
     )
 
     data class RemoteSound(
@@ -216,9 +218,10 @@ object AudioRemoteCatalog {
                         id = id,
                         label = o.optString("label").ifBlank { id },
                         indexUrl = o.optString("indexUrl"),
-                        soundCount = o.optInt("soundCount", 0),
-                        defaultEnabled = o.optBoolean("defaultEnabled", false),
-                    )
+                                                soundCount = o.optInt("soundCount"),
+                                                defaultEnabled = o.optBoolean("defaultEnabled", true),
+                                                rulesUrl = o.optString("rulesUrl"),
+                                            )
                 )
             }
         }

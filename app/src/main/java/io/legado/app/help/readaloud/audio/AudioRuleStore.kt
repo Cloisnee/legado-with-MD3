@@ -165,7 +165,7 @@ object AudioRuleStore {
         val intentText = readText(dir, FILE_INTENT)
         val mapText = readText(dir, FILE_MAP)
         if (intentText == null || mapText == null) {
-            AppLog.putAudio("【音效与背景音】规则未就绪（拉取失败且无缓存），暂用内置示例规则")
+            AppLog.putAudio("【音效与背景音】意图规则未就绪（拉取失败且无缓存）；内置规则包仍旧生效")
             return@withContext null
         }
         val intents = parseIntents(intentText) ?: return@withContext null
