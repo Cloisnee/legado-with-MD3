@@ -43,6 +43,7 @@ import kotlin.math.log10
  * 匹配层（B33.3d）：[AudioRuleEngine] —— 条目规则（含命中回填） > 内置规则包（音效/环境/BGM词典） > CNB 意图规则（AC）；
  * 素材解析 = AudioLibrary registry 索引（soundId 直连 / 名称链；未加载时回退目录直扫）。
  * B33.3c：缺失 → onMissing 回调（自动合成补缺）；闸门（间隔/冷却/驻留）滑条化。
+ * B33.4b：本章有 Ai 计划（[AudioPlanStore]）→ 计划层驱动（环境切换/BGM/音效）；无计划 → 规则层（兜底四条件）。
  */
 class AudioLaneEngine(
     private val appContext: Context,
@@ -51,14 +52,16 @@ class AudioLaneEngine(
     private val serviceActive: () -> Boolean,
     /** 人声音频当前正在出声（BGM 闪避判定用） */
     private val voiceActive: () -> Boolean,
-    /** B33.3c：素材缺失上报（kind=音效/环境/BGM；接自动合成补缺队列） */
-    private val onMissing: (String, String) -> Unit = { _, _ -> },
+    /** B33.3c：素材缺失上报（kind=音效/环境/BGM + 生成描述；接自动合成补缺队列） */
+    private val onMissing: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
 
     data class CueInfo(
         val text: String,
         val isChapterTitle: Boolean = false,
         val emotion: String = "",
+        /** B33.4b：段序号（=剧本行/计划锚点；标题行为 0） */
+        val para: Int = 0,
     )
 
     data class LaneConfig(
@@ -118,6 +121,12 @@ class AudioLaneEngine(
     private var chapterLabel: String = ""
     private var quietChapter: Boolean = false
 
+    /** B33.4b：当前章音频计划（Ai 驱动；null=规则兜底） */
+    @Volatile private var audioPlan: AudioPlan? = null
+    private var planAmbByPara: Map<Int, AudioPlanItem> = emptyMap()
+    private var planBgmByPara: Map<Int, AudioPlanItem> = emptyMap()
+    private var planSfxByPara: Map<Int, List<AudioPlanItem>> = emptyMap()
+
     /** 循环轨解析失败的重试闸门（防每 tick 扫描；文件落库后自动接上） */
     private var ambMissRetryAt: Long = 0L
     private var bgmMissRetryAt: Long = 0L
@@ -128,6 +137,8 @@ class AudioLaneEngine(
         runCatching { AudioLibrary.warmUp(appContext) }
         // B33.4a：内置规则包预热（mingwuyan 音效 / 环境·BGM 词典）
         runCatching { AudioBuiltinRules.warmUp(appContext) }
+        // B33.4b：音频计划存储上下文（播放侧读取计划用）
+        runCatching { AudioPlanStore.remember(appContext) }
     }
 
     private val ticker: Job = scope.launch {
@@ -159,6 +170,18 @@ class AudioLaneEngine(
         lastCueIndex = -1
         if (label != null) chapterLabel = label
         quietChapter = quiet
+        audioPlan = null
+        planAmbByPara = emptyMap()
+        planBgmByPara = emptyMap()
+        planSfxByPara = emptyMap()
+    }
+
+    /** B33.4b：装载本章音频计划（服务异步推送；null=回退规则层） */
+    fun onChapterPlan(plan: AudioPlan?) {
+        audioPlan = plan
+        planAmbByPara = plan?.ambience?.associateBy { it.para }.orEmpty()
+        planBgmByPara = plan?.bgm?.associateBy { it.para }.orEmpty()
+        planSfxByPara = plan?.sfx?.groupBy { it.para }.orEmpty()
     }
 
     /** 暂停——ticker 会依据 serviceActive 自动压低；此处仅加速一次对账 */
@@ -187,11 +210,17 @@ class AudioLaneEngine(
         lastCueIndex = index
         val text = cue.text
         if (text.isBlank()) return
-        driveCue(index, text, isTitle = false)
+        driveCue(index, text, isTitle = false, para = cue.para)
     }
 
     /** 三类轨命中驱动（正文行 / 章标题共用；isTitle 时仅「应用于标题」的自定规则参与） */
-    private fun driveCue(index: Int, text: String, isTitle: Boolean) {
+    private fun driveCue(index: Int, text: String, isTitle: Boolean, para: Int = 0) {
+        // B33.4b：本章有 Ai 计划 → 计划层接管（无计划=规则层；「四条件兜底」天然成立）
+        val plan = audioPlan
+        if (plan != null && !isTitle && para > 0) {
+            driveCueByPlan(index, para)
+            return
+        }
         // 1) 环境：命中新场景 → 切换（最短驻留防抖）；规则层 = 自定 > 示例 > CNB 意图
         AudioRuleEngine.pick(appContext, DemoLanes.Lane.AMBIENCE, text, isTitle)?.let { pick ->
             val keyword = pick.resolved?.asset?.name ?: pick.hit.label
@@ -246,6 +275,72 @@ class AudioLaneEngine(
                 }
             } else {
                 laneLog(index, "音效=$keyword（闸门跳过）")
+            }
+        }
+    }
+
+    /** B33.4b：Ai 计划驱动（环境切换 / BGM 起止 / 音效点事件；闸门与规则层同款，保证联动与防轰炸） */
+    private fun driveCueByPlan(index: Int, para: Int) {
+        // 1) 环境：计划切换点（最短驻留防抖与规则层一致）
+        planAmbByPara[para]?.let { item ->
+            val keyword = item.tag
+            if (keyword.isNotBlank() && keyword != desiredAmbience) {
+                val now = System.currentTimeMillis()
+                if (desiredAmbience == null || now - ambienceDwellAt >= config.ambMinDwellMs) {
+                    desiredAmbience = keyword
+                    ambienceDwellAt = now
+                    ambMissRetryAt = 0L
+                    laneLog(index, "环境→$keyword（Ai导演）")
+                } else {
+                    laneLog(index, "环境=$keyword（驻留未到，跳过）")
+                }
+            }
+        }
+
+        // 2) BGM：起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
+        val bgmItem = planBgmByPara[para]
+        if (bgmItem != null) {
+            val keyword = AudioBgmPicker.pickLocal(appContext, AudioBgmPicker.queryOf(bgmItem))?.asset?.name
+                ?: bgmItem.displayName
+            if (keyword != desiredBgm) {
+                val now = System.currentTimeMillis()
+                if (now - (lastBgmByKeyword[keyword] ?: 0L) >= config.bgmCooldownMs) {
+                    desiredBgm = keyword
+                    bgmHoldRemaining = bgmItem.hold.coerceAtLeast(1)
+                    lastBgmByKeyword[keyword] = now
+                    bgmMissRetryAt = 0L
+                    laneLog(index, "BGM=$keyword（持续 $bgmHoldRemaining 行 · Ai导演）")
+                } else {
+                    laneLog(index, "BGM=$keyword（冷却中，跳过）")
+                }
+            } else {
+                bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmItem.hold.coerceAtLeast(1))
+            }
+        } else if (desiredBgm != null) {
+            bgmHoldRemaining--
+            if (bgmHoldRemaining <= 0) {
+                laneLog(index, "BGM 到期淡出（$desiredBgm）")
+                desiredBgm = null
+            }
+        }
+
+        // 3) 音效：点事件逐条（同款闸门：全局间隔 + 同素材冷却）
+        planSfxByPara[para]?.forEach { item ->
+            val keyword = item.tag
+            if (!allowSfx(keyword)) {
+                laneLog(index, "音效=$keyword（闸门跳过）")
+                return@forEach
+            }
+            val resolved = AudioLibrary.resolve(appContext, keyword)
+            if (resolved == null) {
+                markMissing("音效", keyword, item.desc)
+                return@forEach
+            }
+            val now = System.currentTimeMillis()
+            lastSfxAt = now
+            lastSfxByKeyword[keyword] = now
+            if (fireSfx(resolved, gain = 0.8f, delayMs = item.delayMs)) {
+                laneLog(index, "音效=$keyword（Ai导演）")
             }
         }
     }
@@ -402,6 +497,11 @@ class AudioLaneEngine(
             markMissing("音效", pick.hit.label)
             return false
         }
+        return fireSfx(resolved, pick.hit.gain, pick.hit.delayMs)
+    }
+
+    /** B33.4b：播放体（规则层 pick 与计划条目共用） */
+    private fun fireSfx(resolved: AudioLibrary.ResolvedAsset, gain: Float, delayMs: Long): Boolean {
         val path = resolved.file.absolutePath
         val fallbackAsset = resolved.asset
         val fire: () -> Unit = {
@@ -410,16 +510,16 @@ class AudioLaneEngine(
                 runCatching {
                     // 条目参数实时读取（音量；音速×音高 → SoundPool 速率近似）
                     val meta = AudioLibrary.metaByRelPath(fallbackAsset.relPath) ?: fallbackAsset
-                    val v = (config.sfxVolume * pick.hit.gain * meta.volume).coerceIn(0f, 1f)
+                    val v = (config.sfxVolume * gain * meta.volume).coerceIn(0f, 1f)
                     val rate = (meta.speed * meta.pitch).coerceIn(0.5f, 2.0f)
                     ensureSoundPool().play(sid, v, v, 1, 0, rate)
                 }
             }
         }
         val delayedFire: () -> Unit = {
-            if (pick.hit.delayMs > 0) {
+            if (delayMs > 0) {
                 scope.launch {
-                    delay(pick.hit.delayMs)
+                    delay(delayMs)
                     fire()
                 }
             } else {
@@ -474,13 +574,13 @@ class AudioLaneEngine(
 
     // ---------------------------------------------------------------- misc
 
-    private fun markMissing(kind: String, keyword: String) {
+    private fun markMissing(kind: String, keyword: String, desc: String = "") {
         val key = "$kind|$keyword"
         if (missingLogged.add(key)) {
             if (!quietChapter) {
                 AppLog.putAudio("【音效与背景音${chapterSuffix()}】缺失 $kind「$keyword」")
             }
-            runCatching { onMissing(kind, keyword) }
+            runCatching { onMissing(kind, keyword, desc) }
         }
     }
 

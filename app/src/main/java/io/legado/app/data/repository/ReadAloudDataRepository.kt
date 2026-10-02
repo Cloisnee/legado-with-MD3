@@ -6,6 +6,8 @@ import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import io.legado.app.data.appDb
 import com.github.jing332.tts.store.TtsConfigStore
+import io.legado.app.help.readaloud.audio.AudioPlanStore
+import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.domain.model.readaloud.VoiceGroupInfo
 import kotlinx.coroutines.CancellationException
@@ -61,9 +63,16 @@ data class ScriptLineRow(
     val text: String,
     /** 剧本行前缀 [[emo:xxx]] 的情绪（音频缓存键需要，与播放侧一致） */
     val emotion: String = "",
+    /** B33.4b：行尾音频标签原文（`[[a:…]]`，剧本审查页展示用；[text] 已剥离） */
+    val audio: String = "",
 )
 
 class ReadAloudDataRepository(private val app: Application) {
+
+    init {
+        // B33.4b：向音频计划存储转交应用上下文（分析侧无 Context 场景写计划用）
+        AudioPlanStore.remember(app)
+    }
 
     companion object {
         const val DEFAULT_BOOK = "默认"
@@ -339,7 +348,8 @@ class ReadAloudDataRepository(private val app: Application) {
         return "%08x".format(h)
     }
 
-    private fun stripEmoRest(s: String): String = s.replace(EMO_HEAD, "")
+    /** 剥离行首 [[emo:…]] 与行内 [[a:…]] 音频标签（指纹/正文消费点共用；文本永不变） */
+    private fun stripEmoRest(s: String): String = AudioTagCodec.strip(s.replace(EMO_HEAD, ""))
 
     private fun speakerOf(line: String): String? {
         if (!line.startsWith("〖")) return null
@@ -793,6 +803,7 @@ class ReadAloudDataRepository(private val app: Application) {
                     speaker = spk.orEmpty(),
                     text = stripEmoRest(rest),
                     emotion = EMO_VALUE.find(rest)?.groupValues?.getOrNull(1).orEmpty(),
+                    audio = AudioTagCodec.extractRaw(rest),
                 )
             )
         }

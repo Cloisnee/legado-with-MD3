@@ -83,6 +83,7 @@ object AudioBuiltinRules {
     /** 非阻塞预热（引擎创建时调用） */
     fun warmUp(context: Context) {
         AudioLaneScan.remember(context)
+        AudioPlanStore.remember(context)
         if (mingwuyan != null) return
         ioScope.launch { runCatching { ensureLoaded(context.applicationContext) } }
     }
@@ -90,6 +91,7 @@ object AudioBuiltinRules {
     /** 加载全部内置包（幂等；预合成扫描前确保就绪） */
     suspend fun ensureLoaded(context: Context) {
         AudioLaneScan.remember(context)
+        AudioPlanStore.remember(context)
         if (mingwuyan != null && env != null && bgm != null) return
         lock.withLock {
             if (mingwuyan == null) {

@@ -15,6 +15,10 @@ import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.utils.AliasTokens
+import io.legado.app.help.readaloud.audio.AudioLaneScan
+import io.legado.app.help.readaloud.audio.AudioPlan
+import io.legado.app.help.readaloud.audio.AudioPlanStore
+import io.legado.app.help.readaloud.audio.AudioTagCodec
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +63,7 @@ class SpeechAnalysisPipelineV3(
             "stage1" -> DEFAULT_STAGE1_PROMPT
             "stage2" -> DEFAULT_STAGE2_PROMPT
             "stage4" -> DEFAULT_STAGE4_HEAD
+            "audioDirector" -> DEFAULT_AUDIO_DIRECTOR_PROMPT
             else -> DEFAULT_EMOTION_PROMPT
         }
 
@@ -249,6 +254,54 @@ class SpeechAnalysisPipelineV3(
 情绪词必须严格从以下词表选择：%VOCAB%。拿不准时选“平静”。
 输出：纯JSON，格式：{"emotions":{"1":"愤怒","2":"悲伤"}}，键为话语编号、值为情绪词，必须覆盖文本中的每一个编号，禁止输出任何其他文字。
 """.trimIndent()
+
+        /**
+         * B33.4b · 音频导演默认提示词：
+         *  - 拟音师口径：所有会响的动静都要标（有动静就标；连续过程合并一条）；
+         *  - 命名=简短、具体、常见（对接素材库检索与合成平台）；
+         *  - BGM 结构化三字段+hold；红线：禁跳吓、不确定不坐实。
+         */
+        private val DEFAULT_AUDIO_DIRECTOR_PROMPT = """
+你是一名资深有声书配音导演（拟音方向），为章节文本规划三条音频轨：环境底噪、背景音乐（BGM）、音效。
+
+【输入】按 [n] 编号的章节段落文本（n＝段序号，输出时用它作锚点 para）。
+
+【工作方式：像拟音师一样通读全文】
+把文中一切会发出「动静」的动作与物体事件都排查出来并标注音效——不要只挑高潮、不要只挑关键剧情，有动静就标：
+· 人体动作：脚步、开关门、落座起身、倒茶放杯、翻书折纸、衣料摩擦、拍肩、磕碰……
+· 器物物件：杯盏碰撞、刀剑出鞘相击、桌椅拖动、门轴吱呀、器物落地、车轮马蹄……
+· 自然与场景：雨起、风过、帘动、水声、火声、鸟惊、雷声……
+· 戏内声源：手机铃、广播、电视、敲门、钟鸣……
+· 主观声：心跳、耳鸣、眩晕嗡鸣……
+注意：连续过程合并为一条（如持续走路只在起点标一次「脚步声」）；安静无动静处不标；文中「似乎/仿佛/隐约」的声音不做清晰音效（不确定不坐实）。
+
+【命名要求（直接影响素材命中，务必遵守）】
+1. 只用 2~6 个字的常见、具体的词；不要抽象修辞、引号、方括号、长句。
+2. 音效 tag＝具体声音名：「推门声」「茶杯碎裂」「剑鸣」「马蹄声」式写法。
+3. 环境 tag＝场景名：「客栈大堂」「雨夜街道」「山间清晨」（地点＋天气/时段）。
+4. BGM 用三字段：
+   profile 从【通用/幻想/历史/恐怖/爱情/科幻/悬疑/现代/武侠/仙侠】选一；
+   mood 从【平静/舒缓/温馨/悲情/凄凉/紧张/压迫感/悬疑/热血/史诗/幽默/轻快】选一；
+   intensity 从【低/中/高】选一。
+
+【排布原则】
+- 环境：只在场景变化处切换并各标一次（一章约 1~3 处）；到下次切换或章末自然结束。
+- BGM：只在关键剧情/情绪处起乐（一章约 0~2 处），宁缺毋滥；hold＝从本段起持续的行数（8~40）。
+- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复。
+- 稳定优先：同类场景用同类词，不要刻意换新说法。
+
+【红线】
+- 禁止跳吓（恐怖抽弦、突然巨响、惊悚重音一律不用）。
+- 武器/暴力克制，不做猎奇化。
+
+【输出】只输出纯 JSON：
+{"items":[
+ {"para":12,"anchor":"推开房门","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
+ {"para":18,"anchor":"茶杯摔在地上","type":"sfx","tag":"茶杯碎裂","desc":"瓷杯摔在石板地上碎裂的清脆声","delayMs":200},
+ {"para":30,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
+]}
+字段：para/type 必填；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效可带 delayMs（0~2000 毫秒）；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（6~20 字原文片段，便于校对）。
+""".trimIndent()
     }
 
     // ---------------- 数据小结构 ----------------
@@ -312,7 +365,8 @@ class SpeechAnalysisPipelineV3(
             if (cached.isNotEmpty()) {
                 // 存量补写：早期批次未落文件产物；此处幂等补写（已有则跳过）
                 if (bookName.isNotBlank() && !dataRepository.hasChapterScript(bookName, chapterIndex)) {
-                    writeFileArtifacts(bookName, chapterIndex, bookUrl, cached)
+                    val cachedPlan = loadAudioPlanFor(bookName, bookUrl, chapterIndex, contentHash)
+                    writeFileArtifacts(bookName, chapterIndex, bookUrl, cached, cachedPlan)
                     AppLog.putAnalysis("【分析V3·${chapterLabel}】缓存命中，已补写剧本文件")
                 }
                 // B17：缓存命中也推进「最近完成解析章」（顺读穿过缓存段不断链）
@@ -356,16 +410,15 @@ class SpeechAnalysisPipelineV3(
         val t0 = System.currentTimeMillis()
         val ranges = stageA(paragraphs, cfg, useAi = isContinuous, chapterIndex = chapterIndex)
 
-        // B33.4a：音效与背景音·本地兜底日志（分析侧；B33.4b 接入 AI 导演后改为分支原因：首章/非连续/未设置Ai/Ai识别失败）
-        runCatching {
-            val laneSummary = io.legado.app.help.readaloud.audio.AudioLaneScan
-                .summaryText(paragraphs.map { it.text })
-            if (laneSummary != null) {
-                val laneReason = if (!isContinuous) "首章/非连续" else "未设置Ai"
-                AppLog.putAnalysis(
-                    "【分析V3·${chapterLabel}·音效与背景音】本地规则快速识别（$laneReason）：$laneSummary。"
-                )
-            }
+        // B33.4b：音频导演（AI 计划）——第1阶段后并发发起；跳过时此处打「本地规则快速识别」原因行
+        val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
+        val directorSkipReason = when {
+            !isContinuous -> "首章/非连续"
+            directorRefs.isEmpty() -> "未设置Ai"
+            else -> ""
+        }
+        if (directorSkipReason.isNotEmpty()) {
+            logLaneFallback(directorSkipReason, paragraphs)
         }
         if (ranges.isEmpty()) {
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
@@ -375,6 +428,13 @@ class SpeechAnalysisPipelineV3(
         // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = renderNumbered(segments)
+        // B33.4b：音频导演并发发起（编号文本就绪 → 与第2阶段/情绪并发；锚点=段序号）
+        val directorJob = if (directorSkipReason.isEmpty() && segments.isNotEmpty()) {
+            val directorNumbered = renderDirectorNumbered(segments)
+            pipelineScope.async {
+                callAudioDirector(directorNumbered, segments.size, cfg, directorRefs, chapterLabel)
+            }
+        } else null
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
         // B30：情绪编号定序——就地转旁白的段落不参与计数，情绪按「编号时刻」的 (段号, 区间起点) 反查回填
@@ -425,6 +485,23 @@ class SpeechAnalysisPipelineV3(
             }
         }
 
+        // ===== 音频导演 join（第4阶段完成后 ≤ joinTimeout；超时/失败 → 本地规则兜底） =====
+        var audioPlan: AudioPlan? = null
+        if (directorJob != null) {
+            val plan = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
+            when {
+                plan != null -> {
+                    audioPlan = plan.copy(scriptHash = contentHash)
+                    AppLog.putAnalysis(
+                        "【分析V3·${chapterLabel}·音效与背景音】Ai导演：${plan.countsText()}。"
+                    )
+                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
+                }
+                directorJob.isActive -> logLaneFallback("Ai超时", paragraphs)
+                else -> logLaneFallback("Ai失败", paragraphs)
+            }
+        }
+
         // ===== 声线分配（三池，只吃“已选中”声线库） =====
         val recordsFin = assignVoices(recordsUpd, chapterIndex)
         if (recordsFin.isNotEmpty() || narratorPurged > 0) {
@@ -464,7 +541,7 @@ class SpeechAnalysisPipelineV3(
             .onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】落库失败: ${it.localizedMessage}", it) }
         AppLog.putAnalysis("【分析V3·${chapterLabel}】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
         // ===== 文件产物：all_clean_text / chapter_cache（供角色管理/书籍管理读取） =====
-        val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound)
+        val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound, audioPlan)
         AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入=$fileOk")
         // B17：完成解析 → 推进「最近完成解析章」（顺读 / 跳读 / 回跳 判定依据）
         if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
@@ -552,7 +629,7 @@ class SpeechAnalysisPipelineV3(
         // B17：回填复用也算完成解析 → 推进「最近完成解析章」
         dataRepository.markChapterResolved(name, chapterIndex)
         // B10.5·Q3 换源自愈：把复用结果落到当前 bookUrl 的缓存键（已存在则跳过）
-        dataRepository.ensureChapterCacheForUrl(name, bookUrl, chapterIndex, renderScriptForStore(segments))
+        dataRepository.ensureChapterCacheForUrl(name, bookUrl, chapterIndex, renderScriptForStore(segments, loadAudioPlanFor(name, bookUrl, chapterIndex, contentHash)))
         ChapterSpeechAnalysisResult(analysis, segments, true)
     }
 
@@ -1500,35 +1577,48 @@ class SpeechAnalysisPipelineV3(
         return sb.toString().trimEnd('\n')
     }
 
-    /** 文件产物写入（幂等）：all_clean_text/chapter_cache + 书架索引 */
+    /** 文件产物写入（幂等）：all_clean_text/chapter_cache + 书架索引（B33.4b：附音频标签） */
     private suspend fun writeFileArtifacts(
         bookName: String,
         chapterIndex: Int,
         bookUrl: String,
         segments: List<ChapterSpeechSegment>,
+        audioPlan: AudioPlan? = null,
     ): Boolean {
         if (bookName.isBlank()) return false
         return runCatching {
             dataRepository.ensureBookInList(bookName)
-            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(segments))
+            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(segments, audioPlan))
         }.onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
     }
 
-    /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] 前缀（与脚本文件格式一致） */
-    private fun renderScriptForStore(segments: List<ChapterSpeechSegment>): String {
+    /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] + 行尾音频标签 [[a:…]]（与脚本文件格式一致） */
+    private fun renderScriptForStore(segments: List<ChapterSpeechSegment>, audioPlan: AudioPlan? = null): String {
         val sb = StringBuilder()
-        segments.forEach { s ->
+        segments.forEachIndexed { i, s ->
             if (s.roleType == SpeechRoleType.Narrator) {
-                sb.append("〖旁白〗").append(s.text).append("\n")
+                sb.append("〖旁白〗").append(s.text)
             } else {
                 val nm = s.characterName.ifBlank { "旁白" }
                 sb.append("〖").append(nm).append("〗")
                 if (s.emotion.isNotBlank()) sb.append("[[emo:").append(s.emotion).append("]]")
-                sb.append(s.text).append("\n")
+                sb.append(s.text)
             }
+            audioPlan?.let { sb.append(renderAudioTags(it, i + 1)) }
+            sb.append("\n")
         }
         return sb.toString().trimEnd('\n')
     }
+
+    /** 某段落的音频标签串（顺序：环境 → 音效 → BGM） */
+    private fun renderAudioTags(plan: AudioPlan, para: Int): String =
+        AudioTagCodec.renderLine(
+            ambience = plan.ambience.firstOrNull { it.para == para }?.tag,
+            sfx = plan.sfx.filter { it.para == para }
+                .map { AudioTagCodec.sfxValue(it.tag, it.delayMs) },
+            bgm = plan.bgm.firstOrNull { it.para == para }
+                ?.let { "${it.mood}·${it.intensity}·${it.hold}" },
+        )
 
     private fun lineSpeakerOf(line: String): String? {
         if (!line.startsWith("〖")) return null
@@ -1538,8 +1628,71 @@ class SpeechAnalysisPipelineV3(
 
     private fun stripNarrTag(s: String): String = s.replace("〖旁白〗", "")
 
+    /** 剥离 emo 与音频标签（上下文文本永不含标签） */
     private fun stripEmoTags(s: String): String =
-        Regex("\\[\\[(?:emo|emotion)\\s*[:=][^\\[\\]]*\\]\\]").replace(s, "")
+        AudioTagCodec.strip(Regex("\\[\\[(?:emo|emotion)\\s*[:=][^\\[\\]]*\\]\\]").replace(s, ""))
+
+    // ---------------- B33.4b 音频导演 ----------------
+
+    /** 本地规则兜底行（未设置Ai/首章非连续/Ai失败/Ai超时） */
+    private suspend fun logLaneFallback(reason: String, paragraphs: List<CanonicalSpeechParagraph>) {
+        runCatching {
+            val laneSummary = AudioLaneScan.summaryText(paragraphs.map { it.text })
+            if (laneSummary != null) {
+                AppLog.putAnalysis(
+                    "【分析V3·${chapterLabel}·音效与背景音】本地规则快速识别（$reason）：$laneSummary。"
+                )
+            }
+        }
+    }
+
+    /** 音频导演输入：全段顺序编号 [1..M]（=剧本行/播放队列段序号） */
+    private fun renderDirectorNumbered(segments: List<ChapterSpeechSegment>): String {
+        val sb = StringBuilder()
+        segments.forEachIndexed { i, s ->
+            sb.append("[").append(i + 1).append("] ").append(s.text.trim()).append("\n")
+        }
+        return sb.toString().trimEnd('\n')
+    }
+
+    /** 音频导演调用（队列两级重试；校验见 [AudioDirectorContract]） */
+    private suspend fun callAudioDirector(
+        numbered: String,
+        paraCount: Int,
+        cfg: AnalysisConfigStore.Config,
+        refs: List<AiSpeechClient.ModelRef>,
+        label: String,
+    ): AudioPlan? {
+        if (refs.isEmpty() || numbered.isBlank()) return null
+        val head = cfg.audioDirectorPrompt.ifBlank { DEFAULT_AUDIO_DIRECTOR_PROMPT }
+        val promptFactory = { failHint: String ->
+            buildString {
+                append(head)
+                if (failHint.isNotBlank()) {
+                    append("\n【重要】你上一次的输出存在以下问题：").append(failHint)
+                        .append("。请修正后重新输出完整JSON。\n")
+                }
+                append("\n=== 待规划文本 ===\n").append(numbered)
+            }
+        }
+        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "$label·音频导演") { raw ->
+            ai.extractJson(raw)?.let { AudioDirectorContract.validate(it, paraCount) }
+                ?: ValidateOutcome(null, "返回不是JSON对象")
+        }
+    }
+
+    /** 读取本章音频计划（scriptHash 与当前内容一致才采用；脚本写入用） */
+    private suspend fun loadAudioPlanFor(
+        bookName: String,
+        bookUrl: String,
+        chapterIndex: Int,
+        contentHash: String,
+    ): AudioPlan? {
+        if (bookName.isBlank()) return null
+        val plan = runCatching { AudioPlanStore.load(bookName, bookUrl, chapterIndex) }.getOrNull() ?: return null
+        if (plan.scriptHash.isNotBlank() && plan.scriptHash != contentHash) return null
+        return plan
+    }
 
     private suspend fun callStage4AI(
         context: String,

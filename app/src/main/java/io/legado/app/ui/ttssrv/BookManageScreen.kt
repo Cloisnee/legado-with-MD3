@@ -70,6 +70,7 @@ import io.legado.app.data.repository.CharacterRecord
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.ScriptLineRow
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
@@ -616,6 +617,17 @@ fun BookManageScreen(
                                         color = LegadoTheme.colorScheme.tertiary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (row.audio.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    AppText(
+                                        text = AudioTagCodec.chipsText(row.audio),
+                                        style = LegadoTheme.typography.labelSmall,
+                                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
                                     )
                                 }
                             }

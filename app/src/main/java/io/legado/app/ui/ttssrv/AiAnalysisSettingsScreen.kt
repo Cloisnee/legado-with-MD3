@@ -41,7 +41,7 @@ import org.koin.core.context.GlobalContext
 /**
  * 「AI 分析设置」独立页（B10.4·A1-A5）——我的 → 朗读 →「AI 分析设置」：
  *  - 请求：统一超时（覆盖模型级 timeoutMs）· 等分析就绪最长等待；
- *  - 提示词：stage1 话语选号 / stage2 角色归并 / stage4 同名判定 / 情绪（留空 = 内置默认）；
+ *  - 提示词：stage1 话语选号 / stage2 角色归并 / stage4 同名判定 / 情绪 / 音频导演（留空 = 内置默认）；
  *  - 取文与输出：前情提要 / 后续剧情字数 · 情绪等待 · 单次输出上限。
  * 全部落盘 `_store/analysis_config.json`，保存即生效（下次分析）。
  */
@@ -55,6 +55,7 @@ private enum class PromptTarget(val title: String, val key: String) {
     Stage2("stage2 角色归并 提示词", "stage2"),
     Stage4("stage4 同名判定 提示词", "stage4"),
     Emotion("情绪分析 提示词", "emotion"),
+    AudioDirector("音频导演 提示词", "audioDirector"),
 }
 
 private fun AnalysisConfigStore.Config.withPrompt(key: String, value: String): AnalysisConfigStore.Config =
@@ -62,7 +63,8 @@ private fun AnalysisConfigStore.Config.withPrompt(key: String, value: String): A
         "stage1" -> copy(stage1Prompt = value)
         "stage2" -> copy(stage2Prompt = value)
         "stage4" -> copy(stage4Prompt = value)
-        else -> copy(emotionPrompt = value)
+        "emotion" -> copy(emotionPrompt = value)
+        else -> copy(audioDirectorPrompt = value)
     }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -180,6 +182,16 @@ fun AiAnalysisSettingsScreen(
                             promptTarget = PromptTarget.Emotion
                         },
                     )
+                    TinyClickableSettingItem(
+                        title = PromptTarget.AudioDirector.title,
+                        description = promptDesc(cfg.audioDirectorPrompt),
+                        onClick = {
+                            promptDraft = cfg.audioDirectorPrompt.ifBlank {
+                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.AudioDirector.key)
+                            }
+                            promptTarget = PromptTarget.AudioDirector
+                        },
+                    )
                 }
             }
             item {
@@ -223,6 +235,8 @@ fun AiAnalysisSettingsScreen(
                         "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
                     PromptTarget.Emotion ->
                         "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"
+                    PromptTarget.AudioDirector ->
+                        "已载入内置默认文本，可直接编辑；输入=按 [n] 编号的章节文本，输出=纯 JSON 音频计划；保存后下次分析生效"
                     else -> "已载入内置默认文本，可直接编辑；保存后下次分析生效"
                 },
                 style = LegadoTheme.typography.labelSmall,

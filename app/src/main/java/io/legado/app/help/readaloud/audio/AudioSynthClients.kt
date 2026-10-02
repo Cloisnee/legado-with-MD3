@@ -49,28 +49,13 @@ object AudioSynthClients {
             .build()
     }
 
-    /**
-     * 生成提示词（Gen 用方括号描述；Music 为 caption）。
-     * 注意：描述尽量短——部分模型会把长句“念出来”，只留关键词可显著降低概率；
-     * B33.3d：去掉规则来源名称的「音效/声效」尾缀（如「下雨声音效」→「[下雨声 环境]」）。
-     */
-    fun promptFor(lane: SynthLane, keyword: String): String {
-        val k = keyword.trim().let { raw ->
-            raw.removeSuffix("音效").removeSuffix("声效").trim().ifBlank { raw }
-        }
-        return when (lane) {
-            SynthLane.SFX -> "[$k]"
-            SynthLane.AMB -> "[$k 环境]"
-            SynthLane.BGM -> "$k 氛围，纯器乐配乐，无人声"
-        }
-    }
-
-    /** 按平台生成一条音频；成功返回 mp3 字节。 */
+    /** 按平台生成一条音频；成功返回 mp3 字节。desc=Ai 导演生成描述（提示词 desc 优先，见 [AudioPrompts]） */
     suspend fun generate(
         provider: AiProvider,
         model: AiModelEntry,
         lane: SynthLane,
         keyword: String,
+        desc: String = "",
     ): Result<GenResult> = withContext(Dispatchers.IO) {
         runCatching {
             val platform = AudioSynthPlatforms.effectivePlatform(provider)
@@ -79,7 +64,7 @@ object AudioSynthClients {
             }
             require(base.isNotBlank()) { "BaseUrl 为空" }
             require(provider.apiKey.isNotBlank()) { "未填写 API Key" }
-            val prompt = promptFor(lane, keyword)
+            val prompt = AudioPrompts.of(lane, keyword, desc)
             when (platform) {
                 AudioSynthPlatforms.PLATFORM_STEPFUN ->
                     if (isMusicModel(model.modelId)) {
@@ -95,7 +80,7 @@ object AudioSynthClients {
                     isAudioGenModel(model.modelId) ->
                         senseAudioGenerate(base, provider.apiKey, model, prompt)
 
-                    else -> senseSfx(base, provider.apiKey, model, lane, keyword)
+                    else -> senseSfx(base, provider.apiKey, model, lane, keyword, desc)
                 }
 
                 AudioSynthPlatforms.PLATFORM_ELEVENLABS ->
@@ -228,17 +213,6 @@ object AudioSynthClients {
 
     // ------------------------------------------------------------ SenseAudio / ElevenLabs
 
-    /**
-     * 商汤 SFX 提示词（按官方指南）：用「具体声音名称」（如 关门声），不要方括号与抽象描述。
-     * 例：「推开音效」→「推开声」；「钟声」保持「钟声」。
-     */
-    private fun senseTextFor(lane: SynthLane, keyword: String): String {
-        var k = keyword.trim().removeSuffix("音效").removeSuffix("声效").trim().ifBlank { keyword.trim() }
-        val soundish = k.endsWith("声") || k.endsWith("音") || k.endsWith("响") || k.endsWith("语")
-        if (!soundish) k = "${k}声"
-        return if (lane == SynthLane.AMB) "$k，环境声" else k
-    }
-
     /** SenseAudio 音效（/v1/sound-effects/generations）：同步出 1~4 条变体，取第一条可用 audio_url 下载 */
     private suspend fun senseSfx(
         base: String,
@@ -246,10 +220,11 @@ object AudioSynthClients {
         model: AiModelEntry,
         lane: SynthLane,
         keyword: String,
+        desc: String = "",
     ): GenResult {
         val body = JSONObject().apply {
             put("model", model.modelId)
-            put("text", senseTextFor(lane, keyword))
+            put("text", AudioPrompts.senseText(lane, keyword, desc))
             if (lane == SynthLane.SFX) {
                 // 音效＝短频快：固定 5 秒（1~10s；智能时长会到 ~11s 偏长）
                 put("smart_duration", false)

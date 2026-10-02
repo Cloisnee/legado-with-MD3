@@ -67,6 +67,7 @@ import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.audio.AudioChapterPrelude
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
+import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
@@ -85,6 +86,7 @@ import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.servicePendingIntent
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -99,6 +101,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.Response
 import org.koin.core.context.GlobalContext
 import org.koin.java.KoinJavaComponent.get
@@ -223,6 +226,9 @@ class HttpReadAloudService : BaseReadAloudService(),
     // ---- B33.4-前置：「音效与背景音」章节预合成闭环（统计/远程/合成/总结 + 静默章） ----
     private var audioPrelude: AudioChapterPrelude? = null
 
+    /** B33.4b：当前音频章键（bookUrl|idx；计划异步装载的竞态守卫） */
+    private var currentAudioChapterKey: String = ""
+
     private fun audioPreludeOrCreate(): AudioChapterPrelude? = runCatching {
         audioPrelude ?: AudioChapterPrelude(
             appContext = applicationContext,
@@ -241,7 +247,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 scope = lifecycleScope,
                 serviceActive = { !pause },
                 voiceActive = { runCatching { exoPlayer.isPlaying }.getOrDefault(false) },
-                onMissing = { kind, keyword -> synthQueueOrCreate()?.enqueue(kind, keyword) },
+                onMissing = { kind, keyword, desc -> synthQueueOrCreate()?.enqueue(kind, keyword, null, desc) },
             ).also {
                 it.applySettings(readAloudSettings)
                 laneEngine = it
@@ -255,7 +261,9 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     private fun laneCueInfo(index: Int): AudioLaneEngine.CueInfo? {
         playbackQueue.cues.getOrNull(index)?.let {
-            return AudioLaneEngine.CueInfo(it.text, it.isChapterTitle, it.emotion)
+            // B33.4b：段序号 = 队列体序号 + 1（含标题 cue 偏移；标题行 para=0 不参与计划）
+            val para = index - playbackQueue.leadingTitleCueCount + 1
+            return AudioLaneEngine.CueInfo(it.text, it.isChapterTitle, it.emotion, para.coerceAtLeast(0))
         }
         val text = contentList.getOrNull(index) ?: return null
         return AudioLaneEngine.CueInfo(text, isChapterTitleAt(index), "")
@@ -756,6 +764,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     audioPreludeOrCreate()?.prepareAhead(
                         chapterKey = "${book.bookUrl}|$targetIndex",
                         texts = prepared.queue.cues.map { it.text },
+                        book = book.name,
                     )
                 }
             }
@@ -1466,17 +1475,27 @@ class HttpReadAloudService : BaseReadAloudService(),
             // B33 四轨：章首条目就绪（含换章新队列）
             // B33.4-前置：章标签/静默章设置 + 预合成闭环开章（剧本统计→远程命中→入队，不再等逐行触达）
             runCatching {
-                val ck = runCatching {
-                    val bookUrl = ReadBook.book?.bookUrl.orEmpty()
-                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
-                    "$bookUrl|$idx"
-                }.getOrDefault("")
+                val book = ReadBook.book
+                val bookUrl = book?.bookUrl.orEmpty()
+                val bookName = book?.name.orEmpty()
+                val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                val ck = "$bookUrl|$idx"
+                currentAudioChapterKey = ck
                 val prelude = audioPreludeOrCreate()
                 laneEngineOrCreate()?.onChapterStarted(
                     label = chapterTag(),
                     quiet = prelude?.isPreparedAhead(ck) == true,
                 )
-                prelude?.startChapter(ck, playbackQueue.cues.map { it.text })
+                prelude?.startChapter(ck, playbackQueue.cues.map { it.text }, bookName)
+                // B33.4b：装载本章音频计划（Ai）；就绪后交由计划层驱动（未就绪前规则层兜底）
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val plan = if (bookName.isNotBlank() && idx >= 0) {
+                        runCatching { AudioPlanStore.load(bookName, bookUrl, idx) }.getOrNull()
+                    } else null
+                    withContext(Dispatchers.Main) {
+                        if (ck == currentAudioChapterKey) laneEngineOrCreate()?.onChapterPlan(plan)
+                    }
+                }
             }
             laneCueStarted()
             return

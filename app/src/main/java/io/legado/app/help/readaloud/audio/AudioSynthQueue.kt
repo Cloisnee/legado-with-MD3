@@ -64,6 +64,8 @@ class AudioSynthQueue(
         var updatedAt: Long = 0L,
         /** B33.4-前置：条目归属章（bookUrl|chapterIndex；预合成章用显式键） */
         var chapterKey: String = "",
+        /** B33.4b：生成描述（Ai 导演产物；合成提示词 desc 优先） */
+        var desc: String = "",
     )
 
     private val lock = Mutex()
@@ -93,12 +95,12 @@ class AudioSynthQueue(
         }
     }
 
-    /** 缺失上报入口（由四轨引擎/预合成闭环回调；非挂起、不阻塞播放）；chapterKey=预合成章显式键 */
-    fun enqueue(kind: String, keyword: String, chapterKey: String? = null) {
+    /** 缺失上报入口（由四轨引擎/预合成闭环回调；非挂起、不阻塞播放）；chapterKey=预合成章显式键；desc=生成描述 */
+    fun enqueue(kind: String, keyword: String, chapterKey: String? = null, desc: String = "") {
         val lane = SynthLane.ofKind(kind) ?: return
         val kw = keyword.trim()
         if (kw.isEmpty()) return
-        scope.launch { enqueueInternal(lane, kw, chapterKey) }
+        scope.launch { enqueueInternal(lane, kw, chapterKey, desc) }
     }
 
     fun release() {
@@ -108,7 +110,7 @@ class AudioSynthQueue(
 
     // ------------------------------------------------------------ 入队与限流
 
-    private suspend fun enqueueInternal(lane: SynthLane, kw: String, ckOverride: String? = null) {
+    private suspend fun enqueueInternal(lane: SynthLane, kw: String, ckOverride: String? = null, desc: String = "") {
         ensureLoaded()
         val refs = runCatching { repo.queueRefs(lane.assignKey) }.getOrDefault(emptyList())
         lock.withLock {
@@ -142,7 +144,7 @@ class AudioSynthQueue(
                 logSkipOnce(key, "${lane.label}「$kw」缺失（本章补缺已达上限 $cap）")
                 return
             }
-            val entry = Entry(lane, kw, "pending", updatedAt = now, chapterKey = ck)
+            val entry = Entry(lane, kw, "pending", updatedAt = now, chapterKey = ck, desc = desc)
             entries[key] = entry
             chapterCounts[ck] = used + 1
             queue.trySend(entry)
@@ -179,7 +181,7 @@ class AudioSynthQueue(
         refs.forEachIndexed { index, ref ->
             val provider = ref.provider
             val model = ref.model
-            val result = AudioSynthClients.generate(provider, model, task.lane, task.keyword)
+            val result = AudioSynthClients.generate(provider, model, task.lane, task.keyword, task.desc)
             val gen = result.getOrNull()
             if (gen != null) {
                 try {
@@ -254,6 +256,7 @@ class AudioSynthQueue(
                     source = o.optString("source"),
                     updatedAt = o.optLong("updatedAt", 0L),
                     chapterKey = o.optString("chapterKey"),
+                    desc = o.optString("desc"),
                 )
             }
             val chaptersObj = root.optJSONObject("chapters") ?: JSONObject()
@@ -295,6 +298,7 @@ class AudioSynthQueue(
                 put("source", e.source)
                 put("updatedAt", e.updatedAt)
                 if (e.chapterKey.isNotBlank()) put("chapterKey", e.chapterKey)
+                if (e.desc.isNotBlank()) put("desc", e.desc)
             })
         }
         root.put("entries", entriesObj)
