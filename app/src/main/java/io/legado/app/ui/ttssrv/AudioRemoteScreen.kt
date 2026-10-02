@@ -45,7 +45,8 @@ import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.lazylist.FastScrollLazyColumn
 import io.legado.app.ui.widget.components.list.ListScaffold
 import io.legado.app.ui.widget.components.list.ListUiState
-import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
@@ -85,6 +86,8 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     val inSelectionMode = selectedIds.isNotEmpty()
 
     // B33.2c：18+ 等 defaultEnabled=false 的包受「18+ 内容」开关控制（默认关闭）
+    // B33.4a-附2：开关入口移至顶栏右上角「⋮」菜单（下拉弹窗）
+    var adultMenuOpen by remember { mutableStateOf(false) }
     var adultEnabled by remember {
         mutableStateOf(runCatching { AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true }.getOrDefault(false))
     }
@@ -159,6 +162,9 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         isLoading = loadingIndex,
     )
 
+    // B33.4a-附2：18+ 开关在顶栏「⋮」菜单；统计隐藏包数
+    val hiddenAdultCount = packs.count { !it.defaultEnabled }
+
     ListScaffold(
         title = "远程素材库",
         state = uiState,
@@ -175,6 +181,29 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                 imageVector = AppIcons.Replay,
                 contentDescription = "刷新远程目录",
             )
+            Box {
+                TopBarActionButton(
+                    onClick = { adultMenuOpen = true },
+                    imageVector = AppIcons.MoreVert,
+                    contentDescription = "更多",
+                )
+                RoundDropdownMenu(expanded = adultMenuOpen, onDismissRequest = { adultMenuOpen = false }) { dismiss ->
+                    RoundDropdownMenuItem(
+                        text = if (adultEnabled) {
+                            "关闭 18+ 内容（隐藏 $hiddenAdultCount 个包）"
+                        } else {
+                            "开启 18+ 内容（$hiddenAdultCount 个包）"
+                        },
+                        isSelected = adultEnabled,
+                        onClick = {
+                            dismiss()
+                            val v = !adultEnabled
+                            adultEnabled = v
+                            AppConfigStore.putBoolean(PreferKey.audioAdultEnabled, v)
+                        },
+                    )
+                }
+            }
         },
         selectionActions = SelectionActions(
             onClearSelection = { selectedIds = emptySet() },
@@ -228,24 +257,6 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                         color = LegadoTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     )
-                }
-                val hiddenAdultCount = packs.count { !it.defaultEnabled }
-                if (hiddenAdultCount > 0 || adultEnabled) {
-                    item(key = "adult_toggle") {
-                        TinyClickableSettingItem(
-                            title = if (adultEnabled) {
-                                "隐藏 18+ 内容"
-                            } else {
-                                "显示 18+ 内容（$hiddenAdultCount 个包）"
-                            },
-                            description = "默认关闭；开启后远程库与音效规则层同步生效",
-                            onClick = {
-                                val v = !adultEnabled
-                                adultEnabled = v
-                                AppConfigStore.putBoolean(PreferKey.audioAdultEnabled, v)
-                            },
-                        )
-                    }
                 }
                 items(shown, key = { it.soundId }) { s ->
                     SelectionItemCard(

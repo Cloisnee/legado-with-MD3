@@ -95,7 +95,7 @@ object AudioRuleStore {
 
     /** 数据源：fork 优先、失败回退上游 */
     private val BASES = listOf(
-        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/registry/",
+        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/音效与背景音/registry/",
         "https://cnb.cool/applecabal/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/registry/",
     )
 

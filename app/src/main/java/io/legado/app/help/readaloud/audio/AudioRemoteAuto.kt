@@ -70,9 +70,9 @@ object AudioRemoteAuto {
         packs: List<AudioRemoteCatalog.RemotePack>,
     ): List<AudioRemoteCatalog.RemotePack> {
         val preferred = when (lane) {
-            SynthLane.AMB -> listOf("matrix24", "horror_thriller_v1", "core")
+            SynthLane.AMB -> listOf("amb")
             SynthLane.BGM -> listOf("bgm")
-            SynthLane.SFX -> listOf("mingwuyan", "core", "matrix24")
+            SynthLane.SFX -> listOf("sfx")
         }
         return packs.sortedBy { p ->
             preferred.indexOf(p.id).let { if (it >= 0) it else preferred.size }

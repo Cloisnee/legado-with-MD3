@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 /**
  * B33.2b · 远程素材库（CNB 墨听/JRead 索引体系）。
  *
- * - 清单：`.../yinxiao/jread_audio_normalized/index.json`（packages → 各库索引）；
+ * - 清单：`.../音效与背景音/index.json`（packages → 音效/环境声/bgm/ADULT 四分区索引；媒体 URL 钉 SHA）；
  * - 索引：`index_core.json`（3514）/ `index_horror_thriller_v1.json`（450）/ `index_adult_romance.json`（11，18+ 默认关）；
  * - 缓存：`_store/audio_remote/`（manifest + 各 pack 索引；网络失败回退旧缓存）；
  * - 下载：按条目 `url` 直链流式落库 → `audio_lib/<分类目录>/<中文名>.<ext>` + sidecar（libSource=remote）。
@@ -32,7 +32,7 @@ object AudioRemoteCatalog {
 
     /** 清单来源：优先自家 fork（Cloisnee），失败回退上游 */
     private val MANIFEST_URLS = listOf(
-        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json",
+        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/音效与背景音/index.json",
         "https://cnb.cool/applecabal/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json",
     )
 

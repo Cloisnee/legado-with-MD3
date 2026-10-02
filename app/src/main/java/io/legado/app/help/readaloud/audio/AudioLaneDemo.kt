@@ -68,7 +68,7 @@ object DemoLanes {
 object TmDemoAssets {
 
     private const val CNB_RAW_BASE =
-        "https://cnb.cool/applecabal/yinpin/-/git/raw/master/"
+        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/beee7f9/"
 
     private data class RemoteSpec(val urlRel: String, val saveRel: String)
     private data class ZipSpec(val keywords: List<String>, val saveRel: String)
@@ -80,52 +80,52 @@ object TmDemoAssets {
     private val remoteSpecs = listOf(
         // 音效（硬音效/拟音/戏内声源/主观声）
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/medium_sfx/door_window/door_open_05.mp3",
+            "音效与背景音/音效/开门音效_door_open_05.mp3",
             "sfx/硬音效/开门.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/medium_sfx/door_window/door_close_01.mp3",
+            "音效与背景音/音效/关门声音效_door_close_01.mp3",
             "sfx/硬音效/关门.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/micro_sfx/object_handle/cn_cha_bei_bai_fang_wan_kuai_01.mp3",
+            "音效与背景音/音效/茶杯摆放碗筷音效_cn_cha_bei_bai_fang_wan_kuai_01.mp3",
             "sfx/拟音/茶杯摆放.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/strong_sfx/blade_weapon/blade_clash_metal_02.mp3",
+            "音效与背景音/音效/兵器切音效_blade_clash_metal_02.mp3",
             "sfx/硬音效/兵器交锋.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/scene/bell/bell_chime_03.mp3",
+            "音效与背景音/音效/寺庙钟声音效_bell_chime_03.mp3",
             "sfx/戏内声源/钟声.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/emotion/fear_tension/cn_xin_tiao_01.mp3",
+            "音效与背景音/音效/心跳音效_cn_xin_tiao_01.mp3",
             "sfx/主观声/心跳.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/medium_sfx/body_movement/footstep_run_05.mp3",
+            "音效与背景音/音效/脚步跑音效_footstep_run_05.mp3",
             "sfx/拟音/脚步跑.mp3",
         ),
         RemoteSpec(
-            "yinxiao/jread_audio_normalized/audio/core/sfx/misc/cn_he_cha_sheng_01.mp3",
+            "音效与背景音/音效/喝茶声音效_cn_he_cha_sheng_01.mp3",
             "sfx/拟音/喝茶.mp3",
         ),
         // 环境（matrix24 环境声；wav 大文件，下载后长期复用）
         RemoteSpec(
-            "yinxiao/matrix24/audio/crowd/crowd/ancient_shared_amb_市集日景_matrix24_l07_amb_a037_base_v01.wav",
+            "音效与背景音/环境声/ancient_shared_amb_市集日景_matrix24_l07_amb_a037_base_v01.wav",
             "sfx/环境声/市集日景.wav",
         ),
         RemoteSpec(
-            "yinxiao/matrix24/audio/weather_nature/weather_rain/ancient_shared_amb_竹林雨夜_matrix24_l07_amb_a045_base_v01.wav",
+            "音效与背景音/环境声/ancient_shared_amb_竹林雨夜_matrix24_l07_amb_a045_base_v01.wav",
             "sfx/环境声/竹林雨夜.wav",
         ),
         RemoteSpec(
-            "yinxiao/matrix24/audio/animal_creature/animal/general_amb_清晨鸟鸣_matrix24_l01_amb_amb118_a_v01.wav",
+            "音效与背景音/环境声/general_amb_清晨鸟鸣_matrix24_l01_amb_amb118_a_v01.wav",
             "sfx/环境声/清晨鸟鸣.wav",
         ),
         RemoteSpec(
-            "yinxiao/matrix24/audio/scene_environment/room/ancient_shared_amb_客栈大堂_matrix24_l07_amb_a031_base_v01.wav",
+            "音效与背景音/环境声/ancient_shared_amb_客栈大堂_matrix24_l07_amb_a031_base_v01.wav",
             "sfx/环境声/客栈大堂.wav",
         ),
     )
