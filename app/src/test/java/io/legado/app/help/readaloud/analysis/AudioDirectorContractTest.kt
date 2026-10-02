@@ -49,13 +49,16 @@ class AudioDirectorContractTest {
                 {"para":99,"type":"sfx","tag":"越界"},
                 {"para":2,"type":"sfx","tag":"茶杯碎裂","desc":"陶瓷碎裂"},
                 {"para":3,"type":"wtf","tag":"坏类型"},
-                {"para":4,"type":"bgm","profile":"乱写","mood":"悲伤","intensity":"低"}
+                {"para":5,"type":"sfx","tag":"推门声","desc":"木门推开"},
+                {"para":6,"type":"sfx","tag":"剑鸣","desc":"剑出鞘"},
+                {"para":7,"type":"sfx","tag":"脚步急促","desc":"急促脚步"},
+                {"para":8,"type":"sfx","tag":"马蹄声","desc":"马蹄疾驰"}
                 """.trimIndent()
             ),
             paraCount = 10,
         ).data
         assertNotNull(plan)
-        assertEquals(1, plan!!.sfx.size)
+        assertEquals(5, plan!!.sfx.size)
         assertEquals("茶杯碎裂", plan.sfx[0].tag)
         assertEquals(0, plan.bgm.size)
     }
