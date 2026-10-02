@@ -17,7 +17,7 @@ import io.legado.app.help.readaloud.audio.AudioRuleStore.RuleData
 object AudioRuleEngine {
 
     enum class Source(val label: String) {
-        USER("自定规则"),
+        USER("条目规则"),
         BUILTIN("内置规则"),
         INTENT("意图规则"),
     }
@@ -109,7 +109,7 @@ object AudioRuleEngine {
 
     // ------------------------------------------------------------ 匹配
 
-    /** 返回可播（已解析）或待补缺的最优命中；无命中返回 null。isTitle=章标题行（仅自定规则参与） */
+    /** 返回可播（已解析）或待补缺的最优命中；无命中返回 null。isTitle=章标题行（仅条目规则参与） */
     fun pick(context: Context, lane: DemoLanes.Lane, text: String, isTitle: Boolean = false): Picked? {
         val candidates = candidates(lane, text, isTitle)
         if (candidates.isEmpty()) return null

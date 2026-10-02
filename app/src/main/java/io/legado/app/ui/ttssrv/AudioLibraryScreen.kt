@@ -58,6 +58,7 @@ import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
 import io.legado.app.ui.widget.components.card.TextCard
@@ -540,10 +541,6 @@ fun AudioLibraryScreen(
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
-                            if (ui.pattern.isNotBlank()) {
-                                append(" · 规则：").append(ui.pattern.take(16))
-                                if (ui.pattern.length > 16) append("…")
-                            }
                         },
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
@@ -773,6 +770,13 @@ private fun AudioMoveSheet(
         show = show,
         onDismissRequest = onDismiss,
         title = "移动音频：$count 条",
+        endAction = {
+            MediumTonalButton(
+                onClick = onConfirm,
+                icon = Icons.Default.Check,
+                contentDescription = "移动",
+            )
+        },
     ) {
         Column(
             modifier = Modifier
@@ -810,13 +814,6 @@ private fun AudioMoveSheet(
                     }
                 }
             }
-            MediumPlainButton(
-                onClick = onConfirm,
-                modifier = Modifier.fillMaxWidth(),
-                icon = Icons.Default.Check,
-                text = "移动",
-                contentDescription = "移动",
-            )
         }
     }
 }

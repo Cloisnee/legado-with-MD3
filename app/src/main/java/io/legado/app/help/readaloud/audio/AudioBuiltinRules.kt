@@ -75,20 +75,25 @@ object AudioBuiltinRules {
 
     private val backfilled = Collections.synchronizedSet(HashSet<String>())
 
+    /** 词典合并日志（一次） */
+    private val dictLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val cjkRuns = Regex("[\\u4e00-\\u9fff]{2,}")
 
     /** 非阻塞预热（引擎创建时调用） */
     fun warmUp(context: Context) {
+        AudioLaneScan.remember(context)
         if (mingwuyan != null) return
         ioScope.launch { runCatching { ensureLoaded(context.applicationContext) } }
     }
 
     /** 加载全部内置包（幂等；预合成扫描前确保就绪） */
     suspend fun ensureLoaded(context: Context) {
+        AudioLaneScan.remember(context)
         if (mingwuyan != null && env != null && bgm != null) return
         lock.withLock {
             if (mingwuyan == null) {
-                mingwuyan = loadAsset(context, "audio_rules/mingwuyan_rules.json", "mingwuyan音效")
+                mingwuyan = loadAsset(context, "audio_rules/mingwuyan_rules.json", "音效词典")
             }
             if (env == null) {
                 env = loadAsset(context, "audio_rules/env_dict.json", "环境词典")
@@ -96,6 +101,17 @@ object AudioBuiltinRules {
             if (bgm == null) {
                 bgm = loadAsset(context, "audio_rules/bgm_dict.json", "BGM词典")
             }
+        }
+        // 词典加载完成 → 合并为一条日志（更简约）
+        if (dictLogged.compareAndSet(false, true)) {
+            val m = mingwuyan
+            val e = env
+            val b = bgm
+            AppLog.putAudio(
+                "【音效与背景音】内置词典：音效 ${m?.rules?.size ?: 0}条/${m?.merged?.size ?: 0}标签、" +
+                    "环境 ${e?.rules?.size ?: 0}条/${e?.merged?.size ?: 0}标签、" +
+                    "BGM ${b?.rules?.size ?: 0}条/${b?.merged?.size ?: 0}标签"
+            )
         }
         // 18+ 规则（受开关；网络失败静默回退缓存）
         runCatching { ensureAdult(context) }
@@ -179,10 +195,6 @@ object AudioBuiltinRules {
                 pack.kwToRules = kwToRules.mapValues { (_, v) -> v.distinct().toIntArray() }
             }
         }
-        AppLog.putAudio(
-            "【音效与背景音】内置规则：$name ${rules.size} 条 / ${pack.merged.size} 标签" +
-                "（预筛词 ${kws.size}，常跑 ${always.size}）"
-        )
         return pack
     }
 
@@ -223,7 +235,8 @@ object AudioBuiltinRules {
             }
             if (text.isNullOrBlank() && cache.isFile) text = cache.readText()
             if (!text.isNullOrBlank()) {
-                adult = buildPack("mingwuyan18+", text!!)
+                adult = buildPack("音效词典18+", text!!)
+                AppLog.putAudio("【音效与背景音】内置词典：音效18+ ${adult?.rules?.size ?: 0}条（远程）")
             }
         }
     }

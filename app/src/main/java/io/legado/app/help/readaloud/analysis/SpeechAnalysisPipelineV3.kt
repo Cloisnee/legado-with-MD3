@@ -355,6 +355,18 @@ class SpeechAnalysisPipelineV3(
         // ===== A 话语分析 =====
         val t0 = System.currentTimeMillis()
         val ranges = stageA(paragraphs, cfg, useAi = isContinuous, chapterIndex = chapterIndex)
+
+        // B33.4a：音效与背景音·本地兜底日志（分析侧；B33.4b 接入 AI 导演后改为分支原因：首章/非连续/未设置Ai/Ai识别失败）
+        runCatching {
+            val laneSummary = io.legado.app.help.readaloud.audio.AudioLaneScan
+                .summaryText(paragraphs.map { it.text })
+            if (laneSummary != null) {
+                val laneReason = if (!isContinuous) "首章/非连续" else "未设置Ai"
+                AppLog.putAnalysis(
+                    "【分析V3·${chapterLabel}·音效与背景音】本地规则快速识别（$laneReason）：$laneSummary。"
+                )
+            }
+        }
         if (ranges.isEmpty()) {
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
         }

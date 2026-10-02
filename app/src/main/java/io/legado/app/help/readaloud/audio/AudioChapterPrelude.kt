@@ -3,10 +3,8 @@ package io.legado.app.help.readaloud.audio
 import android.content.Context
 import io.legado.app.constant.AppLog
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * B33.4a · 「音效与背景音」章节预合成闭环（日志 v3）：
@@ -38,6 +36,9 @@ class AudioChapterPrelude(
     /** 预合成尝试去重（每章一次；避免多轮 sweep 重复日志） */
     private val attemptedAhead = HashSet<String>()
 
+    /** 已完成预合成的章 → 条目计数（朗读到达时只打一条合成总结） */
+    private val preparedTotals = HashMap<String, Map<SynthLane, Int>>()
+
     fun isPreparedAhead(chapterKey: String): Boolean =
         runCatching { chapterKey in quietChapters }.getOrDefault(false)
 
@@ -53,6 +54,11 @@ class AudioChapterPrelude(
     fun startChapter(chapterKey: String, texts: List<String>) {
         if (!enabled() || chapterKey.isBlank() || texts.isEmpty()) return
         finishChapter()
+        // 已预合成完成的章：朗读到达时与「音频缓存」一致，只打一条合成总结
+        preparedTotals[chapterKey]?.let { totals ->
+            AppLog.putAudio("【音效与背景音·合成总结·${chapterNo(chapterKey)}】${laneText(totals)}。")
+            return
+        }
         activeJob = scope.launch {
             runCatching { runPrep(chapterKey, texts, ahead = false) }
         }
@@ -106,13 +112,22 @@ class AudioChapterPrelude(
             totals.merge(lane, 1, Int::plus)
             if (resolved) hit.merge(lane, 1, Int::plus) else miss.getOrPut(lane) { mutableListOf() }.add(label)
         }
-        AppLog.putAudio(
-            "【音效与背景音·剧本统计·${chapterNo(chapterKey)}】${laneText(totals)}，" +
-                "已命中${laneText(hit)}，未入库${laneText(miss.mapValues { it.value.size })}。"
-        )
+        if (!ahead) {
+            AppLog.putAudio(
+                "【音效与背景音·剧本统计·${chapterNo(chapterKey)}】${laneText(totals)}，" +
+                    "已命中${laneText(hit)}，未入库${laneText(miss.mapValues { it.value.size })}。"
+            )
+        }
         val prep = Prep(chapterKey, totals)
         miss.forEach { (lane, labels) -> prep.pending[lane] = mutableListOf() }
         if (!ahead) activePrep = prep
+
+        // B33.4a：当前章全命中 → 只打一条合成总结（与音频缓存同款）
+        if (!ahead && miss.isEmpty()) {
+            AppLog.putAudio("【音效与背景音·合成总结·${chapterNo(chapterKey)}】${laneText(totals)}。")
+            activePrep = null
+            return
+        }
 
         // 2) 远程命中（逐条尝试免费下载；散行静默）
         miss.forEach { (lane, labels) ->
@@ -125,10 +140,12 @@ class AudioChapterPrelude(
                 }
             }
         }
-        AppLog.putAudio(
-            "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(prep.remoteHit)}，" +
-                "待合成${laneText(prep.pending.mapValues { it.value.size })}。"
-        )
+        if (!ahead) {
+            AppLog.putAudio(
+                "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(prep.remoteHit)}，" +
+                    "待合成${laneText(prep.pending.mapValues { it.value.size })}。"
+            )
+        }
 
         // 3) 入合成队列
         val q = queue()
@@ -158,6 +175,7 @@ class AudioChapterPrelude(
         if (ahead) {
             if (undone.isEmpty()) {
                 quietChapters.add(chapterKey)
+                preparedTotals[chapterKey] = totals
                 AppLog.putAudio(
                     "【音效与背景音·${chapterNo(chapterKey)}】预合成完成：${laneText(totals)}，" +
                         "远程命中${laneText(prep.remoteHit)}，Ai补缺${laneText(aiDone)}。"
@@ -183,26 +201,9 @@ class AudioChapterPrelude(
         }
     }
 
-    /** 全章文本 → 规则层候选（唯一条目；resolved=本地可解析） */
+    /** 全章文本 → 规则层候选（唯一条目；resolved=本地可解析）；共享实现见 [AudioLaneScan] */
     private suspend fun scanItems(texts: List<String>): List<Triple<SynthLane, String, Boolean>> =
-        withContext(Dispatchers.Default) {
-            buildList {
-                texts.forEach { raw ->
-                    val text = raw.trim()
-                    if (text.length < 2) return@forEach
-                    for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
-                        val pick = AudioRuleEngine.pick(appContext, lane, text) ?: continue
-                        add(Triple(toSynth(lane), pick.hit.label, pick.resolved != null))
-                    }
-                }
-            }.distinctBy { it.first to it.second }
-        }
-
-    private fun toSynth(lane: DemoLanes.Lane): SynthLane = when (lane) {
-        DemoLanes.Lane.AMBIENCE -> SynthLane.AMB
-        DemoLanes.Lane.BGM -> SynthLane.BGM
-        else -> SynthLane.SFX
-    }
+        AudioLaneScan.scan(appContext, texts)
 
     private companion object {
         /** 等待本章全部条目到终态的上限 */

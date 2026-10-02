@@ -40,7 +40,7 @@ import kotlin.math.log10
  * - 「自研混音器扩展位」：上层只依赖本类接口；将来升级为 PCM 混音器时替换实现即可，
  *   HttpReadAloudService / 设置 / UI 零改动（见 B33 施工方案 §3）。
  *
- * 匹配层（B33.3d）：[AudioRuleEngine] —— 用户自定规则 > 内置示例（DemoLanes） > CNB 意图规则（AC）；
+ * 匹配层（B33.3d）：[AudioRuleEngine] —— 条目规则（含命中回填） > 内置规则包（音效/环境/BGM词典） > CNB 意图规则（AC）；
  * 素材解析 = AudioLibrary registry 索引（soundId 直连 / 名称链；未加载时回退目录直扫）。
  * B33.3c：缺失 → onMissing 回调（自动合成补缺）；闸门（间隔/冷却/驻留）滑条化。
  */

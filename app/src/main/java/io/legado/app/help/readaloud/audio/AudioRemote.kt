@@ -259,8 +259,12 @@ object AudioRemoteCatalog {
     }.getOrNull()
 
     /** 落库目录（B33.3e 收敛）：环境类 → `sfx/环境声`；其余音效 → `sfx/音效` */
-    internal fun folderOf(sound: RemoteSound): String =
-        if (sound.category == "scene" || sound.categoryName == "环境声") "sfx/环境声" else "sfx/音效"
+    internal fun folderOf(sound: RemoteSound): String = when {
+        sound.category.equals("bgm", true) || sound.category.startsWith("bgm", true) ||
+            sound.categoryName.equals("BGM", true) -> "bgm"
+        sound.category == "scene" || sound.categoryName == "环境声" -> "sfx/环境声"
+        else -> "sfx/音效"
+    }
 
     /** 落库文件名：中文名纯净文件名 + 源扩展名（mp3/wav…） */
     internal fun fileNameOf(sound: RemoteSound): String {
