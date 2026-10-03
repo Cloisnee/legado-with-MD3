@@ -39,7 +39,7 @@ class AudioDirectorContractTest {
         assertEquals(1, amb.para)
         assertEquals(2, amb.frag)
         val sfx = items.first { it.type == "sfx" }
-        assertEquals(4, sfx.frag)
+        assertEquals(3, sfx.frag)
         assertEquals(200L, sfx.delayMs)
         val bgm = items.first { it.type == "bgm" }
         assertEquals("幻想", bgm.profile)
