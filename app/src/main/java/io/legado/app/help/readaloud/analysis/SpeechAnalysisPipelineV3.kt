@@ -297,7 +297,7 @@ class SpeechAnalysisPipelineV3(
 【排布原则】
 - 环境：只在场景变化处切换并各标一次（一章约 1~3 处）；到下次切换或章末自然结束。
 - BGM：只在关键剧情/情绪处起乐（一章约 0~2 处），宁缺毋滥；hold＝从本段起持续的行数（8~40）。
-- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复；每条音效请标注 frag（效果触发所在的片段号；环境/BGM 只给段号 para 即可）。
+- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复；每条音效请标注 frag（效果触发所在的片段号）与 pos（前/中/后＝**该片段内部**的触发位置：前=片段前1/3≈17%处、中=片段中部、后=片段后1/3≈83%处；片段越长 pos 越有用，很短的片段可省略；环境/BGM 只给段号 para 即可）。
 - 稳定优先：同类场景用同类词，不要刻意换新说法。
 
 【红线】
@@ -307,10 +307,10 @@ class SpeechAnalysisPipelineV3(
 【输出】只输出纯 JSON：
 {"items":[
  {"para":2,"frag":1,"anchor":"客栈的门是被风撞开的","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
- {"para":4,"frag":3,"anchor":"朝她笑了笑","type":"sfx","tag":"轻笑一声","desc":"女子短促的轻笑声"},
+ {"para":4,"frag":2,"anchor":"喝了一口","type":"sfx","tag":"饮酒吞咽","desc":"液体入喉的吞咽声","pos":"后"},
  {"para":30,"frag":2,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
 ]}
-字段：para/type 必填；frag 片段号（音效必填；环境/BGM 可省，缺省=该段首片）；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效特殊时可用 delayMs（0~2000 毫秒）覆盖；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（原文片段，便于校对）。
+字段：para/type 必填；frag 片段号（音效必填；环境/BGM 可省，缺省=该段首片）；音效请附 pos（前/中/后＝片段内触发位置，缺省=片段开头）；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效特殊时可用 delayMs（0~2000 毫秒）覆盖；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（原文片段，便于校对）。
 """.trimIndent()
     }
 
@@ -445,7 +445,7 @@ class SpeechAnalysisPipelineV3(
         // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = renderNumbered(segments)
-        // B34.2b：音频导演并发发起（片段文本就绪 → 与第2阶段/情绪并发；锚点=段号/片段号）
+        // B34.2c：音频导演并发发起（片段文本就绪 → 与第2阶段/情绪并发；锚点=段号/片段号，音效另带片内pos）
         val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
         val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
             val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
@@ -1698,7 +1698,7 @@ class SpeechAnalysisPipelineV3(
         return sb.toString().trimEnd('\n')
     }
 
-    /** B34.2b：导演条目（段/片段）→ 章节计划（剧本行锚点=segOrdinal + 句内比例） */
+    /** B34.2c：导演条目（段/片段+片内pos）→ 章节计划（剧本行锚点=segOrdinal + 句内比例） */
     private fun convertDirectorItems(
         items: List<AudioDirectorContract.DirectorItem>,
         unitsByPara: List<ParaUnits>,
@@ -1725,7 +1725,9 @@ class SpeechAnalysisPipelineV3(
                 else -> sfx += AudioPlanItem(
                     para = ordinal, type = di.type, tag = di.tag, desc = di.desc,
                     delayMs = di.delayMs,
-                    posRatio = AudioPositions.ratioOfUnit(seg.start, seg.end, u.start, u.text.length, 0f),
+                    posRatio = AudioPositions.ratioOfUnit(
+                        seg.start, seg.end, u.start, u.text.length, di.posRatio,
+                    ),
                     anchor = di.anchor,
                 )
             }

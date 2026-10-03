@@ -1,5 +1,6 @@
 package io.legado.app.help.readaloud.analysis
 
+import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import org.json.JSONObject
 
@@ -12,7 +13,8 @@ import org.json.JSONObject
  * 口径（2026-10-02 定稿 + 2026-10-03 片段化修订）：
  *  - 不注入库存；靠「简短、具体、常见」的命名 + 结构化 BGM 三字段命中素材库；
  *  - 音效＝拟音式全覆盖（有动静就标）；BGM＝结构化 {画像/情绪/强度} + hold 行数；
- *  - 片段化后位置由「选片段」表达（原 pos 前中后已去除；本地规则仍用片内命中位）；
+ *  - 音效锚点=段号+片段号，另带 **pos（片段内 前/中/后）**：三等分中点映射（前≈17%/中≈50%/后≈83%），
+ *    非法/缺省=片段开头；本地规则仍用精确片内命中位；
  *  - 容错策略：单条非法→剔除并记录；错误过多（≥3 条且占比≥1/3）或全空 → 判失败重试。
  */
 object AudioDirectorContract {
@@ -34,6 +36,8 @@ object AudioDirectorContract {
         val tag: String = "",
         val desc: String = "",
         val delayMs: Long = 0L,
+        /** 音效片内比例（由 pos 前/中/后 三等分中点映射；非法/缺省=0=片段开头） */
+        val posRatio: Float = 0f,
         val hold: Int = 0,
         val profile: String = "",
         val mood: String = "",
@@ -150,6 +154,7 @@ object AudioDirectorContract {
                             tag = tag,
                             desc = desc,
                             delayMs = o.optLong("delayMs", 0L).coerceIn(0L, 3000L),
+                            posRatio = AudioPositions.ratioOf(o.optString("pos")),
                             anchor = anchor,
                         )
                     }

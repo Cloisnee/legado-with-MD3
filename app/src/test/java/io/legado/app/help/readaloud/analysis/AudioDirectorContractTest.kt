@@ -27,7 +27,7 @@ class AudioDirectorContractTest {
             root(
                 """
                 {"para":1,"frag":2,"type":"ambience","tag":"客栈大堂","desc":"大堂环境底噪"},
-                {"para":4,"frag":3,"type":"音效","tag":"推开声","desc":"木门吱呀","delayMs":200},
+                {"para":4,"frag":3,"type":"音效","tag":"推开声","desc":"木门吱呀","delayMs":200,"pos":"中"},
                 {"para":4,"frag":4,"type":"bgm","profile":"fantasy","mood":"sad","intensity":"medium","hold":12,"desc":"二胡哀伤"}
                 """.trimIndent()
             ),
@@ -41,6 +41,7 @@ class AudioDirectorContractTest {
         val sfx = items.first { it.type == "sfx" }
         assertEquals(3, sfx.frag)
         assertEquals(200L, sfx.delayMs)
+        assertEquals(0.5f, sfx.posRatio, 0.0001f)
         val bgm = items.first { it.type == "bgm" }
         assertEquals("幻想", bgm.profile)
         assertEquals("悲情", bgm.mood)
@@ -63,6 +64,25 @@ class AudioDirectorContractTest {
         assertEquals(2, items!!.size)
         assertEquals(1, items[0].frag)
         assertEquals(2, items[1].frag)
+    }
+
+    @Test
+    fun `音效pos片内映射 缺省与非法为零`() {
+        val items = AudioDirectorContract.validate(
+            root(
+                """
+                {"para":1,"frag":1,"type":"sfx","tag":"剑鸣","desc":"剑出鞘","pos":"后"},
+                {"para":1,"frag":2,"type":"sfx","tag":"推门声","desc":"吱呀"},
+                {"para":1,"frag":3,"type":"sfx","tag":"脚步声","desc":"脚步","pos":"乱写"}
+                """.trimIndent()
+            ),
+            unitCounts,
+        ).data
+        assertNotNull(items)
+        assertEquals(3, items!!.size)
+        assertEquals(5f / 6f, items[0].posRatio, 0.0001f)
+        assertEquals(0f, items[1].posRatio, 0.0001f)
+        assertEquals(0f, items[2].posRatio, 0.0001f)
     }
 
     @Test
