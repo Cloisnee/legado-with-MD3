@@ -17,7 +17,9 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.utils.AliasTokens
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
+import io.legado.app.help.readaloud.audio.AudioPlanItem
 import io.legado.app.help.readaloud.audio.AudioPlanStore
+import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioPrefill
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -265,7 +267,7 @@ class SpeechAnalysisPipelineV3(
         private val DEFAULT_AUDIO_DIRECTOR_PROMPT = """
 你是一名资深有声书配音导演（拟音方向），为章节文本规划三条音频轨：环境底噪、背景音乐（BGM）、音效。
 
-【输入】按 [n] 编号的章节段落文本（n＝段序号，输出时用它作锚点 para）。
+【输入】按〖第N段〗分组、段内片段 [1][2]… 编号的章节文本（与话语分析同一模板；引号随原文保留）。输出定位：para＝段号（〖第N段〗的 N），frag＝片段号（[m] 的 m）。
 
 【工作方式：像拟音师一样通读全文】
 把文中一切会发出「动静」的动作与物体事件都排查出来并标注音效——不要只挑高潮、不要只挑关键剧情，有动静就标：
@@ -286,7 +288,7 @@ class SpeechAnalysisPipelineV3(
    intensity 从【低/中/高】选一。
 
 【本地建议审核】
-输入中形如〔音效建议：X〕〔环境建议：X〕〔BGM建议：X〕的是本地词典初筛结果（名字来自本地/远程素材库）：
+输入中形如〔音效建议：X〕〔环境建议：X〕〔BGM建议：X〕的标记（紧随对应片段之后）是本地词典初筛结果（名字来自本地/远程素材库）：
 - 合理 → 尽量原样采用建议名（命中率最高）；
 - 不准确 → 改成更准确的短名；
 - 多余 → 不输出；
@@ -295,7 +297,7 @@ class SpeechAnalysisPipelineV3(
 【排布原则】
 - 环境：只在场景变化处切换并各标一次（一章约 1~3 处）；到下次切换或章末自然结束。
 - BGM：只在关键剧情/情绪处起乐（一章约 0~2 处），宁缺毋滥；hold＝从本段起持续的行数（8~40）。
-- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复；每条音效请附 pos（前/中/后）标注它在句内的触发位置。
+- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复；每条音效请标注 frag（效果触发所在的片段号；环境/BGM 只给段号 para 即可）。
 - 稳定优先：同类场景用同类词，不要刻意换新说法。
 
 【红线】
@@ -304,11 +306,11 @@ class SpeechAnalysisPipelineV3(
 
 【输出】只输出纯 JSON：
 {"items":[
- {"para":12,"anchor":"推开房门","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
- {"para":18,"anchor":"茶杯摔在地上","type":"sfx","tag":"茶杯碎裂","desc":"瓷杯摔在石板地上碎裂的清脆声","pos":"中"},
- {"para":30,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
+ {"para":2,"frag":1,"anchor":"客栈的门是被风撞开的","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
+ {"para":4,"frag":3,"anchor":"朝她笑了笑","type":"sfx","tag":"轻笑一声","desc":"女子短促的轻笑声"},
+ {"para":30,"frag":2,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
 ]}
-字段：para/type 必填；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效请带 pos（前/中/后＝句内触发位置；特殊时可用 delayMs 0~2000 毫秒覆盖）；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（6~20 字原文片段，便于校对）。
+字段：para/type 必填；frag 片段号（音效必填；环境/BGM 可省，缺省=该段首片）；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效特殊时可用 delayMs（0~2000 毫秒）覆盖；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（原文片段，便于校对）。
 """.trimIndent()
     }
 
@@ -433,19 +435,22 @@ class SpeechAnalysisPipelineV3(
         }
         var segments = assemble(paragraphs, ranges)
 
-        // B34.2·③：本地词典预插标记（导演输入注入建议；兜底章直接用其为计划）
-        val prefills: List<List<AudioLaneScan.Suggestion>> = runCatching {
-            AudioLaneScan.suggest(segments.map { it.text })
-        }.getOrNull() ?: List(segments.size) { emptyList() }
+        // B34.2b·③：预插标记——以第1阶段片段文本为模板（与话语分析输入同款；本地建议来自片段级扫描）
+        val unitsByPara = buildParaUnits(paragraphs)
+        val flatUnits = unitsByPara.flatMap { pu -> pu.units.map { it.text } }
+        val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
+            AudioLaneScan.suggest(flatUnits)
+        }.getOrNull() ?: List(flatUnits.size) { emptyList() }
 
         // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = renderNumbered(segments)
-        // B33.4b：音频导演并发发起（编号文本就绪 → 与第2阶段/情绪并发；锚点=段序号）
-        val directorJob = if (directorSkipReason.isEmpty() && segments.isNotEmpty()) {
-            val directorNumbered = renderDirectorNumbered(segments, prefills)
+        // B34.2b：音频导演并发发起（片段文本就绪 → 与第2阶段/情绪并发；锚点=段号/片段号）
+        val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
+        val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
+            val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
             pipelineScope.async {
-                callAudioDirector(directorNumbered, segments.size, cfg, directorRefs, chapterLabel)
+                callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel)
             }
         } else null
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
@@ -501,21 +506,25 @@ class SpeechAnalysisPipelineV3(
         // ===== 音频导演 join（第4阶段完成后 ≤ joinTimeout；超时/失败 → 本地规则兜底） =====
         var audioPlan: AudioPlan? = null
         if (directorJob != null) {
-            val plan = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
+            val items = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
             when {
-                plan != null -> {
-                    audioPlan = plan.copy(scriptHash = contentHash)
+                items != null -> {
+                    val plan = convertDirectorItems(items, unitsByPara, segments)
+                        .copy(scriptHash = contentHash)
+                    audioPlan = plan
                     AppLog.putAnalysis(
                         "【分析V3·${chapterLabel}·音效与背景音】Ai导演：${plan.countsText()}。"
                     )
-                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
+                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
                 }
                 directorJob.isActive -> logLaneFallback("Ai超时", paragraphs)
                 else -> logLaneFallback("Ai失败", paragraphs)
             }
         } else {
-            // B34.2·③-B：首章/非连续/未设置Ai → 本地建议直接成为章节计划（第4阶段+情绪后写入）
-            val rulesPlan = AudioPrefill.buildRulesPlan(prefills)
+            // B34.2b·③-B：首章/非连续/未设置Ai → 本地建议直接成为章节计划（第4阶段+情绪后写入）
+            val rulesPlan = AudioPrefill.buildRulesPlan(
+                buildFallbackSeeds(unitsByPara, unitSuggestions, segments),
+            )
             if (rulesPlan.itemCount > 0) {
                 audioPlan = rulesPlan.copy(scriptHash = contentHash)
                 AppLog.putAnalysis(
@@ -1669,29 +1678,118 @@ class SpeechAnalysisPipelineV3(
         }
     }
 
-    /** 音频导演输入：全段顺序编号 [1..M]（=剧本行/播放队列段序号；B34.2 附本地建议标记） */
-    private fun renderDirectorNumbered(
-        segments: List<ChapterSpeechSegment>,
-        prefills: List<List<AudioLaneScan.Suggestion>>,
+    /** B34.2b：导演输入=第1阶段片段文本（〖第N段〗+[m] 同款）+ 本地建议标记 */
+    private fun renderDirectorUnits(
+        unitsByPara: List<ParaUnits>,
+        unitSuggestions: List<List<AudioLaneScan.Suggestion>>,
     ): String {
         val sb = StringBuilder()
-        segments.forEachIndexed { i, s ->
-            sb.append("[").append(i + 1).append("] ").append(s.text.trim())
-            val marks = AudioPrefill.markersFor(prefills.getOrElse(i) { emptyList() })
-            if (marks.isNotEmpty()) sb.append(marks)
-            sb.append("\n")
+        var fi = 0
+        unitsByPara.forEach { c ->
+            sb.append("〖第").append(c.paraIndex + 1).append("段〗\n")
+            c.units.forEachIndexed { i, u ->
+                sb.append("[").append(i + 1).append("] ").append(u.text)
+                val marks = AudioPrefill.markersFor(unitSuggestions.getOrElse(fi) { emptyList() })
+                if (marks.isNotEmpty()) sb.append(marks)
+                sb.append("\n")
+                fi++
+            }
         }
         return sb.toString().trimEnd('\n')
+    }
+
+    /** B34.2b：导演条目（段/片段）→ 章节计划（剧本行锚点=segOrdinal + 句内比例） */
+    private fun convertDirectorItems(
+        items: List<AudioDirectorContract.DirectorItem>,
+        unitsByPara: List<ParaUnits>,
+        segments: List<ChapterSpeechSegment>,
+    ): AudioPlan {
+        val amb = ArrayList<AudioPlanItem>()
+        val bgm = ArrayList<AudioPlanItem>()
+        val sfx = ArrayList<AudioPlanItem>()
+        items.forEach { di ->
+            val pu = unitsByPara.firstOrNull { p -> p.paraIndex == di.para - 1 } ?: return@forEach
+            val u = pu.units.getOrNull((di.frag - 1).coerceAtLeast(0)) ?: return@forEach
+            val seg = unitSegment(segments, pu.paraIndex, u.start) ?: return@forEach
+            val ordinal = segments.indexOf(seg) + 1
+            when (di.type) {
+                AudioTagCodec.TYPE_AMB -> amb += AudioPlanItem(
+                    ordinal, di.type, tag = di.tag, desc = di.desc, anchor = di.anchor,
+                )
+
+                AudioTagCodec.TYPE_BGM -> bgm += AudioPlanItem(
+                    ordinal, di.type, tag = di.tag, desc = di.desc, hold = di.hold,
+                    profile = di.profile, mood = di.mood, intensity = di.intensity, anchor = di.anchor,
+                )
+
+                else -> sfx += AudioPlanItem(
+                    para = ordinal, type = di.type, tag = di.tag, desc = di.desc,
+                    delayMs = di.delayMs,
+                    posRatio = AudioPositions.ratioOfUnit(seg.start, seg.end, u.start, u.text.length, 0f),
+                    anchor = di.anchor,
+                )
+            }
+        }
+        return AudioPlan(
+            source = "ai",
+            ambience = amb.sortedBy { it.para },
+            bgm = bgm.sortedBy { it.para },
+            sfx = sfx.sortedBy { it.para },
+        )
+    }
+
+    /** B34.2b：兜底计划种子——片段建议（含片内命中比）→ 剧本行锚点+句内比例 */
+    private fun buildFallbackSeeds(
+        unitsByPara: List<ParaUnits>,
+        unitSuggestions: List<List<AudioLaneScan.Suggestion>>,
+        segments: List<ChapterSpeechSegment>,
+    ): List<AudioPrefill.PlanSeed> {
+        val out = ArrayList<AudioPrefill.PlanSeed>()
+        var fi = 0
+        unitsByPara.forEach { pu ->
+            pu.units.forEachIndexed { _, u ->
+                val sugs = unitSuggestions.getOrElse(fi) { emptyList() }
+                fi++
+                if (sugs.isEmpty()) return@forEachIndexed
+                val seg = unitSegment(segments, pu.paraIndex, u.start) ?: return@forEachIndexed
+                val ordinal = segments.indexOf(seg) + 1
+                sugs.forEach { sug ->
+                    if (sug.label.isBlank()) return@forEach
+                    out += AudioPrefill.PlanSeed(
+                        segPara = ordinal,
+                        lane = sug.lane,
+                        label = sug.label,
+                        ratio = AudioPositions.ratioOfUnit(
+                            seg.start, seg.end, u.start, u.text.length, sug.ratio,
+                        ),
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    /** 片段起点所在剧本行（同段内包含 unitStart 的段；兜底取起点不超过它的最后一段） */
+    private fun unitSegment(
+        segments: List<ChapterSpeechSegment>,
+        paraIndex: Int,
+        unitStart: Int,
+    ): ChapterSpeechSegment? {
+        val segs = segments.filter { it.paragraphIndex == paraIndex }.sortedBy { it.start }
+        if (segs.isEmpty()) return null
+        return segs.lastOrNull { it.start <= unitStart && unitStart < it.end }
+            ?: segs.firstOrNull { it.start <= unitStart }
+            ?: segs.first()
     }
 
     /** 音频导演调用（队列两级重试；校验见 [AudioDirectorContract]） */
     private suspend fun callAudioDirector(
         numbered: String,
-        paraCount: Int,
+        unitCounts: Map<Int, Int>,
         cfg: AnalysisConfigStore.Config,
         refs: List<AiSpeechClient.ModelRef>,
         label: String,
-    ): AudioPlan? {
+    ): List<AudioDirectorContract.DirectorItem>? {
         if (refs.isEmpty() || numbered.isBlank()) return null
         val head = cfg.audioDirectorPrompt.ifBlank { DEFAULT_AUDIO_DIRECTOR_PROMPT }
         val promptFactory = { failHint: String ->
@@ -1705,7 +1803,7 @@ class SpeechAnalysisPipelineV3(
             }
         }
         return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "$label·音频导演") { raw ->
-            ai.extractJson(raw)?.let { AudioDirectorContract.validate(it, paraCount) }
+            ai.extractJson(raw)?.let { AudioDirectorContract.validate(it, unitCounts) }
                 ?: ValidateOutcome(null, "返回不是JSON对象")
         }
     }

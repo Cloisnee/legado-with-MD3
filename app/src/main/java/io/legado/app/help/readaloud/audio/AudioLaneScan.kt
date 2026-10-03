@@ -49,7 +49,7 @@ object AudioLaneScan {
 
     // ------------------------------------------------------------ B34.2·③ 预插标记建议
 
-    /** 逐段建议（ratio=命中位；BGM 无位置=0） */
+    /** 逐片段建议（F=第1阶段片段文本；ratio=片内命中位；BGM 无位置=0） */
     data class Suggestion(val lane: SynthLane, val label: String, val ratio: Float)
 
     /** 无 Context 版（分析侧；未就绪返回 null） */
@@ -58,7 +58,7 @@ object AudioLaneScan {
         return suggest(ctx, texts)
     }
 
-    /** 逐段建议：每段每轨至多 1 个（与兜底口径一致；共享规则/词典/意图链） */
+    /** 逐片段建议：每片段每轨至多 1 个（与兜底口径一致；共享规则/词典/意图链） */
     suspend fun suggest(context: Context, texts: List<String>): List<List<Suggestion>> =
         withContext(Dispatchers.Default) {
             runCatching { AudioBuiltinRules.ensureLoaded(context.applicationContext) }

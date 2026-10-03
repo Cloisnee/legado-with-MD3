@@ -8,6 +8,9 @@ class AudioPrefillTest {
     private fun sug(lane: SynthLane, label: String, ratio: Float = 0f) =
         AudioLaneScan.Suggestion(lane, label, ratio)
 
+    private fun seed(seg: Int, lane: SynthLane, label: String, ratio: Float = 0f) =
+        AudioPrefill.PlanSeed(seg, lane, label, ratio)
+
     @Test
     fun `标记渲染 顺序与文案`() {
         val text = AudioPrefill.markersFor(
@@ -25,9 +28,9 @@ class AudioPrefillTest {
     fun `兜底计划 三轨映射与位置携带`() {
         val plan = AudioPrefill.buildRulesPlan(
             listOf(
-                listOf(sug(SynthLane.AMB, "客栈大堂")),
-                emptyList(),
-                listOf(sug(SynthLane.SFX, "推开声", 0.35f), sug(SynthLane.BGM, "紧张")),
+                seed(3, SynthLane.SFX, "推开声", 0.35f),
+                seed(5, SynthLane.AMB, "客栈大堂"),
+                seed(5, SynthLane.BGM, "紧张"),
             ),
         )
         assertEquals("rules", plan.source)
@@ -41,8 +44,10 @@ class AudioPrefillTest {
     }
 
     @Test
-    fun `空白建议被剔除`() {
-        val plan = AudioPrefill.buildRulesPlan(listOf(listOf(sug(SynthLane.SFX, ""))))
+    fun `空白建议与非法行号被剔除`() {
+        val plan = AudioPrefill.buildRulesPlan(
+            listOf(seed(1, SynthLane.SFX, ""), seed(0, SynthLane.SFX, "x")),
+        )
         assertEquals(0, plan.itemCount)
     }
 }

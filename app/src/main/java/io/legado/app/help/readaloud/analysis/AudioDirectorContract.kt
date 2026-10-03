@@ -1,19 +1,18 @@
 package io.legado.app.help.readaloud.analysis
 
-import io.legado.app.help.readaloud.audio.AudioPlan
-import io.legado.app.help.readaloud.audio.AudioPlanItem
-import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import org.json.JSONObject
 
 /**
- * B33.4b · 音频导演返回契约（本地校验，纯逻辑）。
+ * B34.2b · 音频导演返回契约（本地校验，纯逻辑）。
  *
- * 输入=导演返回的 JSON（`{"items":[…]}`），输出=校验归一后的 [AudioPlan] 或失败原因（failHint 顺延重试）。
+ * 输入=导演返回的 JSON（`{"items":[…]}`），锚点为 **段号(para)+片段号(frag)**
+ * （与导演输入文本的 〖第N段〗/[m] 模板一致；片段=第1阶段同一套本地切块器产物）。
  *
- * 口径（2026-10-02 甲方定稿）：
+ * 口径（2026-10-02 定稿 + 2026-10-03 片段化修订）：
  *  - 不注入库存；靠「简短、具体、常见」的命名 + 结构化 BGM 三字段命中素材库；
  *  - 音效＝拟音式全覆盖（有动静就标）；BGM＝结构化 {画像/情绪/强度} + hold 行数；
+ *  - 片段化后位置由「选片段」表达（原 pos 前中后已去除；本地规则仍用片内命中位）；
  *  - 容错策略：单条非法→剔除并记录；错误过多（≥3 条且占比≥1/3）或全空 → 判失败重试。
  */
 object AudioDirectorContract {
@@ -26,6 +25,21 @@ object AudioDirectorContract {
 
     /** 强度值集 */
     val INTENSITIES = listOf("低", "中", "高")
+
+    /** 导演条目（段号/片段号定位；后续由管线换算为剧本行锚点+句内比例） */
+    data class DirectorItem(
+        val para: Int,
+        val frag: Int,
+        val type: String,
+        val tag: String = "",
+        val desc: String = "",
+        val delayMs: Long = 0L,
+        val hold: Int = 0,
+        val profile: String = "",
+        val mood: String = "",
+        val intensity: String = "",
+        val anchor: String = "",
+    )
 
     private val PROFILE_ALIAS: Map<String, String> = mapOf(
         "common" to "通用", "universal" to "通用", "普通" to "通用",
@@ -61,15 +75,17 @@ object AudioDirectorContract {
         "high" to "高", "strong" to "高", "强" to "高", "强烈" to "高",
     )
 
-    private const val MAX_TOTAL = 120
     private const val MAX_SFX = 80
     private const val MAX_AMB = 12
     private const val MAX_BGM = 8
 
     private val WEIRD_CHARS = Regex("[\\[\\]\\r\\n]")
 
-    /** 校验导演返回（paraCount=输入编号总数，即段数） */
-    fun validate(root: JSONObject, paraCount: Int): ValidateOutcome<AudioPlan> {
+    /**
+     * 校验导演返回。
+     * @param unitCounts 段号（1 基）→ 该段片段数（=导演输入内 [m] 总数）
+     */
+    fun validate(root: JSONObject, unitCounts: Map<Int, Int>): ValidateOutcome<List<DirectorItem>> {
         val items = root.optJSONArray("items")
             ?: return ValidateOutcome(null, "缺少 items 数组（输出格式：{\"items\":[…] }）")
         if (items.length() == 0) {
@@ -78,9 +94,9 @@ object AudioDirectorContract {
         val errors = ArrayList<String>()
         var bad = 0
         var enumHint = false
-        val amb = ArrayList<AudioPlanItem>()
-        val bgm = ArrayList<AudioPlanItem>()
-        val sfx = ArrayList<AudioPlanItem>()
+        val amb = ArrayList<DirectorItem>()
+        val bgm = ArrayList<DirectorItem>()
+        val sfx = ArrayList<DirectorItem>()
         val seen = HashSet<String>()
         for (i in 0 until items.length()) {
             val o = items.optJSONObject(i)
@@ -95,10 +111,17 @@ object AudioDirectorContract {
                 if (bad <= 5) errors += "第${i + 1}条 type 非法（应为 ambience/bgm/sfx）"
                 continue
             }
-            if (para !in 1..paraCount) {
+            val fragCount = unitCounts[para]
+            if (fragCount == null || fragCount <= 0) {
                 bad++
-                if (bad <= 5) errors += "第${i + 1}条 para=$para 越界（应为 1..$paraCount）"
+                if (bad <= 5) errors += "第${i + 1}条 para=$para 不在输入段号内（1..${unitCounts.keys.maxOrNull() ?: 0}）"
                 continue
+            }
+            val fragRaw = o.optInt("frag", 0)
+            val frag = when {
+                fragRaw <= 0 -> 1
+                fragRaw > fragCount -> fragCount
+                else -> fragRaw
             }
             val tag = cleanTag(o.optString("tag"))
             val desc = cleanText(o.optString("desc"), 90)
@@ -110,7 +133,7 @@ object AudioDirectorContract {
                         if (bad <= 5) errors += "第${i + 1}条环境缺少 tag"
                         null
                     } else {
-                        AudioPlanItem(para, type, tag = tag, desc = desc, anchor = anchor)
+                        DirectorItem(para, frag, type, tag = tag, desc = desc, anchor = anchor)
                     }
                 }
 
@@ -120,13 +143,13 @@ object AudioDirectorContract {
                         if (bad <= 5) errors += "第${i + 1}条音效缺少 tag"
                         null
                     } else {
-                        AudioPlanItem(
+                        DirectorItem(
                             para = para,
+                            frag = frag,
                             type = type,
                             tag = tag,
                             desc = desc,
                             delayMs = o.optLong("delayMs", 0L).coerceIn(0L, 3000L),
-                            posRatio = AudioPositions.ratioOf(o.optString("pos")),
                             anchor = anchor,
                         )
                     }
@@ -142,8 +165,9 @@ object AudioDirectorContract {
                         if (bad <= 5) errors += "第${i + 1}条 BGM 画像/情绪/强度非法（profile=${o.optString("profile")} mood=${o.optString("mood")} intensity=${o.optString("intensity")}）"
                         null
                     } else {
-                        AudioPlanItem(
+                        DirectorItem(
                             para = para,
+                            frag = frag,
                             type = type,
                             tag = tag,
                             desc = desc,
@@ -156,7 +180,7 @@ object AudioDirectorContract {
                     }
                 }
             } ?: continue
-            val key = "${item.type}|${item.para}|${item.tag}"
+            val key = "${item.type}|${item.para}|${item.frag}|${item.tag}"
             if (!seen.add(key)) continue
             when (type) {
                 AudioTagCodec.TYPE_AMB -> amb += item
@@ -170,17 +194,9 @@ object AudioDirectorContract {
         if (bad >= 3 && bad * 3 >= items.length()) {
             return ValidateOutcome(null, "错误条目过多（$bad/${items.length()}）：" + errors.take(3).joinToString("；") + hintOf(enumHint))
         }
-        val plan = AudioPlan(
-            source = "ai",
-            ambience = amb.sortedBy { it.para }.take(MAX_AMB),
-            bgm = bgm.sortedBy { it.para }.take(MAX_BGM),
-            sfx = sfx.sortedBy { it.para }.take(MAX_SFX),
+        return ValidateOutcome(
+            amb.take(MAX_AMB) + bgm.take(MAX_BGM) + sfx.take(MAX_SFX),
         )
-        if (plan.itemCount > MAX_TOTAL) {
-            // 极端返回的保护（正常路径不会触发）：按轨截断已足够，这里只兜底总量
-            return ValidateOutcome(plan.copy(sfx = plan.sfx.take((MAX_TOTAL - plan.ambience.size - plan.bgm.size).coerceAtLeast(0))))
-        }
-        return ValidateOutcome(plan)
     }
 
     private fun hintOf(enumHint: Boolean): String = if (!enumHint) "" else
