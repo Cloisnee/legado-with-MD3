@@ -30,12 +30,12 @@ import kotlin.math.log10
  *
  * 职责：在朗读人声（HttpReadAloudService 既有 dialogue 轨）之上叠加——
  *   · ambience 环境底噪（loop）              → 1 个 ExoPlayer
- *   · bgm 背景音乐（loop + 闪避 + 行数到期淡出）→ 1 个 ExoPlayer
+ *   · bgm 背景音乐（loop + 行数到期淡出；BGM 起乐时环境暂停）→ 1 个 ExoPlayer
  *   · sfx 音效（点状，低延迟池）              → SoundPool
  *
  * 设计要点：
  * - 引擎自主驱动：外部只喂「当前剧本行」(onCue) 与少量生命周期事件；ticker(200ms) 负责
- *   随播放状态起停、闪避压/放、淡入淡出、BGM 持续行数收尾 —— 保证四条轨「联动」而非各播各的。
+ *   随播放状态起停、音量渐变、淡入淡出、BGM 持续行数收尾 —— 保证四条轨「联动」而非各播各的。
  * - 不抢音频焦点（音频焦点仍由人声播放器统一管理）。
  * - 「自研混音器扩展位」：上层只依赖本类接口；将来升级为 PCM 混音器时替换实现即可，
  *   HttpReadAloudService / 设置 / UI 零改动（见 B33 施工方案 §3）。
@@ -50,8 +50,6 @@ class AudioLaneEngine(
     private val scope: CoroutineScope,
     /** 服务处于「播放」状态（未暂停） */
     private val serviceActive: () -> Boolean,
-    /** 人声音频当前正在出声（BGM 闪避判定用） */
-    private val voiceActive: () -> Boolean,
     /** B33.3c：素材缺失上报（kind=音效/环境/BGM + 生成描述；接自动合成补缺队列） */
     private val onMissing: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
@@ -69,14 +67,11 @@ class AudioLaneEngine(
         val sfxVolume: Float = 0.8f,
         val ambVolume: Float = 0.35f,
         val bgmVolume: Float = 0.25f,
-        val ducking: Boolean = true,
         /** B33.3c 闸门（秒 → ms，applySettings 换算） */
         val sfxMinGapMs: Long = 6_000L,
         val sfxCooldownMs: Long = 60_000L,
         val bgmCooldownMs: Long = 150_000L,
         val ambMinDwellMs: Long = 25_000L,
-        /** B33.3e：BGM 起乐时环境让位（0=不处理 / 1=压低到30% / 2=暂停） */
-        val ambExclusive: Int = 1,
     )
 
     /** media3 版音频属性（ExoPlayer 轨用） */
@@ -90,9 +85,6 @@ class AudioLaneEngine(
         .setUsage(PlatformAudioAttributes.USAGE_MEDIA)
         .setContentType(PlatformAudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
-
-    /** 闪避系数：有人声时 BGM 压到 40%（≈ 0.12/0.30 的工业口径，见施工方案 §5） */
-    private val duckFactor = 0.40f
 
     private var config = LaneConfig()
 
@@ -154,12 +146,10 @@ class AudioLaneEngine(
             sfxVolume = settings.alSfxVolume.coerceIn(0, 100) / 100f,
             ambVolume = settings.alAmbVolume.coerceIn(0, 100) / 100f,
             bgmVolume = settings.alBgmVolume.coerceIn(0, 100) / 100f,
-            ducking = settings.alDucking,
             sfxMinGapMs = settings.alSfxMinGapS.coerceIn(0, 30) * 1000L,
             sfxCooldownMs = settings.alSfxCooldownS.coerceIn(0, 300) * 1000L,
             bgmCooldownMs = settings.alBgmCooldownS.coerceIn(0, 600) * 1000L,
             ambMinDwellMs = settings.alAmbDwellS.coerceIn(0, 120) * 1000L,
-            ambExclusive = settings.alBgmAmbExclusive.coerceIn(0, 2),
         )
         if (!config.enabled) resetAll()
     }
@@ -339,7 +329,7 @@ class AudioLaneEngine(
             val now = System.currentTimeMillis()
             lastSfxAt = now
             lastSfxByKeyword[keyword] = now
-            if (fireSfx(resolved, gain = 0.8f, delayMs = item.delayMs)) {
+            if (fireSfx(resolved, gain = 1.0f, delayMs = item.delayMs)) {
                 laneLog(index, "音效=$keyword（Ai导演）")
             }
         }
@@ -362,28 +352,19 @@ class AudioLaneEngine(
     private fun tick() {
         if (!config.enabled) return
         val active = serviceActive()
-        val voice = voiceActive()
 
-        // 环境轨：目标 = 轨音量；暂停/停播 → 0；BGM 起乐时按互斥档让位
+        // 环境轨：目标 = 轨音量；暂停/停播 → 0；BGM 起乐时固定暂停环境（结束后恢复；B34 已拔除选项）
         val bgmAudible = desiredBgm != null && (bgmLane.player?.volume ?: 0f) > 0.02f
-        val ambExclusiveFactor = when {
-            !bgmAudible -> 1f
-            config.ambExclusive == 2 -> 0f
-            config.ambExclusive == 1 -> 0.3f
-            else -> 1f
-        }
         driveLane(
             lane = ambLane,
             desired = desiredAmbience,
-            target = if (active) config.ambVolume * ambExclusiveFactor else 0f,
+            target = if (active && !bgmAudible) config.ambVolume else 0f,
             active = active,
             kind = "环境",
         )
 
-        // BGM 轨：闪避 = 轨音量 × 0.4（仅人声实际出声时压低）
-        val bgmTarget = if (active) {
-            config.bgmVolume * (if (config.ducking && voice) duckFactor else 1f)
-        } else 0f
+        // BGM 轨：轨音量
+        val bgmTarget = if (active) config.bgmVolume else 0f
         driveLane(
             lane = bgmLane,
             desired = desiredBgm,

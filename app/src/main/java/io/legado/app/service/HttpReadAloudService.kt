@@ -246,14 +246,13 @@ class HttpReadAloudService : BaseReadAloudService(),
                 appContext = applicationContext,
                 scope = lifecycleScope,
                 serviceActive = { !pause },
-                voiceActive = { runCatching { exoPlayer.isPlaying }.getOrDefault(false) },
                 onMissing = { kind, keyword, desc -> synthQueueOrCreate()?.enqueue(kind, keyword, null, desc) },
             ).also {
                 it.applySettings(readAloudSettings)
                 laneEngine = it
                 AppLog.putAudio(
                     "【音效与背景音】引擎就绪：音效 ${readAloudSettings.alSfxVolume}% · 环境 ${readAloudSettings.alAmbVolume}%" +
-                        " · BGM ${readAloudSettings.alBgmVolume}% · 闪避 ${if (readAloudSettings.alDucking) "开" else "关"}"
+                        " · BGM ${readAloudSettings.alBgmVolume}%"
                 )
             }
         }.getOrNull()

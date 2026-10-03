@@ -431,15 +431,12 @@ object PreferKey {
     const val alSfxVolume = "alSfxVolume"
     const val alAmbVolume = "alAmbVolume"
     const val alBgmVolume = "alBgmVolume"
-    const val alDucking = "alDucking"
     // B33.3c：补缺闸门滑条（替代旧「音效密度」低/中/高；旧键 alSfxDensity 一次性迁移后废弃）
     const val alSfxMinGapS = "alSfxMinGapS"
     const val alSfxCooldownS = "alSfxCooldownS"
     const val alBgmCooldownS = "alBgmCooldownS"
     const val alAmbDwellS = "alAmbDwellS"
     const val alChapterSynthCap = "alChapterSynthCap"
-    // B33.3e：BGM 起乐时环境让位（0=不处理 / 1=压低 / 2=暂停）
-    const val alBgmAmbExclusive = "alBgmAmbExclusive"
     // B33.2c：18+ 内容开关（默认关闭；远程库与规则层同步生效）
     const val audioAdultEnabled = "audioAdultEnabled"
     // B33.2 · 音频库（排序模式持久化）

@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -119,7 +120,7 @@ fun AudioLibraryScreen(
     var isSearch by remember { mutableStateOf(false) }
     var searchKey by remember { mutableStateOf("") }
     var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
-    var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var localOrder by remember { mutableStateOf<List<AudioLibrary.AudioAsset>?>(null) }
     var playingId by remember { mutableStateOf<String?>(null) }
     var previewPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
@@ -286,15 +287,19 @@ fun AudioLibraryScreen(
                         a.category.contains(q, ignoreCase = true)
                 }
             }
-            val sorted = when (sortMode) {
-                "asc" -> list
-                "desc" -> list.reversed()
+            // B34：排序全表生效——「全部」= 全表时间序（新在前/旧在前直接作用于全表）；
+            // 分类栏保持入库序/拖排语义（asc=入库序、desc=倒序）
+            when (sortMode) {
+                "asc" -> if (selectedCategory == null) list.sortedBy { it.mtime } else list
+                "desc" -> if (selectedCategory == null) {
+                    list.sortedByDescending { it.mtime }
+                } else {
+                    list.reversed()
+                }
                 "name_asc" -> list.sortedBy { it.name.lowercase() }
                 "name_desc" -> list.sortedByDescending { it.name.lowercase() }
                 else -> list
             }
-            // 「全部」按类聚合（BGM → 环境声 → 音效；稳定排序，类内保留排序结果）
-            if (selectedCategory == null) sorted.sortedBy { categoryRankOf(it.category) } else sorted
         }
     }
 
@@ -307,7 +312,8 @@ fun AudioLibraryScreen(
         localOrder = list
     }
 
-    val canReorder = sortMode == "asc" || sortMode == "desc"
+    // B34：全表时间序下不提供拖排（跨类自定义序无持久化语义）；分类栏照旧
+    val canReorder = (sortMode == "asc" || sortMode == "desc") && selectedCategory != null
     val listState = rememberLazyListState()
     val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
         moveLocal(from.index, to.index)
@@ -541,6 +547,8 @@ fun AudioLibraryScreen(
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
+                            // B34·⑤C：有匹配规则时给个标识（不显示规则内容）
+                            if (ui.pattern.isNotBlank()) append(" · 规则")
                         },
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
@@ -648,13 +656,6 @@ fun AudioLibraryScreen(
         allowExtensions = arrayOf("zip", "mp3", "m4a", "wav", "ogg", "flac", "aac"),
     )
 
-}
-
-/** 「全部」页类聚合顺序（BGM → 环境声 → 音效） */
-private fun categoryRankOf(category: String): Int = when (category) {
-    "BGM" -> 0
-    "环境声" -> 1
-    else -> 2
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)

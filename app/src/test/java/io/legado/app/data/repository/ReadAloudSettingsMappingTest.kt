@@ -8,14 +8,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 39 键写映射逐字段对应`() {
+    fun `朗读设置 37 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 39 键读映射逐字段对应`() {
+    fun `朗读设置 37 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -103,8 +103,6 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         alSfxVolume = 71,
         alAmbVolume = 32,
         alBgmVolume = 23,
-        alDucking = false,
-        alBgmAmbExclusive = 2,
         alSfxMinGapS = 5,
         alSfxCooldownS = 55,
         alBgmCooldownS = 145,
@@ -128,7 +126,6 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(ttsFollowSys = false),
         base.copy(useMultiSpeaker = false),
         base.copy(alEnabled = true),
-        base.copy(alDucking = true),
         base.copy(alSfxMinGapS = 0, alChapterSynthCap = 0),
     )
 }
@@ -166,8 +163,6 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.alSfxVolume to alSfxVolume,
     PreferKey.alAmbVolume to alAmbVolume,
     PreferKey.alBgmVolume to alBgmVolume,
-    PreferKey.alDucking to alDucking,
-    PreferKey.alBgmAmbExclusive to alBgmAmbExclusive,
     PreferKey.alSfxMinGapS to alSfxMinGapS,
     PreferKey.alSfxCooldownS to alSfxCooldownS,
     PreferKey.alBgmCooldownS to alBgmCooldownS,

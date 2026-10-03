@@ -1,15 +1,8 @@
 package io.legado.app.help.readaloud.audio
 
 import android.content.Context
-import android.os.Environment
 import com.github.jing332.compat.fs.TtsDirProvider
-import io.legado.app.help.http.await
-import io.legado.app.help.http.okHttpClient
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.Request
 import java.io.File
-import java.util.zip.ZipFile
 
 /**
  * B33 四轨（音效/BGM/环境）· 小闭环演示层。
@@ -67,77 +60,6 @@ object DemoLanes {
 
 object TmDemoAssets {
 
-    private const val CNB_RAW_BASE =
-        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/beee7f9/"
-
-    private data class RemoteSpec(val urlRel: String, val saveRel: String)
-    private data class ZipSpec(val keywords: List<String>, val saveRel: String)
-
-    /**
-     * 远程示例素材：音效 = JRead 核心 MP3；环境 = matrix24 WAV。
-     * B33.2 起由「音频库管理页」接全量（3514/6272/450 + BGM 1483）。
-     */
-    private val remoteSpecs = listOf(
-        // 音效（硬音效/拟音/戏内声源/主观声）
-        RemoteSpec(
-            "音效与背景音/音效/开门音效_door_open_05.mp3",
-            "sfx/硬音效/开门.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/关门声音效_door_close_01.mp3",
-            "sfx/硬音效/关门.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/茶杯摆放碗筷音效_cn_cha_bei_bai_fang_wan_kuai_01.mp3",
-            "sfx/拟音/茶杯摆放.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/兵器切音效_blade_clash_metal_02.mp3",
-            "sfx/硬音效/兵器交锋.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/寺庙钟声音效_bell_chime_03.mp3",
-            "sfx/戏内声源/钟声.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/心跳音效_cn_xin_tiao_01.mp3",
-            "sfx/主观声/心跳.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/脚步跑音效_footstep_run_05.mp3",
-            "sfx/拟音/脚步跑.mp3",
-        ),
-        RemoteSpec(
-            "音效与背景音/音效/喝茶声音效_cn_he_cha_sheng_01.mp3",
-            "sfx/拟音/喝茶.mp3",
-        ),
-        // 环境（matrix24 环境声；wav 大文件，下载后长期复用）
-        RemoteSpec(
-            "音效与背景音/环境声/ancient_shared_amb_市集日景_matrix24_l07_amb_a037_base_v01.wav",
-            "sfx/环境声/市集日景.wav",
-        ),
-        RemoteSpec(
-            "音效与背景音/环境声/ancient_shared_amb_竹林雨夜_matrix24_l07_amb_a045_base_v01.wav",
-            "sfx/环境声/竹林雨夜.wav",
-        ),
-        RemoteSpec(
-            "音效与背景音/环境声/general_amb_清晨鸟鸣_matrix24_l01_amb_amb118_a_v01.wav",
-            "sfx/环境声/清晨鸟鸣.wav",
-        ),
-        RemoteSpec(
-            "音效与背景音/环境声/ancient_shared_amb_客栈大堂_matrix24_l07_amb_a031_base_v01.wav",
-            "sfx/环境声/客栈大堂.wav",
-        ),
-    )
-
-    /** BGM 示例：从甲方下载的 BGM 库 zip 按关键字提取（不解压全库） */
-    private val zipSpecs = listOf(
-        ZipSpec(listOf("urban_battle_heroic_high_loop"), "bgm/战斗.m4a"),
-        ZipSpec(listOf("history_tension_tension_mid_loop"), "bgm/紧张.m4a"),
-        ZipSpec(listOf("romance_warm_warm_low_loop"), "bgm/温柔.m4a"),
-        ZipSpec(listOf("xianxia_tension_tension_high_loop"), "bgm/仙侠紧张.m4a"),
-    )
-
     fun libRoot(context: Context): File =
         File(File(TtsDirProvider.baseDir(context), "data"), "audio_lib")
 
@@ -160,101 +82,5 @@ object TmDemoAssets {
         return dir.listFiles().orEmpty().asSequence().flatMap { f ->
             if (f.isDirectory) walkFiles(f, depth + 1) else sequenceOf(f)
         }
-    }
-
-    private fun findBgmZip(): File? {
-        val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val direct = File(dlDir, "JRead_BGM_Library_Curated_20260701.zip")
-        if (direct.isFile) return direct
-        return dlDir.listFiles().orEmpty()
-            .firstOrNull { it.isFile && it.name.startsWith("JRead_BGM") && it.name.endsWith(".zip") }
-    }
-
-    /** 准备示例素材；返回概要文本。重复执行会跳过已有文件（增量补齐）。 */
-    suspend fun ensureDemoAssets(
-        context: Context,
-        log: (String) -> Unit = {},
-    ): String = withContext(Dispatchers.IO) {
-        val root = libRoot(context).apply { mkdirs() }
-        var ok = 0
-        var skip = 0
-        var fail = 0
-
-        for (spec in remoteSpecs) {
-            val out = File(root, spec.saveRel)
-            if (out.isFile && out.length() > 0) {
-                skip++
-                continue
-            }
-            val done = runCatching {
-                out.parentFile?.mkdirs()
-                val request = Request.Builder().url(CNB_RAW_BASE + spec.urlRel).build()
-                okHttpClient.newCall(request).await().use { resp ->
-                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                    val body = resp.body ?: error("empty body")
-                    body.byteStream().use { input ->
-                        out.outputStream().use { output -> input.copyTo(output) }
-                    }
-                }
-                if (out.length() <= 0) error("empty file")
-                true
-            }.getOrElse {
-                runCatching { out.delete() }
-                log("【四轨·素材】失败：${spec.saveRel}（${it.localizedMessage}）")
-                false
-            }
-            if (done) {
-                ok++
-                log("【四轨·素材】已下载：${spec.saveRel}")
-                runCatching { AudioLibrary.notifyFileAdded(context, out) }
-            } else {
-                fail++
-            }
-        }
-
-        // BGM：从 zip 提取示例曲
-        val zip = findBgmZip()
-        if (zip == null) {
-            log("【四轨·素材】未找到 BGM 库 zip（Download/JRead_BGM_Library_Curated_*.zip），跳过 BGM 示例")
-        } else {
-            runCatching {
-                ZipFile(zip).use { zf ->
-                    val entries = zf.entries().toList()
-                    for (spec in zipSpecs) {
-                        val out = File(root, spec.saveRel)
-                        if (out.isFile && out.length() > 0) {
-                            skip++
-                            continue
-                        }
-                        val hit = entries.firstOrNull { e ->
-                            !e.isDirectory &&
-                                spec.keywords.all { kw -> e.name.contains(kw) } &&
-                                (e.name.endsWith(".m4a") || e.name.endsWith(".mp3"))
-                        }
-                        if (hit == null) {
-                            log("【四轨·素材】zip 内未匹配到：${spec.keywords.joinToString("/")}")
-                            fail++
-                            continue
-                        }
-                        out.parentFile?.mkdirs()
-                        zf.getInputStream(hit).use { input ->
-                            out.outputStream().use { output -> input.copyTo(output) }
-                        }
-                        if (out.length() > 0) {
-                            ok++
-                            log("【四轨·素材】已提取：${spec.saveRel}")
-                            runCatching { AudioLibrary.notifyFileAdded(context, out) }
-                        } else {
-                            fail++
-                        }
-                    }
-                }
-            }.onFailure {
-                log("【四轨·素材】读取 BGM zip 失败：${it.localizedMessage}")
-                fail++
-            }
-        }
-
-        "示例素材准备完成：新增 $ok · 跳过 $skip · 失败 $fail"
     }
 }

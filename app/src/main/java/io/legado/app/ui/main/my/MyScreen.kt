@@ -209,13 +209,11 @@ fun MyScreen(
             ) {
                 ClickableSettingItem(
                     title = "模型管理",
-                    description = "模型库 / 模型分配 / 文本分析",
                     imageVector = Icons.Default.Tune,
                     onClick = { onNavigate(PrefClickEvent.OpenAiModelManage) }
                 )
                 ClickableSettingItem(
                     title = "AI 分析设置",
-                    description = "请求 / 提示词 / 取文与输出",
                     imageVector = Icons.Default.AutoAwesome,
                     onClick = { onNavigate(PrefClickEvent.OpenAiAnalysisSettings) }
                 )
@@ -226,31 +224,26 @@ fun MyScreen(
             ) {
                 ClickableSettingItem(
                     title = stringResource(R.string.aloud_config),
-                    description = "界面 / 播放行为 / 其他",
                     imageVector = Icons.Default.Settings,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudSettings) }
                 )
                 ClickableSettingItem(
                     title = stringResource(R.string.read_aloud_engines_and_voices),
-                    description = "音色插件 / 配置列表 / 内置引擎",
                     imageVector = Icons.Default.RecordVoiceOver,
                     onClick = { onNavigate(PrefClickEvent.OpenTtsServerCenter) }
                 )
                 ClickableSettingItem(
                     title = "音频库管理",
-                    description = "音效 / BGM / 环境素材（浏览 · 试听 · 扫描）",
                     imageVector = Icons.Default.LibraryMusic,
                     onClick = { onNavigate(PrefClickEvent.OpenAudioLibrary) }
                 )
                 ClickableSettingItem(
                     title = "角色与剧本",
-                    description = "角色管理 / 书籍管理 / 声线 / 改标签 / 章节管理",
                     imageVector = Icons.Default.TheaterComedy,
                     onClick = { onNavigate(PrefClickEvent.OpenRoleScriptManage) }
                 )
                 ClickableSettingItem(
                     title = stringResource(R.string.tts_cache_manage),
-                    description = "朗读分析流程 / 音频缓存",
                     imageVector = Icons.Default.BugReport,
                     onClick = { onNavigate(PrefClickEvent.OpenReadAloudLogs) }
                 )

@@ -132,7 +132,7 @@ object AudioRuleEngine {
                 Hit(
                     lane = lane, source = Source.USER,
                     keywords = listOf(u.name), soundIds = emptyList(),
-                    gain = 0.8f, delayMs = 0L,
+                    gain = 1.0f, delayMs = 0L,
                     holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
                     label = u.name,
                 )
@@ -147,7 +147,7 @@ object AudioRuleEngine {
                 Hit(
                     lane = lane, source = Source.BUILTIN,
                     keywords = listOf(r.label), soundIds = emptyList(),
-                    gain = 0.8f, delayMs = 0L,
+                    gain = 1.0f, delayMs = 0L,
                     holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
                     label = r.label,
                 )

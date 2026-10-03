@@ -41,8 +41,6 @@ data class ReadAloudSettings(
     val alAmbVolume: Int = 35,
     /** BGM 轨音量（0..100） */
     val alBgmVolume: Int = 25,
-    /** BGM 闪避：有台词出声时自动压低 */
-    val alDucking: Boolean = true,
     // ---- B33.3c：补缺闸门「滑条」（替代旧「音效密度」低/中/高；旧值一次性迁移）----
     /** 音效最小间隔（秒，0–30） */
     val alSfxMinGapS: Int = 6,
@@ -54,6 +52,4 @@ data class ReadAloudSettings(
     val alAmbDwellS: Int = 25,
     /** 每章自动补缺上限（条，0–50；0=关闭自动补缺） */
     val alChapterSynthCap: Int = 10,
-    /** B33.3e：BGM 起乐时环境让位（0=不处理 / 1=压低到 30% / 2=暂停） */
-    val alBgmAmbExclusive: Int = 1,
 )

@@ -1,10 +1,7 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -21,7 +18,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
@@ -29,16 +25,12 @@ import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.config.AppConfigStore
-import io.legado.app.help.readaloud.audio.AudioSynthQueue
-import io.legado.app.help.readaloud.audio.TmDemoAssets
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.SplicedColumnGroup
-import io.legado.app.ui.widget.components.checkBox.CheckboxItem
-import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
@@ -110,9 +102,6 @@ fun ReadAloudSettingsScreen(
     var showAlBgmCd by remember { mutableStateOf(false) }
     var showAlAmbDwell by remember { mutableStateOf(false) }
     var showAlChapCap by remember { mutableStateOf(false) }
-    var showAlAmbExcl by remember { mutableStateOf(false) }
-    var seedRunning by remember { mutableStateOf(false) }
-    var synthTesting by remember { mutableStateOf(false) }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -282,7 +271,7 @@ fun ReadAloudSettingsScreen(
                 SplicedColumnGroup(title = "音效与音乐（四轨）") {
                     TinySwitchSettingItem(
                         title = "四轨音效",
-                        description = "在朗读人声之上叠加 BGM / 环境底噪 / 音效 三条音轨（独立音量、自动闪避、场景联动）",
+                        description = "在朗读人声之上叠加 BGM / 环境底噪 / 音效 三条音轨（独立音量、场景联动）",
                         checked = st.alEnabled,
                         onCheckedChange = { v -> update { it.copy(alEnabled = v) } },
                     )
@@ -301,21 +290,6 @@ fun ReadAloudSettingsScreen(
                             title = "BGM 音量",
                             description = "${st.alBgmVolume}%",
                             onClick = { showAlBgm = true },
-                        )
-                        TinySwitchSettingItem(
-                            title = "BGM 自动闪避",
-                            description = "有台词出声时自动压低 BGM，空档恢复",
-                            checked = st.alDucking,
-                            onCheckedChange = { v -> update { it.copy(alDucking = v) } },
-                        )
-                        TinyClickableSettingItem(
-                            title = "BGM 起乐时环境",
-                            description = when (st.alBgmAmbExclusive) {
-                                2 -> "暂停环境底噪（BGM 结束恢复）"
-                                1 -> "压低环境底噪到 30%"
-                                else -> "不处理（两轨各自独立）"
-                            },
-                            onClick = { showAlAmbExcl = true },
                         )
                         TinyClickableSettingItem(
                             title = "音效最小间隔",
@@ -342,50 +316,7 @@ fun ReadAloudSettingsScreen(
                             description = if (st.alChapterSynthCap <= 0) "已关闭" else "${st.alChapterSynthCap} 条",
                             onClick = { showAlChapCap = true },
                         )
-                        TinyClickableSettingItem(
-                            title = if (seedRunning) "正在准备示例素材…" else "准备示例素材（四轨试听用）",
-                            description = "下载示例音效/环境（远程），并从 BGM 库 zip 提取 4 首示例曲到素材库",
-                            onClick = {
-                                if (!seedRunning) {
-                                    seedRunning = true
-                                    scope.launch {
-                                        val msg = runCatching {
-                                            TmDemoAssets.ensureDemoAssets(context.applicationContext) { line ->
-                                                AppLog.putAudio(line)
-                                            }
-                                        }.getOrElse { "示例素材准备失败：${it.localizedMessage}" }
-                                        seedRunning = false
-                                        context.toastOnUi(msg)
-                                    }
-                                }
-                            },
-                        )
-                        TinyClickableSettingItem(
-                            title = if (synthTesting) "正在合成…" else "合成测试（生成「铜铃轻响」）",
-                            description = "用真实合成队列生成一条音效 → 入库 → 验证「缺失→补缺」闭环",
-                            onClick = {
-                                if (!synthTesting) {
-                                    synthTesting = true
-                                    scope.launch {
-                                        val msg = runCatching {
-                                            AudioSynthQueue.selfTest(context.applicationContext, "铜铃轻响")
-                                        }.getOrElse { "合成测试失败：${it.localizedMessage}" }
-                                        synthTesting = false
-                                        context.toastOnUi(msg)
-                                    }
-                                }
-                            },
-                        )
                     }
-                }
-            }
-            item {
-                SplicedColumnGroup(title = "音频合成平台") {
-                    TinyClickableSettingItem(
-                        title = "已移至「AI 模型管理 → 模型库」",
-                        description = "音频合成平台（阶跃/SenseAudio/ElevenLabs）现于模型管理页统一配置；本页不再重复。",
-                        onClick = {},
-                    )
                 }
             }
             item {
@@ -592,48 +523,4 @@ fun ReadAloudSettingsScreen(
         onValueChange = { v -> update { it.copy(alChapterSynthCap = v.coerceIn(0, 50)) } },
         onDismissRequest = { showAlChapCap = false },
     )
-    AlAmbExclusiveSheet(
-        show = showAlAmbExcl,
-        current = st.alBgmAmbExclusive,
-        onSelect = { v ->
-            update { it.copy(alBgmAmbExclusive = v) }
-            showAlAmbExcl = false
-        },
-        onDismiss = { showAlAmbExcl = false },
-    )
-}
-
-/** B33.3e · 「BGM 起乐时环境」三态选择（不处理 / 压低 / 暂停） */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AlAmbExclusiveSheet(
-    show: Boolean,
-    current: Int,
-    onSelect: (Int) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismiss,
-        title = "BGM 起乐时环境",
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(
-                0 to "不处理（两轨各自独立）",
-                1 to "压低（环境衰减到 30%）",
-                2 to "暂停（BGM 结束后恢复）",
-            ).forEach { (value, label) ->
-                CheckboxItem(
-                    title = label,
-                    checked = current == value,
-                    onCheckedChange = { onSelect(value) },
-                )
-            }
-        }
-    }
 }

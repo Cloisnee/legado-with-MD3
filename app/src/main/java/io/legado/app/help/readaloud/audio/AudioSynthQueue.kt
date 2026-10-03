@@ -410,48 +410,6 @@ class AudioSynthQueue(
                 true
             }.getOrDefault(false)
         }
-
-        /**
-         * 「合成测试」：用真实派单链路生成一条音效（默认「铜铃轻响」）并入库。
-         * 返回可直接展示的结果文案（成功含来源与落库路径）。
-         */
-        suspend fun selfTest(context: Context, keyword: String = "铜铃轻响"): String =
-            withContext(Dispatchers.IO) {
-                val app = context.applicationContext as Application
-                val lane = SynthLane.SFX
-                val repo = AiModelRepository(app)
-                val refs = runCatching { repo.queueRefs(lane.assignKey) }.getOrDefault(emptyList())
-                if (refs.isEmpty()) {
-                    return@withContext "未分配「合成·${lane.label}」模型：请到 模型管理 → 分配 里添加"
-                }
-                var lastError = ""
-                refs.forEachIndexed { index, ref ->
-                    val started = System.currentTimeMillis()
-                    val result = AudioSynthClients.generate(ref.provider, ref.model, lane, keyword)
-                    val gen = result.getOrNull()
-                    if (gen != null) {
-                        val rel = runCatching {
-                            saveGeneratedAudio(
-                                app, lane, keyword, gen.bytes,
-                                source = "${ref.provider.name}/${ref.model.name}",
-                            )
-                        }.getOrElse { "入库失败：${it.localizedMessage}" }
-                        val sec = (System.currentTimeMillis() - started) / 1000.0
-                        if (rel.startsWith("入库失败")) {
-                            AppLog.putAudio("【合成·测试】入库失败：$rel")
-                            return@withContext "❌ 已生成但${rel}"
-                        }
-                        AppLog.putAudio("【合成·测试】成功：$keyword ← ${ref.provider.name}（${sec}s）→ $rel")
-                        return@withContext "✅ 已生成：${ref.provider.name}（${"%.1f".format(sec)}s）→ audio_lib/$rel"
-                    }
-                    lastError = result.exceptionOrNull()?.localizedMessage ?: "未知错误"
-                    if (index < refs.lastIndex) {
-                        AppLog.putAudio("【合成·测试】${ref.provider.name} 失败（$lastError），换下一个…")
-                    }
-                }
-                AppLog.putAudio("【合成·测试】失败：$lastError")
-                "❌ 合成失败：$lastError"
-            }
     }
 }
 
