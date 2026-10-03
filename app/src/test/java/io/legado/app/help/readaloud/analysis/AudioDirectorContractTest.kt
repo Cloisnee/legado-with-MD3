@@ -113,4 +113,20 @@ class AudioDirectorContractTest {
         assertEquals(1, plan.sfx[0].para)
         assertEquals(5, plan.sfx[1].para)
     }
+
+    @Test
+    fun `音效 pos 映射为句内比例`() {
+        val plan = AudioDirectorContract.validate(
+            root(
+                """
+                {"para":2,"type":"sfx","tag":"推门声","desc":"木门推开","pos":"中"},
+                {"para":3,"type":"sfx","tag":"剑鸣","desc":"剑出鞘","pos":"乱写"}
+                """.trimIndent()
+            ),
+            paraCount = 10,
+        ).data
+        assertNotNull(plan)
+        assertEquals(0.5f, plan!!.sfx[0].posRatio, 0.0001f)
+        assertEquals(0f, plan.sfx[1].posRatio, 0.0001f)
+    }
 }

@@ -2,6 +2,7 @@ package io.legado.app.help.readaloud.analysis
 
 import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanItem
+import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import org.json.JSONObject
 
@@ -125,6 +126,7 @@ object AudioDirectorContract {
                             tag = tag,
                             desc = desc,
                             delayMs = o.optLong("delayMs", 0L).coerceIn(0L, 3000L),
+                            posRatio = AudioPositions.ratioOf(o.optString("pos")),
                             anchor = anchor,
                         )
                     }

@@ -72,6 +72,8 @@ class AudioLaneEngine(
         val sfxCooldownMs: Long = 60_000L,
         val bgmCooldownMs: Long = 150_000L,
         val ambMinDwellMs: Long = 25_000L,
+        /** B34.2·⑨：读速估算（字/秒；句内位置→延迟换算用） */
+        val charsPerSec: Float = 4.2f,
     )
 
     /** media3 版音频属性（ExoPlayer 轨用） */
@@ -150,8 +152,16 @@ class AudioLaneEngine(
             sfxCooldownMs = settings.alSfxCooldownS.coerceIn(0, 300) * 1000L,
             bgmCooldownMs = settings.alBgmCooldownS.coerceIn(0, 600) * 1000L,
             ambMinDwellMs = settings.alAmbDwellS.coerceIn(0, 120) * 1000L,
+            charsPerSec = estimateCharsPerSec(settings),
         )
         if (!config.enabled) resetAll()
+    }
+
+    /** B34.2·⑨：读速估算（字/秒）——基准 × 语速档；v1 估算（实际音频时长校准留 v2） */
+    private fun estimateCharsPerSec(settings: ReadAloudSettings): Float {
+        val rate = settings.ttsSpeechRate.coerceIn(0, 10)
+        val factor = if (settings.ttsFollowSys) 1f else 0.5f + rate / 10f
+        return BASE_CHARS_PER_SEC * factor
     }
 
     /** 换章/重新播放：全轨淡出重置（新章的行会在 onCue 里重新驱动） */
@@ -208,7 +218,7 @@ class AudioLaneEngine(
         // B33.4b：本章有 Ai 计划 → 计划层接管（无计划=规则层；「四条件兜底」天然成立）
         val plan = audioPlan
         if (plan != null && !isTitle && para > 0) {
-            driveCueByPlan(index, para)
+            driveCueByPlan(index, para, text)
             return
         }
         // 1) 环境：命中新场景 → 切换（最短驻留防抖）；规则层 = 自定 > 示例 > CNB 意图
@@ -260,7 +270,7 @@ class AudioLaneEngine(
                 val now = System.currentTimeMillis()
                 lastSfxAt = now
                 lastSfxByKeyword[keyword] = now
-                if (playSfx(pick)) {
+                if (playSfx(pick, text.length)) {
                     laneLog(index, "音效=$keyword（${pick.hit.source.label}）")
                 }
             } else {
@@ -270,7 +280,7 @@ class AudioLaneEngine(
     }
 
     /** B33.4b：Ai 计划驱动（环境切换 / BGM 起止 / 音效点事件；闸门与规则层同款，保证联动与防轰炸） */
-    private fun driveCueByPlan(index: Int, para: Int) {
+    private fun driveCueByPlan(index: Int, para: Int, text: String) {
         // 1) 环境：计划切换点（最短驻留防抖与规则层一致）
         planAmbByPara[para]?.let { item ->
             val keyword = item.tag
@@ -291,6 +301,7 @@ class AudioLaneEngine(
         val bgmItem = planBgmByPara[para]
         if (bgmItem != null) {
             val keyword = AudioBgmPicker.pickLocal(appContext, AudioBgmPicker.queryOf(bgmItem))?.asset?.name
+                ?: AudioLibrary.resolve(appContext, bgmItem.tag)?.asset?.name
                 ?: bgmItem.displayName
             if (keyword != desiredBgm) {
                 val now = System.currentTimeMillis()
@@ -329,7 +340,10 @@ class AudioLaneEngine(
             val now = System.currentTimeMillis()
             lastSfxAt = now
             lastSfxByKeyword[keyword] = now
-            if (fireSfx(resolved, gain = 1.0f, delayMs = item.delayMs)) {
+            // B34.2·⑨：显式延迟优先；否则按句内位置（AI 前/中/后或规则命中位）换算
+            val delayMs = item.delayMs.takeIf { it > 0 }
+                ?: AudioPositions.delayMs(text.length, item.posRatio, config.charsPerSec)
+            if (fireSfx(resolved, gain = 1.0f, delayMs = delayMs)) {
                 laneLog(index, "音效=$keyword（Ai导演）")
             }
         }
@@ -472,13 +486,16 @@ class AudioLaneEngine(
         return true
     }
 
-    private fun playSfx(pick: AudioRuleEngine.Picked): Boolean {
+    private fun playSfx(pick: AudioRuleEngine.Picked, textLen: Int): Boolean {
         val resolved = pick.resolved ?: AudioRuleEngine.resolveHit(appContext, pick.hit)
         if (resolved == null) {
             markMissing("音效", pick.hit.label)
             return false
         }
-        return fireSfx(resolved, pick.hit.gain, pick.hit.delayMs)
+        // B34.2·⑨：显式延迟优先；否则按句内命中位置换算
+        val delayMs = pick.hit.delayMs.takeIf { it > 0 }
+            ?: AudioPositions.delayMs(textLen, pick.hit.posRatio, config.charsPerSec)
+        return fireSfx(resolved, pick.hit.gain, delayMs)
     }
 
     /** B33.4b：播放体（规则层 pick 与计划条目共用） */
@@ -728,6 +745,9 @@ class AudioLaneEngine(
     }
 
     private companion object {
+        /** B34.2·⑨：中文朗读基准读速（字/秒，估算） */
+        const val BASE_CHARS_PER_SEC = 4.2f
+
         /** 循环轨解析失败重试间隔（ms） */
         const val MISS_RETRY_MS = 10_000L
 

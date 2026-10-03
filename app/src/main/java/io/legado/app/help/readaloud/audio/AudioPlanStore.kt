@@ -18,6 +18,8 @@ data class AudioPlanItem(
     val tag: String = "",
     val desc: String = "",
     val delayMs: Long = 0L,
+    /** B34.2：句内触发位置比例（0=句首；AI 前/中/后或规则命中位换算而来） */
+    val posRatio: Float = 0f,
     val hold: Int = 0,
     val profile: String = "",
     val mood: String = "",
@@ -128,6 +130,7 @@ object AudioPlanStore {
                 if (item.tag.isNotBlank()) put("tag", item.tag)
                 if (item.desc.isNotBlank()) put("desc", item.desc)
                 if (item.delayMs > 0) put("delayMs", item.delayMs)
+                if (item.posRatio > 0f) put("posRatio", item.posRatio.toDouble())
                 if (item.hold > 0) put("hold", item.hold)
                 if (item.profile.isNotBlank()) put("profile", item.profile)
                 if (item.mood.isNotBlank()) put("mood", item.mood)
@@ -159,6 +162,7 @@ object AudioPlanStore {
                 tag = o.optString("tag"),
                 desc = o.optString("desc"),
                 delayMs = o.optLong("delayMs"),
+                posRatio = o.optDouble("posRatio", 0.0).toFloat(),
                 hold = o.optInt("hold"),
                 profile = o.optString("profile"),
                 mood = o.optString("mood"),

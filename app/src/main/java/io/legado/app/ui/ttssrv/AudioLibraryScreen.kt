@@ -30,11 +30,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -315,6 +317,27 @@ fun AudioLibraryScreen(
     // B34：全表时间序下不提供拖排（跨类自定义序无持久化语义）；分类栏照旧
     val canReorder = (sortMode == "asc" || sortMode == "desc") && selectedCategory != null
     val listState = rememberLazyListState()
+
+    // B34.2·⑪：返回保位——显式记忆滚动（返回重建时「加载中」占位会把恢复位置钳到 0）
+    var savedScrollIndex by rememberSaveable { mutableIntStateOf(0) }
+    var savedScrollOffset by rememberSaveable { mutableIntStateOf(0) }
+    var scrollRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (idx, off) ->
+                savedScrollIndex = idx
+                savedScrollOffset = off
+            }
+    }
+    LaunchedEffect(loading, shownItems.size) {
+        if (!loading && shownItems.isNotEmpty() && !scrollRestored && savedScrollIndex > 0) {
+            scrollRestored = true
+            listState.scrollToItem(
+                savedScrollIndex.coerceAtMost(shownItems.lastIndex),
+                savedScrollOffset,
+            )
+        }
+    }
     val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
         moveLocal(from.index, to.index)
         hapticFeedback.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)

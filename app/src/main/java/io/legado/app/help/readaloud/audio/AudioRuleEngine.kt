@@ -31,6 +31,8 @@ object AudioRuleEngine {
         val soundIds: List<String>,
         val gain: Float,
         val delayMs: Long,
+        /** B34.2：句内触发位置比例（0=句首；命中位/前中后换算而来） */
+        val posRatio: Float = 0f,
         val holdCues: Int,
         /** 缺失上报用的展示名 */
         val label: String,
@@ -61,6 +63,13 @@ object AudioRuleEngine {
             if (isTitle && !scopeTitle) return false
             if (!isTitle && !scopeContent) return false
             return if (regex != null) regex.containsMatchIn(text) else text.contains(literal.orEmpty())
+        }
+
+        /** B34.2：命中起点（供句内触发位置换算；未命中 -1） */
+        fun matchIndex(text: String): Int {
+            if (regex != null) return regex.find(text)?.range?.first ?: -1
+            val lit = literal ?: return -1
+            return text.indexOf(lit)
         }
     }
 
@@ -133,6 +142,7 @@ object AudioRuleEngine {
                     lane = lane, source = Source.USER,
                     keywords = listOf(u.name), soundIds = emptyList(),
                     gain = 1.0f, delayMs = 0L,
+                    posRatio = AudioPositions.ratioOfMatch(u.matchIndex(text), text.length),
                     holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
                     label = u.name,
                 )
@@ -142,14 +152,15 @@ object AudioRuleEngine {
         // 章标题行只认用户显式规则（示例/意图层不参与）
         if (isTitle) return out
         // 2) 内置规则包（mingwuyan 音效 / 环境·BGM 词典；示例规则已退役）
-        AudioBuiltinRules.hit(lane, text)?.let { r ->
+        AudioBuiltinRules.hit(lane, text)?.let { m ->
             out.add(
                 Hit(
                     lane = lane, source = Source.BUILTIN,
-                    keywords = listOf(r.label), soundIds = emptyList(),
+                    keywords = listOf(m.rule.label), soundIds = emptyList(),
                     gain = 1.0f, delayMs = 0L,
+                    posRatio = AudioPositions.ratioOfMatch(m.start, text.length),
                     holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
-                    label = r.label,
+                    label = m.rule.label,
                 )
             )
         }
@@ -162,12 +173,16 @@ object AudioRuleEngine {
     internal fun intentHits(data: RuleData, lane: DemoLanes.Lane, text: String): List<Hit> {
         val matches = data.matcher.matchAll(text)
         if (matches.isEmpty()) return emptyList()
-        // intent 下标 → 最长命中长度
+        // intent 下标 → 最长命中长度 + 命中起点（B34.2：位置换算用）
         val best = HashMap<Int, Int>()
+        val bestStart = HashMap<Int, Int>()
         for (m in matches) {
             val ii = data.intentIndexByPattern.getOrNull(m.patternIndex) ?: continue
             val prev = best[ii]
-            if (prev == null || m.length > prev) best[ii] = m.length
+            if (prev == null || m.length > prev) {
+                best[ii] = m.length
+                bestStart[ii] = m.start
+            }
         }
         if (best.isEmpty()) return emptyList()
         val ordered = best.entries.sortedWith(
@@ -198,7 +213,9 @@ object AudioRuleEngine {
                 Hit(
                     lane = lane, source = Source.INTENT,
                     keywords = names.take(8), soundIds = sids,
-                    gain = intent.volume, delayMs = 0L, holdCues = 0,
+                    gain = intent.volume, delayMs = 0L,
+                    posRatio = AudioPositions.ratioOfMatch(bestStart[ii] ?: 0, text.length),
+                    holdCues = 0,
                     label = label, intentId = intent.id,
                 )
             )

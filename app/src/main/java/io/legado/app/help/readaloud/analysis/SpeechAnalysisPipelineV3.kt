@@ -18,6 +18,7 @@ import io.legado.app.utils.AliasTokens
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanStore
+import io.legado.app.help.readaloud.audio.AudioPrefill
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -284,10 +285,17 @@ class SpeechAnalysisPipelineV3(
    mood 从【平静/舒缓/温馨/悲情/凄凉/紧张/压迫感/悬疑/热血/史诗/幽默/轻快】选一；
    intensity 从【低/中/高】选一。
 
+【本地建议审核】
+输入中形如〔音效建议：X〕〔环境建议：X〕〔BGM建议：X〕的是本地词典初筛结果（名字来自本地/远程素材库）：
+- 合理 → 尽量原样采用建议名（命中率最高）；
+- 不准确 → 改成更准确的短名；
+- 多余 → 不输出；
+- 有遗漏 → 按上面的排查方式补充（拟音全覆盖）。
+
 【排布原则】
 - 环境：只在场景变化处切换并各标一次（一章约 1~3 处）；到下次切换或章末自然结束。
 - BGM：只在关键剧情/情绪处起乐（一章约 0~2 处），宁缺毋滥；hold＝从本段起持续的行数（8~40）。
-- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复。
+- 音效：按上面的排查方式全面覆盖；同一动作不要逐句重复；每条音效请附 pos（前/中/后）标注它在句内的触发位置。
 - 稳定优先：同类场景用同类词，不要刻意换新说法。
 
 【红线】
@@ -297,10 +305,10 @@ class SpeechAnalysisPipelineV3(
 【输出】只输出纯 JSON：
 {"items":[
  {"para":12,"anchor":"推开房门","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
- {"para":18,"anchor":"茶杯摔在地上","type":"sfx","tag":"茶杯碎裂","desc":"瓷杯摔在石板地上碎裂的清脆声","delayMs":200},
+ {"para":18,"anchor":"茶杯摔在地上","type":"sfx","tag":"茶杯碎裂","desc":"瓷杯摔在石板地上碎裂的清脆声","pos":"中"},
  {"para":30,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
 ]}
-字段：para/type 必填；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效可带 delayMs（0~2000 毫秒）；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（6~20 字原文片段，便于校对）。
+字段：para/type 必填；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效请带 pos（前/中/后＝句内触发位置；特殊时可用 delayMs 0~2000 毫秒覆盖）；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（6~20 字原文片段，便于校对）。
 """.trimIndent()
     }
 
@@ -425,12 +433,17 @@ class SpeechAnalysisPipelineV3(
         }
         var segments = assemble(paragraphs, ranges)
 
+        // B34.2·③：本地词典预插标记（导演输入注入建议；兜底章直接用其为计划）
+        val prefills: List<List<AudioLaneScan.Suggestion>> = runCatching {
+            AudioLaneScan.suggest(segments.map { it.text })
+        }.getOrNull() ?: List(segments.size) { emptyList() }
+
         // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = renderNumbered(segments)
         // B33.4b：音频导演并发发起（编号文本就绪 → 与第2阶段/情绪并发；锚点=段序号）
         val directorJob = if (directorSkipReason.isEmpty() && segments.isNotEmpty()) {
-            val directorNumbered = renderDirectorNumbered(segments)
+            val directorNumbered = renderDirectorNumbered(segments, prefills)
             pipelineScope.async {
                 callAudioDirector(directorNumbered, segments.size, cfg, directorRefs, chapterLabel)
             }
@@ -499,6 +512,16 @@ class SpeechAnalysisPipelineV3(
                 }
                 directorJob.isActive -> logLaneFallback("Ai超时", paragraphs)
                 else -> logLaneFallback("Ai失败", paragraphs)
+            }
+        } else {
+            // B34.2·③-B：首章/非连续/未设置Ai → 本地建议直接成为章节计划（第4阶段+情绪后写入）
+            val rulesPlan = AudioPrefill.buildRulesPlan(prefills)
+            if (rulesPlan.itemCount > 0) {
+                audioPlan = rulesPlan.copy(scriptHash = contentHash)
+                AppLog.putAnalysis(
+                    "【分析V3·${chapterLabel}·音效与背景音】本地计划已写入剧本：${rulesPlan.countsText()}。"
+                )
+                runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
             }
         }
 
@@ -1646,11 +1669,17 @@ class SpeechAnalysisPipelineV3(
         }
     }
 
-    /** 音频导演输入：全段顺序编号 [1..M]（=剧本行/播放队列段序号） */
-    private fun renderDirectorNumbered(segments: List<ChapterSpeechSegment>): String {
+    /** 音频导演输入：全段顺序编号 [1..M]（=剧本行/播放队列段序号；B34.2 附本地建议标记） */
+    private fun renderDirectorNumbered(
+        segments: List<ChapterSpeechSegment>,
+        prefills: List<List<AudioLaneScan.Suggestion>>,
+    ): String {
         val sb = StringBuilder()
         segments.forEachIndexed { i, s ->
-            sb.append("[").append(i + 1).append("] ").append(s.text.trim()).append("\n")
+            sb.append("[").append(i + 1).append("] ").append(s.text.trim())
+            val marks = AudioPrefill.markersFor(prefills.getOrElse(i) { emptyList() })
+            if (marks.isNotEmpty()) sb.append(marks)
+            sb.append("\n")
         }
         return sb.toString().trimEnd('\n')
     }

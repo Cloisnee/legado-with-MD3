@@ -6,6 +6,7 @@ import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
 import io.legado.app.data.appDb
 import com.github.jing332.tts.store.TtsConfigStore
+import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
@@ -70,8 +71,9 @@ data class ScriptLineRow(
 class ReadAloudDataRepository(private val app: Application) {
 
     init {
-        // B33.4b：向音频计划存储转交应用上下文（分析侧无 Context 场景写计划用）
+        // B33.4b/B34.2：向音频计划存储与规则扫描转交应用上下文（分析侧无 Context 场景使用）
         AudioPlanStore.remember(app)
+        AudioLaneScan.remember(app)
     }
 
     companion object {

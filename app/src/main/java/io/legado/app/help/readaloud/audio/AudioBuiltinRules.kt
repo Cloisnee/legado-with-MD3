@@ -47,8 +47,8 @@ object AudioBuiltinRules {
             }
         }
 
-        /** 一行 → 首个命中规则（关键词候选 + 常跑位，按规则顺序） */
-        fun hit(text: String): Rule? {
+        /** 一行 → 首个命中规则+起点（关键词候选 + 常跑位，按规则顺序） */
+        fun hit(text: String): PackMatch? {
             if (rules.isEmpty()) return null
             if (matcher == null && alwaysIndices.isEmpty()) return null
             val cand = java.util.TreeSet<Int>()
@@ -58,11 +58,15 @@ object AudioBuiltinRules {
             alwaysIndices.forEach { cand.add(it) }
             for (i in cand) {
                 val r = rules.getOrNull(i) ?: continue
-                if (r.regex.containsMatchIn(text)) return r
+                val m = r.regex.find(text) ?: continue
+                return PackMatch(r, m.range.first)
             }
             return null
         }
     }
+
+    /** 命中结果（B34.2：附命中起点，供句内触发位置换算） */
+    class PackMatch(val rule: Rule, val start: Int)
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
@@ -120,7 +124,7 @@ object AudioBuiltinRules {
     }
 
     /** 引擎用：按轨命中（未加载/无命中返回 null；解析素材由引擎完成） */
-    fun hit(lane: DemoLanes.Lane, text: String): Rule? = when (lane) {
+    fun hit(lane: DemoLanes.Lane, text: String): PackMatch? = when (lane) {
         DemoLanes.Lane.SFX -> mingwuyan?.hit(text)
             ?: adult?.takeIf { adultEnabled() }?.hit(text)
         DemoLanes.Lane.AMBIENCE -> env?.hit(text)

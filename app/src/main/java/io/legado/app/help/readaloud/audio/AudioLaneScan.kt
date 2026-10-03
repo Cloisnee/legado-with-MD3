@@ -47,6 +47,36 @@ object AudioLaneScan {
         return "bgm${counts[SynthLane.BGM] ?: 0}条、环境声${counts[SynthLane.AMB] ?: 0}条、音效${counts[SynthLane.SFX] ?: 0}条"
     }
 
+    // ------------------------------------------------------------ B34.2·③ 预插标记建议
+
+    /** 逐段建议（ratio=命中位；BGM 无位置=0） */
+    data class Suggestion(val lane: SynthLane, val label: String, val ratio: Float)
+
+    /** 无 Context 版（分析侧；未就绪返回 null） */
+    suspend fun suggest(texts: List<String>): List<List<Suggestion>>? {
+        val ctx = appCtx ?: return null
+        return suggest(ctx, texts)
+    }
+
+    /** 逐段建议：每段每轨至多 1 个（与兜底口径一致；共享规则/词典/意图链） */
+    suspend fun suggest(context: Context, texts: List<String>): List<List<Suggestion>> =
+        withContext(Dispatchers.Default) {
+            runCatching { AudioBuiltinRules.ensureLoaded(context.applicationContext) }
+            texts.map { raw ->
+                val text = raw.trim()
+                if (text.length < 2) {
+                    emptyList()
+                } else {
+                    buildList {
+                        for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
+                            val pick = AudioRuleEngine.pick(context, lane, text) ?: continue
+                            add(Suggestion(toSynth(lane), pick.hit.label, pick.hit.posRatio))
+                        }
+                    }
+                }
+            }
+        }
+
     private fun toSynth(lane: DemoLanes.Lane): SynthLane = when (lane) {
         DemoLanes.Lane.AMBIENCE -> SynthLane.AMB
         DemoLanes.Lane.BGM -> SynthLane.BGM

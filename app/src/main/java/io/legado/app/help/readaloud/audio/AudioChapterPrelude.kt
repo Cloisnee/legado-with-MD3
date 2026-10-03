@@ -243,7 +243,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.BGM,
                         label = item.displayName,
-                        resolved = AudioBgmPicker.pickLocal(appContext, q) != null,
+                        resolved = AudioBgmPicker.pickLocal(appContext, q) != null ||
+                            AudioLibrary.resolve(appContext, item.tag) != null,
                         desc = item.desc,
                         bgm = q,
                     )
