@@ -35,7 +35,7 @@ class AudioDirectorContractTest {
         ).data
         assertNotNull(items)
         assertEquals(3, items!!.size)
-        val amb = items.first { it.type == "ambience" }
+        val amb = items.first { it.type == "amb" }
         assertEquals(1, amb.para)
         assertEquals(2, amb.frag)
         val sfx = items.first { it.type == "sfx" }

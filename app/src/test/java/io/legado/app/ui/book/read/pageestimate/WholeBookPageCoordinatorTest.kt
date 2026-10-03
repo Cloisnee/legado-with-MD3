@@ -272,7 +272,15 @@ class WholeBookPageCoordinatorTest {
         coordinator.requestEstimate(config, BOOK_ID) {
             listOf(ChapterLengthInfo(0, "chapter-0", 10, contentLength = 100, contentHash = 99L))
         }
-        awaitState(coordinator)
+        // 加固等待：状态可能先于「陈旧精确页数清除」发布（慢机上原断言存在竞态）
+        withTimeout(5_000) {
+            while (coordinator.getState(0, 0)?.totalPages != 10 ||
+                coordinator.getState(0, 0)?.currentChapterExact == true ||
+                exactStore.values.isNotEmpty()
+            ) {
+                delay(10)
+            }
+        }
 
         assertEquals(10, coordinator.getState(0, 0)?.totalPages)
         assertFalse(coordinator.getState(0, 0)?.currentChapterExact == true)
