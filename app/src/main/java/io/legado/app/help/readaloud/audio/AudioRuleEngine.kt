@@ -2,9 +2,6 @@ package io.legado.app.help.readaloud.audio
 
 import android.content.Context
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.PreferKey
-import io.legado.app.help.config.AppConfigStore
-import io.legado.app.help.readaloud.audio.AudioRuleStore.RuleData
 
 /**
  * B33.3d · 音效规则层（兜底驱动）匹配器；B33.3e：条目「匹配规则」实装（正则/字面 + 标题/正文范围）。
@@ -18,8 +15,6 @@ object AudioRuleEngine {
 
     enum class Source(val label: String) {
         USER("条目规则"),
-        BUILTIN("内置规则"),
-        INTENT("意图规则"),
     }
 
     data class Hit(
@@ -42,7 +37,6 @@ object AudioRuleEngine {
     data class Picked(val hit: Hit, val resolved: AudioLibrary.ResolvedAsset?)
 
     private const val MAX_CANDIDATES = 10
-    private const val MAX_INTENT_HITS = 6
     private const val USER_RULES_TTL_MS = 30_000L
 
     /** 用户 BGM 规则默认持续行数（命中后持续 N 行淡出） */
@@ -116,8 +110,6 @@ object AudioRuleEngine {
         else -> DemoLanes.Lane.SFX
     }
 
-    internal fun laneForType(type: String): DemoLanes.Lane =
-        if (type == "scene") DemoLanes.Lane.AMBIENCE else DemoLanes.Lane.SFX
 
     // ------------------------------------------------------------ 匹配
 
@@ -154,99 +146,23 @@ object AudioRuleEngine {
         }
         // 章标题行只认用户显式规则（示例/意图层不参与）
         if (isTitle) return out
-        // 2) 内置规则包（mingwuyan 音效 / 环境·BGM 词典；示例规则已退役）
-        AudioBuiltinRules.hit(lane, text)?.let { m ->
-            out.add(
-                Hit(
-                    lane = lane, source = Source.BUILTIN,
-                    keywords = listOf(m.rule.label), soundIds = emptyList(),
-                    gain = 1.0f, delayMs = 0L,
-                    posRatio = AudioPositions.ratioOfMatch(m.start, text.length),
-                    holdCues = if (lane == DemoLanes.Lane.BGM) USER_BGM_HOLD_CUES else 0,
-                    label = m.rule.label,
-                )
-            )
-        }
-        // 3) CNB 意图规则（AC 命中 → 类型分道 → 排序）
-        val data = AudioRuleStore.current() ?: return out
-        out.addAll(intentHits(data, lane, text))
+        // P1.2：内置词典 / CNB 意图已退役（词网接管）——仅用户条目规则
         return out.take(MAX_CANDIDATES)
     }
 
-    internal fun intentHits(data: RuleData, lane: DemoLanes.Lane, text: String): List<Hit> {
-        val matches = data.matcher.matchAll(text)
-        if (matches.isEmpty()) return emptyList()
-        // intent 下标 → 最长命中长度 + 命中起点（B34.2：位置换算用）
-        val best = HashMap<Int, Int>()
-        val bestStart = HashMap<Int, Int>()
-        for (m in matches) {
-            val ii = data.intentIndexByPattern.getOrNull(m.patternIndex) ?: continue
-            val prev = best[ii]
-            if (prev == null || m.length > prev) {
-                best[ii] = m.length
-                bestStart[ii] = m.start
-            }
-        }
-        if (best.isEmpty()) return emptyList()
-        val ordered = best.entries.sortedWith(
-            compareByDescending<Map.Entry<Int, Int>> { data.intents[it.key].priority }
-                .thenByDescending { it.value }
-                .thenBy { it.key }
-        )
-        val hits = ArrayList<Hit>()
-        for ((ii, _) in ordered) {
-            if (hits.size >= MAX_INTENT_HITS) break
-            val intent = data.intents.getOrNull(ii) ?: continue
-            if (laneForType(intent.type) != lane) continue
-            // B33.2c：18+ 分类开关（关=按 tagFilters 排除；开=不排除）
-            val adultEnabled = runCatching {
-                AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true
-            }.getOrDefault(false)
-            val excluded = if (adultEnabled) emptySet() else data.excludedSoundIds
-            val sids = data.soundIdsByIntent[intent.id].orEmpty()
-                .filter { it.isNotBlank() && it !in excluded }
-            if (sids.isEmpty()) continue
-            val names = LinkedHashSet<String>()
-            sids.forEach { sid ->
-                val meta = data.soundById[sid]
-                if (meta != null) names.addAll(meta.names) else names.add(sid)
-            }
-            val label = data.soundById[sids.first()]?.name ?: sids.first()
-            hits.add(
-                Hit(
-                    lane = lane, source = Source.INTENT,
-                    keywords = names.take(8), soundIds = sids,
-                    gain = intent.volume, delayMs = 0L,
-                    posRatio = AudioPositions.ratioOfMatch(bestStart[ii] ?: 0, text.length),
-                    holdCues = 0,
-                    label = label, intentId = intent.id,
-                )
-            )
-        }
-        return hits
-    }
 
     // ------------------------------------------------------------ 解析到本地素材
 
-    fun resolveHit(context: Context, hit: Hit): AudioLibrary.ResolvedAsset? {
-        val resolved = resolveHitInner(context, hit)
-        // B33.4a：内置规则命中且解析成功 → 命中即回填（合并正则写入条目「匹配规则」）
-        if (resolved != null && hit.source == Source.BUILTIN) {
-            runCatching { AudioBuiltinRules.tryBackfill(context, hit.lane, hit.label, resolved.asset) }
-        }
-        return resolved
-    }
+    fun resolveHit(context: Context, hit: Hit): AudioLibrary.ResolvedAsset? =
+        resolveHitInner(context, hit)
 
     private fun resolveHitInner(context: Context, hit: Hit): AudioLibrary.ResolvedAsset? {
         // 1) soundId 直连（下载条目 sidecar 自带 soundId）
         for (sid in hit.soundIds) {
             AudioLibrary.resolveBySoundId(context, sid)?.let { return it }
         }
-        // 2) 别名表 → soundId → 直连；3) 名称链（精确 → 别名 → 包含）
+        // 2) 名称链（精确 → 别名 → 包含）
         for (kw in hit.keywords) {
-            AudioRuleStore.current()?.soundIdOfAlias(kw)?.let { sid ->
-                AudioLibrary.resolveBySoundId(context, sid)?.let { return it }
-            }
             AudioLibrary.resolve(context, kw)?.let { return it }
         }
         return null

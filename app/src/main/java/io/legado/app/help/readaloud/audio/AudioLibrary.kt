@@ -701,17 +701,10 @@ object AudioLibrary {
         runCatching { file.relativeTo(TmDemoAssets.libRoot(context)).path.replace(File.separatorChar, '/') }
             .getOrDefault(file.name)
 
-    /** B33.2c：无 sidecar 后，按名称在规则声音表反查（soundId + 别名），尽力恢复联动 */
+    /** P1.2：按名称在词网反查（soundId + 别名） */
     private fun recoverByName(name: String): Pair<String, List<String>> {
-        val data = AudioRuleStore.current() ?: return "" to emptyList()
-        val sid = runCatching { data.soundIdByName(name) }.getOrDefault("")
-        if (sid.isBlank()) return "" to emptyList()
-        val aliases = data.namesOfSound(sid)
-            .asSequence()
-            .filter { it.isNotBlank() && it != name }
-            .take(8)
-            .toList()
-        return sid to aliases
+        val asset = runCatching { AudioNetStore.lookup(name) }.getOrNull() ?: return "" to emptyList()
+        return asset.id to asset.aliases.filter { it.isNotBlank() && it != name }.take(8)
     }
 
     private fun scanInternal(context: Context, old: Map<String, AudioAsset>): Map<String, AudioAsset> {

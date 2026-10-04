@@ -126,12 +126,9 @@ class AudioLaneEngine(
     private var bgmMissRetryAt: Long = 0L
 
     init {
-        // B33.3d：规则数据预热（失败静默回退示例规则）+ 素材库索引预热
-        runCatching { AudioRuleStore.warmUp(appContext) }
+        // 素材库索引预热
         runCatching { AudioLibrary.warmUp(appContext) }
-        // B33.4a：内置规则包预热（mingwuyan 音效 / 环境·BGM 词典）
-        runCatching { AudioBuiltinRules.warmUp(appContext) }
-        // P1：词网预热（索引 + 本地加词）
+        // P1：词网预热（索引 + 本地加词；顺带清理旧链缓存）
         runCatching { AudioNetStore.warmUp(appContext) }
         // B33.4b：音频计划存储上下文（播放侧读取计划用）
         runCatching { AudioPlanStore.remember(appContext) }

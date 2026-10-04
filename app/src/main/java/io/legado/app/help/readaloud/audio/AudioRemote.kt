@@ -1,9 +1,6 @@
 package io.legado.app.help.readaloud.audio
 
 import android.content.Context
-import com.github.jing332.compat.fs.TtsDirProvider
-import io.legado.app.help.http.await
-import io.legado.app.help.http.okHttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -11,38 +8,23 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
- * B33.2b · 远程素材库（CNB 墨听/JRead 索引体系）。
+ * P1.2 · 远程素材库（单链版）：数据源 = 词网 [AudioNetStore]（`声效/index/`）。
  *
- * - 清单：`.../音效与背景音/index.json`（packages → 音效/环境声/bgm/ADULT 四分区索引；媒体 URL 钉 SHA）；
- * - 索引：`index_core.json`（3514）/ `index_horror_thriller_v1.json`（450）/ `index_adult_romance.json`（11，18+ 默认关）；
- * - 缓存：`_store/audio_remote/`（manifest + 各 pack 索引；网络失败回退旧缓存）；
- * - 下载：按条目 `url` 直链流式落库 → `audio_lib/<分类目录>/<中文名>.<ext>` + sidecar（libSource=remote）。
+ * 旧「音效与背景声」pack 体系（CNB 缓存 + 钉 SHA 旧索引）全部退役；
+ * 浏览 / 搜索 / 下载均走新声效库索引——库管理「远程素材库」页即新版词网视图。
  */
 object AudioRemoteCatalog {
 
-    /** 清单来源：优先自家 fork（Cloisnee），失败回退上游 */
-    private val MANIFEST_URLS = listOf(
-        "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/音效与背景音/index.json",
-        "https://cnb.cool/applecabal/yinpin/-/git/raw/master/yinxiao/jread_audio_normalized/index.json",
-    )
-
     data class RemotePack(
-        val id: String = "",
-        val label: String = "",
+        val id: String = "core",
+        val label: String = "声效库",
         val indexUrl: String = "",
         val soundCount: Int = 0,
         val defaultEnabled: Boolean = true,
-        /** B33.4a：18+ 等远程规则包地址（随包拉取；可空） */
         val rulesUrl: String = "",
     )
 
@@ -53,225 +35,55 @@ object AudioRemoteCatalog {
         val category: String = "",
         val categoryName: String = "",
         val subType: String = "",
-        val pack: String = "",
+        val pack: String = "core",
         val url: String = "",
         val assetPath: String = "",
         val sha256: String = "",
         val tags: List<String> = emptyList(),
     )
 
-    private val http by lazy {
-        okHttpClient.newBuilder()
-            .callTimeout(300, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .build()
+    /** 清单：单一「声效库」（数量=词网资产数） */
+    suspend fun manifest(context: Context, forceRefresh: Boolean = false): List<RemotePack> {
+        AudioNetStore.ensureLoaded(context)
+        return listOf(RemotePack(soundCount = AudioNetStore.assetCount))
     }
 
-    private val loadLock = Mutex()
-    private val indexLock = Mutex()
-
-    @Volatile
-    private var manifestCache: List<RemotePack>? = null
-
-    private val indexCache = HashMap<String, List<RemoteSound>>()
-
-    private fun remoteDir(context: Context): File =
-        File(TtsDirProvider.baseDir(context), "_store/audio_remote")
-
-    /** 远程目录（packages 清单）：优先内存 → 磁盘缓存 → 远端；forceRefresh 强制网络（失败回退缓存） */
-    suspend fun manifest(context: Context, forceRefresh: Boolean = false): List<RemotePack> =
-        withContext(Dispatchers.IO) {
-            manifestCache?.takeIf { !forceRefresh }?.let { return@withContext it }
-            loadLock.withLock {
-                manifestCache?.takeIf { !forceRefresh }?.let { return@withLock it }
-                val f = File(remoteDir(context), "manifest.json")
-                val text = if (!forceRefresh && f.isFile) {
-                    f.readText().removePrefix("\uFEFF")
-                } else {
-                    val fresh = runCatching { fetchManifestText() }.getOrElse { e ->
-                        if (f.isFile) f.readText().removePrefix("\uFEFF") else throw e
-                    }
-                    runCatching {
-                        f.parentFile?.mkdirs()
-                        f.writeText(fresh)
-                    }
-                    fresh
-                }
-                val packs = parseManifest(text).orEmpty()
-                manifestCache = packs
-                packs
-            }
-        }
-
-    /** 某个 pack 的音效索引：内存 → 磁盘缓存 → 远端下载；onStatus 用于 UI 提示 */
+    /** 索引：词网快照 → 远程条目（onStatus 兼容旧签名） */
     suspend fun sounds(
         context: Context,
         pack: RemotePack,
         forceRefresh: Boolean = false,
         onStatus: (String) -> Unit = {},
     ): List<RemoteSound> = withContext(Dispatchers.IO) {
-        indexLock.withLock {
-            if (!forceRefresh) {
-                indexCache[pack.id]?.let { return@withLock it }
-            }
-            val f = File(remoteDir(context), "index_${pack.id}.json")
-            val text = if (!forceRefresh && f.isFile) {
-                f.readText().removePrefix("\uFEFF")
-            } else {
-                onStatus(
-                    if (f.isFile) "正在刷新索引…"
-                    else "首次载入索引（约 ${pack.soundCount} 条，稍候）…"
-                )
-                val fresh = runCatching { fetchText(pack.indexUrl) }.getOrElse { e ->
-                    if (f.isFile) f.readText().removePrefix("\uFEFF") else throw e
-                }
-                runCatching {
-                    val tmp = File(f.parentFile, f.name + ".tmp")
-                    tmp.writeText(fresh)
-                    if (!tmp.renameTo(f)) {
-                        tmp.copyTo(f, overwrite = true)
-                        tmp.delete()
-                    }
-                }
-                fresh
-            }
-            val list = parseIndex(text).orEmpty()
-            indexCache[pack.id] = list
-            list
+        AudioNetStore.ensureLoaded(context)
+        AudioNetStore.snapshot().map { a ->
+            RemoteSound(
+                soundId = a.id,
+                name = a.name,
+                aliases = a.aliases,
+                category = a.lane,
+                categoryName = laneNameOf(a.lane),
+                pack = pack.id,
+                url = AudioNetStore.urlOf(a.file),
+                assetPath = a.file,
+            )
         }
     }
 
-    /** 下载一条远程音效并落库（已存在则直接复用并登记） */
+    /** 下载一条远程音效并落库（落库名=规范名） */
     suspend fun download(
         context: Context,
         sound: RemoteSound,
         onProgress: (Long) -> Unit = {},
     ): File = withContext(Dispatchers.IO) {
-        val root = TmDemoAssets.libRoot(context)
-        val name = fileNameOf(sound)
-        val out = File(File(root, folderOf(sound)), name)
-        val relPath = runCatching { out.relativeTo(root).path.replace(File.separatorChar, '/') }
-            .getOrNull().orEmpty()
-        val existingSource = if (relPath.isBlank()) "" else AudioLibrary.sourceOfRelPath(relPath)
-        if (out.isFile && out.length() > 0L && existingSource != AudioLibrary.SOURCE_GENERATED) {
-            // 已存在（远程/历史等）：直接复用；仅当现有文件是「合成产物」时才用远程版本替换
-            AudioLibrary.notifyFileAdded(context, out, AudioLibrary.SOURCE_REMOTE, sound.soundId, sound.aliases)
-            return@withContext out
-        }
-        out.parentFile?.mkdirs()
-        val tmp = File(out.parentFile, "$name.part")
-        val req = Request.Builder()
-            .url(sound.url)
-            .header("User-Agent", "legado-audio-remote")
-            .build()
-        val resp = http.newCall(req).await()
-        require(resp.isSuccessful) { "HTTP ${resp.code}" }
-        val body = resp.body ?: error("空响应")
-        var downloaded = 0L
-        var lastReport = 0L
-        body.byteStream().use { input ->
-            tmp.outputStream().use { output ->
-                val buf = ByteArray(64 * 1024)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n <= 0) break
-                    output.write(buf, 0, n)
-                    downloaded += n
-                    if (downloaded - lastReport >= 256 * 1024) {
-                        lastReport = downloaded
-                        runCatching { onProgress(downloaded) }
-                    }
-                }
-            }
-        }
-        if (downloaded <= 0L) {
-            runCatching { tmp.delete() }
-            error("下载为空")
-        }
-        if (!tmp.renameTo(out)) {
-            tmp.copyTo(out, overwrite = true)
-            tmp.delete()
-        }
-        // B33.2c：不再写 sidecar——元数据经统一入口并入 _meta/<类>.json
-        AudioLibrary.notifyFileAdded(
-            context,
-            out,
-            AudioLibrary.SOURCE_REMOTE,
-            sound.soundId,
-            sound.aliases,
+        val asset = AudioNetStore.NetAsset(
+            id = sound.soundId.ifBlank { sound.name },
+            name = sound.name,
+            lane = sound.category,
+            file = sound.assetPath,
+            adult = sound.category == "adult",
         )
-        out
-    }
-
-    // ------------------------------------------------------------ 纯函数（可单测）
-
-    internal fun parseManifest(text: String): List<RemotePack>? = runCatching {
-        val root = JSONObject(text)
-        val arr = root.optJSONArray("packages") ?: JSONArray()
-        buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val id = o.optString("id")
-                if (id.isBlank()) continue
-                add(
-                    RemotePack(
-                        id = id,
-                        label = o.optString("label").ifBlank { id },
-                        indexUrl = o.optString("indexUrl"),
-                                                soundCount = o.optInt("soundCount"),
-                                                defaultEnabled = o.optBoolean("defaultEnabled", true),
-                                                rulesUrl = o.optString("rulesUrl"),
-                                            )
-                )
-            }
-        }
-    }.getOrNull()
-
-    internal fun parseIndex(text: String): List<RemoteSound>? = runCatching {
-        val root = JSONObject(text)
-        val arr = root.optJSONArray("sounds") ?: JSONArray()
-        buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val id = o.optString("soundId")
-                if (id.isBlank()) continue
-                val primary = o.optString("legacyName").ifBlank { o.optString("sourceOriginalName") }
-                add(
-                    RemoteSound(
-                        soundId = id,
-                        name = primary.ifBlank { id },
-                        aliases = (
-                            o.optJSONArray("aliases").toStringList() +
-                                o.optJSONArray("legacyNames").toStringList()
-                            ).distinct(),
-                        category = o.optString("category"),
-                        categoryName = o.optString("categoryName"),
-                        subType = o.optString("subType"),
-                        pack = o.optString("pack"),
-                        url = o.optString("url"),
-                        assetPath = o.optString("assetPath"),
-                        sha256 = o.optString("sha256"),
-                        tags = o.optJSONArray("tags").toStringList(),
-                    )
-                )
-            }
-        }
-    }.getOrNull()
-
-    /** 落库目录（B33.3e 收敛）：环境类 → `sfx/环境声`；其余音效 → `sfx/音效` */
-    internal fun folderOf(sound: RemoteSound): String = when {
-        sound.category.equals("bgm", true) || sound.category.startsWith("bgm", true) ||
-            sound.categoryName.equals("BGM", true) -> "bgm"
-        sound.category == "scene" || sound.categoryName == "环境声" -> "sfx/环境声"
-        else -> "sfx/音效"
-    }
-
-    /** 落库文件名：中文名纯净文件名 + 源扩展名（mp3/wav…） */
-    internal fun fileNameOf(sound: RemoteSound): String {
-        val base = sanitizeGeneratedName(sound.name.ifBlank { sound.soundId })
-        val ext = sound.assetPath.substringAfterLast('.', "mp3").lowercase()
-            .takeIf { it in setOf("mp3", "wav", "m4a", "ogg", "flac", "aac") } ?: "mp3"
-        return "$base.$ext"
+        AudioNetStore.fetchAsset(context, asset, onProgress) ?: error("下载失败：${sound.name}")
     }
 
     /** 搜索：精确（名/别名）→ 前缀 → 包含，保持原始顺序去重 */
@@ -296,38 +108,17 @@ object AudioRemoteCatalog {
         return (exact + prefix + contain).take(limit)
     }
 
-    // ------------------------------------------------------------ 内部
-
-    private suspend fun fetchManifestText(): String {
-        var last: Throwable? = null
-        for (url in MANIFEST_URLS) {
-            runCatching { return fetchText(url) }.onFailure { last = it }
-        }
-        throw last ?: IllegalStateException("远程清单不可用")
-    }
-
-    private suspend fun fetchText(url: String): String {
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", "legado-audio-remote")
-            .build()
-        val resp = http.newCall(req).await()
-        require(resp.isSuccessful) { "HTTP ${resp.code}" }
-        return resp.body?.string() ?: error("空响应")
-    }
-
-    private fun JSONArray?.toStringList(): List<String> {
-        if (this == null) return emptyList()
-        val out = ArrayList<String>()
-        for (i in 0 until length()) {
-            val s = optString(i)
-            if (s.isNotBlank()) out.add(s)
-        }
-        return out
+    internal fun laneNameOf(lane: String): String = when (lane.lowercase()) {
+        "bgm" -> "BGM"
+        "amb" -> "环境声"
+        "adult" -> "ADULT"
+        else -> "音效"
     }
 }
 
-/** B33.2b · 远程下载队列（串行；状态供库页/远程页观察） */
+/**
+ * 远程下载队列（库管理「远程素材库」页用）：并入词网下载落库。
+ */
 object AudioRemoteDownloader {
 
     sealed interface State {

@@ -161,9 +161,10 @@ class AudioSynthQueue(
             task.updatedAt = now()
         }
         save()
-        // B33.4 前置：补缺链第二环——远程库自动补缺（免费；不需要合成模型）
+        // P1.2：补缺链第二环——词网直连（免费；不需要合成模型）
         val remoteFile = runCatching {
-            AudioRemoteAuto.tryFetch(appContext, task.lane, task.keyword)
+            val net = AudioNetStore.lookup(task.keyword)
+            if (net != null) AudioNetStore.fetchAsset(appContext, net) else null
         }.getOrNull()
         if (remoteFile != null) {
             val rel = runCatching {

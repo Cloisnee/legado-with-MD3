@@ -44,6 +44,7 @@ object AudioNetStore {
         val lane: String,       // sfx/amb/bgm/adult
         val file: String,
         val category: String = "",
+        val aliases: List<String> = emptyList(),
         val adult: Boolean = false,
         val volume: Float = 1f,
         val loop: Boolean = false,
@@ -69,14 +70,21 @@ object AudioNetStore {
             .build()
     }
 
-    /** 预热（幂等、异步、失败静默）：加载词网 + 合并本地加词 */
+    /** 预热（幂等、异步、失败静默）：加载词网 + 合并本地加词 + 清理旧链缓存（换新裤子，无残留） */
     fun warmUp(context: Context) {
         val appCtx = context.applicationContext
         io.launch {
+            runCatching { File(TtsDirProvider.baseDir(appCtx), "_store/audio_remote").deleteRecursively() }
             runCatching { ensureLoaded(appCtx) }
             runCatching { rebuildLocalWords(appCtx) }
         }
     }
+
+    /** 词网快照（远程素材库页/镜像用） */
+    fun snapshot(): List<NetAsset> = byId.values.sortedBy { it.id }
+
+    /** 媒体 URL（媒体根 + 逐段编码） */
+    fun urlOf(file: String): String = BASE + encodePath(file)
 
     val isReady: Boolean get() = loaded
     val assetCount: Int get() = byId.size
@@ -363,6 +371,10 @@ object AudioNetStore {
                 lane = o.optString("lane", "sfx"),
                 file = o.optString("file"),
                 category = o.optString("category"),
+                aliases = o.optJSONArray("aliases").let { arr ->
+                    if (arr == null) emptyList()
+                    else (0 until arr.length()).mapNotNull { k -> arr.optString(k).takeIf { it.isNotBlank() } }
+                },
                 adult = o.optBoolean("adult", false),
                 volume = o.optDouble("volume", 1.0).toFloat(),
                 loop = o.optBoolean("loop", false),

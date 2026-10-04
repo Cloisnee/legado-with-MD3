@@ -162,15 +162,6 @@ class AudioChapterPrelude(
                         }
                     }.getOrNull()
                 }
-                if (fetched == null) {
-                    fetched = runCatching {
-                        if (item.bgm != null) {
-                            AudioBgmPicker.fetchRemote(appContext, item.bgm)
-                        } else {
-                            AudioRemoteAuto.tryFetch(appContext, lane, item.label)
-                        }
-                    }.getOrNull()
-                }
                 if (fetched != null) {
                     prep.remoteHit.merge(lane, 1, Int::plus)
                     if (viaNet) prep.netHit.merge(lane, 1, Int::plus)
@@ -195,7 +186,12 @@ class AudioChapterPrelude(
                 list.forEach { item ->
                     var fetched = false
                     runCatching {
-                        val net = AudioNetStore.lookup(item.label)
+                        val net = if (item.bgm != null) {
+                            AudioNetStore.lookup(item.bgm.profile + item.bgm.mood)
+                                ?: AudioNetStore.lookup(item.label)
+                        } else {
+                            AudioNetStore.lookup(item.label)
+                        }
                         if (net != null) fetched = AudioNetStore.fetchAsset(appContext, net) != null
                     }
                     if (!fetched) {

@@ -8,117 +8,76 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
-/** org.json 为 Android 框架实现：单测走 Robolectric（否则 JVM 下为 Not mocked 桩）。 */
+/** P1.2：仅用户条目规则（内置词典/意图已退役）；加词模式（多词字面）为主测点。 */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = android.app.Application::class, sdk = [35])
 class AudioRuleEngineTest {
 
+    private fun asset(
+        name: String,
+        pattern: String,
+        isRegex: Boolean = false,
+        category: String = "音效",
+        scopeTitle: Boolean = false,
+        scopeContent: Boolean = true,
+        enabled: Boolean = true,
+    ) = AudioLibrary.AudioAsset(
+        name = name,
+        relPath = "sfx/音效/$name.mp3",
+        category = category,
+        pattern = pattern,
+        isRegex = isRegex,
+        scopeTitle = scopeTitle,
+        scopeContent = scopeContent,
+        enabled = enabled,
+    )
+
     @Test
-    fun `意图解析 与 车道映射`() {
-        val intents = AudioRuleStore.parseIntents(
-            """
-            {"intents":[
-              {"intentId":"i_scene","type":"scene","anchors":["鸟鸣"],"priority":3,"volume":0.52,"timing":"loop"},
-              {"intentId":"i_strong","type":"strong_sfx","anchors":["万箭齐发","万箭齐射"],"priority":6,"volume":0.88},
-              {"intentId":"i_off","type":"sfx","anchors":["X"],"runtimeEnabled":false}
-            ]}
-            """.trimIndent()
-        ).orEmpty()
-        assertEquals(3, intents.size)
-        assertEquals(2, intents.first { it.id == "i_strong" }.anchors.size)
-        // 3 条中 1 条 runtimeEnabled=false → 构建后 2 条参与匹配
-        assertEquals(2, AudioRuleStore.buildData(intents, emptyMap(), emptyMap(), emptyMap(), emptySet()).intentCount)
-        assertEquals(DemoLanes.Lane.AMBIENCE, AudioRuleEngine.laneForType("scene"))
-        assertEquals(DemoLanes.Lane.SFX, AudioRuleEngine.laneForType("strong_sfx"))
-        assertEquals(DemoLanes.Lane.SFX, AudioRuleEngine.laneForType("emotion"))
+    fun `加词模式 多词字面任一命中`() {
+        val rules = AudioRuleEngine.compileUserRules(
+            listOf(asset("开门声", "推门|开门、掩门;关门\n吱呀")),
+        )
+        assertEquals(1, rules.size)
+        val r = rules[0]
+        assertTrue(r.matches("他推开门的瞬间", false))
+        assertTrue(r.matches("只听掩门一声轻响", false))
+        assertFalse(r.matches("风雪很大", false))
+        // "他推开门的瞬间" 中 "开门" 起点 = 2（“推门”不连续，不算命中）
+        assertEquals(2, r.matchIndex("他推开门的瞬间"))
     }
 
     @Test
-    fun `AC 命中 意图排序（优先级降序）与分道`() {
-        val intents = AudioRuleStore.parseIntents(
-            """
-            {"intents":[
-              {"intentId":"i_scene","type":"scene","anchors":["鸟鸣"],"priority":3,"volume":0.52},
-              {"intentId":"i_strong","type":"strong_sfx","anchors":["万箭齐发","万箭齐射"],"priority":6,"volume":0.88},
-              {"intentId":"i_micro","type":"micro_sfx","anchors":["茶杯"],"priority":5,"volume":0.7}
-            ]}
-            """.trimIndent()
-        ).orEmpty()
-        val map = mapOf(
-            "i_scene" to listOf("bird_call_02"),
-            "i_strong" to listOf("arrow_volley_01"),
-            "i_micro" to listOf("cup_01"),
-        )
-        val sounds = mapOf(
-            "arrow_volley_01" to AudioRuleStore.SoundMeta("arrow_volley_01", "万箭齐发音效", listOf("万箭齐发音效", "万箭齐发")),
-            "cup_01" to AudioRuleStore.SoundMeta("cup_01", "茶杯摆放音效", listOf("茶杯摆放音效")),
-            "bird_call_02" to AudioRuleStore.SoundMeta("bird_call_02", "林鸟惊飞音效", listOf("林鸟惊飞音效")),
-        )
-        val text = "万箭齐发，他放下茶杯；远处似有鸟鸣。"
-        val data = AudioRuleStore.buildData(intents, map, sounds, emptyMap(), emptySet())
-        assertEquals(
-            listOf("i_strong", "i_micro"),
-            AudioRuleEngine.intentHits(data, DemoLanes.Lane.SFX, text).map { it.intentId },
-        )
-        assertEquals(
-            listOf("i_scene"),
-            AudioRuleEngine.intentHits(data, DemoLanes.Lane.AMBIENCE, text).map { it.intentId },
-        )
-        // 默认关闭（18+ 等）声音被排除：候选全排除 → 该意图整体跳过
-        val filtered = AudioRuleStore.buildData(intents, map, sounds, emptyMap(), setOf("arrow_volley_01"))
-        assertEquals(
-            listOf("i_micro"),
-            AudioRuleEngine.intentHits(filtered, DemoLanes.Lane.SFX, text).map { it.intentId },
-        )
-    }
-
-    @Test
-    fun `别名表解析 小写归并`() {
-        val map = AudioRuleStore.parseAliasRules(
-            """{"aliases":[{"alias":"万箭齐发","soundId":"arrow_volley_01"},{"alias":"Arrow","soundId":"x1"}]}"""
-        )
-        assertEquals("arrow_volley_01", map["万箭齐发"])
-        assertEquals("x1", map["arrow"])
-    }
-
-    @Test
-    fun `四条件兜底口径`() {
-        assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = false))
-        assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = true, aiFailed = true))
-        assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = true, aiConfigured = false))
-        assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = true, isFirstChapter = true))
-        assertTrue(AudioFallbackPolicy.shouldUseRules(hasPlan = true, isNonContiguous = true))
-        assertFalse(AudioFallbackPolicy.shouldUseRules(hasPlan = true))
-    }
-
-    @Test
-    fun `自定规则 正则与字面 及 标题正文范围`() {
-        val mk = { name: String, pattern: String, isRegex: Boolean, sT: Boolean, sC: Boolean, cat: String ->
-            AudioLibrary.AudioAsset(
-                name = name,
-                relPath = "sfx/x/$name.mp3",
-                category = cat,
-                pattern = pattern,
-                isRegex = isRegex,
-                scopeTitle = sT,
-                scopeContent = sC,
-            )
-        }
+    fun `正则规则与非法正则`() {
         val rules = AudioRuleEngine.compileUserRules(
             listOf(
-                mk("雨夜庭院", "(细雨|雨夜)", true, false, true, "环境声"),
-                mk("战斗鼓", "战鼓", false, true, false, "音效"),
-                mk("已停用", "雨", true, false, true, "音效").copy(enabled = false),
-            )
+                asset("轰鸣", "轰(隆|的一声)", isRegex = true),
+                asset("坏规则", "(((", isRegex = true),
+            ),
         )
-        assertEquals(2, rules.size)
-        val rain = rules.first { it.name == "雨夜庭院" }
-        assertTrue(rain.matches("这是一个雨夜", isTitle = false))
-        assertFalse(rain.matches("雨夜庭院", isTitle = true))
-        assertEquals(DemoLanes.Lane.AMBIENCE, rain.lane)
-        val drum = rules.first { it.name == "战斗鼓" }
-        assertTrue(drum.matches("敲响战鼓", isTitle = true))
-        assertFalse(drum.matches("敲响战鼓", isTitle = false))
-        assertEquals(DemoLanes.Lane.SFX, drum.lane)
+        assertEquals(1, rules.size)
+        assertTrue(rules[0].matches("轰隆一声巨响", false))
+        assertFalse(rules[0].matches("安静", false))
+    }
+
+    @Test
+    fun `范围与车道`() {
+        val rules = AudioRuleEngine.compileUserRules(
+            listOf(
+                asset("浙雨", "浙雨", scopeTitle = true, scopeContent = false),
+                asset("夜曲", "夜曲", category = "BGM"),
+                asset("雨夜", "雨夜", category = "环境声"),
+            ),
+        )
+        val t = rules.first { it.name == "浙雨" }
+        assertTrue(t.matches("浙雨", true))
+        assertFalse(t.matches("浙雨", false))
+        assertEquals(DemoLanes.Lane.BGM, rules.first { it.name == "夜曲" }.lane)
+        assertEquals(DemoLanes.Lane.AMBIENCE, rules.first { it.name == "雨夜" }.lane)
+    }
+
+    @Test
+    fun `停用条目与空模式不参与`() {
+        assertEquals(0, AudioRuleEngine.compileUserRules(listOf(asset("x", "x", enabled = false))).size)
+        assertEquals(0, AudioRuleEngine.compileUserRules(listOf(asset("y", "   "))).size)
     }
 }

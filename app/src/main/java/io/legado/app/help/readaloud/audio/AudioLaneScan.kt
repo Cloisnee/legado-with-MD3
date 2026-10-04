@@ -27,7 +27,6 @@ object AudioLaneScan {
 
     suspend fun scan(context: Context, texts: List<String>): List<Triple<SynthLane, String, Boolean>> =
         withContext(Dispatchers.Default) {
-            runCatching { AudioBuiltinRules.ensureLoaded(context.applicationContext) }
             buildList {
                 texts.forEach { raw ->
                     val text = raw.trim()
@@ -58,10 +57,9 @@ object AudioLaneScan {
         return suggest(ctx, texts)
     }
 
-    /** 逐片段建议：每片段每轨至多 1 个（P1：词网优先（含本地加词）；规则/词典兜底） */
+    /** 逐片段建议：每片段每轨至多 1 个（P1：词网优先（含本地加词）；用户条目规则兜底） */
     suspend fun suggest(context: Context, texts: List<String>): List<List<Suggestion>> =
         withContext(Dispatchers.Default) {
-            runCatching { AudioBuiltinRules.ensureLoaded(context.applicationContext) }
             runCatching { AudioNetStore.ensureLoaded(context.applicationContext) }
             runCatching { AudioNetStore.rebuildLocalWords(context.applicationContext) }
             texts.map { raw ->

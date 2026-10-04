@@ -1,11 +1,6 @@
 package io.legado.app.help.readaloud.audio
 
 import android.content.Context
-import io.legado.app.constant.PreferKey
-import io.legado.app.help.config.AppConfigStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * B33.4b · BGM 选曲器（结构化三字段：画像/情绪/强度）。
@@ -165,25 +160,4 @@ object AudioBgmPicker {
         remember(best.soundId)
         return best
     }
-
-    /** 预合成链路：bgm 包选曲 → 下载落库（命中返回落库文件） */
-    suspend fun fetchRemote(context: Context, q: Query): File? = withContext(Dispatchers.IO) {
-        runCatching {
-            val packs = AudioRemoteCatalog.manifest(context)
-                .filter { it.indexUrl.isNotBlank() && (it.defaultEnabled || adultEnabled()) }
-                .sortedBy { if (it.id == "bgm") 0 else 1 }
-            for (pack in packs) {
-                val list = runCatching { AudioRemoteCatalog.sounds(context, pack) }.getOrDefault(emptyList())
-                val pool = list.filter { AudioRemoteAuto.laneBucket(it) == 1 }
-                if (pool.isEmpty()) continue
-                val hit = pickRemote(pool, q) ?: continue
-                val file = runCatching { AudioRemoteCatalog.download(context, hit) }.getOrNull() ?: continue
-                return@withContext file
-            }
-            null
-        }.getOrNull()
-    }
-
-    private fun adultEnabled(): Boolean =
-        runCatching { AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true }.getOrDefault(false)
 }
