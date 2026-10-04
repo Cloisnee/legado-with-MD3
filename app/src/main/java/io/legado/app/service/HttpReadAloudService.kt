@@ -785,6 +785,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                     )
                 }
             }
+        } catch (e: CancellationException) {
+            // P1.4：服务停止/任务取消属正常路径，静默（不再记「异常」）
         } catch (e: Exception) {
             AppLog.putAudio("听书预下载异常: ${e.localizedMessage}", e)
         }
@@ -1054,6 +1056,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                 )
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
             }
+        } catch (e: CancellationException) {
+            // P1.4：服务停止/任务取消属正常路径，静默
         } catch (e: Exception) {
             AppLog.putAudio("听书流式预下载异常: ${e.localizedMessage}", e)
         }

@@ -108,28 +108,38 @@ class AudioChapterPrelude(
         activeJob?.cancel()
         activeJob = null
         val q = queue() ?: return
-        val (termFailed, inflight) = splitUndone(prep, q)
-        logUndone(chapterNo(prep.key), termFailed, inflight)
+        val (termFailed, inflight, skipped) = splitUndone(prep, q)
+        logUndone(chapterNo(prep.key), termFailed, inflight, skipped)
     }
 
-    /** M1-A：未完成条目分类——终态失败 / 未终态（后台继续） */
-    private fun splitUndone(prep: Prep, q: AudioSynthQueue): Pair<List<String>, List<String>> {
+    /** M1-A/P1.4：未完成条目分类——终态失败 / 未终态（后台继续）/ 未入队（跳过） */
+    private fun splitUndone(
+        prep: Prep,
+        q: AudioSynthQueue,
+    ): Triple<List<String>, List<String>, List<String>> {
         val failed = ArrayList<String>()
         val inflight = ArrayList<String>()
+        val skipped = ArrayList<String>()
         prep.enqueued.forEach { (lane, labels) ->
             labels.forEach { l ->
                 when (q.entryStatus(lane, l)) {
                     "done" -> {}
                     "failed" -> failed += l
-                    else -> inflight += l
+                    "pending", "running" -> inflight += l
+                    else -> skipped += l
                 }
             }
         }
-        return failed to inflight
+        return Triple(failed, inflight, skipped)
     }
 
-    /** M1-A：补缺结果日志（区分「真失败」与「未终态·后台继续」） */
-    private fun logUndone(no: String, failed: List<String>, inflight: List<String>) {
+    /** M1-A/P1.4：补缺结果日志（真失败 / 未终态·后台继续 / 未入队·跳过） */
+    private fun logUndone(
+        no: String,
+        failed: List<String>,
+        inflight: List<String>,
+        skipped: List<String>,
+    ) {
         if (failed.isNotEmpty()) {
             AppLog.putAudio(
                 "【音效与背景音·补缺失败·$no】${failed.size} 条：${failed.joinToString("、")}（终态失败）"
@@ -138,6 +148,11 @@ class AudioChapterPrelude(
         if (inflight.isNotEmpty()) {
             AppLog.putAudio(
                 "【音效与背景音·未终态·$no】${inflight.size} 条：${inflight.joinToString("、")}（后台继续）"
+            )
+        }
+        if (skipped.isNotEmpty()) {
+            AppLog.putAudio(
+                "【音效与背景音·未入队·$no】${skipped.size} 条：${skipped.joinToString("、")}（跳过：无模型或达上限）"
             )
         }
     }
@@ -218,7 +233,8 @@ class AudioChapterPrelude(
                         if (net != null) fetched = AudioNetStore.fetchAsset(appContext, net) != null
                     }
                     if (!fetched) {
-                        q.enqueue(lane.label, item.label, chapterKey, item.desc)
+                        // P1.4：同步注册（否则后续终态等待会在注册完成前空转）
+                        q.enqueueAwait(lane.label, item.label, chapterKey, item.desc)
                         prep.enqueued.getOrPut(lane) { mutableListOf() }.add(item.label)
                     }
                 }
@@ -237,9 +253,13 @@ class AudioChapterPrelude(
                 if (q != null && q.entryStatus(lane, l) == "done") aiDone.merge(lane, 1, Int::plus)
             }
         }
-        val (termFailed, inflight) = if (q != null) splitUndone(prep, q) else emptyList<String>() to emptyList()
+        val (termFailed, inflight, skipped) = if (q != null) {
+            splitUndone(prep, q)
+        } else {
+            Triple(emptyList(), emptyList(), emptyList())
+        }
         if (ahead) {
-            if (termFailed.isEmpty() && inflight.isEmpty()) {
+            if (termFailed.isEmpty() && inflight.isEmpty() && skipped.isEmpty()) {
                 quietChapters.add(chapterKey)
                 preparedTotals[chapterKey] = totals
                 AppLog.putAudio(
@@ -249,16 +269,16 @@ class AudioChapterPrelude(
                         "，Ai补缺${laneText(aiDone)}。"
                 )
             } else {
-                logUndone(chapterNo(chapterKey), termFailed, inflight)
+                logUndone(chapterNo(chapterKey), termFailed, inflight, skipped)
             }
         } else {
             if (prep.enqueued.isNotEmpty()) {
                 AppLog.putAudio("【音效与背景音·Ai补缺·${chapterNo(chapterKey)}】${laneText(aiDone)}。")
             }
-            if (termFailed.isEmpty() && inflight.isEmpty()) {
+            if (termFailed.isEmpty() && inflight.isEmpty() && skipped.isEmpty()) {
                 AppLog.putAudio("【音效与背景音·合成总结·${chapterNo(chapterKey)}】${laneText(totals)}。")
             } else {
-                logUndone(chapterNo(chapterKey), termFailed, inflight)
+                logUndone(chapterNo(chapterKey), termFailed, inflight, skipped)
             }
             activePrep = null
         }

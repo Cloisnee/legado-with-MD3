@@ -103,6 +103,14 @@ class AudioSynthQueue(
         scope.launch { enqueueInternal(lane, kw, chapterKey, desc) }
     }
 
+    /** P1.4：同步注册版入队（预合成闸门用；返回后条目已登记，等待终态不会空转） */
+    suspend fun enqueueAwait(kind: String, keyword: String, chapterKey: String? = null, desc: String = "") {
+        val lane = SynthLane.ofKind(kind) ?: return
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return
+        enqueueInternal(lane, kw, chapterKey, desc)
+    }
+
     fun release() {
         queue.close()
         worker.cancel()
