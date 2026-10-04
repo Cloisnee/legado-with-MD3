@@ -8,14 +8,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 37 键写映射逐字段对应`() {
+    fun `朗读设置 38 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 37 键读映射逐字段对应`() {
+    fun `朗读设置 38 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -127,6 +127,7 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(useMultiSpeaker = false),
         base.copy(alEnabled = true),
         base.copy(alSfxMinGapS = 0, alChapterSynthCap = 0),
+        base.copy(standbyStart = false),
     )
 }
 
@@ -159,6 +160,7 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
     PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
     PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.readAloudStandbyStart to standbyStart,
     PreferKey.alEnabled to alEnabled,
     PreferKey.alSfxVolume to alSfxVolume,
     PreferKey.alAmbVolume to alAmbVolume,
