@@ -67,8 +67,11 @@ import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.help.readaloud.audio.AudioChapterPrelude
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
+import io.legado.app.help.readaloud.audio.AudioNetStore
+import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
+import io.legado.app.help.readaloud.audio.SynthLane
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
@@ -80,6 +83,7 @@ import io.legado.app.help.readaloud.playback.isUsableCacheFile
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeUrl
+import io.legado.app.utils.ChapterLabels
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.printOnDebug
@@ -364,7 +368,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         super.onPlaybackStateReplaced()
         val chapter = readerReadAloudChapter ?: return
         AppLog.putAudio(
-            "【音频缓存·第${chapter.chapterIndex + 1}章】播放队列就绪：${contentList.size}条"
+            "【音频缓存·${ChapterLabels.of(chapter.title, chapter.chapterIndex)}】播放队列就绪：${contentList.size}条"
         )
     }
 
@@ -445,6 +449,13 @@ class HttpReadAloudService : BaseReadAloudService(),
             downloadTaskActiveLock.withLock {
                 ensureActive()
                 val httpTts = ReadAloud.httpTTS ?: throw NoStackTraceException("tts is null")
+
+                // M1-B 播放门：本章计划（本行声效终态查询用；null=无计划层→不设门）
+                val gatePlan = runCatching {
+                    val b = ReadBook.book
+                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                    if (b == null || idx < 0) null else AudioPlanStore.load(b.name, b.bookUrl, idx)
+                }.getOrNull()
 
                 // B8.6：本章合成检查计数（预合成失败条目的补合成情况可见化）
                 var chapterNew = 0
@@ -575,6 +586,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val mediaItem = MediaItem.fromUri(
                         Uri.fromFile(if (cacheFile.isValidAudio()) cacheFile else silentFile)
                     ).buildUpon().setMediaId(cueGainMb.toString()).build()
+                    // M1-B 播放门：推进前等本行音效到合成终态（成功→放、失败→跳；不设上限）
+                    gateCueSfxTerminal(gatePlan, index)
                     launch(Main) {
                         if (readAloudSettings.ttsParagraphInterval > 0) {
                             if (index == nowSpeak && exoPlayer.mediaItemCount == 0) {
@@ -660,7 +673,9 @@ class HttpReadAloudService : BaseReadAloudService(),
                 paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
             )
         ) {
-            AppLog.putAudio("【音频缓存·第${chapter.index + 1}章】跳过预合成（朗读分析未就绪）")
+            AppLog.putAudio(
+                "【音频缓存·${ChapterLabels.of(displayTitle, chapter.index)}】跳过预合成（朗读分析未就绪）"
+            )
             return null
         }
         val plan = buildSpeechPlan(
@@ -750,11 +765,13 @@ class HttpReadAloudService : BaseReadAloudService(),
                     prepared = getPreDownloadChapter(book, chapter)
                 }
                 if (prepared == null) {
-                    AppLog.putAudio("【音频缓存·第${targetIndex + 1}章】跳过预合成（等待分析就绪超时）")
+                    AppLog.putAudio(
+                        "【音频缓存·${ChapterLabels.of(chapter.title, targetIndex)}】跳过预合成（等待分析就绪超时）"
+                    )
                     continue
                 }
                 AppLog.putAudio(
-                    "【音频缓存·第${targetIndex + 1}章】预合成 ${prepared.contentList.size}条"
+                    "【音频缓存·${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)}】预合成 ${prepared.contentList.size}条"
                 )
                 val chapterFailed = synthesizeChapterCues(prepared, httpTts, concurrency)
                 consecutiveFailures = if (chapterFailed) consecutiveFailures + 1 else 0
@@ -764,6 +781,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         chapterKey = "${book.bookUrl}|$targetIndex",
                         texts = prepared.queue.cues.map { it.text },
                         book = book.name,
+                        label = ChapterLabels.of(chapter.title, targetIndex),
                     )
                 }
             }
@@ -815,7 +833,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         val skipped = outcomes.count { it == CueSyncOutcome.Skipped }
         val failedCount = outcomes.count { it == CueSyncOutcome.Failed }
         AppLog.putAudio(
-            "【音频缓存·第${prepared.chapterIndex + 1}章】预合成完成：" +
+            "【音频缓存·${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)}】预合成完成：" +
                 "新增 $stored、命中 $cached、跳过 $skipped、失败 $failedCount（共 $totalCues 条）"
         )
         failedCount > totalCues / 2
@@ -841,14 +859,14 @@ class HttpReadAloudService : BaseReadAloudService(),
         while (n < maxRetry) {
             n++
             AppLog.putAudio(
-                "【音频缓存·第${prepared.chapterIndex + 1}章】预合成失败，第 $n/$maxRetry 次重试 $label: ${result.reason} | ${snippet(content)}"
+                "【音频缓存·${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)}】预合成失败，第 $n/$maxRetry 次重试 $label: ${result.reason} | ${snippet(content)}"
             )
             delay(500)
             result = synthesizeSingleCue(routedVoice, cue, content, prepared, segIndex, httpTts)
             if (result.outcome != CueSyncOutcome.Failed) return result.outcome
         }
         AppLog.putAudio(
-            "【音频缓存·第${prepared.chapterIndex + 1}章】预合成失败（已重试 $n 次后放弃）$label" +
+            "【音频缓存·${ChapterLabels.of(prepared.chapterTitle, prepared.chapterIndex)}】预合成失败（已重试 $n 次后放弃）$label" +
                 " | ${snippet(content)} | ${result.reason}"
         )
         return result.outcome
@@ -1248,9 +1266,39 @@ class HttpReadAloudService : BaseReadAloudService(),
     private fun cueLabel(index: Int, voice: ReadAloudVoice): String =
         "#$index " + voice.speakerId.ifBlank { voice.displayName }
 
-    /** B33.3c-附3：音频缓存日志章节前缀（第 N 章；N = index+1） */
+    /** B33.3c-附3 · M2：音频缓存日志章节前缀（与分析侧一致：优先真实章名，回退第N章） */
     private fun chapterTag(): String =
-        readerReadAloudChapter?.let { "第${it.chapterIndex + 1}章" } ?: "第?章"
+        readerReadAloudChapter?.let { ChapterLabels.of(it.title, it.chapterIndex) } ?: "第?章"
+
+    /**
+     * M1-B 播放门：朗读推进（追加媒体项）前，等本行挂钩音效到合成终态（done/failed），不设上限。
+     * 成功 → 该行播放时正常出声；失败 → 跳过。pending/running → 卡住推进（与等人声同款体感）。
+     * 未入队/无计划层（plan=null）→ 不等待。
+     */
+    private suspend fun gateCueSfxTerminal(plan: AudioPlan?, cueIndex: Int) {
+        if (!readAloudSettings.alEnabled) return
+        val q = synthQueueOrCreate() ?: return
+        val cue = playbackQueue.cues.getOrNull(cueIndex) ?: return
+        if (cue.isChapterTitle) return
+        val para = cueIndex - playbackQueue.leadingTitleCueCount + 1
+        val items = plan?.sfx?.filter { it.para == para } ?: return
+        if (items.isEmpty()) return
+        val keys = items.flatMap { item ->
+            listOfNotNull(
+                item.tag.takeIf { it.isNotBlank() },
+                AudioNetStore.lookup(item.tag)?.name?.takeIf { n -> n != item.tag },
+            )
+        }.distinct()
+        if (keys.isEmpty()) return
+        val blocked = keys.any { q.entryInFlight(SynthLane.SFX, it) }
+        if (blocked) {
+            AppLog.putAudio("【音频缓存·${chapterTag()}】播放门：等待本行音效合成 #$cueIndex（${keys.size} 键）…")
+        }
+        val waited = q.awaitKeywordsTerminal(SynthLane.SFX, keys)
+        if (blocked) {
+            AppLog.putAudio("【音频缓存·${chapterTag()}】播放门：音效已终态，放行 #$cueIndex（${waited}ms）")
+        }
+    }
 
     /** 音频日志中的文本摘要（单行、截断） */
     private fun snippet(text: String, max: Int = 24): String {
@@ -1485,7 +1533,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     label = chapterTag(),
                     quiet = prelude?.isPreparedAhead(ck) == true,
                 )
-                prelude?.startChapter(ck, playbackQueue.cues.map { it.text }, bookName)
+                prelude?.startChapter(ck, playbackQueue.cues.map { it.text }, bookName, chapterTag())
                 // B33.4b：装载本章音频计划（Ai）；就绪后交由计划层驱动（未就绪前规则层兜底）
                 lifecycleScope.launch(Dispatchers.IO) {
                     val plan = if (bookName.isNotBlank() && idx >= 0) {

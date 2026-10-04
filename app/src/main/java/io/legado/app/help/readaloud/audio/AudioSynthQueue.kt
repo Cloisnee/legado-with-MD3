@@ -317,15 +317,27 @@ class AudioSynthQueue(
     private fun chapterBusy(chapterKey: String): Boolean =
         entries.values.any { it.chapterKey == chapterKey && (it.status == "pending" || it.status == "running") }
 
-    /** 等待某章全部合成条目到终态（done/failed）；超时返回 false */
-    suspend fun awaitChapterIdle(chapterKey: String, timeoutMs: Long): Boolean {
-        if (chapterKey.isBlank()) return true
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (!lock.withLock { chapterBusy(chapterKey) }) return true
-            delay(500)
+    /** M1-A：等待某章全部合成条目到终态（done/failed；不设上限；音效一次成/败即终态） */
+    suspend fun awaitChapterTerminal(chapterKey: String) {
+        if (chapterKey.isBlank()) return
+        while (lock.withLock { chapterBusy(chapterKey) }) delay(500)
+    }
+
+    /** M1-B：某关键词条目是否仍在途（pending/running）。未入队/已终态 = false（不等待） */
+    fun entryInFlight(lane: SynthLane, keyword: String): Boolean = runCatching {
+        when (entries["${lane.name}|$keyword"]?.status) {
+            "pending", "running" -> true
+            else -> false
         }
-        return !lock.withLock { chapterBusy(chapterKey) }
+    }.getOrDefault(false)
+
+    /** M1-B：等待一组关键词全部离开在途态（不设上限）；返回等待毫秒 */
+    suspend fun awaitKeywordsTerminal(lane: SynthLane, keywords: Collection<String>): Long {
+        val keys = keywords.filter { it.isNotBlank() }.distinct()
+        if (keys.isEmpty()) return 0L
+        val t0 = System.currentTimeMillis()
+        while (keys.any { entryInFlight(lane, it) }) delay(500)
+        return System.currentTimeMillis() - t0
     }
 
     /** 某条目当前状态（""=未入队；供预合成总结统计） */

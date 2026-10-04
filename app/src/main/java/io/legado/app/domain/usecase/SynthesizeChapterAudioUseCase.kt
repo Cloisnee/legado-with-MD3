@@ -47,8 +47,8 @@ class SynthesizeChapterAudioUseCase(
         chapterIndex: Int,
         onProgress: suspend (processed: Int, total: Int) -> Unit = { _, _ -> },
     ): Result = withContext(Dispatchers.IO) {
-        // B19：章节显示名（B33.3c-附3：统一「第 N 章」前缀格式）
-        val chLabel = "第${chapterIndex + 1}章"
+        // B19 · M2：章节显示名（与分析侧一致——优先真实章名，回退第N章）
+        val chLabel = dataRepository.chapterLabelOf(book, chapterIndex)
         val lines = dataRepository.loadChapterScript(book, chapterIndex)
         if (lines.isEmpty()) {
             AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章暂无本地剧本")
