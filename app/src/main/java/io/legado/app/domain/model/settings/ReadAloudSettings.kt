@@ -32,6 +32,8 @@ data class ReadAloudSettings(
     val ttsSynthTimeoutSec: Int = 75,
     /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
     val ttsMaxRetry: Int = 5,
+    /** M4：待命启动（防误触，默认开）——点「开始朗读」先进入待命（不合成/不分析/不播放），再点一次才开始 */
+    val standbyStart: Boolean = true,
     // ---- B33 音效/BGM/环境·四轨（2026-09-30 立项；音频小闭环）----
     /** 四轨总开关（在朗读人声之上叠加 音效/BGM/环境 三条音频轨） */
     val alEnabled: Boolean = true,

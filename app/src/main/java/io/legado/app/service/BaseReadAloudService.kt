@@ -37,6 +37,7 @@ import io.legado.app.constant.NotificationId
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
@@ -305,7 +306,7 @@ abstract class BaseReadAloudService : BaseService(),
             val pageIndex = it.getInt("pageIndex")
             val startPos = it.getInt("startPos")
             val chapterPosition = it.getInt("chapterPosition", -1).takeIf { position -> position >= 0 }
-            newReadAloud(play, pageIndex, startPos, chapterPosition)
+            handlePlayRequest(play, pageIndex, startPos, chapterPosition)
         }
         lifecycleScope.launch {
             merge(
@@ -357,7 +358,7 @@ abstract class BaseReadAloudService : BaseService(),
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            IntentAction.play -> newReadAloud(
+            IntentAction.play -> handlePlayRequest(
                 intent.getBooleanExtra("play", true),
                 intent.getIntExtra("pageIndex", ReadBook.durPageIndex),
                 intent.getIntExtra("startPos", 0),
@@ -384,12 +385,64 @@ abstract class BaseReadAloudService : BaseService(),
         stopSelf()
     }
 
+    // ---- M4：待命启动（防误触；点「开始朗读」先进待命，再点一次才走全套）----
+    @Volatile
+    private var standbyArmed = false
+
+    /** 本服务实例是否已真正启动过朗读（待命不算）——同实例的后续普通启动不再进待命 */
+    @Volatile
+    private var sessionPrepared = false
+
+    private fun standbyEnabled(): Boolean = runCatching {
+        val gateway: ReadAloudSettingsGateway = get(ReadAloudSettingsGateway::class.java)
+        gateway.currentSettings.standbyStart
+    }.getOrDefault(true)
+
+    /** M4：朗读启动请求统一入口（待命判定 / 待命确认 / 正常启动） */
+    private fun handlePlayRequest(play: Boolean, pageIndex: Int, startPos: Int, chapterPosition: Int?) {
+        if (standbyArmed) {
+            if (!play) return // 待命中：非播放请求（如翻页同步）忽略，保持待命
+            standbyArmed = false
+            newReadAloud(true, pageIndex, startPos, chapterPosition)
+            return
+        }
+        if (play && chapterPosition == null && !sessionPrepared && standbyEnabled()) {
+            enterStandby()
+            return
+        }
+        newReadAloud(play, pageIndex, startPos, chapterPosition)
+    }
+
+    /** M4：进入待命——不调度分析 / 不建计划（无「等分析就绪」计时）/ 不合成 / 不播放；再点一次走全套 */
+    private fun enterStandby() {
+        standbyArmed = true
+        pause = true
+        sessionStore.setStatus(ReadAloudSessionStatus.Paused)
+        upMediaSessionPlaybackState(PlaybackStateCompat.STATE_PAUSED)
+        upReadAloudNotification()
+        toastOnUi("朗读已待命：再点一次开始")
+    }
+
+    /** M4：待命确认——清除待命并走全套启动（建计划/调度分析/播放）；true=已消费（调用方直接返回） */
+    protected fun tryStartFromStandby(): Boolean {
+        if (!standbyArmed) return false
+        standbyArmed = false
+        newReadAloud(
+            play = true,
+            requestedPageIndex = ReadBook.durPageIndex,
+            requestedStartPos = 0,
+            requestedChapterPosition = null,
+        )
+        return true
+    }
+
     private fun newReadAloud(
         play: Boolean,
         requestedPageIndex: Int,
         requestedStartPos: Int,
         requestedChapterPosition: Int?,
     ) {
+        sessionPrepared = true
         // 每次"从指定位置开始朗读"都是新会话：恢复页面跟随朗读（手动脱离后点"从此处朗读"等）
         sessionStore.restoreReadAloudFollow()
         clearFinishChapterTimerIfChapterChanged(ReadBook.durChapterIndex)
@@ -619,6 +672,7 @@ abstract class BaseReadAloudService : BaseService(),
     @SuppressLint("WakelockTimeout")
     @CallSuper
     open fun resumeReadAloud() {
+        if (tryStartFromStandby()) return
         resumeReadAloudInternal()
     }
 
@@ -1198,6 +1252,7 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun createNotification(): NotificationCompat.Builder {
         var nTitle: String = when {
+            standbyArmed -> "朗读待命"
             pause -> getString(R.string.read_aloud_pause)
             timeMinute > 0 -> getString(
                 R.string.read_aloud_timer,

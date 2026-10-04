@@ -426,6 +426,8 @@ object PreferKey {
     const val ttsParagraphInterval = "ttsParagraphInterval"
     const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
     const val ttsMaxRetry = "ttsMaxRetry"
+    // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
+    const val readAloudStandbyStart = "readAloudStandbyStart"
     // B33 四轨（音效/BGM/环境·小闭环）
     const val alEnabled = "alEnabled"
     const val alSfxVolume = "alSfxVolume"

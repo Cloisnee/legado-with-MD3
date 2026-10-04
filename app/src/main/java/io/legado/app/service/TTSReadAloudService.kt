@@ -338,6 +338,7 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
      * 恢复朗读
      */
     override fun resumeReadAloud() {
+        if (tryStartFromStandby()) return
         super.resumeReadAloud()
         play()
     }

@@ -107,6 +107,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 1),
     ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 75),
     ttsMaxRetry = compatDsValue(ReadAloudKeys.TtsMaxRetry, 5),
+    standbyStart = compatDsValue(ReadAloudKeys.StandbyStart, true),
     alEnabled = compatDsValue(ReadAloudKeys.AlEnabled, true),
     alSfxVolume = compatDsValue(ReadAloudKeys.AlSfxVolume, 80).coerceIn(0, 100),
     alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 35).coerceIn(0, 100),
@@ -152,6 +153,7 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
     PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
     PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.readAloudStandbyStart to standbyStart,
     PreferKey.alEnabled to alEnabled,
     PreferKey.alSfxVolume to alSfxVolume,
     PreferKey.alAmbVolume to alAmbVolume,
@@ -195,6 +197,7 @@ private object ReadAloudKeys {
     val PreSynthesisConcurrency = intPreferencesKey(PreferKey.ttsPreSynthesisConcurrency)
     val TtsSynthTimeoutSec = intPreferencesKey(PreferKey.ttsSynthTimeoutSec)
     val TtsMaxRetry = intPreferencesKey(PreferKey.ttsMaxRetry)
+    val StandbyStart = booleanPreferencesKey(PreferKey.readAloudStandbyStart)
     val AlEnabled = booleanPreferencesKey(PreferKey.alEnabled)
     val AlSfxVolume = intPreferencesKey(PreferKey.alSfxVolume)
     val AlAmbVolume = intPreferencesKey(PreferKey.alAmbVolume)

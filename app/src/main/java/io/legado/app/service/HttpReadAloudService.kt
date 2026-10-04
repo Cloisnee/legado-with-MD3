@@ -1401,6 +1401,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     override fun resumeReadAloud() {
+        if (tryStartFromStandby()) return
         super.resumeReadAloud()
         kotlin.runCatching {
             if (pageChanged) {
