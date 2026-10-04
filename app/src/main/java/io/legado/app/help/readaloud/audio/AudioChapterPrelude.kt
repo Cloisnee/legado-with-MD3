@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * B33.4a · 「音效与背景音」章节预合成闭环（日志 v3）：
@@ -29,6 +30,7 @@ class AudioChapterPrelude(
 
     private class Prep(val key: String, val totals: Map<SynthLane, Int>) {
         val remoteHit = HashMap<SynthLane, Int>()
+        val netHit = HashMap<SynthLane, Int>()
         val pending = HashMap<SynthLane, MutableList<Item>>()
         val enqueued = HashMap<SynthLane, MutableList<String>>()
     }
@@ -145,18 +147,33 @@ class AudioChapterPrelude(
             return
         }
 
-        // 2) 远程命中（逐条尝试免费下载；散行静默；BGM 走结构化选曲）
+        // 2) 远程命中（P1：词网直连优先 → 旧链补缺；逐条尝试；散行静默；BGM 走结构化选曲）
         miss.forEach { (lane, list) ->
             list.forEach { item ->
-                val fetched = runCatching {
-                    if (item.bgm != null) {
-                        AudioBgmPicker.fetchRemote(appContext, item.bgm)
-                    } else {
-                        AudioRemoteAuto.tryFetch(appContext, lane, item.label)
-                    }
-                }.getOrNull()
+                var fetched: File? = null
+                var viaNet = false
+                if (item.bgm == null) {
+                    fetched = runCatching {
+                        val net = AudioNetStore.lookup(item.label)
+                        if (net != null) {
+                            AudioNetStore.fetchAsset(appContext, net).also { if (it != null) viaNet = true }
+                        } else {
+                            null
+                        }
+                    }.getOrNull()
+                }
+                if (fetched == null) {
+                    fetched = runCatching {
+                        if (item.bgm != null) {
+                            AudioBgmPicker.fetchRemote(appContext, item.bgm)
+                        } else {
+                            AudioRemoteAuto.tryFetch(appContext, lane, item.label)
+                        }
+                    }.getOrNull()
+                }
                 if (fetched != null) {
                     prep.remoteHit.merge(lane, 1, Int::plus)
+                    if (viaNet) prep.netHit.merge(lane, 1, Int::plus)
                 } else {
                     prep.pending.getOrPut(lane) { mutableListOf() }.add(item)
                 }
@@ -164,8 +181,9 @@ class AudioChapterPrelude(
         }
         if (!ahead) {
             AppLog.putAudio(
-                "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(prep.remoteHit)}，" +
-                    "待合成${laneText(prep.pending.mapValues { it.value.size })}。"
+                "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(prep.remoteHit)}" +
+                    (if (prep.netHit.isNotEmpty()) "（词网 ${laneText(prep.netHit)}）" else "") +
+                    "，待合成${laneText(prep.pending.mapValues { it.value.size })}。"
             )
         }
 
@@ -207,7 +225,9 @@ class AudioChapterPrelude(
                 preparedTotals[chapterKey] = totals
                 AppLog.putAudio(
                     "【音效与背景音·${chapterNo(chapterKey)}】预合成完成：${laneText(totals)}，" +
-                        "远程命中${laneText(prep.remoteHit)}，Ai补缺${laneText(aiDone)}。"
+                        "远程命中${laneText(prep.remoteHit)}" +
+                        (if (prep.netHit.isNotEmpty()) "（词网 ${laneText(prep.netHit)}）" else "") +
+                        "，Ai补缺${laneText(aiDone)}。"
                 )
             } else {
                 AppLog.putAudio(
