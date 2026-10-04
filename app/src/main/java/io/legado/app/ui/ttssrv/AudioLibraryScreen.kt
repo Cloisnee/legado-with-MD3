@@ -947,6 +947,8 @@ private suspend fun pushToCloud(
 ): String {
     val repo = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
     val token = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
+    // 先确保词网就绪（冷启动下 snapshot 为空会退化为「全部上传→服务端去重」，浪费流量）
+    runCatching { AudioNetStore.ensureLoaded(appContext) }
     val netKeys = runCatching {
         AudioNetStore.snapshot()
             .map { AudioRemoteCatalog.laneNameOf(it.lane) to it.name }
