@@ -39,11 +39,11 @@ object AudioLaneScan {
             }.distinctBy { it.first to it.second }
         }
 
-    /** 一行文案：「bgm x条、环境声 x条、音效 x条」（分析侧日志用） */
+    /** 一行文案：「环境声 x条、音效 x条」（BGM 由计划层产出、不在此层；不再输出误导性的「bgm0条」） */
     suspend fun summaryText(context: Context, texts: List<String>): String {
         val counts = HashMap<SynthLane, Int>()
         scan(context, texts).forEach { (lane, _, _) -> counts.merge(lane, 1, Int::plus) }
-        return "bgm${counts[SynthLane.BGM] ?: 0}条、环境声${counts[SynthLane.AMB] ?: 0}条、音效${counts[SynthLane.SFX] ?: 0}条"
+        return "环境声${counts[SynthLane.AMB] ?: 0}条、音效${counts[SynthLane.SFX] ?: 0}条"
     }
 
     // ------------------------------------------------------------ B34.2·③ 预插标记建议
@@ -57,11 +57,12 @@ object AudioLaneScan {
         return suggest(ctx, texts)
     }
 
-    /** 逐片段建议：每片段每轨至多 1 个（P1：词网优先（含本地加词）；用户条目规则兜底） */
+    /** 逐片段建议：每片段每轨至多 1 个（P1 词网优先（含本地加词）；M3 内置音效规则（仅音效）居中；用户条目规则兜底） */
     suspend fun suggest(context: Context, texts: List<String>): List<List<Suggestion>> =
         withContext(Dispatchers.Default) {
             runCatching { AudioNetStore.ensureLoaded(context.applicationContext) }
             runCatching { AudioNetStore.rebuildLocalWords(context.applicationContext) }
+            runCatching { AudioBuiltinSfxRules.ensureLoaded(context.applicationContext) }
             texts.map { raw ->
                 val text = raw.trim()
                 if (text.length < 2) {
@@ -73,6 +74,20 @@ object AudioLaneScan {
                     val covered = net.map { it.lane }.toSet()
                     for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
                         if (toSynth(lane) in covered) continue
+                        // M3：普通音效——词网之后、用户规则兜底前，先过「内置音效规则」
+                        if (lane == DemoLanes.Lane.SFX) {
+                            val b = AudioBuiltinSfxRules.hit(text)
+                            if (b != null) {
+                                out.add(
+                                    Suggestion(
+                                        SynthLane.SFX,
+                                        b.name,
+                                        AudioPositions.ratioOfMatch(b.start, text.length),
+                                    )
+                                )
+                                continue
+                            }
+                        }
                         val pick = AudioRuleEngine.pick(context, lane, text) ?: continue
                         out.add(Suggestion(toSynth(lane), pick.hit.label, pick.hit.posRatio))
                     }
