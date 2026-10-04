@@ -71,7 +71,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
 
     var packs by remember { mutableStateOf<List<AudioRemoteCatalog.RemotePack>>(emptyList()) }
     var packError by remember { mutableStateOf<String?>(null) }
-    var selectedTab by remember { mutableStateOf(0) }
+    var laneTab by remember { mutableStateOf(0) }
     var loadingIndex by remember { mutableStateOf(false) }
     var indexStatus by remember { mutableStateOf("") }
     var indexError by remember { mutableStateOf<String?>(null) }
@@ -91,10 +91,6 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     var adultEnabled by remember {
         mutableStateOf(runCatching { AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true }.getOrDefault(false))
     }
-    val visiblePacks = remember(packs, adultEnabled) {
-        packs.filter { it.defaultEnabled || adultEnabled }
-    }
-
     fun reloadLocalNames() {
         scope.launch {
             localNames = AudioLibrary.assets(context.applicationContext).map { it.name }.toSet()
@@ -140,8 +136,8 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         reloadLocalNames()
     }
 
-    LaunchedEffect(visiblePacks, selectedTab) {
-        val pack = visiblePacks.getOrNull(selectedTab) ?: return@LaunchedEffect
+    LaunchedEffect(packs) {
+        val pack = packs.firstOrNull() ?: return@LaunchedEffect
         if (loadedPackId != pack.id) loadIndex(pack)
     }
 
@@ -150,8 +146,22 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         if (doneCount > 0) reloadLocalNames()
     }
 
-    val shown = remember(sounds, query) {
-        AudioRemoteCatalog.search(sounds, query)
+    // M5：分区筛选（音效/环境声/BGM/ADULT；ADULT 跟随 18+ 开关显示）
+    val laneTabs = remember(adultEnabled) {
+        buildList {
+            add("sfx" to "音效")
+            add("amb" to "环境声")
+            add("bgm" to "BGM")
+            if (adultEnabled) add("adult" to "ADULT")
+        }
+    }
+    val laneTabSafe = laneTab.coerceIn(0, laneTabs.size - 1)
+    val laneSounds = remember(sounds, adultEnabled, laneTabSafe, laneTabs.size) {
+        val lane = laneTabs[laneTabSafe].first
+        sounds.filter { it.category == lane && (adultEnabled || it.category != "adult") }
+    }
+    val shown = remember(laneSounds, query) {
+        AudioRemoteCatalog.search(laneSounds, query)
     }
 
     val uiState = RemoteLibUiState(
@@ -162,8 +172,8 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         isLoading = loadingIndex,
     )
 
-    // B33.4a-附2：18+ 开关在顶栏「⋮」菜单；统计隐藏包数
-    val hiddenAdultCount = packs.count { !it.defaultEnabled }
+    // M5：18+ 开关在顶栏「⋮」菜单；决定 ADULT 分区是否显示
+    val adultSoundCount = remember(sounds) { sounds.count { it.category == "adult" } }
 
     ListScaffold(
         title = "远程素材库",
@@ -175,7 +185,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         topBarActions = {
             TopBarActionButton(
                 onClick = {
-                    visiblePacks.getOrNull(selectedTab)?.let { loadIndex(it, force = true) }
+                    packs.firstOrNull()?.let { loadIndex(it, force = true) }
                     loadManifest(force = true)
                 },
                 imageVector = AppIcons.Replay,
@@ -190,9 +200,9 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                 RoundDropdownMenu(expanded = adultMenuOpen, onDismissRequest = { adultMenuOpen = false }) { dismiss ->
                     RoundDropdownMenuItem(
                         text = if (adultEnabled) {
-                            "关闭 18+ 内容（隐藏 $hiddenAdultCount 个包）"
+                            "关闭 18+ 内容（隐藏 ADULT 分区）"
                         } else {
-                            "开启 18+ 内容（$hiddenAdultCount 个包）"
+                            "开启 18+ 内容（显示 ADULT 分区 $adultSoundCount 条）"
                         },
                         isSelected = adultEnabled,
                         onClick = {
@@ -200,6 +210,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                             val v = !adultEnabled
                             adultEnabled = v
                             AppConfigStore.putBoolean(PreferKey.audioAdultEnabled, v)
+                            if (!v) laneTab = 0
                         },
                     )
                 }
@@ -222,14 +233,13 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
             secondaryActions = emptyList(),
         ),
         bottomContent = {
-            if (visiblePacks.size > 1) {
-                AppTabRow(
-                    modifier = Modifier.adaptiveHorizontalPadding(),
-                    tabTitles = visiblePacks.map { it.label },
-                    selectedTabIndex = selectedTab.coerceIn(0, visiblePacks.size - 1),
-                    onTabSelected = { selectedTab = it },
-                )
-            }
+            // M5：恢复 音效/环境声/BGM/ADULT 分栏（ADULT 跟随开关）
+            AppTabRow(
+                modifier = Modifier.adaptiveHorizontalPadding(),
+                tabTitles = laneTabs.map { it.second },
+                selectedTabIndex = laneTabSafe,
+                onTabSelected = { laneTab = it },
+            )
         },
         snackbarHostState = snackbarHostState,
     ) { padding ->
@@ -248,7 +258,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                         packError != null -> packError
                         loadingIndex -> indexStatus.ifBlank { "正在载入索引…" }
                         indexError != null -> indexError
-                        loadedPackId != null -> "索引就绪：共 ${sounds.size} 条 · 点卡片进多选，点右侧按钮下载"
+                        loadedPackId != null -> "索引就绪：${laneTabs[laneTabSafe].second} ${laneSounds.size} 条 · 点卡片进多选，点右侧按钮下载"
                         else -> "正在准备…"
                     }
                     AppText(

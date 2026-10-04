@@ -2,6 +2,7 @@ package io.legado.app.help.readaloud.audio
 
 import android.content.Context
 import com.github.jing332.compat.fs.TtsDirProvider
+import io.legado.app.constant.AppLog
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.http.await
@@ -56,6 +57,9 @@ object AudioNetStore {
     // ---------------- 状态 ----------------
     @Volatile private var byId: Map<String, NetAsset> = emptyMap()
     @Volatile private var aliasToIds: Map<String, List<String>> = emptyMap()
+
+    /** M5：ADULT 独立别名（aliases_adult.json）；默认不并入，开关开启才参与检索/建议 */
+    @Volatile private var aliasToIdsAdult: Map<String, List<String>> = emptyMap()
     @Volatile private var localWordToName: Map<String, String> = emptyMap()
     @Volatile private var ac: AhoCorasick? = null
     @Volatile private var acPatterns: List<String> = emptyList()
@@ -102,12 +106,14 @@ object AudioNetStore {
                 val manifestFile = File(dir, "manifest.json")
                 val catalogFile = File(dir, "catalog.json")
                 val aliasesFile = File(dir, "aliases.json")
+                val adultFile = File(dir, "aliases_adult.json")
                 // 1) 先用缓存
                 if (catalogFile.isFile && aliasesFile.isFile) {
                     runCatching {
                         applyData(
                             catalogFile.readText().removePrefix("\uFEFF"),
                             aliasesFile.readText().removePrefix("\uFEFF"),
+                            adultFile.takeIf { it.isFile }?.readText()?.removePrefix("\uFEFF"),
                         )
                     }
                 }
@@ -121,11 +127,23 @@ object AudioNetStore {
                     runCatching {
                         val cat = fetchText(BASE + encodePath(INDEX_DIR + "catalog.json"))
                         val ali = fetchText(BASE + encodePath(INDEX_DIR + "aliases.json"))
+                        val adultFetched = runCatching {
+                            fetchText(BASE + encodePath(INDEX_DIR + "aliases_adult.json"))
+                        }.getOrNull()
                         dir.mkdirs()
                         manifestFile.writeText(remoteManifest)
                         writeAtomic(catalogFile, cat)
                         writeAtomic(aliasesFile, ali)
-                        applyData(cat, ali)
+                        if (!adultFetched.isNullOrBlank()) writeAtomic(adultFile, adultFetched)
+                        applyData(
+                            cat, ali,
+                            adultFetched
+                                ?: adultFile.takeIf { it.isFile }?.readText()?.removePrefix("\uFEFF"),
+                        )
+                        AppLog.putAudio(
+                            "【音效与背景音】词网更新 v$remoteVer：资产 ${byId.size}、" +
+                                "别名 ${aliasToIds.size}（ADULT ${aliasToIdsAdult.size} 另存，开关开才并入）"
+                        )
                     }
                 }
                 loaded
@@ -133,11 +151,12 @@ object AudioNetStore {
         }
     }
 
-    private fun applyData(catalogText: String, aliasesText: String) {
+    private fun applyData(catalogText: String, aliasesText: String, adultText: String? = null) {
         val cat = parseCatalog(catalogText) ?: return
         val ali = parseAliases(aliasesText) ?: return
         byId = cat
         aliasToIds = ali
+        aliasToIdsAdult = adultText?.let { parseAliases(it) }.orEmpty()
         rebuildAc()
         loaded = true
     }
@@ -167,6 +186,7 @@ object AudioNetStore {
     private fun rebuildAc() {
         val patterns = LinkedHashSet<String>()
         patterns.addAll(aliasToIds.keys)
+        if (adultEnabled()) patterns.addAll(aliasToIdsAdult.keys)
         patterns.addAll(localWordToName.keys)
         val list = patterns.filter { it.isNotBlank() }.toList()
         acPatterns = list
@@ -175,18 +195,19 @@ object AudioNetStore {
 
     // ---------------- 检索 ----------------
 
-    /** 归一层：任意说法 → 库内最佳资产（null=词网里没有） */
+    /** 归一层：任意说法 → 库内最佳资产（null=词网里没有；M5：默认不含 ADULT，开关开启才并入） */
     fun lookup(word: String): NetAsset? {
         val w = norm(word)
         if (w.isBlank()) return null
-        bestOf(aliasToIds[w])?.let { return it }
+        val adultOk = adultEnabled()
+        bestOf(idsFor(w, adultOk))?.let { return it }
         // 本地加词优先（用户亲手挂的）
         localWordToName[w]?.let { name ->
             byId.values.firstOrNull { it.name == name }?.let { return it }
         }
         // 柔和后缀：加减「声/音效」
         softVariants(w).forEach { v ->
-            bestOf(aliasToIds[v])?.let { return it }
+            bestOf(idsFor(v, adultOk))?.let { return it }
             localWordToName[v]?.let { name ->
                 byId.values.firstOrNull { it.name == name }?.let { return it }
             }
@@ -194,7 +215,7 @@ object AudioNetStore {
         // 包含兜底：词网里谁包含它 / 它包含谁（长词优先，防“一门”类误配）
         var best: NetAsset? = null
         var bestLen = 0
-        for ((alias, ids) in aliasToIds) {
+        for ((alias, ids) in effectiveAliases(adultOk)) {
             if (alias.length < 2) continue
             if ((w.length >= 2 && alias.contains(w)) || (w.length >= 2 && w.contains(alias))) {
                 val asset = bestOf(ids) ?: continue
@@ -205,14 +226,41 @@ object AudioNetStore {
         return best
     }
 
+    /** M5：命中候选——默认仅普通词网；开关开启并入 ADULT（同键两集合求并） */
+    private fun idsFor(word: String, adultOk: Boolean): List<String> {
+        val normal = aliasToIds[word]
+        if (!adultOk) return normal.orEmpty()
+        val adult = aliasToIdsAdult[word]
+        return when {
+            normal == null -> adult.orEmpty()
+            adult == null -> normal
+            else -> normal + adult
+        }
+    }
+
+    /** M5：包含兜底用的有效别名集（开关开启时并入 ADULT） */
+    private fun effectiveAliases(adultOk: Boolean): Map<String, List<String>> {
+        if (!adultOk || aliasToIdsAdult.isEmpty()) return aliasToIds
+        val merged = HashMap<String, List<String>>(aliasToIds.size + aliasToIdsAdult.size)
+        merged.putAll(aliasToIds)
+        aliasToIdsAdult.forEach { (k, v) ->
+            val prev = merged[k]
+            merged[k] = if (prev == null) v else prev + v
+        }
+        return merged
+    }
+
+    /** 18+ 内容开关（M5：ADULT 别名/建议/归一层跟随） */
+    private fun adultEnabled(): Boolean = runCatching {
+        AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true
+    }.getOrDefault(false)
+
     /** 章级扫描：文本 → 建议（AC 多词一遍过；名字=库内规范名，ratio=命中位） */
     fun suggest(text: String, maxPerLane: Int = 1): List<NetSuggestion> {
         val matcher = ac ?: return emptyList()
         val t = text.trim()
         if (t.length < 2) return emptyList()
-        val adultOk = runCatching {
-            AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true
-        }.getOrDefault(false)
+        val adultOk = adultEnabled()
         data class Cand(val lane: SynthLane, val name: String, val ratio: Float, val len: Int)
         val best = HashMap<SynthLane, Cand>()
         for (m in matcher.matchAll(t)) {
