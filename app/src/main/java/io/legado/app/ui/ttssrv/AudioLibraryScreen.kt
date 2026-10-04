@@ -57,6 +57,7 @@ import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioMissingRow
 import io.legado.app.help.readaloud.audio.AudioNetStore
+import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
 import io.legado.app.help.readaloud.audio.splitWordList
@@ -949,7 +950,7 @@ private suspend fun pushToCloud(
     val token = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
     // 先确保词网就绪（冷启动下 snapshot 为空会退化为「全部上传→服务端去重」，浪费流量）
     runCatching { AudioNetStore.ensureLoaded(appContext) }
-    val netKeys = runCatching {
+    val netKeys: Set<Pair<String, String>> = runCatching {
         AudioNetStore.snapshot()
             .map { AudioRemoteCatalog.laneNameOf(it.lane) to it.name }
             .toSet()
