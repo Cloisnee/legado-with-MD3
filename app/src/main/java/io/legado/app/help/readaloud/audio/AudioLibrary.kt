@@ -419,6 +419,73 @@ object AudioLibrary {
         }
     }
 
+    /** P1.4：库内栏目（音效/BGM/环境声/ADULT；ADULT 由路径分隔识别） */
+    internal fun laneOf(a: AudioAsset): String =
+        if (a.relPath.contains("/ADULT/")) "ADULT" else a.category
+
+    /** P1.4 · 合并跟随结果：并入词数 / 删除条目数 / 失败原因（null=成功） */
+    data class MergeFollowResult(val mergedWords: Int, val removed: Int, val error: String? = null)
+
+    /**
+     * P1.4 · 合并跟随：把其余条目的「名称 + 词模式规则词 + 别名」去重并入目标「匹配规则」
+     * （词模式、关闭正则；按约不保留原正则内容），随后连文件删除其余条目。
+     */
+    suspend fun mergeFollow(
+        context: Context,
+        targetId: String,
+        absorbedIds: Set<String>,
+    ): MergeFollowResult = withContext(Dispatchers.IO) {
+        val cur = lock.withLock { index } ?: return@withContext MergeFollowResult(0, 0, "库未就绪")
+        val target = cur[targetId] ?: return@withContext MergeFollowResult(0, 0, "目标不存在")
+        val absorbed = absorbedIds.filter { it != targetId }.mapNotNull { cur[it] }
+        if (absorbed.isEmpty()) return@withContext MergeFollowResult(0, 0, "没有可合并的条目")
+        if (absorbed.any { laneOf(it) != laneOf(target) }) {
+            return@withContext MergeFollowResult(0, 0, "仅支持同一栏目内合并")
+        }
+        // 词集：名称 + 词模式规则词 + 别名
+        val incoming = LinkedHashSet<String>()
+        absorbed.forEach { a ->
+            incoming += a.name
+            if (!a.isRegex && a.pattern.isNotBlank()) incoming += splitWordList(a.pattern)
+            incoming += a.aliases
+        }
+        val (mergedPattern, newWordCount) = mergeFollowPattern(
+            targetPattern = target.pattern,
+            targetIsRegex = target.isRegex,
+            incoming = incoming,
+            existingExtra = target.aliases + target.name,
+        )
+        // 先更新目标（词模式开、正则关），再连文件删除其余
+        if (!updateAsset(context, target.copy(pattern = mergedPattern, isRegex = false))) {
+            return@withContext MergeFollowResult(0, 0, "目标更新失败")
+        }
+        val removed = removeAssets(context, absorbedIds.filter { it != targetId }.toSet())
+        MergeFollowResult(newWordCount, removed)
+    }
+
+    /**
+     * P1.4：合并词集 → 目标新「匹配规则」（词模式；空白清洗、去重、「|」分隔）。
+     * 返回（新 pattern, 实际并入的新词数）；目标原为正则时按约丢弃原内容。
+     */
+    internal fun mergeFollowPattern(
+        targetPattern: String,
+        targetIsRegex: Boolean,
+        incoming: Collection<String>,
+        existingExtra: Collection<String> = emptyList(),
+    ): Pair<String, Int> {
+        val existing = LinkedHashSet<String>()
+        if (!targetIsRegex && targetPattern.isNotBlank()) existing += splitWordList(targetPattern)
+        existing += existingExtra
+        val newWords = incoming.map { it.trim() }
+            .filter { it.isNotBlank() && it !in existing }
+            .distinct()
+        val pattern = buildList {
+            if (!targetIsRegex && targetPattern.isNotBlank()) add(targetPattern.trim())
+            if (newWords.isNotEmpty()) add(newWords.joinToString("|"))
+        }.filter { it.isNotBlank() }.joinToString("|")
+        return pattern to newWords.size
+    }
+
     /** 拖拽重排：给定 id 集合按新相对顺序落到其在规范序中的原位置（与替换净化 moveOrder 对齐） */
     suspend fun reorder(context: Context, orderedIds: List<String>): Boolean = withContext(Dispatchers.IO) {
         if (orderedIds.isEmpty()) return@withContext false

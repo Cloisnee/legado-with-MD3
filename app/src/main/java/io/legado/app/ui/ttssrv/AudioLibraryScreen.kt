@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -54,6 +56,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioMissingRow
+import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -130,6 +133,8 @@ fun AudioLibraryScreen(
     var showImportPicker by remember { mutableStateOf(false) }
     var moveSheet by remember { mutableStateOf(false) }
     var moveTarget by remember { mutableStateOf<String?>(null) }
+    var mergeSheet by remember { mutableStateOf(false) }
+    var mergeTargetId by remember { mutableStateOf<String?>(null) }
     var generatedOnly by remember { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
@@ -318,25 +323,27 @@ fun AudioLibraryScreen(
     val canReorder = (sortMode == "asc" || sortMode == "desc") && selectedCategory != null
     val listState = rememberLazyListState()
 
-    // B34.2·⑪：返回保位——显式记忆滚动（返回重建时「加载中」占位会把恢复位置钳到 0）
+    // B34.2·⑪ + P1.4 修复：返回保位——先恢复、后跟录；加载期与恢复前一律不记录
+    // （旧实现里滚动监听在返回重建的加载期把 (0,0) 写回记忆值，恢复读取时已被冲掉 → 回顶部）
     var savedScrollIndex by rememberSaveable { mutableIntStateOf(0) }
     var savedScrollOffset by rememberSaveable { mutableIntStateOf(0) }
     var scrollRestored by remember { mutableStateOf(false) }
-    LaunchedEffect(listState) {
+    LaunchedEffect(loading, shownItems.size) {
+        if (loading || shownItems.isEmpty()) return@LaunchedEffect
+        if (!scrollRestored) {
+            scrollRestored = true
+            if (savedScrollIndex > 0) {
+                listState.scrollToItem(
+                    savedScrollIndex.coerceAtMost(shownItems.lastIndex),
+                    savedScrollOffset,
+                )
+            }
+        }
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .collect { (idx, off) ->
                 savedScrollIndex = idx
                 savedScrollOffset = off
             }
-    }
-    LaunchedEffect(loading, shownItems.size) {
-        if (!loading && shownItems.isNotEmpty() && !scrollRestored && savedScrollIndex > 0) {
-            scrollRestored = true
-            listState.scrollToItem(
-                savedScrollIndex.coerceAtMost(shownItems.lastIndex),
-                savedScrollOffset,
-            )
-        }
     }
     val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
         moveLocal(from.index, to.index)
@@ -429,6 +436,26 @@ fun AudioLibraryScreen(
                 onClick = {
                     moveTarget = null
                     moveSheet = true
+                },
+            ),
+            ActionItem(
+                text = "合并跟随",
+                onClick = {
+                    val ids = selectedIds.filterIsInstance<String>().toSet()
+                    val picked = allAssets.filter { it.id in ids }
+                    val lanes = picked.map { AudioLibrary.laneOf(it) }.distinct()
+                    when {
+                        picked.size < 2 -> scope.launch {
+                            snackbarHostState.showSnackbar("至少选择两个音频才能合并")
+                        }
+                        lanes.size > 1 -> scope.launch {
+                            snackbarHostState.showSnackbar("仅支持同一栏目内合并（当前选中跨栏目）")
+                        }
+                        else -> {
+                            mergeTargetId = null
+                            mergeSheet = true
+                        }
+                    }
                 },
             ),
             ActionItem(
@@ -668,6 +695,41 @@ fun AudioLibraryScreen(
         },
     )
 
+    AudioMergeFollowSheet(
+        show = mergeSheet,
+        items = allAssets.filter { it.id in selectedIds.filterIsInstance<String>() },
+        targetId = mergeTargetId,
+        onTargetChange = { mergeTargetId = it },
+        onDismiss = { mergeSheet = false },
+        onConfirm = {
+            val dest = mergeTargetId
+            if (dest == null) {
+                scope.launch { snackbarHostState.showSnackbar("请先选择跟随目标") }
+            } else {
+                val ids = selectedIds.filterIsInstance<String>().toSet()
+                mergeSheet = false
+                scope.launch {
+                    val res = runCatching {
+                        AudioLibrary.mergeFollow(context.applicationContext, dest, ids)
+                    }.getOrDefault(AudioLibrary.MergeFollowResult(0, 0, "合并异常"))
+                    if (res.error == null) {
+                        // 本地词网即时生效（播放匹配 / 建议 / 归一层三处）
+                        runCatching { AudioNetStore.rebuildLocalWords(context.applicationContext) }
+                    }
+                    selectedIds = emptySet()
+                    reload()
+                    snackbarHostState.showSnackbar(
+                        if (res.error == null) {
+                            "已合并跟随：并入 ${res.mergedWords} 个词、删除 ${res.removed} 个音频"
+                        } else {
+                            "未合并：${res.error}"
+                        }
+                    )
+                }
+            }
+        },
+    )
+
     FilePickerSheet(
         show = showImportPicker,
         onDismissRequest = { showImportPicker = false },
@@ -838,6 +900,78 @@ private fun AudioMoveSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/** P1.4 · 「合并跟随」：选一个目标，其余条目的名称/词模式词/别名并入其匹配规则（词模式、关正则），并连文件删除其余 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioMergeFollowSheet(
+    show: Boolean,
+    items: List<AudioLibrary.AudioAsset>,
+    targetId: String?,
+    onTargetChange: (String?) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val target = items.firstOrNull { it.id == targetId }
+    AppModalBottomSheet(
+        show = show,
+        onDismissRequest = onDismiss,
+        title = "合并跟随：${items.size} 条",
+        endAction = {
+            MediumTonalButton(
+                onClick = onConfirm,
+                icon = Icons.Default.Check,
+                contentDescription = "合并",
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            AppText(
+                text = "选择要跟随的目标。其余音频的「名称 + 词模式词 + 别名」将并入目标的匹配规则（词模式），随后连文件删除其余音频。",
+                style = LegadoTheme.typography.labelSmall,
+                color = LegadoTheme.colorScheme.onSurfaceVariant,
+            )
+            items.forEach { a ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onTargetChange(a.id) },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = a.id == targetId, onClick = { onTargetChange(a.id) })
+                    Column(modifier = Modifier.weight(1f)) {
+                        AppText(text = a.name, style = LegadoTheme.typography.bodyMedium)
+                        if (a.isRegex && a.pattern.isNotBlank()) {
+                            AppText(
+                                text = "当前为正则规则：合并将关闭正则（原正则内容不保留）",
+                                style = LegadoTheme.typography.labelSmall,
+                                color = LegadoTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+            if (target != null && target.isRegex && target.pattern.isNotBlank()) {
+                AppText(
+                    text = "⚠ 目标「${target.name}」为正则规则，确认后将关闭正则。",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.error,
+                )
+            }
+            AppText(
+                text = "将删除其余 ${items.size - 1} 个音频（连文件，不可撤销）。",
+                style = LegadoTheme.typography.labelSmall,
+                color = LegadoTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
