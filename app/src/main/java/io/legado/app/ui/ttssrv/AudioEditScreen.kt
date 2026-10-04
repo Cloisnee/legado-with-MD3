@@ -299,7 +299,7 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                     value = pattern,
                     onValueChange = { pattern = it },
                     label = "匹配规则",
-                    placeholder = { AppText("留空=由库级规则驱动；输入关键词或正则") },
+                    placeholder = { AppText("留空=由库级规则驱动；关正则=加词（多词用 | 、; 换行）") },
                     backgroundColor = LegadoTheme.colorScheme.surfaceInput,
                     modifier = Modifier
                         .fillMaxWidth()

@@ -1,0 +1,415 @@
+package io.legado.app.help.readaloud.audio
+
+import android.content.Context
+import com.github.jing332.compat.fs.TtsDirProvider
+import io.legado.app.help.config.AppConfigStore
+import io.legado.app.constant.PreferKey
+import io.legado.app.help.http.await
+import io.legado.app.help.http.okHttpClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+
+/**
+ * P1 · 词网（唯一概念）：把「说法 → 库内声音」接到 App。
+ *
+ * - 数据源：仓库 `声效/index/{manifest,catalog,aliases}.json`（CNB raw，无鉴权；负缓存问题不影响 App）；
+ * - 缓存：`_store/audio_index/`（manifest 版本变化才重拉 catalog/aliases）；
+ * - 能力：① [lookup] 归一（任意自由说法 → 库内资产）② [suggest] 章级扫描（AC 多词命中 → 建议名=库内名）
+ *   ③ [localWords] 本地加词（条目「匹配规则」关正则=加词模式，多词 `|、;换行` 分隔）并入有效词网
+ *   ④ [fetchAsset] 按需下载（file → raw URL）并落库登记（soundId 直连）。
+ *
+ * 有效词网 = 仓库词网 + 本地加词；三处生效：播放匹配 / 建议内联 / 归一层拉回。
+ */
+object AudioNetStore {
+
+    private const val BASE = "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/"
+    private const val INDEX_DIR = "声效/index/"
+    private const val CACHE_DIR = "_store/audio_index"
+
+    /** 词网资产（catalog 条目精简） */
+    data class NetAsset(
+        val id: String,
+        val name: String,
+        val lane: String,       // sfx/amb/bgm/adult
+        val file: String,
+        val category: String = "",
+        val adult: Boolean = false,
+        val volume: Float = 1f,
+        val loop: Boolean = false,
+    )
+
+    /** 建议（章级扫描用）：lane + 库内规范名 + 命中位比例 */
+    data class NetSuggestion(val lane: SynthLane, val name: String, val ratio: Float)
+
+    // ---------------- 状态 ----------------
+    @Volatile private var byId: Map<String, NetAsset> = emptyMap()
+    @Volatile private var aliasToIds: Map<String, List<String>> = emptyMap()
+    @Volatile private var localWordToName: Map<String, String> = emptyMap()
+    @Volatile private var ac: AhoCorasick? = null
+    @Volatile private var acPatterns: List<String> = emptyList()
+    @Volatile private var loaded = false
+
+    private val loadLock = Mutex()
+    private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val http by lazy {
+        okHttpClient.newBuilder()
+            .callTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** 预热（幂等、异步、失败静默）：加载词网 + 合并本地加词 */
+    fun warmUp(context: Context) {
+        val appCtx = context.applicationContext
+        io.launch {
+            runCatching { ensureLoaded(appCtx) }
+            runCatching { rebuildLocalWords(appCtx) }
+        }
+    }
+
+    val isReady: Boolean get() = loaded
+    val assetCount: Int get() = byId.size
+    val aliasCount: Int get() = aliasToIds.size
+
+    // ---------------- 加载 ----------------
+
+    /** 预热（幂等）：缓存优先；后台检查版本更新。 */
+    suspend fun ensureLoaded(context: Context): Boolean {
+        if (loaded) return true
+        return withContext(Dispatchers.IO) {
+            loadLock.withLock {
+                if (loaded) return@withLock true
+                val dir = cacheDir(context)
+                val manifestFile = File(dir, "manifest.json")
+                val catalogFile = File(dir, "catalog.json")
+                val aliasesFile = File(dir, "aliases.json")
+                // 1) 先用缓存
+                if (catalogFile.isFile && aliasesFile.isFile) {
+                    runCatching {
+                        applyData(
+                            catalogFile.readText().removePrefix("\uFEFF"),
+                            aliasesFile.readText().removePrefix("\uFEFF"),
+                        )
+                    }
+                }
+                // 2) 拉 manifest 比对版本（失败静默；有缓存即可用）
+                val remoteManifest = runCatching { fetchText(BASE + encodePath(INDEX_DIR + "manifest.json")) }.getOrNull()
+                val remoteVer = remoteManifest?.let { runCatching { JSONObject(it).optString("version") }.getOrNull() }.orEmpty()
+                val localVer = manifestFile.takeIf { it.isFile }
+                    ?.let { runCatching { JSONObject(it.readText().removePrefix("\uFEFF")).optString("version") }.getOrNull() }
+                    .orEmpty()
+                if (remoteManifest != null && (remoteVer.isBlank() || remoteVer != localVer || !loaded)) {
+                    runCatching {
+                        val cat = fetchText(BASE + encodePath(INDEX_DIR + "catalog.json"))
+                        val ali = fetchText(BASE + encodePath(INDEX_DIR + "aliases.json"))
+                        dir.mkdirs()
+                        manifestFile.writeText(remoteManifest)
+                        writeAtomic(catalogFile, cat)
+                        writeAtomic(aliasesFile, ali)
+                        applyData(cat, ali)
+                    }
+                }
+                loaded
+            }
+        }
+    }
+
+    private fun applyData(catalogText: String, aliasesText: String) {
+        val cat = parseCatalog(catalogText) ?: return
+        val ali = parseAliases(aliasesText) ?: return
+        byId = cat
+        aliasToIds = ali
+        rebuildAc()
+        loaded = true
+    }
+
+    // ---------------- 本地加词（自助词网） ----------------
+
+    /**
+     * 合并本地条目加词（编辑条目「匹配规则」关正则=加词模式；多词 `|、;，换行` 分隔）+ 条目别名。
+     * 词 → 条目素材名（播放/建议/归一层三处生效）。条目编辑/重扫后调用。
+     */
+    suspend fun rebuildLocalWords(context: Context) {
+        val words = HashMap<String, String>()
+        runCatching {
+            AudioLibrary.ensureLoaded(context.applicationContext)
+            AudioLibrary.assets(context.applicationContext).forEach { a ->
+                if (!a.enabled) return@forEach
+                if (!a.isRegex && a.pattern.isNotBlank()) {
+                    splitWords(a.pattern).forEach { w -> words.putIfAbsent(w, a.name) }
+                }
+                a.aliases.filter { it.isNotBlank() }.forEach { w -> words.putIfAbsent(w.trim(), a.name) }
+            }
+        }
+        localWordToName = words
+        rebuildAc()
+    }
+
+    private fun rebuildAc() {
+        val patterns = LinkedHashSet<String>()
+        patterns.addAll(aliasToIds.keys)
+        patterns.addAll(localWordToName.keys)
+        val list = patterns.filter { it.isNotBlank() }.toList()
+        acPatterns = list
+        ac = runCatching { AhoCorasick(list) }.getOrNull()
+    }
+
+    // ---------------- 检索 ----------------
+
+    /** 归一层：任意说法 → 库内最佳资产（null=词网里没有） */
+    fun lookup(word: String): NetAsset? {
+        val w = norm(word)
+        if (w.isBlank()) return null
+        bestOf(aliasToIds[w])?.let { return it }
+        // 本地加词优先（用户亲手挂的）
+        localWordToName[w]?.let { name ->
+            byId.values.firstOrNull { it.name == name }?.let { return it }
+        }
+        // 柔和后缀：加减「声/音效」
+        softVariants(w).forEach { v ->
+            bestOf(aliasToIds[v])?.let { return it }
+            localWordToName[v]?.let { name ->
+                byId.values.firstOrNull { it.name == name }?.let { return it }
+            }
+        }
+        // 包含兜底：词网里谁包含它 / 它包含谁（长词优先，防“一门”类误配）
+        var best: NetAsset? = null
+        var bestLen = 0
+        for ((alias, ids) in aliasToIds) {
+            if (alias.length < 2) continue
+            if ((w.length >= 2 && alias.contains(w)) || (w.length >= 2 && w.contains(alias))) {
+                val asset = bestOf(ids) ?: continue
+                val l = minOf(alias.length, w.length)
+                if (l > bestLen) { bestLen = l; best = asset }
+            }
+        }
+        return best
+    }
+
+    /** 章级扫描：文本 → 建议（AC 多词一遍过；名字=库内规范名，ratio=命中位） */
+    fun suggest(text: String, maxPerLane: Int = 1): List<NetSuggestion> {
+        val matcher = ac ?: return emptyList()
+        val t = text.trim()
+        if (t.length < 2) return emptyList()
+        val adultOk = runCatching {
+            AppConfigStore.getBoolean(PreferKey.audioAdultEnabled) == true
+        }.getOrDefault(false)
+        data class Cand(val lane: SynthLane, val name: String, val ratio: Float, val len: Int)
+        val best = HashMap<SynthLane, Cand>()
+        for (m in matcher.matchAll(t)) {
+            val alias = acPatterns.getOrNull(m.patternIndex) ?: continue
+            if (alias.length < 2) continue
+            // 本地加词优先
+            val localName = localWordToName[alias]
+            val asset = if (localName != null) {
+                byId.values.firstOrNull { it.name == localName }
+            } else {
+                bestOf(aliasToIds[alias])
+            } ?: continue
+            if (asset.adult && !adultOk) continue
+            val lane = laneOf(asset.lane) ?: continue
+            val ratio = AudioPositions.ratioOfMatch(m.start, t.length)
+            val cand = Cand(lane, asset.name, ratio, m.length)
+            val prev = best[lane]
+            if (prev == null || cand.len > prev.len) best[lane] = cand
+        }
+        return best.values.map { NetSuggestion(it.lane, it.name, it.ratio) }
+    }
+
+    // ---------------- 下载落库 ----------------
+
+    /** 按需下载一条词网资产（file → raw URL）→ 落库登记（soundId 直连）。已存在则直接返回。 */
+    suspend fun fetchAsset(context: Context, asset: NetAsset, onProgress: (Long) -> Unit = {}): File? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = TmDemoAssets.libRoot(context)
+                val ext = asset.file.substringAfterLast('.', "mp3").lowercase()
+                val name = sanitizeGeneratedName(asset.name) + "." + ext
+                val folder = folderOf(asset.lane)
+                val out = File(root, "$folder/$name")
+                val relPath = out.relativeTo(root).path.replace(File.separatorChar, '/')
+                if (out.isFile && out.length() > 0L &&
+                    AudioLibrary.sourceOfRelPath(relPath) != AudioLibrary.SOURCE_GENERATED
+                ) {
+                    AudioLibrary.notifyFileAdded(
+                        context, out, AudioLibrary.SOURCE_REMOTE, asset.id,
+                        asset.aliasesForNotify(),
+                    )
+                    return@runCatching out
+                }
+                out.parentFile?.mkdirs()
+                val tmp = File(out.parentFile, "$name.part")
+                val req = Request.Builder()
+                    .url(BASE + encodePath(asset.file))
+                    .header("User-Agent", "legado-audio-net")
+                    .build()
+                val resp = http.newCall(req).await()
+                require(resp.isSuccessful) { "HTTP ${resp.code}" }
+                val body = resp.body ?: error("空响应")
+                var downloaded = 0L
+                var lastReport = 0L
+                body.byteStream().use { input ->
+                    tmp.outputStream().use { output ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            output.write(buf, 0, n)
+                            downloaded += n
+                            if (downloaded - lastReport >= 256 * 1024) {
+                                lastReport = downloaded
+                                runCatching { onProgress(downloaded) }
+                            }
+                        }
+                    }
+                }
+                if (downloaded <= 0L) {
+                    runCatching { tmp.delete() }
+                    error("下载为空")
+                }
+                if (!tmp.renameTo(out)) {
+                    tmp.copyTo(out, overwrite = true)
+                    tmp.delete()
+                }
+                AudioLibrary.notifyFileAdded(
+                    context, out, AudioLibrary.SOURCE_REMOTE, asset.id, asset.aliasesForNotify(),
+                )
+                out
+            }.getOrNull()
+        }
+
+    private fun NetAsset.aliasesForNotify(): List<String> =
+        (listOf(name) + aliasToIds.filterValues { it.contains(id) }.keys.take(8)).distinct()
+
+    // ---------------- 纯函数（可单测） ----------------
+
+    /** 说法归一：去空白、去柔和后缀（音效/声效/的声音/声音） */
+    internal fun norm(raw: String): String {
+        var t = raw.trim()
+        for (suf in listOf("音效", "声效", "的声音", "声音")) {
+            if (t.length > suf.length && t.endsWith(suf)) {
+                t = t.removeSuffix(suf)
+                break
+            }
+        }
+        return t.trim()
+    }
+
+    /** 加减「声/音」形态（候选扩展） */
+    internal fun softVariants(w: String): List<String> {
+        val out = ArrayList<String>(3)
+        if (w.length >= 2) {
+            if (w.endsWith("声")) out.add(w.dropLast(1)) else out.add(w + "声")
+            if (w.endsWith("音")) out.add(w.dropLast(1)) else out.add(w + "音")
+        }
+        return out
+    }
+
+    /** 加词模式的分词：`|`、顿号、分号、逗号、换行、制表符分隔 */
+    internal fun splitWords(raw: String): List<String> = splitWordList(raw)
+
+    /** 路径逐段百分号编码（中文/空格/符号；raw 通道要求） */
+    internal fun encodePath(path: String): String =
+        path.split('/').joinToString("/") { seg ->
+            URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
+        }
+
+    internal fun laneOf(lane: String): SynthLane? = when (lane.lowercase()) {
+        "sfx", "adult" -> SynthLane.SFX
+        "amb" -> SynthLane.AMB
+        "bgm" -> SynthLane.BGM
+        else -> null
+    }
+
+    internal fun folderOf(lane: String): String = when (lane.lowercase()) {
+        "bgm" -> "bgm"
+        "amb" -> "sfx/环境声"
+        "adult" -> "sfx/ADULT"
+        else -> "sfx/音效"
+    }
+
+    /** 候选去重后取最佳：优先名==说法本身 → 名最短 → 首个 */
+    private fun bestOf(ids: List<String>?): NetAsset? {
+        val list = ids?.mapNotNull { byId[it] } ?: return null
+        if (list.isEmpty()) return null
+        return list.sortedWith(
+            compareBy({ it.name.length }, { it.id }),
+        ).first()
+    }
+
+    // ---------------- 解析（内部） ----------------
+
+    private fun parseCatalog(text: String): Map<String, NetAsset>? = runCatching {
+        val root = JSONObject(text)
+        val arr = root.optJSONArray("assets") ?: return null
+        val map = LinkedHashMap<String, NetAsset>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            if (id.isBlank()) continue
+            map[id] = NetAsset(
+                id = id,
+                name = o.optString("name").ifBlank { id },
+                lane = o.optString("lane", "sfx"),
+                file = o.optString("file"),
+                category = o.optString("category"),
+                adult = o.optBoolean("adult", false),
+                volume = o.optDouble("volume", 1.0).toFloat(),
+                loop = o.optBoolean("loop", false),
+            )
+        }
+        map
+    }.getOrNull()
+
+    private fun parseAliases(text: String): Map<String, List<String>>? = runCatching {
+        val root = JSONObject(text)
+        val arr = root.optJSONArray("aliases") ?: return null
+        val map = LinkedHashMap<String, List<String>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val alias = o.optString("alias").trim()
+            if (alias.isBlank()) continue
+            val ids = ArrayList<String>(2)
+            o.optJSONArray("ids")?.let { a ->
+                for (k in 0 until a.length()) a.optString(k).takeIf { it.isNotBlank() }?.let { ids.add(it) }
+            }
+            if (ids.isNotEmpty()) map[alias] = ids
+        }
+        map
+    }.getOrNull()
+
+    private fun cacheDir(context: Context): File =
+        File(TtsDirProvider.baseDir(context), CACHE_DIR)
+
+    private fun writeAtomic(f: File, text: String) {
+        runCatching {
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(text)
+            if (!tmp.renameTo(f)) {
+                tmp.copyTo(f, overwrite = true)
+                tmp.delete()
+            }
+        }
+    }
+
+    private suspend fun fetchText(url: String): String {
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", "legado-audio-net")
+            .build()
+        val resp = http.newCall(req).await()
+        require(resp.isSuccessful) { "HTTP ${resp.code}" }
+        return resp.body?.string() ?: error("空响应")
+    }
+}

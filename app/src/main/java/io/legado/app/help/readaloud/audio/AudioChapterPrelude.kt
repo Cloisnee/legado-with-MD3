@@ -169,14 +169,21 @@ class AudioChapterPrelude(
             )
         }
 
-        // 3) 入合成队列（携带生成描述；合成提示词 desc 优先）
+        // 3) 入合成队列（P1：词网有货 → 直接按 file 下载（落库名=规范名），取代合成）
         val q = queue()
         val pendingTotal = prep.pending.values.sumOf { it.size }
         if (q != null && pendingTotal > 0) {
             prep.pending.forEach { (lane, list) ->
                 list.forEach { item ->
-                    q.enqueue(lane.label, item.label, chapterKey, item.desc)
-                    prep.enqueued.getOrPut(lane) { mutableListOf() }.add(item.label)
+                    var fetched = false
+                    runCatching {
+                        val net = AudioNetStore.lookup(item.label)
+                        if (net != null) fetched = AudioNetStore.fetchAsset(appContext, net) != null
+                    }
+                    if (!fetched) {
+                        q.enqueue(lane.label, item.label, chapterKey, item.desc)
+                        prep.enqueued.getOrPut(lane) { mutableListOf() }.add(item.label)
+                    }
                 }
             }
         }

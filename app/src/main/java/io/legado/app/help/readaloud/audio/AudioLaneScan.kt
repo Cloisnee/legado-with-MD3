@@ -58,21 +58,27 @@ object AudioLaneScan {
         return suggest(ctx, texts)
     }
 
-    /** 逐片段建议：每片段每轨至多 1 个（与兜底口径一致；共享规则/词典/意图链） */
+    /** 逐片段建议：每片段每轨至多 1 个（P1：词网优先（含本地加词）；规则/词典兜底） */
     suspend fun suggest(context: Context, texts: List<String>): List<List<Suggestion>> =
         withContext(Dispatchers.Default) {
             runCatching { AudioBuiltinRules.ensureLoaded(context.applicationContext) }
+            runCatching { AudioNetStore.ensureLoaded(context.applicationContext) }
+            runCatching { AudioNetStore.rebuildLocalWords(context.applicationContext) }
             texts.map { raw ->
                 val text = raw.trim()
                 if (text.length < 2) {
                     emptyList()
                 } else {
-                    buildList {
-                        for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
-                            val pick = AudioRuleEngine.pick(context, lane, text) ?: continue
-                            add(Suggestion(toSynth(lane), pick.hit.label, pick.hit.posRatio))
-                        }
+                    val out = ArrayList<Suggestion>(3)
+                    val net = runCatching { AudioNetStore.suggest(text) }.getOrDefault(emptyList())
+                    net.forEach { out.add(Suggestion(it.lane, it.name, it.ratio)) }
+                    val covered = net.map { it.lane }.toSet()
+                    for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
+                        if (toSynth(lane) in covered) continue
+                        val pick = AudioRuleEngine.pick(context, lane, text) ?: continue
+                        out.add(Suggestion(toSynth(lane), pick.hit.label, pick.hit.posRatio))
                     }
+                    out
                 }
             }
         }

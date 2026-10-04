@@ -50,26 +50,26 @@ object AudioRuleEngine {
 
     // ------------------------------------------------------------ 用户自定规则（素材「匹配规则」字段）
 
-    /** 单条自定规则（正则或字面；标题/正文范围） */
+    /** 单条自定规则（正则或字面；字面支持多词（加词模式）：`|、;换行` 分隔） */
     internal class UserRule(
         val lane: DemoLanes.Lane,
         val name: String,
         val regex: Regex?,
-        val literal: String?,
+        val literals: List<String>?,
         val scopeTitle: Boolean,
         val scopeContent: Boolean,
     ) {
         fun matches(text: String, isTitle: Boolean): Boolean {
             if (isTitle && !scopeTitle) return false
             if (!isTitle && !scopeContent) return false
-            return if (regex != null) regex.containsMatchIn(text) else text.contains(literal.orEmpty())
+            return if (regex != null) regex.containsMatchIn(text)
+            else literals.orEmpty().any { text.contains(it) }
         }
 
         /** B34.2：命中起点（供句内触发位置换算；未命中 -1） */
         fun matchIndex(text: String): Int {
             if (regex != null) return regex.find(text)?.range?.first ?: -1
-            val lit = literal ?: return -1
-            return text.indexOf(lit)
+            return literals.orEmpty().map { text.indexOf(it) }.filter { it >= 0 }.minOrNull() ?: -1
         }
     }
 
@@ -98,7 +98,10 @@ object AudioRuleEngine {
                         UserRule(laneOfAsset(a), a.name, it, null, a.scopeTitle, a.scopeContent)
                     }
                 } else {
-                    UserRule(laneOfAsset(a), a.name, null, p, a.scopeTitle, a.scopeContent)
+                    UserRule(
+                        laneOfAsset(a), a.name, null, splitWordList(p),
+                        a.scopeTitle, a.scopeContent,
+                    )
                 }
                 if (rule == null && invalidPatternLogged.add("${a.name}|$p")) {
                     AppLog.putAudio("【音效与背景音】正则无效已跳过：${a.name}（$p）")

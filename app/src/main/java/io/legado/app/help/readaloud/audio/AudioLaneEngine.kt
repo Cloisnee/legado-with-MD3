@@ -131,6 +131,8 @@ class AudioLaneEngine(
         runCatching { AudioLibrary.warmUp(appContext) }
         // B33.4a：内置规则包预热（mingwuyan 音效 / 环境·BGM 词典）
         runCatching { AudioBuiltinRules.warmUp(appContext) }
+        // P1：词网预热（索引 + 本地加词）
+        runCatching { AudioNetStore.warmUp(appContext) }
         // B33.4b：音频计划存储上下文（播放侧读取计划用）
         runCatching { AudioPlanStore.remember(appContext) }
     }
@@ -302,6 +304,9 @@ class AudioLaneEngine(
         if (bgmItem != null) {
             val keyword = AudioBgmPicker.pickLocal(appContext, AudioBgmPicker.queryOf(bgmItem))?.asset?.name
                 ?: AudioLibrary.resolve(appContext, bgmItem.tag)?.asset?.name
+                ?: AudioNetStore.lookup(bgmItem.tag)?.let { net ->
+                    AudioLibrary.resolve(appContext, net.name)?.asset?.name ?: net.name
+                }
                 ?: bgmItem.displayName
             if (keyword != desiredBgm) {
                 val now = System.currentTimeMillis()
@@ -327,12 +332,17 @@ class AudioLaneEngine(
 
         // 3) 音效：点事件逐条（同款闸门：全局间隔 + 同素材冷却）
         planSfxByPara[para]?.forEach { item ->
-            val keyword = item.tag
+            // P1：词网归一——自由说法拉回库内规范名；词网有货则异步下载（落库后自动接上）
+            val net = AudioNetStore.lookup(item.tag)
+            val keyword = net?.name ?: item.tag
             if (!allowSfx(keyword)) {
                 laneLog(index, "音效=$keyword（闸门跳过）")
                 return@forEach
             }
-            val resolved = AudioLibrary.resolve(appContext, keyword)
+            var resolved = AudioLibrary.resolve(appContext, keyword)
+            if (resolved == null && net != null) {
+                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+            }
             if (resolved == null) {
                 markMissing("音效", keyword, item.desc)
                 return@forEach
@@ -407,7 +417,15 @@ class AudioLaneEngine(
             val now = System.currentTimeMillis()
             val retryAt = if (kind == "BGM") bgmMissRetryAt else ambMissRetryAt
             if (now >= retryAt) {
-                val resolved = AudioLibrary.resolve(appContext, desired)
+                var resolved = AudioLibrary.resolve(appContext, desired)
+                if (resolved == null) {
+                    // P1：词网归一——有货则异步下载（落库后由 10s 重试自动接上）
+                    val net = AudioNetStore.lookup(desired)
+                    if (net != null) {
+                        scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+                        resolved = AudioLibrary.resolve(appContext, net.name)
+                    }
+                }
                 if (resolved != null) {
                     lane.playKeyword(desired, resolved.file, resolved.asset)
                     if (kind == "BGM") bgmMissRetryAt = 0L else ambMissRetryAt = 0L
