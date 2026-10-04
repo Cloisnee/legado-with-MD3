@@ -58,6 +58,8 @@ import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioMissingRow
 import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
+import io.legado.app.help.readaloud.audio.CloudWordnetClient
+import io.legado.app.help.readaloud.audio.splitWordList
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
@@ -135,6 +137,7 @@ fun AudioLibraryScreen(
     var moveTarget by remember { mutableStateOf<String?>(null) }
     var mergeSheet by remember { mutableStateOf(false) }
     var mergeTargetId by remember { mutableStateOf<String?>(null) }
+    var cloudPushing by remember { mutableStateOf(false) }
     var generatedOnly by remember { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
@@ -454,6 +457,39 @@ fun AudioLibraryScreen(
                         else -> {
                             mergeTargetId = null
                             mergeSheet = true
+                        }
+                    }
+                },
+            ),
+            ActionItem(
+                text = "补充云端词网",
+                onClick = {
+                    val enabled = AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true
+                    val repoCfg = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
+                    val tokenCfg = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
+                    val ids = selectedIds.filterIsInstance<String>().toSet()
+                    val picked = allAssets.filter { it.id in ids }
+                    when {
+                        cloudPushing -> scope.launch {
+                            snackbarHostState.showSnackbar("正在提交中，请稍候…")
+                        }
+                        !enabled || repoCfg.isBlank() || tokenCfg.isBlank() -> scope.launch {
+                            snackbarHostState.showSnackbar("请先在 朗读设置 → 云端词网 配置仓库与令牌")
+                        }
+                        picked.isEmpty() -> scope.launch {
+                            snackbarHostState.showSnackbar("请先选择要补充的条目")
+                        }
+                        picked.size > 20 -> scope.launch {
+                            snackbarHostState.showSnackbar("单批最多 20 条，请分批提交")
+                        }
+                        else -> {
+                            cloudPushing = true
+                            scope.launch {
+                                val msg = pushToCloud(context.applicationContext, picked)
+                                cloudPushing = false
+                                selectedIds = emptySet()
+                                snackbarHostState.showSnackbar(msg)
+                            }
                         }
                     }
                 },
@@ -900,6 +936,57 @@ private fun AudioMoveSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/** P1.4 · 组批提交云端词网（新音频上传；库内同名只并词）；返回用户可读结果 */
+private suspend fun pushToCloud(
+    appContext: android.content.Context,
+    picked: List<AudioLibrary.AudioAsset>,
+): String {
+    val repo = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
+    val token = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
+    val netKeys = runCatching {
+        AudioNetStore.snapshot()
+            .map { AudioRemoteCatalog.laneNameOf(it.lane) to it.name }
+            .toSet()
+    }.getOrDefault(emptySet())
+    var skipped = 0
+    val items = ArrayList<CloudWordnetClient.Item>(picked.size)
+    picked.forEach { a ->
+        val lane = AudioLibrary.laneOf(a)
+        val matched = (lane to a.name) in netKeys
+        val filePath = if (matched) {
+            null
+        } else {
+            val f = AudioLibrary.fileOf(appContext, a)
+            if (a.zipRel.isBlank() && f.isFile && f.length() > 0L) f.absolutePath else null
+        }
+        if (!matched && filePath == null) {
+            skipped++
+            return@forEach
+        }
+        val ext = a.relPath.substringAfterLast('.', "mp3").lowercase()
+            .let { if (it in setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")) it else "mp3" }
+        items += CloudWordnetClient.Item(
+            name = a.name,
+            lane = lane,
+            words = if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList(),
+            aliases = a.aliases,
+            filePath = filePath,
+            ext = ext,
+        )
+    }
+    if (items.isEmpty()) return "没有可提交的条目（$skipped 条缺少文件）"
+    val res = CloudWordnetClient.pushBatch(repo, token, items)
+    return if (res.error != null) {
+        "提交失败：${res.error}"
+    } else {
+        buildString {
+            append("已提交云端处理：上传 ${res.uploaded}、仅并词 ${res.mergeOnly}")
+            if (skipped > 0) append("、跳过 $skipped")
+            append("（处理后自动生效）")
         }
     }
 }

@@ -428,6 +428,10 @@ object PreferKey {
     const val ttsMaxRetry = "ttsMaxRetry"
     // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
     const val readAloudStandbyStart = "readAloudStandbyStart"
+    // P1.4：云端词网（本地条目推送到 CNB 仓库，由流水线合并进词网）
+    const val cloudWordEnabled = "cloudWordEnabled"
+    const val cloudWordRepo = "cloudWordRepo"
+    const val cloudWordToken = "cloudWordToken"
     // B33 四轨（音效/BGM/环境·小闭环）
     const val alEnabled = "alEnabled"
     const val alSfxVolume = "alSfxVolume"

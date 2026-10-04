@@ -1,9 +1,15 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -12,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -28,16 +35,23 @@ import io.legado.app.help.config.AppConfigStore
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
+import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
+import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SplicedColumnGroup
+import io.legado.app.ui.widget.components.button.series.MediumPlainButton
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
+import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
+import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
 import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.help.IntentHelp
+import io.legado.app.help.readaloud.audio.CloudWordnetClient
 import io.legado.app.utils.TTSCacheUtils
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
@@ -102,6 +116,7 @@ fun ReadAloudSettingsScreen(
     var showAlBgmCd by remember { mutableStateOf(false) }
     var showAlAmbDwell by remember { mutableStateOf(false) }
     var showAlChapCap by remember { mutableStateOf(false) }
+    var showCloudWord by remember { mutableStateOf(false) }
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -376,6 +391,15 @@ fun ReadAloudSettingsScreen(
                         ),
                         onClick = { showCleanTime = true },
                     )
+                    TinyClickableSettingItem(
+                        title = "云端词网",
+                        description = run {
+                            val en = AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true
+                            val rp = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
+                            if (en && rp.isNotBlank()) "已配置：$rp" else "未配置（点此填写仓库与令牌）"
+                        },
+                        onClick = { showCloudWord = true },
+                    )
                 }
             }
         }
@@ -529,4 +553,107 @@ fun ReadAloudSettingsScreen(
         onValueChange = { v -> update { it.copy(alChapterSynthCap = v.coerceIn(0, 50)) } },
         onDismissRequest = { showAlChapCap = false },
     )
+    CloudWordnetConfigSheet(
+        show = showCloudWord,
+        onDismissRequest = { showCloudWord = false },
+    )
+}
+
+/** P1.4 · 「云端词网」配置（仓库 + 专用令牌 + 启用 + 测试连接） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CloudWordnetConfigSheet(
+    show: Boolean,
+    onDismissRequest: () -> Unit,
+) {
+    var enabled by remember(show) {
+        mutableStateOf(AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true)
+    }
+    var repo by remember(show) {
+        mutableStateOf(AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty())
+    }
+    var token by remember(show) {
+        mutableStateOf(AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty())
+    }
+    var testing by remember(show) { mutableStateOf(false) }
+    var testMsg by remember(show) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    AppModalBottomSheet(
+        show = show,
+        onDismissRequest = onDismissRequest,
+        title = "云端词网",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    AppConfigStore.putBoolean(PreferKey.cloudWordEnabled, enabled)
+                    AppConfigStore.putString(PreferKey.cloudWordRepo, repo.trim())
+                    AppConfigStore.putString(PreferKey.cloudWordToken, token.trim())
+                    onDismissRequest()
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "保存",
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AppText(
+                text = "把音频库选中的条目（新音频 + 词/别名）推送到 CNB 仓库，由云端流水线合并进词网；" +
+                    "处理完成后，下次听书自动拉取最新索引（音频库 ⋮ → 补充云端词网）。",
+                style = LegadoTheme.typography.labelSmall,
+                color = LegadoTheme.colorScheme.onSurfaceVariant,
+            )
+            TinySwitchSettingItem(
+                title = "启用",
+                checked = enabled,
+                onCheckedChange = { enabled = it },
+            )
+            AppTextField(
+                value = repo,
+                onValueChange = { repo = it; testMsg = null },
+                modifier = Modifier.fillMaxWidth(),
+                label = "仓库（如 Cloisnee/yinpin）",
+            )
+            AppTextField(
+                value = token,
+                onValueChange = { token = it; testMsg = null },
+                modifier = Modifier.fillMaxWidth(),
+                label = "访问令牌（需 repo-code:rw + repo-cnb-trigger:rw）",
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MediumPlainButton(
+                    onClick = {
+                        testing = true
+                        testMsg = null
+                        scope.launch {
+                            testMsg = runCatching {
+                                CloudWordnetClient.testConnection(repo, token)
+                            }.getOrElse { "失败：${it.localizedMessage}" }
+                            testing = false
+                        }
+                    },
+                    enabled = !testing && repo.isNotBlank() && token.isNotBlank(),
+                    text = if (testing) "测试中…" else "测试连接",
+                )
+                testMsg?.let {
+                    AppText(
+                        text = it,
+                        style = LegadoTheme.typography.labelSmall,
+                        color = if (it.startsWith("连接正常")) {
+                            LegadoTheme.colorScheme.primary
+                        } else {
+                            LegadoTheme.colorScheme.error
+                        },
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+            }
+        }
+    }
 }
