@@ -306,14 +306,13 @@ object AudioNetStore {
         return t.trim()
     }
 
-    /** 加减「声/音」形态（候选扩展） */
+    /** 加减「声/音」形态（候选扩展；基于去尾干词，去重且排除原词） */
     internal fun softVariants(w: String): List<String> {
-        val out = ArrayList<String>(3)
-        if (w.length >= 2) {
-            if (w.endsWith("声")) out.add(w.dropLast(1)) else out.add(w + "声")
-            if (w.endsWith("音")) out.add(w.dropLast(1)) else out.add(w + "音")
-        }
-        return out
+        if (w.length < 2) return emptyList()
+        val stem = w.removeSuffix("声").removeSuffix("音").ifEmpty { w }
+        return listOf(stem, stem + "声", stem + "音")
+            .filter { it.isNotBlank() && it != w }
+            .distinct()
     }
 
     /** 加词模式的分词：`|`、顿号、分号、逗号、换行、制表符分隔 */
