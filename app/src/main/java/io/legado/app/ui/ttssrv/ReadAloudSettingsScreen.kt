@@ -647,7 +647,6 @@ private fun CloudWordnetConfigSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp)
                     .padding(bottom = 120.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {

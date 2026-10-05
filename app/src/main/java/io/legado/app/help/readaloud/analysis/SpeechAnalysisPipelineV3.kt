@@ -22,6 +22,7 @@ import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioPrefill
 import io.legado.app.help.readaloud.audio.AudioTagCodec
+import io.legado.app.help.readaloud.audio.SynthLane
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -420,15 +421,12 @@ class SpeechAnalysisPipelineV3(
         val t0 = System.currentTimeMillis()
         val ranges = stageA(paragraphs, cfg, useAi = isContinuous, chapterIndex = chapterIndex)
 
-        // B33.4b：音频导演（AI 计划）——第1阶段后并发发起；跳过时此处打「本地规则快速识别」原因行
+        // B33.4b：音频导演（AI 计划）——第1阶段后并发发起；跳过时在片段建议就绪后打「本地建议预扫」行
         val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
         val directorSkipReason = when {
             !isContinuous -> "首章/非连续"
             directorRefs.isEmpty() -> "未设置Ai"
             else -> ""
-        }
-        if (directorSkipReason.isNotEmpty()) {
-            logLaneFallback(directorSkipReason, paragraphs)
         }
         if (ranges.isEmpty()) {
             AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
@@ -441,6 +439,12 @@ class SpeechAnalysisPipelineV3(
         val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
             AudioLaneScan.suggest(flatUnits)
         }.getOrNull() ?: List(flatUnits.size) { emptyList() }
+
+        if (directorSkipReason.isNotEmpty()) {
+            // P1.5.1：跳过 Ai 导演时的预扫行——与「本地计划」同源（词网+内置+用户建议），
+            // 唯一条目口径=与音频侧「剧本统计」一致（修「分析显示0条 vs 音频5条」的口径误解）
+            logLaneFallbackSuggestions(directorSkipReason, unitSuggestions)
+        }
 
         // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
@@ -1666,7 +1670,7 @@ class SpeechAnalysisPipelineV3(
 
     // ---------------- B33.4b 音频导演 ----------------
 
-    /** 本地规则兜底行（未设置Ai/首章非连续/Ai失败/Ai超时） */
+    /** Ai 失败/超时兜底行：本地规则层快扫（播放侧后续回退同源扫描，口径一致） */
     private suspend fun logLaneFallback(reason: String, paragraphs: List<CanonicalSpeechParagraph>) {
         runCatching {
             val laneSummary = AudioLaneScan.summaryText(paragraphs.map { it.text })
@@ -1676,6 +1680,19 @@ class SpeechAnalysisPipelineV3(
                 )
             }
         }
+    }
+
+    /** P1.5.1：本地建议预扫行（跳过 Ai 导演时）；计数=唯一条目（与「本地计划」/音频侧「剧本统计」同口径） */
+    private fun logLaneFallbackSuggestions(
+        reason: String,
+        suggestions: List<List<AudioLaneScan.Suggestion>>,
+    ) {
+        val uniq = suggestions.flatten().distinctBy { it.lane to it.label }
+        val amb = uniq.count { it.lane == SynthLane.AMB }
+        val sfx = uniq.count { it.lane == SynthLane.SFX }
+        AppLog.putAnalysis(
+            "【分析V3·${chapterLabel}·音效与背景音】本地建议预扫（$reason）：环境声${amb}条、音效${sfx}条。"
+        )
     }
 
     /** B34.2b：导演输入=第1阶段片段文本（〖第N段〗+[m] 同款）+ 本地建议标记 */

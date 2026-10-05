@@ -46,8 +46,13 @@ data class AudioPlan(
     val itemCount: Int get() = ambience.size + bgm.size + sfx.size
     val isEmpty: Boolean get() = itemCount == 0
 
-    /** 「bgm x条、环境声 x条、音效 x条」（日志/统计口径） */
-    fun countsText(): String = "bgm ${bgm.size}条、环境声 ${ambience.size}条、音效 ${sfx.size}条"
+    /** 计数文案（唯一条目口径：同轨同名去重——与音频侧「剧本统计」同口径，日志对照用） */
+    fun countsText(): String {
+        val amb = ambience.distinctBy { it.tag }.size
+        val sfxN = sfx.distinctBy { it.tag }.size
+        val bgmN = bgm.distinctBy { it.displayName }.size
+        return "bgm ${bgmN}条、环境声 ${amb}条、音效 ${sfxN}条"
+    }
 }
 
 /**

@@ -167,7 +167,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     // 厂商编辑
     var vendorSheet by remember { mutableStateOf(false) }
-    var vendorMenu by remember(vendorSheet) { mutableStateOf(false) }
     var veId by remember { mutableStateOf("") }
     var veName by remember { mutableStateOf("") }
     var veBase by remember { mutableStateOf("") }
@@ -802,45 +801,12 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             )
         },
         endAction = {
-            Box {
-                MediumTonalButton(
-                    onClick = { vendorMenu = true },
-                    icon = Icons.Default.MoreVert,
-                    contentDescription = stringResource(R.string.more_menu),
-                )
-                RoundDropdownMenu(
-                    expanded = vendorMenu,
-                    onDismissRequest = { vendorMenu = false },
-                ) { dismiss ->
-                    if (veId.isBlank()) {
-                        RoundDropdownMenuItem(
-                            text = "保存并拉取模型",
-                            onClick = {
-                                dismiss()
-                                saveVendor()
-                            },
-                        )
-                    } else {
-                        RoundDropdownMenuItem(
-                            text = "重新拉取模型",
-                            onClick = {
-                                dismiss()
-                                val stored = cfg?.providers?.firstOrNull { it.id == veId }
-                                if (stored != null) {
-                                    refetchModels(
-                                        stored.copy(
-                                            name = veName.trim(),
-                                            baseUrl = veBase.trim(),
-                                            apiKey = veKey.trim(),
-                                            protocol = veProtocol,
-                                        )
-                                    )
-                                }
-                            },
-                        )
-                    }
-                }
-            }
+            // P1.5.1：按甲方要求——右上角 ⋮ 仅占位（不做功能）；「保存并拉取模型」由右下角保存按钮承担
+            MediumTonalButton(
+                onClick = {},
+                icon = Icons.Default.MoreVert,
+                contentDescription = stringResource(R.string.more_menu),
+            )
         },
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
@@ -848,7 +814,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp)
                     .padding(bottom = 120.dp),
             ) {
                 AppTextField(
