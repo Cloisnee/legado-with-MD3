@@ -33,7 +33,7 @@ class AudioLibraryTest {
     }
 
     @Test
-    fun `P1.5 按轨归属 同栏严格映射`() {
+    fun `按轨归属 同栏严格映射`() {
         assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfRelPath("sfx/音效/开门.mp3"))
         assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfRelPath("sfx/ADULT/喘息.mp3"))
         assertEquals(SynthLane.AMB, AudioLibrary.laneSynthOfRelPath("sfx/环境声/客栈大堂.wav"))
