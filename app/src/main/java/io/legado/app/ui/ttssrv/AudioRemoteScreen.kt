@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
+import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
 import io.legado.app.help.readaloud.audio.AudioRemoteDownloader
 import io.legado.app.ui.theme.LegadoTheme
@@ -97,11 +98,20 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
         }
     }
 
-    fun loadManifest(force: Boolean = false) {
+    fun loadManifest(force: Boolean = false, notify: Boolean = false) {
         scope.launch {
             packError = null
             runCatching { AudioRemoteCatalog.manifest(context.applicationContext, force) }
-                .onSuccess { packs = it }
+                .onSuccess {
+                    packs = it
+                    if (notify) {
+                        // P1.5：强制复核完成 → 提示「最新已生效」
+                        val v = AudioNetStore.version
+                        snackbarHostState.showSnackbar(
+                            if (v.isBlank()) "词网已复核（最新已生效）" else "词网已复核：v$v（最新已生效）"
+                        )
+                    }
+                }
                 .onFailure {
                     packError = "远程目录加载失败：${it.localizedMessage}"
                 }
@@ -132,7 +142,8 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
-        loadManifest()
+        // P1.5：打开页面即强制复核词网（远端有新版即时热更）
+        loadManifest(force = true)
         reloadLocalNames()
     }
 
@@ -186,7 +197,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
             TopBarActionButton(
                 onClick = {
                     packs.firstOrNull()?.let { loadIndex(it, force = true) }
-                    loadManifest(force = true)
+                    loadManifest(force = true, notify = true)
                 },
                 imageVector = AppIcons.Replay,
                 contentDescription = "刷新远程目录",

@@ -109,6 +109,9 @@ class AudioLaneEngine(
     private val lastBgmByKeyword = HashMap<String, Long>()
     private val missingLogged = HashSet<String>()
 
+    /** P1.5 · 跨栏忽略日志去重（轨+词，每条一次） */
+    private val crossLaneLogged = HashSet<String>()
+
     private var lastCueIndex: Int = -1
 
     /** B33.4-前置：当前章「第N章」标签（日志前缀）与静默标志（预合成完成的章播放时静默） */
@@ -330,13 +333,15 @@ class AudioLaneEngine(
         // 3) 音效：点事件逐条（同款闸门：全局间隔 + 同素材冷却）
         planSfxByPara[para]?.forEach { item ->
             // P1：词网归一——自由说法拉回库内规范名；词网有货则异步下载（落库后自动接上）
-            val net = AudioNetStore.lookup(item.tag)
+            // P1.5：同栏严格——仅命中音效轨素材；异栏命中忽略并打日志（转补缺合成）
+            val net = AudioNetStore.lookupForLane(item.tag, SynthLane.SFX)
+            if (net == null) logCrossLaneIgnore(SynthLane.SFX, item.tag)
             val keyword = net?.name ?: item.tag
             if (!allowSfx(keyword)) {
                 laneLog(index, "音效=$keyword（闸门跳过）")
                 return@forEach
             }
-            var resolved = AudioLibrary.resolve(appContext, keyword)
+            var resolved = AudioLibrary.resolveForLane(appContext, keyword, SynthLane.SFX)
             if (resolved == null && net != null) {
                 scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
             }
@@ -414,13 +419,28 @@ class AudioLaneEngine(
             val now = System.currentTimeMillis()
             val retryAt = if (kind == "BGM") bgmMissRetryAt else ambMissRetryAt
             if (now >= retryAt) {
-                var resolved = AudioLibrary.resolve(appContext, desired)
+                // P1.5：环境轨同栏严格（异栏素材忽略 → 转补缺）；BGM 维持既有链
+                var resolved = if (kind == "环境") {
+                    AudioLibrary.resolveForLane(appContext, desired, SynthLane.AMB)
+                } else {
+                    AudioLibrary.resolve(appContext, desired)
+                }
                 if (resolved == null) {
                     // P1：词网归一——有货则异步下载（落库后由 10s 重试自动接上）
-                    val net = AudioNetStore.lookup(desired)
+                    val net = if (kind == "环境") {
+                        AudioNetStore.lookupForLane(desired, SynthLane.AMB).also {
+                            if (it == null) logCrossLaneIgnore(SynthLane.AMB, desired)
+                        }
+                    } else {
+                        AudioNetStore.lookup(desired)
+                    }
                     if (net != null) {
                         scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
-                        resolved = AudioLibrary.resolve(appContext, net.name)
+                        resolved = if (kind == "环境") {
+                            AudioLibrary.resolveForLane(appContext, net.name, SynthLane.AMB)
+                        } else {
+                            AudioLibrary.resolve(appContext, net.name)
+                        }
                     }
                 }
                 if (resolved != null) {
@@ -598,6 +618,20 @@ class AudioLaneEngine(
     }
 
     private fun chapterSuffix(): String = if (chapterLabel.isBlank()) "" else "·$chapterLabel"
+
+    /**
+     * P1.5 · 跨栏素材忽略日志（同轨未命中、异轨有材 → 转补缺合成）。
+     * 每条（轨+词）只记一次；预合成完成的章静默（预合成侧另有日志）。
+     */
+    private fun logCrossLaneIgnore(lane: SynthLane, keyword: String) {
+        if (keyword.isBlank()) return
+        val key = "${lane.name}|$keyword"
+        if (crossLaneLogged.contains(key)) return
+        val msg = AudioNetStore.crossLaneMessage(lane, keyword) ?: return
+        crossLaneLogged.add(key)
+        if (quietChapter) return
+        AppLog.putAudio("【音效与背景音${chapterSuffix()}】$msg")
+    }
 
     /** 章级四轨日志（预合成完成的章静默；格式：【音效与背景音·第N章】#i ×××） */
     private fun laneLog(index: Int, msg: String) {

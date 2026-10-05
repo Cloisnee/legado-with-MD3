@@ -45,6 +45,9 @@ object CloudWordnetClient {
         val sn: String?,
         val buildUrl: String?,
         val error: String? = null,
+        /** P1.5 · 批标识与仓库标识（完成回执轮询用） */
+        val batch: String? = null,
+        val slug: String? = null,
     )
 
     private val http by lazy {
@@ -112,7 +115,7 @@ object CloudWordnetClient {
                 put("items", jItems)
             }
             val (sn, url) = startBuild(slug, token, batch, payload.toString())
-            PushResult(uploaded, mergeOnly, skipped, sn, url, null)
+            PushResult(uploaded, mergeOnly, skipped, sn, url, null, batch, slug)
         } catch (e: Exception) {
             PushResult(0, 0, 0, null, null, e.localizedMessage ?: e.javaClass.simpleName)
         }

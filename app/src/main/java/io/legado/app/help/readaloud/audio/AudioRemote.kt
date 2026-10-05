@@ -42,9 +42,9 @@ object AudioRemoteCatalog {
         val tags: List<String> = emptyList(),
     )
 
-    /** 清单：单一「声效库」（数量=词网资产数） */
+    /** 清单：单一「声效库」（数量=词网资产数）；forceRefresh=远程页打开/刷新时强制复核词网 */
     suspend fun manifest(context: Context, forceRefresh: Boolean = false): List<RemotePack> {
-        AudioNetStore.ensureLoaded(context)
+        AudioNetStore.ensureLoaded(context, force = forceRefresh)
         return listOf(RemotePack(soundCount = AudioNetStore.assetCount))
     }
 
@@ -55,7 +55,7 @@ object AudioRemoteCatalog {
         forceRefresh: Boolean = false,
         onStatus: (String) -> Unit = {},
     ): List<RemoteSound> = withContext(Dispatchers.IO) {
-        AudioNetStore.ensureLoaded(context)
+        AudioNetStore.ensureLoaded(context, force = forceRefresh)
         AudioNetStore.snapshot().map { a ->
             RemoteSound(
                 soundId = a.id,

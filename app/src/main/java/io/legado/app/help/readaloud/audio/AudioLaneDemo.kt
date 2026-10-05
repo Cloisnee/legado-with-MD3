@@ -77,6 +77,21 @@ object TmDemoAssets {
             ?: files.firstOrNull { it.name.contains(keyword, ignoreCase = true) }
     }
 
+    /** P1.5 · 按轨兜底查找（同栏严格）：路径归属轨过滤后，再按文件名匹配（跨栏素材不看） */
+    fun findFileForLane(context: Context, keyword: String, lane: SynthLane): File? {
+        val root = libRoot(context)
+        if (!root.exists()) return null
+        val files = walkFiles(root, 0)
+            .filter { it.extension.lowercase() in AUDIO_EXTS }
+            .filter { f ->
+                val rel = f.relativeTo(root).path.replace(File.separatorChar, '/')
+                AudioLibrary.laneSynthOfRelPath(rel) == lane
+            }
+            .toList()
+        return files.firstOrNull { it.nameWithoutExtension == keyword }
+            ?: files.firstOrNull { it.name.contains(keyword, ignoreCase = true) }
+    }
+
     private fun walkFiles(dir: File, depth: Int): Sequence<File> {
         if (depth > 4) return emptySequence()
         return dir.listFiles().orEmpty().asSequence().flatMap { f ->

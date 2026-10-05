@@ -170,8 +170,9 @@ class AudioSynthQueue(
         }
         save()
         // P1.2：补缺链第二环——词网直连（免费；不需要合成模型）
+        // P1.5：同栏严格——仅取任务同轨素材（异栏命中视为未命中，继续走合成）
         val remoteFile = runCatching {
-            val net = AudioNetStore.lookup(task.keyword)
+            val net = AudioNetStore.lookupForLane(task.keyword, task.lane)
             if (net != null) AudioNetStore.fetchAsset(appContext, net) else null
         }.getOrNull()
         if (remoteFile != null) {

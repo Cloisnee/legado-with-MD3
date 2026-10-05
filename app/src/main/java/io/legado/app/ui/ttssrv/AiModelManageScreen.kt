@@ -33,8 +33,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,8 +57,10 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelEntry
 import io.legado.app.data.repository.AiModelRepository
@@ -76,6 +80,7 @@ import io.legado.app.ui.widget.components.SelectionBottomBar
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.card.SelectionItemCardContent
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
@@ -162,6 +167,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
 
     // 厂商编辑
     var vendorSheet by remember { mutableStateOf(false) }
+    var vendorMenu by remember(vendorSheet) { mutableStateOf(false) }
     var veId by remember { mutableStateOf("") }
     var veName by remember { mutableStateOf("") }
     var veBase by remember { mutableStateOf("") }
@@ -782,43 +788,126 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 厂商添加/编辑 ----------------
+    // ---------------- 厂商添加/编辑（P1.5：套 RuleEditSheet 模板——顶左 ✕ / 顶右 ⋮ / 右下浮动保存） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
         show = vendorSheet,
         onDismissRequest = { vendorSheet = false },
         title = if (veId.isBlank()) "添加服务商" else "编辑服务商",
+        startAction = {
+            MediumTonalButton(
+                onClick = { vendorSheet = false },
+                icon = Icons.Default.Close,
+                contentDescription = stringResource(R.string.close),
+            )
+        },
+        endAction = {
+            Box {
+                MediumTonalButton(
+                    onClick = { vendorMenu = true },
+                    icon = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.more_menu),
+                )
+                RoundDropdownMenu(
+                    expanded = vendorMenu,
+                    onDismissRequest = { vendorMenu = false },
+                ) { dismiss ->
+                    if (veId.isBlank()) {
+                        RoundDropdownMenuItem(
+                            text = "保存并拉取模型",
+                            onClick = {
+                                dismiss()
+                                saveVendor()
+                            },
+                        )
+                    } else {
+                        RoundDropdownMenuItem(
+                            text = "重新拉取模型",
+                            onClick = {
+                                dismiss()
+                                val stored = cfg?.providers?.firstOrNull { it.id == veId }
+                                if (stored != null) {
+                                    refetchModels(
+                                        stored.copy(
+                                            name = veName.trim(),
+                                            baseUrl = veBase.trim(),
+                                            apiKey = veKey.trim(),
+                                            protocol = veProtocol,
+                                        )
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        },
     ) {
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            SheetField("名称", veName) { veName = it }
-            SheetField("BaseUrl（如 https://api.xxx.com/v1）", veBase) { veBase = it }
-            SheetField("API Key", veKey) { veKey = it }
-            if (veId.isBlank()) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 120.dp),
+            ) {
+                AppTextField(
+                    value = veName,
+                    onValueChange = { veName = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "名称",
+                    singleLine = true,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                AppTextField(
+                    value = veBase,
+                    onValueChange = { veBase = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "BaseUrl（如 https://api.xxx.com/v1）",
+                    singleLine = true,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                AppTextField(
+                    value = veKey,
+                    onValueChange = { veKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "API Key",
+                    singleLine = true,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                if (veId.isBlank()) {
+                    TinyDropdownSettingItem(
+                        title = "类型",
+                        selectedValue = veKind,
+                        displayEntries = arrayOf("分析模型", "音频合成平台"),
+                        entryValues = arrayOf("chat", "audio"),
+                        description = "分析模型=参与文本/音频分析；音频合成平台=缺失素材补缺用",
+                        onValueChange = { veKind = it },
+                    )
+                }
                 TinyDropdownSettingItem(
-                    title = "类型",
-                    selectedValue = veKind,
-                    displayEntries = arrayOf("分析模型", "音频合成平台"),
-                    entryValues = arrayOf("chat", "audio"),
-                    description = "分析模型=参与文本/音频分析；音频合成平台=缺失素材补缺用",
-                    onValueChange = { veKind = it },
+                    title = "协议",
+                    selectedValue = veProtocol,
+                    displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
+                    entryValues = arrayOf("openai", "google", "claude"),
+                    description = "决定 拉取模型 / 测试 的请求方式（兼容 OpenAI / Claude / Google）",
+                    onValueChange = { veProtocol = it },
                 )
             }
-            TinyDropdownSettingItem(
-                title = "协议",
-                selectedValue = veProtocol,
-                displayEntries = arrayOf("OpenAI 兼容", "Google", "Claude"),
-                entryValues = arrayOf("openai", "google", "claude"),
-                description = "决定 拉取模型 / 测试 的请求方式（兼容 OpenAI / Claude / Google）",
-                onValueChange = { veProtocol = it },
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            TinyClickableSettingItem(
-                title = when {
-                    veId.isBlank() -> "保存并拉取模型"
-                    else -> "保存"
-                },
-                onClick = { saveVendor() },
-            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+            ) {
+                AppFloatingActionButton(
+                    onClick = { saveVendor() },
+                    tooltipText = stringResource(R.string.action_save),
+                    icon = Icons.Default.Save,
+                )
+            }
         }
     }
 

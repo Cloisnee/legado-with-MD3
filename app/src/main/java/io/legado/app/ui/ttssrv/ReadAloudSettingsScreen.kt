@@ -2,14 +2,19 @@ package io.legado.app.ui.ttssrv
 
 import android.app.Application
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,11 +42,13 @@ import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SplicedColumnGroup
-import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
@@ -559,7 +566,10 @@ fun ReadAloudSettingsScreen(
     )
 }
 
-/** P1.4 · 「云端词网」配置（仓库 + 专用令牌 + 启用 + 测试连接） */
+/**
+ * P1.4 · 「云端词网」配置（仓库 + 专用令牌 + 启用 + 测试连接）。
+ * P1.5：套用套件 RuleEditSheet 模板——顶左 ✕ / 顶右 ⋮（测试连接）/ 右下浮动保存；字段平铺去 Tiny 卡片。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CloudWordnetConfigSheet(
@@ -577,69 +587,94 @@ private fun CloudWordnetConfigSheet(
     }
     var testing by remember(show) { mutableStateOf(false) }
     var testMsg by remember(show) { mutableStateOf<String?>(null) }
+    var menuOpen by remember(show) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun save() {
+        AppConfigStore.putBoolean(PreferKey.cloudWordEnabled, enabled)
+        AppConfigStore.putString(PreferKey.cloudWordRepo, repo.trim())
+        AppConfigStore.putString(PreferKey.cloudWordToken, token.trim())
+        onDismissRequest()
+    }
+
+    fun runTest() {
+        testing = true
+        testMsg = null
+        scope.launch {
+            testMsg = runCatching {
+                CloudWordnetClient.testConnection(repo, token)
+            }.getOrElse { "失败：${it.localizedMessage}" }
+            testing = false
+        }
+    }
 
     AppModalBottomSheet(
         show = show,
         onDismissRequest = onDismissRequest,
         title = "云端词网",
-        endAction = {
+        startAction = {
             MediumTonalButton(
-                onClick = {
-                    AppConfigStore.putBoolean(PreferKey.cloudWordEnabled, enabled)
-                    AppConfigStore.putString(PreferKey.cloudWordRepo, repo.trim())
-                    AppConfigStore.putString(PreferKey.cloudWordToken, token.trim())
-                    onDismissRequest()
-                },
-                icon = Icons.Default.Check,
-                contentDescription = "保存",
+                onClick = onDismissRequest,
+                icon = Icons.Default.Close,
+                contentDescription = stringResource(R.string.close),
             )
         },
+        endAction = {
+            Box {
+                MediumTonalButton(
+                    onClick = { menuOpen = true },
+                    icon = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.more_menu),
+                )
+                RoundDropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) { dismiss ->
+                    RoundDropdownMenuItem(
+                        text = if (testing) "测试中…" else "测试连接",
+                        enabled = !testing && repo.isNotBlank() && token.isNotBlank(),
+                        onClick = {
+                            dismiss()
+                            runTest()
+                        },
+                    )
+                }
+            }
+        },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            AppText(
-                text = "把音频库选中的条目（新音频 + 词/别名）推送到 CNB 仓库，由云端流水线合并进词网；" +
-                    "处理完成后，下次听书自动拉取最新索引（音频库 ⋮ → 补充云端词网）。",
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-            )
-            TinySwitchSettingItem(
-                title = "启用",
-                checked = enabled,
-                onCheckedChange = { enabled = it },
-            )
-            AppTextField(
-                value = repo,
-                onValueChange = { repo = it; testMsg = null },
-                modifier = Modifier.fillMaxWidth(),
-                label = "仓库（如 Cloisnee/yinpin）",
-            )
-            AppTextField(
-                value = token,
-                onValueChange = { token = it; testMsg = null },
-                modifier = Modifier.fillMaxWidth(),
-                label = "访问令牌（需 repo-code:rw + repo-cnb-trigger:rw）",
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                MediumPlainButton(
-                    onClick = {
-                        testing = true
-                        testMsg = null
-                        scope.launch {
-                            testMsg = runCatching {
-                                CloudWordnetClient.testConnection(repo, token)
-                            }.getOrElse { "失败：${it.localizedMessage}" }
-                            testing = false
-                        }
-                    },
-                    enabled = !testing && repo.isNotBlank() && token.isNotBlank(),
-                    text = if (testing) "测试中…" else "测试连接",
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AppText(
+                    text = "把音频库选中的条目（新音频 + 词/别名）推送到 CNB 仓库，由云端流水线合并进词网；" +
+                        "处理完成后弹窗提示并自动刷新（下次听书生效）。",
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                )
+                TinySwitchSettingItem(
+                    title = "启用",
+                    checked = enabled,
+                    onCheckedChange = { enabled = it },
+                )
+                AppTextField(
+                    value = repo,
+                    onValueChange = { repo = it; testMsg = null },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "仓库（如 Cloisnee/yinpin）",
+                )
+                AppTextField(
+                    value = token,
+                    onValueChange = { token = it; testMsg = null },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "访问令牌（需 repo-code:rw + repo-cnb-trigger:rw）",
                 )
                 testMsg?.let {
                     AppText(
@@ -650,9 +685,19 @@ private fun CloudWordnetConfigSheet(
                         } else {
                             LegadoTheme.colorScheme.error
                         },
-                        modifier = Modifier.padding(start = 10.dp),
                     )
                 }
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+            ) {
+                AppFloatingActionButton(
+                    onClick = { save() },
+                    tooltipText = stringResource(R.string.action_save),
+                    icon = Icons.Default.Save,
+                )
             }
         }
     }

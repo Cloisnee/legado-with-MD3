@@ -56,6 +56,9 @@ class AudioChapterPrelude(
     /** 预合成尝试去重（每章一次；避免多轮 sweep 重复日志） */
     private val attemptedAhead = HashSet<String>()
 
+    /** P1.5 · 跨栏忽略日志去重（轨+词，每条一次） */
+    private val crossLaneLogged = HashSet<String>()
+
     /** 已完成预合成的章 → 条目计数（朗读到达时只打一条合成总结） */
     private val preparedTotals = HashMap<String, Map<SynthLane, Int>>()
 
@@ -157,6 +160,16 @@ class AudioChapterPrelude(
         }
     }
 
+    /** P1.5 · 跨栏素材忽略日志（同轨未命中、异轨有材 → 转补缺合成；每条一次） */
+    private fun logCrossLaneIgnore(lane: SynthLane, keyword: String) {
+        if (keyword.isBlank()) return
+        val key = "${lane.name}|$keyword"
+        if (crossLaneLogged.contains(key)) return
+        val msg = AudioNetStore.crossLaneMessage(lane, keyword) ?: return
+        crossLaneLogged.add(key)
+        AppLog.putAudio("【音效与背景音】$msg")
+    }
+
     /** 主流程：剧本统计 → 远程命中 → 入队 → 等待 → 总结（Ai 计划优先；无计划回退规则层） */
     private suspend fun runPrep(chapterKey: String, texts: List<String>, book: String, ahead: Boolean) {
         // 1) 剧本统计（本章计划条目 / 全章文本过规则层；唯一条目按轨计数）
@@ -186,19 +199,21 @@ class AudioChapterPrelude(
         }
 
         // 2) 远程命中（P1：词网直连优先 → 旧链补缺；逐条尝试；散行静默；BGM 走结构化选曲）
+        // P1.5：同栏严格——计划条目 fetch 仅认同轨素材；异栏命中忽略（转补缺队列走合成）
         miss.forEach { (lane, list) ->
             list.forEach { item ->
                 var fetched: File? = null
                 var viaNet = false
                 if (item.bgm == null) {
-                    fetched = runCatching {
-                        val net = AudioNetStore.lookup(item.label)
-                        if (net != null) {
+                    val net = AudioNetStore.lookupForLane(item.label, item.lane)
+                    if (net == null) logCrossLaneIgnore(item.lane, item.label)
+                    fetched = if (net != null) {
+                        runCatching {
                             AudioNetStore.fetchAsset(appContext, net).also { if (it != null) viaNet = true }
-                        } else {
-                            null
-                        }
-                    }.getOrNull()
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
                 }
                 if (fetched != null) {
                     prep.remoteHit.merge(lane, 1, Int::plus)
@@ -228,7 +243,8 @@ class AudioChapterPrelude(
                             AudioNetStore.lookup(item.bgm.profile + item.bgm.mood)
                                 ?: AudioNetStore.lookup(item.label)
                         } else {
-                            AudioNetStore.lookup(item.label)
+                            // P1.5：同栏严格（异栏素材不采用 → 落补缺队列走合成）
+                            AudioNetStore.lookupForLane(item.label, item.lane)
                         }
                         if (net != null) fetched = AudioNetStore.fetchAsset(appContext, net) != null
                     }
@@ -294,7 +310,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.AMB,
                         label = item.tag,
-                        resolved = AudioLibrary.resolve(appContext, item.tag) != null,
+                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）
+                        resolved = AudioLibrary.resolveForLane(appContext, item.tag, SynthLane.AMB) != null,
                         desc = item.desc,
                         bgm = null,
                     )
@@ -314,7 +331,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.SFX,
                         label = item.tag,
-                        resolved = AudioLibrary.resolve(appContext, item.tag) != null,
+                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）
+                        resolved = AudioLibrary.resolveForLane(appContext, item.tag, SynthLane.SFX) != null,
                         desc = item.desc,
                         bgm = null,
                     )

@@ -33,6 +33,17 @@ class AudioLibraryTest {
     }
 
     @Test
+    fun `P1.5 按轨归属 同栏严格映射`() {
+        assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfRelPath("sfx/音效/开门.mp3"))
+        assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfRelPath("sfx/ADULT/喘息.mp3"))
+        assertEquals(SynthLane.AMB, AudioLibrary.laneSynthOfRelPath("sfx/环境声/客栈大堂.wav"))
+        assertEquals(SynthLane.BGM, AudioLibrary.laneSynthOfRelPath("bgm/战斗.m4a"))
+        assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfRelPath("导入/铜铃轻响.mp3"))
+        assertEquals(SynthLane.AMB, AudioLibrary.laneSynthOfAsset(asset("sfx/环境声/风.mp3")))
+        assertEquals(SynthLane.SFX, AudioLibrary.laneSynthOfAsset(asset("sfx/ADULT/喘息.mp3")))
+    }
+
+    @Test
     fun `解析链顺序 精确优先于别名优先于包含`() {
         val list = listOf(
             asset("sfx/拟音/竹林雨夜.mp3"),

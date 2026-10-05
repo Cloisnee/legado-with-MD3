@@ -153,24 +153,41 @@ object AudioLibrary {
     }
 
     /** 引擎热路径：同步解析为「条目 + 文件」（停用条目不参与；未加载时回退目录直扫） */
-    fun resolve(context: Context, keyword: String): ResolvedAsset? {
+    fun resolve(context: Context, keyword: String): ResolvedAsset? =
+        resolveInternal(context, keyword, null)
+
+    /** P1.5 · 跨栏治理（同栏严格）：仅命中指定轨素材；同栏无命中 → null（上层转补缺合成） */
+    fun resolveForLane(context: Context, keyword: String, lane: SynthLane): ResolvedAsset? =
+        resolveInternal(context, keyword, lane)
+
+    private fun resolveInternal(context: Context, keyword: String, lane: SynthLane?): ResolvedAsset? {
         val kw = keyword.trim()
         if (kw.isEmpty()) return null
         if (index == null) warmUp(context)
         index?.let { snap ->
-            val hit = lookup(snap.values.filter { it.enabled }, kw)
+            val pool = if (lane == null) {
+                snap.values.filter { it.enabled }
+            } else {
+                snap.values.filter { it.enabled && laneSynthOfAsset(it) == lane }
+            }
+            val hit = lookup(pool, kw)
             if (hit != null && hit.zipRel.isBlank()) {
                 val f = fileOf(context, hit)
                 if (f.isFile) return ResolvedAsset(hit, f)
             }
         }
-        // 负缓存：TTL 内不重复深扫（合成/下载落库会即时清除）
+        // 负缓存：TTL 内不重复深扫（合成/下载落库会即时清除；按轨查询用独立键）
+        val cacheKey = if (lane == null) kw else "$kw@${lane.name}"
         val now = System.currentTimeMillis()
-        val lastMiss = missCache[kw]
+        val lastMiss = missCache[cacheKey]
         if (lastMiss != null && now - lastMiss < MISS_TTL_MS) return null
         // 兜底：目录直扫（覆盖尚未入册的新文件；命中后自动补登）
-        val f = TmDemoAssets.findFile(context, kw) ?: run {
-            missCache[kw] = now
+        val f = (if (lane == null) {
+            TmDemoAssets.findFile(context, kw)
+        } else {
+            TmDemoAssets.findFileForLane(context, kw, lane)
+        }) ?: run {
+            missCache[cacheKey] = now
             return null
         }
         val asset = registerFile(context, f, SOURCE_LOCAL) ?: AudioAsset(
@@ -179,8 +196,23 @@ object AudioLibrary {
             category = categoryOf(relOf(context, f)),
             source = SOURCE_LOCAL,
         )
-        missCache.remove(kw)
+        missCache.remove(cacheKey)
         return ResolvedAsset(asset, f)
+    }
+
+    /** P1.5 · 资产轨归属（跨栏治理用；ADULT/导入 → SFX，与 [laneOf] 同口径） */
+    internal fun laneSynthOfAsset(a: AudioAsset): SynthLane = when (laneOf(a)) {
+        "BGM" -> SynthLane.BGM
+        "环境声" -> SynthLane.AMB
+        else -> SynthLane.SFX
+    }
+
+    /** P1.5 · 相对路径 → 轨归属（目录兜底用；与 [laneSynthOfAsset] 同口径） */
+    internal fun laneSynthOfRelPath(relPath: String): SynthLane = when {
+        relPath.contains("/ADULT/") -> SynthLane.SFX
+        relPath.startsWith("bgm/") -> SynthLane.BGM
+        relPath.startsWith("sfx/环境声/") -> SynthLane.AMB
+        else -> SynthLane.SFX
     }
 
     /** 预热：后台加载一次（不阻塞播放链路） */

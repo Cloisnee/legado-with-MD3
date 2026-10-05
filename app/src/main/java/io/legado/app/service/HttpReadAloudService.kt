@@ -1290,7 +1290,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         val keys = items.flatMap { item ->
             listOfNotNull(
                 item.tag.takeIf { it.isNotBlank() },
-                AudioNetStore.lookup(item.tag)?.name?.takeIf { n -> n != item.tag },
+                // P1.5：同栏严格（等待键=音效轨规范名）
+                AudioNetStore.lookupForLane(item.tag, SynthLane.SFX)?.name?.takeIf { n -> n != item.tag },
             )
         }.distinct()
         if (keys.isEmpty()) return
@@ -1524,6 +1525,9 @@ class HttpReadAloudService : BaseReadAloudService(),
         // B11 响度均衡：切段即应用该条目的声线增益（含首个条目的 PLAYLIST_CHANGED 转换）
         applyLoudnessGain(mediaItem?.mediaId?.toIntOrNull() ?: 0)
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+            // P1.5 · 伪转场守卫：clearMediaItems 触发的空转场 = 拆场（章末/换章清谱），不是开章——
+            // 否则会用旧章重跑一遍 prelude（「剧本统计/合成总结」双打日志根因）；亮度归零保留（上方 applyLoudnessGain(0)）。
+            if (mediaItem == null) return
             // B33 四轨：章首条目就绪（含换章新队列）
             // B33.4-前置：章标签/静默章设置 + 预合成闭环开章（剧本统计→远程命中→入队，不再等逐行触达）
             runCatching {

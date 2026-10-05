@@ -1,5 +1,6 @@
 package io.legado.app.ui.ttssrv
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -7,6 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -15,18 +20,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import io.legado.app.R
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
+import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.SplicedColumnGroup
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
+import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
@@ -221,57 +233,95 @@ fun AiAnalysisSettingsScreen(
         }
     }
 
-    // ---------------- 提示词编辑 ----------------
+    // ---------------- 提示词编辑（P1.5：套 RuleEditSheet 模板——顶左 ✕ / 顶右 ⋮（恢复内置默认）/ 右下浮动保存） ----------------
     val target = promptTarget
+    var promptMenu by remember(promptTarget) { mutableStateOf(false) }
     AppModalBottomSheet(
         show = target != null,
         onDismissRequest = { promptTarget = null },
         title = target?.title.orEmpty(),
-    ) {
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            AppText(
-                text = when (target) {
-                    PromptTarget.Stage4 ->
-                        "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
-                    PromptTarget.Emotion ->
-                        "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"
-                    PromptTarget.AudioDirector ->
-                        "已载入内置默认文本，可直接编辑；输入=按 [n] 编号的章节文本，输出=纯 JSON 音频计划；保存后下次分析生效"
-                    else -> "已载入内置默认文本，可直接编辑；保存后下次分析生效"
-                },
-                style = LegadoTheme.typography.labelSmall,
-                color = LegadoTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        startAction = {
+            MediumTonalButton(
+                onClick = { promptTarget = null },
+                icon = Icons.Default.Close,
+                contentDescription = stringResource(R.string.close),
             )
-            AppTextField(
-                value = promptDraft,
-                onValueChange = { promptDraft = it },
+        },
+        endAction = {
+            Box {
+                MediumTonalButton(
+                    onClick = { promptMenu = true },
+                    icon = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.more_menu),
+                )
+                RoundDropdownMenu(
+                    expanded = promptMenu,
+                    onDismissRequest = { promptMenu = false },
+                ) { dismiss ->
+                    RoundDropdownMenuItem(
+                        text = "恢复内置默认",
+                        onClick = {
+                            dismiss()
+                            promptTarget?.let { promptDraft = SpeechAnalysisPipelineV3.defaultPrompt(it.key) }
+                        },
+                    )
+                }
+            }
+        },
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 2.dp),
-                label = "提示词",
-                minLines = 8,
-                maxLines = 16,
-            )
-            TinyClickableSettingItem(
-                title = "保存",
-                onClick = {
-                    val k = promptTarget ?: return@TinyClickableSettingItem
-                    val def = SpeechAnalysisPipelineV3.defaultPrompt(k.key).trim()
-                    // 与内置默认一致时存空串（保持「内置默认」态，便于后续随内置更新）
-                    val v = if (promptDraft.trim() == def) "" else promptDraft
-                    promptTarget = null
-                    update { it.withPrompt(k.key, v) }
-                    context.toastOnUi("已保存提示词")
-                },
-            )
-            TinyClickableSettingItem(
-                title = "恢复内置默认",
-                description = "将上方文本重置为内置默认提示词（可继续编辑）",
-                onClick = {
-                    promptTarget?.let { promptDraft = SpeechAnalysisPipelineV3.defaultPrompt(it.key) }
-                },
-            )
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 120.dp),
+            ) {
+                AppText(
+                    text = when (target) {
+                        PromptTarget.Stage4 ->
+                            "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
+                        PromptTarget.Emotion ->
+                            "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"
+                        PromptTarget.AudioDirector ->
+                            "已载入内置默认文本，可直接编辑；输入=按 [n] 编号的章节文本，输出=纯 JSON 音频计划；保存后下次分析生效"
+                        else -> "已载入内置默认文本，可直接编辑；保存后下次分析生效"
+                    },
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+                AppTextField(
+                    value = promptDraft,
+                    onValueChange = { promptDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "提示词",
+                    minLines = 8,
+                    maxLines = 16,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+            ) {
+                AppFloatingActionButton(
+                    onClick = {
+                        val k = promptTarget
+                        if (k != null) {
+                            val def = SpeechAnalysisPipelineV3.defaultPrompt(k.key).trim()
+                            // 与内置默认一致时存空串（保持「内置默认」态，便于后续随内置更新）
+                            val v = if (promptDraft.trim() == def) "" else promptDraft
+                            promptTarget = null
+                            update { it.withPrompt(k.key, v) }
+                            context.toastOnUi("已保存提示词")
+                        }
+                    },
+                    tooltipText = stringResource(R.string.action_save),
+                    icon = Icons.Default.Save,
+                )
+            }
         }
     }
 

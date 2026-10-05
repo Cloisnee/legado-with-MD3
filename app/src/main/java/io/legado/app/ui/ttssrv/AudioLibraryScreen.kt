@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,8 +27,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -45,6 +46,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
@@ -60,6 +62,7 @@ import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
+import io.legado.app.help.readaloud.audio.CloudWordnetReceiptWatcher
 import io.legado.app.help.readaloud.audio.splitWordList
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -71,6 +74,7 @@ import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
 import io.legado.app.ui.widget.components.card.TextCard
+import io.legado.app.ui.widget.components.checkBox.AppCheckbox
 import io.legado.app.ui.widget.components.divider.PillDivider
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.ui.widget.components.icon.AppIcons
@@ -125,8 +129,8 @@ fun AudioLibraryScreen(
     var sortMode by remember {
         mutableStateOf(AppConfigStore.getString(PreferKey.audioLibSortMode) ?: "desc")
     }
-    var isSearch by remember { mutableStateOf(false) }
-    var searchKey by remember { mutableStateOf("") }
+    var isSearch by rememberSaveable { mutableStateOf(false) }
+    var searchKey by rememberSaveable { mutableStateOf("") }
     var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var localOrder by remember { mutableStateOf<List<AudioLibrary.AudioAsset>?>(null) }
@@ -139,7 +143,7 @@ fun AudioLibraryScreen(
     var mergeSheet by remember { mutableStateOf(false) }
     var mergeTargetId by remember { mutableStateOf<String?>(null) }
     var cloudPushing by remember { mutableStateOf(false) }
-    var generatedOnly by remember { mutableStateOf(false) }
+    var generatedOnly by rememberSaveable { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
 
@@ -484,8 +488,17 @@ fun AudioLibraryScreen(
                             snackbarHostState.showSnackbar("单批最多 20 条，请分批提交")
                         }
                         else -> {
-                            cloudPushing = true
                             scope.launch {
+                                // P1.5：提交防连击——上一批回执未回时提示可能竞态（可仍要提交）
+                                if (CloudWordnetReceiptWatcher.isWatching()) {
+                                    val r = snackbarHostState.showSnackbar(
+                                        message = "上一批仍在处理（约 1 分钟），连续提交可能相互竞态",
+                                        actionLabel = "仍要提交",
+                                        withDismissAction = true,
+                                    )
+                                    if (r != SnackbarResult.ActionPerformed) return@launch
+                                }
+                                cloudPushing = true
                                 val msg = pushToCloud(context.applicationContext, picked)
                                 cloudPushing = false
                                 selectedIds = emptySet()
@@ -736,8 +749,13 @@ fun AudioLibraryScreen(
         show = mergeSheet,
         items = allAssets.filter { it.id in selectedIds.filterIsInstance<String>() },
         targetId = mergeTargetId,
+        playingId = playingId,
+        onPreview = { a -> togglePreview(a) },
         onTargetChange = { mergeTargetId = it },
-        onDismiss = { mergeSheet = false },
+        onDismiss = {
+            mergeSheet = false
+            stopPreview()
+        },
         onConfirm = {
             val dest = mergeTargetId
             if (dest == null) {
@@ -745,6 +763,7 @@ fun AudioLibraryScreen(
             } else {
                 val ids = selectedIds.filterIsInstance<String>().toSet()
                 mergeSheet = false
+                stopPreview()
                 scope.launch {
                     val res = runCatching {
                         AudioLibrary.mergeFollow(context.applicationContext, dest, ids)
@@ -949,7 +968,8 @@ private suspend fun pushToCloud(
     val repo = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
     val token = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
     // 先确保词网就绪（冷启动下 snapshot 为空会退化为「全部上传→服务端去重」，浪费流量）
-    runCatching { AudioNetStore.ensureLoaded(appContext) }
+    // P1.5：强制复核——保证「库内同名只并词」判定基于最新词网（节流窗口内的近期批也生效）
+    runCatching { AudioNetStore.ensureLoaded(appContext, force = true) }
     val netKeys: Set<Pair<String, String>> = runCatching {
         AudioNetStore.snapshot()
             .map { AudioRemoteCatalog.laneNameOf(it.lane) to it.name }
@@ -986,26 +1006,38 @@ private suspend fun pushToCloud(
     return if (res.error != null) {
         "提交失败：${res.error}"
     } else {
+        // P1.5：后台轮询完成回执（非页面作用域——退出页面不中断）→ 完成后弹窗 + 词网热刷新
+        val slug = res.slug
+        val batch = res.batch
+        if (slug != null && batch != null) {
+            CloudWordnetReceiptWatcher.watch(appContext, slug, batch)
+        }
         buildString {
             append("已提交云端处理：上传 ${res.uploaded}、仅并词 ${res.mergeOnly}")
             if (skipped > 0) append("、跳过 $skipped")
-            append("（处理后自动生效）")
+            append("；完成后自动刷新词网（弹窗提示）")
         }
     }
 }
 
-/** P1.4 · 「合并跟随」：选一个目标，其余条目的名称/词模式词/别名并入其匹配规则（词模式、关正则），并连文件删除其余 */
+/**
+ * P1.4 · 「合并跟随」：勾选一个目标，其余条目的名称/词模式词/别名并入其匹配规则（词模式、关正则），并连文件删除其余。
+ * P1.5：行样式对齐「声音选择（多选+试听）」——左方框勾选 + 中间名称 + 右侧试听（本地预览）；
+ * 警告文案合并为一处（原：逐条正则提示 + 目标正则提示两处）。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AudioMergeFollowSheet(
     show: Boolean,
     items: List<AudioLibrary.AudioAsset>,
     targetId: String?,
+    playingId: String?,
+    onPreview: (AudioLibrary.AudioAsset) -> Unit,
     onTargetChange: (String?) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    val target = items.firstOrNull { it.id == targetId }
+    val regexNames = items.filter { it.isRegex && it.pattern.isNotBlank() }.map { it.name }
     AppModalBottomSheet(
         show = show,
         onDismissRequest = onDismiss,
@@ -1021,46 +1053,60 @@ private fun AudioMergeFollowSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             AppText(
-                text = "选择要跟随的目标。其余音频的「名称 + 词模式词 + 别名」将并入目标的匹配规则（词模式），随后连文件删除其余音频。",
+                text = "勾选要跟随的目标（单选）。其余音频的「名称 + 词模式词 + 别名」将并入目标的匹配规则（词模式），随后连文件删除其余音频。",
                 style = LegadoTheme.typography.labelSmall,
                 color = LegadoTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
             )
             items.forEach { a ->
+                val checked = a.id == targetId
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onTargetChange(a.id) },
+                        .clickable { onTargetChange(if (checked) null else a.id) }
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(selected = a.id == targetId, onClick = { onTargetChange(a.id) })
-                    Column(modifier = Modifier.weight(1f)) {
-                        AppText(text = a.name, style = LegadoTheme.typography.bodyMedium)
-                        if (a.isRegex && a.pattern.isNotBlank()) {
-                            AppText(
-                                text = "当前为正则规则：合并将关闭正则（原正则内容不保留）",
-                                style = LegadoTheme.typography.labelSmall,
-                                color = LegadoTheme.colorScheme.error,
-                            )
-                        }
-                    }
+                    AppCheckbox(
+                        checked = checked,
+                        onCheckedChange = null,
+                        includeStateSemantics = false,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    AppText(
+                        text = a.name,
+                        style = LegadoTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallPlainButton(
+                        onClick = { onPreview(a) },
+                        icon = if (playingId == a.id) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = "试听",
+                    )
                 }
             }
-            if (target != null && target.isRegex && target.pattern.isNotBlank()) {
+            // P1.5：警告文案合并一处（正则关闭提示 + 删除提示）
+            if (regexNames.isNotEmpty()) {
                 AppText(
-                    text = "⚠ 目标「${target.name}」为正则规则，确认后将关闭正则。",
+                    text = "⚠ 涉及正则规则（${regexNames.joinToString("、")}）：合并将关闭正则，原正则内容不保留。",
                     style = LegadoTheme.typography.labelSmall,
                     color = LegadoTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
             AppText(
                 text = "将删除其余 ${items.size - 1} 个音频（连文件，不可撤销）。",
                 style = LegadoTheme.typography.labelSmall,
                 color = LegadoTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
             )
         }
     }

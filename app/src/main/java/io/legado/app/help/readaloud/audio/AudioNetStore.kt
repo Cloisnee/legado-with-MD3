@@ -38,6 +38,9 @@ object AudioNetStore {
     private const val INDEX_DIR = "声效/index/"
     private const val CACHE_DIR = "_store/audio_index"
 
+    /** P1.5 · manifest 复核节流间隔（已加载时 ≥10 分钟才拉一次；force 不受限） */
+    private const val MANIFEST_RECHECK_MS = 10 * 60 * 1000L
+
     /** 词网资产（catalog 条目精简） */
     data class NetAsset(
         val id: String,
@@ -64,6 +67,13 @@ object AudioNetStore {
     @Volatile private var ac: AhoCorasick? = null
     @Volatile private var acPatterns: List<String> = emptyList()
     @Volatile private var loaded = false
+
+    /** P1.5 · 最近一次 manifest 复核时间（节流用）与当前词网版本 */
+    @Volatile private var lastManifestCheckAt: Long = 0L
+    @Volatile private var netVersion: String = ""
+
+    /** 词网当前版本（catalog.version；未加载=空串） */
+    val version: String get() = netVersion
 
     private val loadLock = Mutex()
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -96,19 +106,28 @@ object AudioNetStore {
 
     // ---------------- 加载 ----------------
 
-    /** 预热（幂等）：缓存优先；后台检查版本更新。 */
-    suspend fun ensureLoaded(context: Context): Boolean {
-        if (loaded) return true
+    /**
+     * 预热/复核（幂等）：
+     * - 未加载：缓存优先加载 + 拉 manifest 比对；
+     * - 已加载：**节流复核**（[MANIFEST_RECHECK_MS] 内不重复请求）；[force]=true 强制复核（远程素材库打开/刷新）。
+     * 复核失败写音频日志（不再静默）；有版本变化即热更（catalog/aliases/adult）。
+     */
+    suspend fun ensureLoaded(context: Context, force: Boolean = false): Boolean {
+        if (loaded && !force && System.currentTimeMillis() - lastManifestCheckAt < MANIFEST_RECHECK_MS) {
+            return true
+        }
         return withContext(Dispatchers.IO) {
             loadLock.withLock {
-                if (loaded) return@withLock true
+                if (loaded && !force && System.currentTimeMillis() - lastManifestCheckAt < MANIFEST_RECHECK_MS) {
+                    return@withLock true
+                }
                 val dir = cacheDir(context)
                 val manifestFile = File(dir, "manifest.json")
                 val catalogFile = File(dir, "catalog.json")
                 val aliasesFile = File(dir, "aliases.json")
                 val adultFile = File(dir, "aliases_adult.json")
-                // 1) 先用缓存
-                if (catalogFile.isFile && aliasesFile.isFile) {
+                // 1) 首次：先用缓存
+                if (!loaded && catalogFile.isFile && aliasesFile.isFile) {
                     runCatching {
                         applyData(
                             catalogFile.readText().removePrefix("\uFEFF"),
@@ -117,33 +136,53 @@ object AudioNetStore {
                         )
                     }
                 }
-                // 2) 拉 manifest 比对版本（失败静默；有缓存即可用）
-                val remoteManifest = runCatching { fetchText(BASE + encodePath(INDEX_DIR + "manifest.json")) }.getOrNull()
-                val remoteVer = remoteManifest?.let { runCatching { JSONObject(it).optString("version") }.getOrNull() }.orEmpty()
-                val localVer = manifestFile.takeIf { it.isFile }
-                    ?.let { runCatching { JSONObject(it.readText().removePrefix("\uFEFF")).optString("version") }.getOrNull() }
-                    .orEmpty()
-                if (remoteManifest != null && (remoteVer.isBlank() || remoteVer != localVer || !loaded)) {
-                    runCatching {
-                        val cat = fetchText(BASE + encodePath(INDEX_DIR + "catalog.json"))
-                        val ali = fetchText(BASE + encodePath(INDEX_DIR + "aliases.json"))
-                        val adultFetched = runCatching {
-                            fetchText(BASE + encodePath(INDEX_DIR + "aliases_adult.json"))
-                        }.getOrNull()
-                        dir.mkdirs()
-                        manifestFile.writeText(remoteManifest)
-                        writeAtomic(catalogFile, cat)
-                        writeAtomic(aliasesFile, ali)
-                        if (!adultFetched.isNullOrBlank()) writeAtomic(adultFile, adultFetched)
-                        applyData(
-                            cat, ali,
-                            adultFetched
-                                ?: adultFile.takeIf { it.isFile }?.readText()?.removePrefix("\uFEFF"),
-                        )
-                        AppLog.putAudio(
-                            "【音效与背景音】词网更新 v$remoteVer：资产 ${byId.size}、" +
-                                "别名 ${aliasToIds.size}（ADULT ${aliasToIdsAdult.size} 另存，开关开才并入）"
-                        )
+                // 2) 拉 manifest 比对版本（节流/强制；失败写日志、有缓存即可用）
+                if (force || !loaded || System.currentTimeMillis() - lastManifestCheckAt >= MANIFEST_RECHECK_MS) {
+                    val remoteManifest = try {
+                        fetchText(BASE + encodePath(INDEX_DIR + "manifest.json"))
+                    } catch (e: Exception) {
+                        if (loaded) {
+                            AppLog.putAudio(
+                                "【音效与背景音】词网复核失败（保留本地 v$netVersion）：${e.localizedMessage}"
+                            )
+                        }
+                        null
+                    }
+                    // 无论成败都进入下一轮节流窗口（force 不受限）
+                    lastManifestCheckAt = System.currentTimeMillis()
+                    if (remoteManifest != null) {
+                        val remoteVer = runCatching { JSONObject(remoteManifest).optString("version") }
+                            .getOrNull().orEmpty()
+                        val localVer = manifestFile.takeIf { it.isFile }
+                            ?.let {
+                                runCatching {
+                                    JSONObject(it.readText().removePrefix("\uFEFF")).optString("version")
+                                }.getOrNull()
+                            }
+                            .orEmpty()
+                        if (remoteVer.isBlank() || remoteVer != localVer || !loaded) {
+                            runCatching {
+                                val cat = fetchText(BASE + encodePath(INDEX_DIR + "catalog.json"))
+                                val ali = fetchText(BASE + encodePath(INDEX_DIR + "aliases.json"))
+                                val adultFetched = runCatching {
+                                    fetchText(BASE + encodePath(INDEX_DIR + "aliases_adult.json"))
+                                }.getOrNull()
+                                dir.mkdirs()
+                                manifestFile.writeText(remoteManifest)
+                                writeAtomic(catalogFile, cat)
+                                writeAtomic(aliasesFile, ali)
+                                if (!adultFetched.isNullOrBlank()) writeAtomic(adultFile, adultFetched)
+                                applyData(
+                                    cat, ali,
+                                    adultFetched
+                                        ?: adultFile.takeIf { it.isFile }?.readText()?.removePrefix("\uFEFF"),
+                                )
+                                AppLog.putAudio(
+                                    "【音效与背景音】词网更新 v$remoteVer：资产 ${byId.size}、" +
+                                        "别名 ${aliasToIds.size}（ADULT ${aliasToIdsAdult.size} 另存，开关开才并入）"
+                                )
+                            }
+                        }
                     }
                 }
                 loaded
@@ -157,6 +196,7 @@ object AudioNetStore {
         byId = cat
         aliasToIds = ali
         aliasToIdsAdult = adultText?.let { parseAliases(it) }.orEmpty()
+        netVersion = runCatching { JSONObject(catalogText).optString("version") }.getOrDefault("")
         rebuildAc()
         loaded = true
     }
@@ -196,20 +236,58 @@ object AudioNetStore {
     // ---------------- 检索 ----------------
 
     /** 归一层：任意说法 → 库内最佳资产（null=词网里没有；M5：默认不含 ADULT，开关开启才并入） */
-    fun lookup(word: String): NetAsset? {
+    fun lookup(word: String): NetAsset? = lookupFiltered(word) { true }
+
+    /**
+     * P1.5 · 跨栏治理（同栏严格）：只在指定轨内解析；同栏无命中 → null（调用方转补缺合成）。
+     * 多栏命中时取同栏；仅异栏命中 = 视为未命中（可用 [crossLaneLabels] 记诊断日志）。
+     */
+    fun lookupForLane(word: String, lane: SynthLane): NetAsset? =
+        lookupFiltered(word) { laneOf(it.lane) == lane }
+
+    /**
+     * P1.5 · 跨栏诊断：同轨未命中时，返回异轨命中的展示名列表（仅日志/统计用，不参与播放）。
+     * 无任何异轨命中 = 空列表。
+     */
+    fun crossLaneLabels(word: String, lane: SynthLane): List<String> {
+        val out = ArrayList<String>(2)
+        SynthLane.entries.forEach { l ->
+            if (l == lane) return@forEach
+            if (lookupFiltered(word) { laneOf(it.lane) == l } != null) out.add(laneDisplay(l))
+        }
+        return out
+    }
+
+    /** P1.5 · 跨栏忽略提示文案（各接入点日志复用；异轨无命中 = null） */
+    fun crossLaneMessage(lane: SynthLane, keyword: String): String? {
+        val labels = crossLaneLabels(keyword, lane)
+        if (labels.isEmpty()) return null
+        val tail = if (labels.size == 1) "仅${labels.first()}库有" else "${labels.joinToString("、")}库有"
+        return "跨栏素材忽略：${laneDisplay(lane)}「$keyword」→ $tail（转补缺）"
+    }
+
+    /** P1.5 · 轨展示名（日志口径：环境声，非「环境」） */
+    internal fun laneDisplay(lane: SynthLane): String = when (lane) {
+        SynthLane.SFX -> "音效"
+        SynthLane.AMB -> "环境声"
+        SynthLane.BGM -> "BGM"
+    }
+
+    /** 检索主实现：归一 → 精确/本地词/柔和后缀/包含兜底；[allow] 过滤候选（跨栏治理用） */
+    private fun lookupFiltered(word: String, allow: (NetAsset) -> Boolean): NetAsset? {
         val w = norm(word)
         if (w.isBlank()) return null
         val adultOk = adultEnabled()
-        bestOf(idsFor(w, adultOk))?.let { return it }
+        bestOf(idsFor(w, adultOk).filter { id -> byId[id]?.let(allow) == true })?.let { return it }
         // 本地加词优先（用户亲手挂的）
         localWordToName[w]?.let { name ->
-            byId.values.firstOrNull { it.name == name }?.let { return it }
+            byId.values.firstOrNull { it.name == name && allow(it) }?.let { return it }
         }
         // 柔和后缀：加减「声/音效」
         softVariants(w).forEach { v ->
-            bestOf(idsFor(v, adultOk))?.let { return it }
+            bestOf(idsFor(v, adultOk).filter { id -> byId[id]?.let(allow) == true })?.let { return it }
             localWordToName[v]?.let { name ->
-                byId.values.firstOrNull { it.name == name }?.let { return it }
+                byId.values.firstOrNull { it.name == name && allow(it) }?.let { return it }
             }
         }
         // 包含兜底：词网里谁包含它 / 它包含谁（长词优先，防“一门”类误配）
@@ -218,7 +296,7 @@ object AudioNetStore {
         for ((alias, ids) in effectiveAliases(adultOk)) {
             if (alias.length < 2) continue
             if ((w.length >= 2 && alias.contains(w)) || (w.length >= 2 && w.contains(alias))) {
-                val asset = bestOf(ids) ?: continue
+                val asset = bestOf(ids.filter { id -> byId[id]?.let(allow) == true }) ?: continue
                 val l = minOf(alias.length, w.length)
                 if (l > bestLen) { bestLen = l; best = asset }
             }
