@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -822,6 +821,18 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
+    // P1.6·⑤：声线「生效」徽标（旁白=启用组的第 1 条；默认对话=启用组的 duihuaA/B 条，章内随机）
+    val narratorFirstKey = groups
+        .firstOrNull { it.roleType == VoiceBankRoleType.NARRATOR && it.name in activeBanks }
+        ?.entries?.firstOrNull()?.let { entryKeyOf(it) }
+    val dialogEffectiveKeys: Set<String> = groups
+        .firstOrNull { it.roleType == VoiceBankRoleType.DEFAULT_DIALOG && it.name in activeBanks }
+        ?.entries
+        ?.filter { it.tag.startsWith("duihuaA") || it.tag.startsWith("duihuaB") }
+        ?.map { entryKeyOf(it) }
+        ?.toSet()
+        ?: emptySet()
+
     RuleListScaffold(
         title = stringResource(R.string.read_aloud_engines_and_voices),
         state = uiState,
@@ -836,15 +847,50 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
         topBarActions = {
             TopBarActionButton(
-                onClick = { showImportPicker = true },
-                imageVector = Icons.Default.FileDownload,
-                contentDescription = "导入",
-            )
-            TopBarActionButton(
                 onClick = { showEngineSheet = true },
                 imageVector = Icons.Default.SwapHoriz,
                 contentDescription = "切换朗读引擎",
             )
+        },
+        dropDownMenuContent = { dismiss ->
+            // P1.6·⑤B：导入/导出按页生效（音色插件页 / 配置列表页）
+            if (selectedTab == 0) {
+                RoundDropdownMenuItem(
+                    text = "导入音色插件",
+                    onClick = {
+                        dismiss()
+                        showImportPicker = true
+                    },
+                )
+                RoundDropdownMenuItem(
+                    text = "导出所有音色插件",
+                    onClick = {
+                        dismiss()
+                        scope.launch {
+                            detailTitle = "导出完成（所有音色插件）"
+                            detailText = repo.exportPlugins()
+                        }
+                    },
+                )
+            } else {
+                RoundDropdownMenuItem(
+                    text = "导入配置列表",
+                    onClick = {
+                        dismiss()
+                        showImportPicker = true
+                    },
+                )
+                RoundDropdownMenuItem(
+                    text = "导出所有配置列表",
+                    onClick = {
+                        dismiss()
+                        scope.launch {
+                            detailTitle = "导出完成（所有配置列表）"
+                            detailText = repo.exportVoices()
+                        }
+                    },
+                )
+            }
         },
         bottomContent = { _ ->
             AppTabRow(
@@ -1186,11 +1232,23 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                                     }
                                                 },
                                                 trailing = {
-                                                    SmallPlainButton(
-                                                        icon = Icons.Default.PlayArrow,
-                                                        contentDescription = "试听",
-                                                        onClick = { auditionEntry(e) },
-                                                    )
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        when {
+                                                            entryKeyOf(e) == narratorFirstKey -> {
+                                                                VoiceEffectBadge("旁白 · 生效")
+                                                                Spacer(modifier = Modifier.width(8.dp))
+                                                            }
+                                                            entryKeyOf(e) in dialogEffectiveKeys -> {
+                                                                VoiceEffectBadge("生效 · 章内随机")
+                                                                Spacer(modifier = Modifier.width(8.dp))
+                                                            }
+                                                        }
+                                                        SmallPlainButton(
+                                                            icon = Icons.Default.PlayArrow,
+                                                            contentDescription = "试听",
+                                                            onClick = { auditionEntry(e) },
+                                                        )
+                                                    }
                                                 },
                                             )
                                         }
@@ -2757,6 +2815,26 @@ private fun LevelRow(
                 )
             }
         }
+    }
+}
+
+/** P1.6·⑤：声线「生效」小徽标（配置列表条目行；仅标识，无交互） */
+@Composable
+private fun VoiceEffectBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .background(
+                color = LegadoTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(50),
+            )
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        AppText(
+            text = text,
+            style = LegadoTheme.typography.labelSmall,
+            color = LegadoTheme.colorScheme.onPrimaryContainer,
+            maxLines = 1,
+        )
     }
 }
 

@@ -266,10 +266,10 @@ class HttpReadAloudService : BaseReadAloudService(),
         playbackQueue.cues.getOrNull(index)?.let {
             // B33.4b：段序号 = 队列体序号 + 1（含标题 cue 偏移；标题行 para=0 不参与计划）
             val para = index - playbackQueue.leadingTitleCueCount + 1
-            return AudioLaneEngine.CueInfo(it.text, it.isChapterTitle, it.emotion, para.coerceAtLeast(0))
+            return AudioLaneEngine.CueInfo(it.text, it.isChapterTitle, para.coerceAtLeast(0))
         }
         val text = contentList.getOrNull(index) ?: return null
-        return AudioLaneEngine.CueInfo(text, isChapterTitleAt(index), "")
+        return AudioLaneEngine.CueInfo(text, isChapterTitleAt(index))
     }
 
     private fun laneCueStarted() {

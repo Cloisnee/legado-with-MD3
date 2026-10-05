@@ -57,7 +57,6 @@ class AudioLaneEngine(
     data class CueInfo(
         val text: String,
         val isChapterTitle: Boolean = false,
-        val emotion: String = "",
         /** B33.4b：段序号（=剧本行/计划锚点；标题行为 0） */
         val para: Int = 0,
     )
@@ -471,7 +470,9 @@ class AudioLaneEngine(
         val base = volume.coerceIn(0f, 1f)
 
         // B33.4 前置：循环交叉淡化（双播放器无缝衔接；时长未知/过短时退化为单曲循环）
-        val fade = lane.advanceCrossfade(allow = active && base > 0.02f)
+        // P1.6·⑩：先推进「切换」交叉淡化（旧轨→新轨 1.2s 等功率交接），再走「循环内」交叉
+        val fade = lane.advanceSwitchCrossfade(allow = active && base > 0.02f)
+            ?: lane.advanceCrossfade(allow = active && base > 0.02f)
         if (fade != null) {
             lane.setVolumesDirect(base * (1f - fade), base * fade)
             applyLoopBoost(lane, p, base)
@@ -661,6 +662,10 @@ class AudioLaneEngine(
         private var crossfading = false
         private var fileUri: Uri? = null
         private var lastCrossPos = -1L
+
+        /** P1.6·⑩：切换交叉淡化状态（旧轨→新轨 1.2s 等功率交接） */
+        private var switching = false
+        private var switchAt = 0L
         private val enhancers = HashMap<ExoPlayer, LoudnessEnhancer>()
 
         /** 当前出声（主）播放器 */
@@ -687,26 +692,77 @@ class AudioLaneEngine(
             if (playerA == null) playerA = buildPlayer()
             if (playerB == null) playerB = buildPlayer()
             val a = playerA ?: return
-            if (keyword != kw || a.currentMediaItem == null) {
-                runCatching {
-                    playerA?.stop()
-                    playerA?.clearMediaItems()
-                    playerB?.stop()
-                    playerB?.clearMediaItems()
-                }
-                activeIsA = true
+            if (keyword == kw && a.currentMediaItem != null) {
+                val p = player ?: return
+                if (!p.isPlaying) runCatching { p.play() }
+                return
+            }
+            // P1.6·⑩：切换交叉淡化——旧轨留主位淡出、新轨上备胎淡入（1.2s，与「循环内交叉」同款映射）；
+            // 章末/停止（stopAndClear）维持硬切；连切时先把上一轮交接即时收尾。
+            val cur = player
+            if (!switching && keyword != null && cur?.currentMediaItem != null) {
+                val nxt = standby ?: return
                 crossfading = false
                 lastCrossPos = -1L
                 fileUri = Uri.fromFile(file)
                 runCatching {
-                    a.setMediaItem(MediaItem.fromUri(fileUri!!))
-                    a.volume = 0f
-                    a.prepare()
+                    nxt.stop()
+                    nxt.clearMediaItems()
+                    nxt.setMediaItem(MediaItem.fromUri(fileUri!!))
+                    nxt.volume = 0f
+                    nxt.prepare()
+                    nxt.play()
                 }
+                switching = true
+                switchAt = System.currentTimeMillis()
                 keyword = kw
+                return
             }
+            if (switching) {
+                // 连切/异常残留：状态复位（随后硬重启接管）
+                switching = false
+            }
+            runCatching {
+                playerA?.stop()
+                playerA?.clearMediaItems()
+                playerB?.stop()
+                playerB?.clearMediaItems()
+            }
+            activeIsA = true
+            crossfading = false
+            lastCrossPos = -1L
+            fileUri = Uri.fromFile(file)
+            runCatching {
+                a.setMediaItem(MediaItem.fromUri(fileUri!!))
+                a.volume = 0f
+                a.prepare()
+            }
+            keyword = kw
             val p = player ?: return
             if (!p.isPlaying) runCatching { p.play() }
+        }
+
+        /**
+         * P1.6·⑩：切换交叉淡化推进；返回 0..1 交接进度（非 null=正在交接）。
+         * 映射与「循环内交叉」一致：主位（旧轨）fade-out、备胎（新轨）fade-in；完成时新轨升主、旧轨停止。
+         * allow=false（暂停/静音/拆场）→ 即时收尾（章末/停止维持硬切口径）。
+         */
+        fun advanceSwitchCrossfade(allow: Boolean): Float? {
+            if (!switching) return null
+            if (!allow) {
+                activeIsA = !activeIsA
+                runCatching { standby?.stop(); standby?.clearMediaItems() }
+                switching = false
+                return null
+            }
+            val fade = ((System.currentTimeMillis() - switchAt).toFloat() / CROSSFADE_MS).coerceIn(0f, 1f)
+            if (fade >= 1f) {
+                activeIsA = !activeIsA // 新轨升任主位（standby 变为旧轨）
+                runCatching { standby?.stop(); standby?.clearMediaItems() }
+                switching = false
+                return null
+            }
+            return fade
         }
 
         /**
@@ -771,6 +827,7 @@ class AudioLaneEngine(
             crossfading = false
             lastCrossPos = -1L
             fileUri = null
+            switching = false
             forEachPlayer { p ->
                 runCatching {
                     p.stop()
@@ -788,6 +845,7 @@ class AudioLaneEngine(
             keyword = null
             asset = null
             crossfading = false
+            switching = false
             enhancers.values.forEach { runCatching { it.release() } }
             enhancers.clear()
         }

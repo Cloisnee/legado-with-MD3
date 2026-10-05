@@ -243,14 +243,8 @@ object AudioLibrary {
                 if (anyMeta) {
                     index = merged
                 } else {
-                    // 无聚合文件：一次性导入旧 registry.json（若有），否则全量扫描；随后按类别拆分落盘
-                    val legacy = legacyRegistryFile(context)
-                    val parsedLegacy = if (legacy.isFile) {
-                        parseRegistry(legacy.readText().removePrefix("\uFEFF"))
-                    } else {
-                        null
-                    }
-                    index = parsedLegacy ?: scanInternal(context, emptyMap())
+                    // P1.6·⑦免兼容：不再导入旧 registry.json（已退役、旧文件忽略）——直接全量扫描 → 分类落盘
+                    index = scanInternal(context, emptyMap())
                     persist(context, index.orEmpty().values)
                 }
             }
@@ -791,10 +785,6 @@ object AudioLibrary {
         "环境声" -> "ambience.json"
         else -> "sfx.json"
     }
-
-    /** 旧版 registry.json（仅一次性导入兜底；用户可删除） */
-    private fun legacyRegistryFile(context: Context): File =
-        File(TmDemoAssets.libRoot(context), "registry.json")
 
     private fun relOf(context: Context, file: File): String =
         runCatching { file.relativeTo(TmDemoAssets.libRoot(context)).path.replace(File.separatorChar, '/') }
