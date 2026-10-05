@@ -28,7 +28,7 @@ class AudioDirectorContractTest {
                 """
                 {"para":1,"frag":2,"type":"ambience","tag":"客栈大堂","desc":"大堂环境底噪"},
                 {"para":4,"frag":3,"type":"音效","tag":"推开声","desc":"木门吱呀","delayMs":200,"pos":"中"},
-                {"para":4,"frag":4,"type":"bgm","profile":"fantasy","mood":"sad","intensity":"medium","hold":12,"desc":"二胡哀伤"}
+                {"para":4,"frag":4,"type":"bgm","theme":"fantasy","scene":"battle","mood":"sad","speed":"medium","hold":12,"desc":"二胡哀伤"}
                 """.trimIndent()
             ),
             unitCounts,
@@ -43,9 +43,10 @@ class AudioDirectorContractTest {
         assertEquals(200L, sfx.delayMs)
         assertEquals(0.5f, sfx.posRatio, 0.0001f)
         val bgm = items.first { it.type == "bgm" }
-        assertEquals("幻想", bgm.profile)
-        assertEquals("悲情", bgm.mood)
-        assertEquals("中", bgm.intensity)
+        assertEquals("幻想", bgm.theme)
+        assertEquals("战斗", bgm.scene)
+        assertEquals("悲伤", bgm.mood)
+        assertEquals("中速", bgm.speed)
         assertEquals(12, bgm.hold)
     }
 
@@ -132,11 +133,11 @@ class AudioDirectorContractTest {
     @Test
     fun `枚举非法 提示含值集`() {
         val out = AudioDirectorContract.validate(
-            root("""{"para":1,"frag":1,"type":"bgm","profile":"x","mood":"y","intensity":"z"}"""),
+            root("""{"para":1,"frag":1,"type":"bgm","theme":"x","scene":"y","mood":"z","speed":"w"}"""),
             unitCounts,
         )
         assertNull(out.data)
-        assertTrue(out.failReason.contains("画像"))
+        assertTrue(out.failReason.contains("题材"))
     }
 
     @Test

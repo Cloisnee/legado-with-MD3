@@ -1,5 +1,7 @@
 package io.legado.app.help.readaloud.audio
 
+import io.legado.app.help.readaloud.analysis.AudioDirectorContract
+
 /**
  * B34.2b · 导演预插标记（③ · 纯逻辑）：
  *  - [markersFor]：某片段的本地词典建议 → 导演输入内联标记（〔音效建议：…〕）；
@@ -26,10 +28,18 @@ object AudioPrefill {
         SynthLane.BGM -> "BGM"
     }
 
-    /** 某片段建议 → 内联标记串（顺序=建议顺序；空白名跳过） */
+    /** 某片段建议 → 内联标记串（顺序=建议顺序；空白名跳过；BGM 以四段关键词展示） */
     fun markersFor(suggestions: List<AudioLaneScan.Suggestion>): String =
         suggestions.filter { it.label.isNotBlank() }
-            .joinToString("") { sug -> "〔${laneLabel(sug.lane)}建议：${sug.label}〕" }
+            .joinToString("") { sug ->
+                val shown = if (sug.lane == SynthLane.BGM) {
+                    val dims = AudioDirectorContract.dimsOf(sug.label)
+                    if (dims.size >= 2) dims.joinToString("·") else sug.label
+                } else {
+                    sug.label
+                }
+                "〔${laneLabel(sug.lane)}建议：$shown〕"
+            }
 
     /** 兜底计划：种子 → 章节计划（source=rules；按剧本行号排序；同轨上限） */
     fun buildRulesPlan(seeds: List<PlanSeed>): AudioPlan {

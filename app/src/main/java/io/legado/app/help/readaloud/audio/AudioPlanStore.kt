@@ -21,15 +21,17 @@ data class AudioPlanItem(
     /** B34.2：句内触发位置比例（0=句首；AI 前/中/后或规则命中位换算而来） */
     val posRatio: Float = 0f,
     val hold: Int = 0,
-    val profile: String = "",
+    /** BGM 四段关键词：题材/场景/情绪/速度（=素材库文件名「题材-场景-情绪-速度-循环-描述」前四段） */
+    val theme: String = "",
+    val scene: String = "",
     val mood: String = "",
-    val intensity: String = "",
+    val speed: String = "",
     val anchor: String = "",
 ) {
-    /** 展示名：环境/音效用 tag；BGM 用「画像·情绪·强度」，无字段时回退 tag */
+    /** 展示名：环境/音效用 tag；BGM 用「题材·场景·情绪·速度」（四段词，缺段省略），无字段时回退 tag */
     val displayName: String
         get() = when (type) {
-            AudioTagCodec.TYPE_BGM -> listOf(profile, mood, intensity)
+            AudioTagCodec.TYPE_BGM -> listOf(theme, scene, mood, speed)
                 .filter { it.isNotBlank() }.joinToString("·").ifBlank { tag }
             else -> tag
         }
@@ -137,9 +139,10 @@ object AudioPlanStore {
                 if (item.delayMs > 0) put("delayMs", item.delayMs)
                 if (item.posRatio > 0f) put("posRatio", item.posRatio.toDouble())
                 if (item.hold > 0) put("hold", item.hold)
-                if (item.profile.isNotBlank()) put("profile", item.profile)
+                if (item.theme.isNotBlank()) put("theme", item.theme)
+                if (item.scene.isNotBlank()) put("scene", item.scene)
                 if (item.mood.isNotBlank()) put("mood", item.mood)
-                if (item.intensity.isNotBlank()) put("intensity", item.intensity)
+                if (item.speed.isNotBlank()) put("speed", item.speed)
                 if (item.anchor.isNotBlank()) put("anchor", item.anchor)
             })
         }
@@ -169,9 +172,10 @@ object AudioPlanStore {
                 delayMs = o.optLong("delayMs"),
                 posRatio = o.optDouble("posRatio", 0.0).toFloat(),
                 hold = o.optInt("hold"),
-                profile = o.optString("profile"),
+                theme = o.optString("theme"),
+                scene = o.optString("scene"),
                 mood = o.optString("mood"),
-                intensity = o.optString("intensity"),
+                speed = o.optString("speed"),
                 anchor = o.optString("anchor"),
             )
         }

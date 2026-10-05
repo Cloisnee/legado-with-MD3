@@ -1,73 +1,67 @@
 package io.legado.app.help.readaloud.audio
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioBgmPickerTest {
 
-    private fun query(profile: String = "古风", mood: String = "悲情", intensity: String = "低") =
-        AudioBgmPicker.Query(profile, mood, intensity)
-
-    private fun remote(
-        soundId: String,
-        name: String,
-        aliases: List<String> = emptyList(),
-        tags: List<String> = emptyList(),
-        subType: String = "",
-    ) = AudioRemoteCatalog.RemoteSound(
-        soundId = soundId,
-        name = name,
-        aliases = aliases,
-        category = "bgm",
-        categoryName = "BGM",
-        subType = subType,
-        tags = tags,
-    )
+    private fun query(
+        theme: String = "古风",
+        scene: String = "战斗",
+        mood: String = "紧张",
+        speed: String = "快速",
+    ) = AudioBgmPicker.Query(theme, scene, mood, speed)
 
     @Test
-    fun `中英 token 命中打分`() {
+    fun `四段全中文名 精确命中`() {
         val q = query()
-        val good = AudioBgmPicker.scoreOf("history_ancient_sad_low_loop_古风庭院", q)
-        val weak = AudioBgmPicker.scoreOf("urban_modern_calm_medium_loop_都市", q)
-        assertTrue(good.usable)
-        assertTrue(good.total > weak.total)
+        val m = AudioBgmPicker.matchOf("古风-战斗-紧张-快速-循环-剑影", q)
+        assertTrue(m.matched)
+        assertTrue(m.strict)
+        assertEquals(0, m.softDims)
     }
 
     @Test
-    fun `选曲 优先画像+情绪双命中`() {
+    fun `任一已标注维度不命中即失败`() {
         val q = query()
-        val a = remote("a", "common_daily_calm_medium_loop_日常") // 无命中
-        val b = remote("b", "history_daily_sad_low_loop_古风悲情") // profile+mood+intensity
-        val c = remote("c", "urban_night_warm_low_loop_都市温馨") // 仅 intensity
-        val pick = AudioBgmPicker.pickRemote(listOf(a, b, c), q)
-        assertEquals("b", pick?.soundId)
+        // 情绪不同（已标注）→ 失败
+        assertFalse(AudioBgmPicker.matchOf("古风-战斗-平静-快速-循环-剑影", q).matched)
+        // 题材不同（已标注）→ 失败
+        assertFalse(AudioBgmPicker.matchOf("都市-战斗-紧张-快速-循环-街道", q).matched)
+        // 场景不命中且该维已标注（客栈）→ 失败
+        assertFalse(AudioBgmPicker.matchOf("古风-客栈-紧张-快速-循环-宴席", q).matched)
     }
 
     @Test
-    fun `无有效命中 返回 null`() {
+    fun `缺失维度宽松 并计入softDims`() {
         val q = query()
-        val a = remote("a", "scifi_space_heroic_high_loop")
-        assertNull(AudioBgmPicker.pickRemote(listOf(a), q))
+        // 无速度标注（全名/别名无 慢/中/快速）→ speed 宽松；其余三维修命中
+        val m = AudioBgmPicker.matchOf("古风-战斗-紧张-循环-鼓点-压迫", q)
+        assertTrue(m.matched)
+        assertFalse(m.strict)
+        assertEquals(1, m.softDims)
     }
 
     @Test
-    fun `中文命名条目 可命中`() {
-        val q = query()
-        val a = remote("a", "古风_客栈_叙事_悲情_低_循环")
-        val b = remote("b", "现代_都市_紧张_高")
-        val pick = AudioBgmPicker.pickRemote(listOf(a, b), q)
-        assertEquals("a", pick?.soundId)
+    fun `陈旧命名 子串命中且多宽松维`() {
+        val q = query(theme = "仙侠", scene = "日常", mood = "舒缓", speed = "慢速")
+        val m = AudioBgmPicker.matchOf("仙侠·舒缓·中", q)
+        assertTrue(m.matched) // 场景/速度无标注 → 两维宽松
+        assertEquals(2, m.softDims)
     }
 
     @Test
-    fun `别名与标签参与检索`() {
-        val q = query(profile = "幻想", mood = "平静")
-        val a = remote("a", "BGM_增补_0009", aliases = listOf("BGM_增补_0009_幻想_森林_平静_中等"), tags = listOf("calm"))
-        assertTrue(AudioBgmPicker.scoreOf(AudioBgmPicker.searchText(a), q).usable)
-        // 画像=古风 与 幻想 不互通 → 不视为有效命中（仅强度不构成有效命中）
-        val q2 = query(profile = "恐怖", mood = "悲情")
-        assertTrue(!AudioBgmPicker.scoreOf(AudioBgmPicker.searchText(a), q2).usable)
+    fun `四段须全给 否则不匹配`() {
+        assertFalse(AudioBgmPicker.matchOf("古风-战斗-紧张-快速", query(speed = "")).matched)
+        assertFalse(AudioBgmPicker.matchOf("古风-战斗-紧张-快速", query(theme = "")).matched)
+    }
+
+    @Test
+    fun `dimsOf 解析 顺序与不复用`() {
+        assertEquals(listOf("古风"), AudioBgmPicker.dimsOf("古风"))
+        // 悬疑(题材位) 取走后不再复用；紧张(场景位词表内) 与 中速(速度)
+        assertEquals(listOf("悬疑", "紧张", "中速"), AudioBgmPicker.dimsOf("悬疑-紧张-中速-循环-氛围"))
     }
 }

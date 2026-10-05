@@ -301,10 +301,19 @@ class AudioLaneEngine(
         // 2) BGM：起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
         val bgmItem = planBgmByPara[para]
         if (bgmItem != null) {
-            val keyword = AudioBgmPicker.pickLocal(appContext, AudioBgmPicker.queryOf(bgmItem))?.asset?.name
+            // P1.6.1：四段关键词选曲——本地库（严格→宽松）→ 远程词网 BGM 池（命中即异步下载）
+            // → tag 直连兜底（rules 计划/旧格式）→ 缺失合成
+            val q = AudioBgmPicker.queryOf(bgmItem)
+            val local = AudioBgmPicker.pickLocal(appContext, q)
+            val net = if (local == null) AudioBgmPicker.pickNet(q) else null
+            if (local == null && net != null) {
+                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+            }
+            val keyword = local?.asset?.name
                 ?: AudioLibrary.resolve(appContext, bgmItem.tag)?.asset?.name
-                ?: AudioNetStore.lookup(bgmItem.tag)?.let { net ->
-                    AudioLibrary.resolve(appContext, net.name)?.asset?.name ?: net.name
+                ?: net?.let { n -> AudioLibrary.resolve(appContext, n.name)?.asset?.name ?: n.name }
+                ?: AudioNetStore.lookup(bgmItem.tag)?.let { n ->
+                    AudioLibrary.resolve(appContext, n.name)?.asset?.name ?: n.name
                 }
                 ?: bgmItem.displayName
             if (keyword != desiredBgm) {

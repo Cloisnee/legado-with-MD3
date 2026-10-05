@@ -263,7 +263,7 @@ class SpeechAnalysisPipelineV3(
          * B33.4b · 音频导演默认提示词：
          *  - 拟音师口径：所有会响的动静都要标（有动静就标；连续过程合并一条）；
          *  - 命名=简短、具体、常见（对接素材库检索与合成平台）；
-         *  - BGM 结构化三字段+hold；红线：禁跳吓、不确定不坐实。
+         *  - BGM 结构化四段关键词（题材/场景/情绪/速度）+hold；红线：禁跳吓、不确定不坐实。
          */
         private val DEFAULT_AUDIO_DIRECTOR_PROMPT = """
 你是一名资深有声书配音导演（拟音方向），为章节文本规划三条音频轨：环境底噪、背景音乐（BGM）、音效。
@@ -283,14 +283,16 @@ class SpeechAnalysisPipelineV3(
 1. 只用 2~6 个字的常见、具体的词；不要抽象修辞、引号、方括号、长句。
 2. 音效 tag＝具体声音名：「推门声」「茶杯碎裂」「剑鸣」「马蹄声」式写法。
 3. 环境 tag＝场景名：「客栈大堂」「雨夜街道」「山间清晨」（地点＋天气/时段）。
-4. BGM 用三字段：
-   profile 从【通用/幻想/历史/恐怖/爱情/科幻/悬疑/现代/武侠/仙侠】选一；
-   mood 从【平静/舒缓/温馨/悲情/凄凉/紧张/压迫感/悬疑/热血/史诗/幽默/轻快】选一；
-   intensity 从【低/中/高】选一。
+4. BGM 用四段关键词（对应素材库文件名「题材-场景-情绪-速度-循环-描述」的前四段；四段全部命中才会选中该曲）：
+   theme 题材 从【${AudioDirectorContract.THEMES.joinToString("/")}】选一；
+   scene 场景 从【${AudioDirectorContract.SCENES.joinToString("/")}】选一；
+   mood 情绪 从【${AudioDirectorContract.MOODS.joinToString("/")}】选一；
+   speed 速度 从【${AudioDirectorContract.SPEEDS.joinToString("/")}】选一。
+   优先选择素材库常见组合（如「古风-战斗-紧张-快速」「都市-日常-平静-中速」「悬疑-调查-紧张-中速」）。
 
 【本地建议审核】
-输入中形如〔音效建议：X〕〔环境建议：X〕〔BGM建议：X〕的标记（紧随对应片段之后）是本地词典初筛结果（名字来自本地/远程素材库）：
-- 合理 → 尽量原样采用建议名（命中率最高）；
+输入中形如〔音效建议：X〕〔环境建议：X〕〔BGM建议：X〕的标记（紧随对应片段之后）是本地词典初筛结果（名字/关键词来自本地/远程素材库）：
+- 合理 → 音效/环境：尽量原样采用建议名（命中率最高）；BGM：建议显示为四段关键词（题材·场景·情绪·速度），采用并把缺失段从上面词表补全；
 - 不准确 → 改成更准确的短名；
 - 多余 → 不输出；
 - 有遗漏 → 按上面的排查方式补充（拟音全覆盖）。
@@ -309,9 +311,9 @@ class SpeechAnalysisPipelineV3(
 {"items":[
  {"para":2,"frag":1,"anchor":"客栈的门是被风撞开的","type":"ambience","tag":"客栈大堂","desc":"客栈大堂内人声嘈杂、杯盏碰撞的环境底噪"},
  {"para":4,"frag":2,"anchor":"喝了一口","type":"sfx","tag":"饮酒吞咽","desc":"液体入喉的吞咽声","pos":"后"},
- {"para":30,"frag":2,"anchor":"他跪在坟前","type":"bgm","profile":"古风","mood":"悲情","intensity":"低","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
+ {"para":30,"frag":2,"anchor":"他跪在坟前","type":"bgm","theme":"古风","scene":"离别","mood":"悲情","speed":"慢速","hold":12,"desc":"二胡与低音弦乐，缓慢哀伤"}
 ]}
-字段：para/type 必填；frag 片段号（音效必填；环境/BGM 可省，缺省=该段首片）；音效请附 pos（前/中/后＝片段内触发位置，缺省=片段开头）；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效特殊时可用 delayMs（0~2000 毫秒）覆盖；BGM 必填 hold 与 profile/mood/intensity；anchor 可选（原文片段，便于校对）。
+字段：para/type 必填；frag 片段号（音效必填；环境/BGM 可省，缺省=该段首片）；音效请附 pos（前/中/后＝片段内触发位置，缺省=片段开头）；tag 检索短名（音效/环境必填；BGM 可省）；desc 生成描述（音效/环境必填，一句话）；音效特殊时可用 delayMs（0~2000 毫秒）覆盖；BGM 必填 hold 与 theme/scene/mood/speed（四段词须来自上面值集）；anchor 可选（原文片段，便于校对）。
 """.trimIndent()
     }
 
@@ -1652,8 +1654,10 @@ class SpeechAnalysisPipelineV3(
             ambience = plan.ambience.firstOrNull { it.para == para }?.tag,
             sfx = plan.sfx.filter { it.para == para }
                 .map { AudioTagCodec.sfxValue(it.tag, it.delayMs) },
-            bgm = plan.bgm.firstOrNull { it.para == para }
-                ?.let { "${it.mood}·${it.intensity}·${it.hold}" },
+            bgm = plan.bgm.firstOrNull { it.para == para }?.let { b ->
+                // P1.6.1：BGM 值=展示名（四段词拼接；rules 计划回退 tag）+（hold>0 时附行数）
+                if (b.hold > 0) "${b.displayName}·${b.hold}" else b.displayName
+            },
         )
 
     private fun lineSpeakerOf(line: String): String? {
@@ -1736,7 +1740,7 @@ class SpeechAnalysisPipelineV3(
 
                 AudioTagCodec.TYPE_BGM -> bgm += AudioPlanItem(
                     ordinal, di.type, tag = di.tag, desc = di.desc, hold = di.hold,
-                    profile = di.profile, mood = di.mood, intensity = di.intensity, anchor = di.anchor,
+                    theme = di.theme, scene = di.scene, mood = di.mood, speed = di.speed, anchor = di.anchor,
                 )
 
                 else -> sfx += AudioPlanItem(

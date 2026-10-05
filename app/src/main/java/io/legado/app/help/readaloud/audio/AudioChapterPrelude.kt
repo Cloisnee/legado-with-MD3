@@ -240,8 +240,8 @@ class AudioChapterPrelude(
                     var fetched = false
                     runCatching {
                         val net = if (item.bgm != null) {
-                            AudioNetStore.lookup(item.bgm.profile + item.bgm.mood)
-                                ?: AudioNetStore.lookup(item.label)
+                            // P1.6.1：BGM 四段关键词选曲（词网 BGM 池；严格→宽松）
+                            AudioBgmPicker.pickNet(item.bgm)
                         } else {
                             // P1.5：同栏严格（异栏素材不采用 → 落补缺队列走合成）
                             AudioNetStore.lookupForLane(item.label, item.lane)
