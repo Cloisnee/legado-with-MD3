@@ -47,11 +47,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.legado.app.help.readaloud.audio.AudioBuiltinSfxRules
 import io.legado.app.help.readaloud.audio.AudioLibrary
+import io.legado.app.help.readaloud.audio.AudioSeries
+import io.legado.app.help.readaloud.audio.splitWordList
 import io.legado.app.ui.replace.edit.QuickInputBar
 import io.legado.app.ui.replace.edit.keyboardAsState
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.AppFloatingActionButton
 import io.legado.app.ui.widget.components.AppScaffold
+import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.AppTextField
 import io.legado.app.ui.widget.components.button.ToggleChip
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
@@ -106,6 +109,8 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
     var activeField by remember { mutableStateOf(EditField.Pattern) }
     var showMenu by remember { mutableStateOf(false) }
     var paramsOpen by remember { mutableStateOf(false) }
+    // 第四刀：跨系列词冲突（硬拦截弹窗）
+    var wordConflicts by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     val isKeyboardVisible by keyboardAsState()
 
     LaunchedEffect(assetId) {
@@ -130,13 +135,31 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
     fun save() {
         val base = asset ?: return
         scope.launch {
+            val oldWords = if (!base.isRegex) splitWordList(base.pattern) else emptyList()
+            val inputWords = if (!isRegex) splitWordList(pattern.trim()) else emptyList()
+            val added = inputWords.filter { it !in oldWords }
+            // 第四刀·①：跨系列词硬拦截——新增词撞「同栏、非同系列」条目 → 弹窗并中止（先改对方或换词）
+            val hits = AudioSeries.crossSeriesConflicts(base, added)
+            if (hits.isNotEmpty()) {
+                wordConflicts = hits
+                return@launch
+            }
+            var tip = "已保存"
             runCatching {
                 val newName = name.trim().ifBlank { base.name }
+                var newPattern = pattern.trim()
+                // 第四刀·②：改名脱离系列 → 清掉「旧系列其他成员共享的词」（非同系列自留词保留）
+                if (AudioSeries.seriesKey(base.name) != AudioSeries.seriesKey(newName)) {
+                    val shared = AudioSeries.members(app, base).flatMap { AudioSeries.wordsOf(it) }.toSet()
+                    val cur = splitWordList(newPattern)
+                    val kept = cur.filter { it !in shared }
+                    if (kept.size != cur.size) newPattern = AudioSeries.joinWords(kept)
+                }
                 AudioLibrary.updateAsset(
                     app,
                     base.copy(
                         name = newName,
-                        pattern = pattern.trim(),
+                        pattern = newPattern,
                         tagDesc = tagDesc.trim(),
                         isRegex = isRegex,
                         scopeTitle = scopeTitle,
@@ -147,11 +170,20 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                 if (newName != base.name) {
                     AudioBuiltinSfxRules.rememberRedirect(app, base.name, newName)
                 }
+                // 第四刀·③：同系列词同步——本次新增的词 → 同步给同系列其他成员
+                val after = AudioLibrary.snapshot().firstOrNull { it.id == base.id }
+                val syncN = if (after != null && !after.isRegex) {
+                    val addedFinal = splitWordList(after.pattern).filter { it !in oldWords }
+                    AudioSeries.syncWordsToSeries(app, after, addedFinal)
+                } else {
+                    0
+                }
                 if (category != base.category) {
                     AudioLibrary.setCategory(app, setOf(base.id), category)
                 }
+                if (syncN > 0) tip = "已保存（同系列同步 $syncN 条）"
             }
-            app.toastOnUi("已保存")
+            app.toastOnUi(tip)
             onBack()
         }
     }
@@ -364,6 +396,22 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                 app.toastOnUi("参数已保存（播放中实时生效）")
             }
         },
+    )
+
+    // 第四刀：跨系列词冲突提示（硬拦截——同系列共享词从任一条添加即可，会自动同步）
+    AppAlertDialog(
+        show = wordConflicts.isNotEmpty(),
+        onDismissRequest = { wordConflicts = emptyList() },
+        title = "词被其他系列占用",
+        text = buildString {
+            append("以下词已被同栏的其他条目使用（跨系列唯一）：\n\n")
+            wordConflicts.forEach { (w, owner) ->
+                append("・「").append(w).append("」→ ").append(owner).append("\n")
+            }
+            append("\n请先修改对方条目，或改用别的词；\n同系列共享词只需给其中一条添加，会自动同步到全系列。")
+        },
+        confirmText = "知道了",
+        onConfirm = { wordConflicts = emptyList() },
     )
 }
 
