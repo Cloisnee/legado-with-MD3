@@ -1,8 +1,7 @@
 package io.legado.app.help.readaloud.audio
 
+import android.app.Application
 import android.content.Context
-import android.media.AudioAttributes as PlatformAudioAttributes
-import android.media.SoundPool
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
@@ -13,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.constant.AppLog
+import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.log10
+import kotlin.math.pow
 
 /**
  * B33 · 四轨音频引擎（音频小闭环版）。
@@ -31,7 +32,7 @@ import kotlin.math.log10
  * 职责：在朗读人声（HttpReadAloudService 既有 dialogue 轨）之上叠加——
  *   · ambience 环境底噪（loop）              → 1 个 ExoPlayer
  *   · bgm 背景音乐（loop + 行数到期淡出；BGM 起乐时环境暂停）→ 1 个 ExoPlayer
- *   · sfx 音效（点状，低延迟池）              → SoundPool
+ *   · sfx 音效（点状，低延迟池）              → ExoPlayer 复用池（P1.6.2：可挂 LoudnessEnhancer）
  *
  * 设计要点：
  * - 引擎自主驱动：外部只喂「当前剧本行」(onCue) 与少量生命周期事件；ticker(200ms) 负责
@@ -81,22 +82,20 @@ class AudioLaneEngine(
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
         .build()
 
-    /** 平台版音频属性（SoundPool 用） */
-    private val platformAudioAttributes = PlatformAudioAttributes.Builder()
-        .setUsage(PlatformAudioAttributes.USAGE_MEDIA)
-        .setContentType(PlatformAudioAttributes.CONTENT_TYPE_MUSIC)
-        .build()
-
     private var config = LaneConfig()
 
     private val bgmLane = LoopLane()
     private val ambLane = LoopLane()
-    private var soundPool: SoundPool? = null
 
-    private val sfxLoaded = HashMap<String, Int>() // path -> sampleId（0=加载失败）
-    private val sfxLoading = HashSet<String>()
-    private val sfxById = HashMap<Int, String>()
-    private val sfxWaiters = HashMap<String, MutableList<() -> Unit>>()
+    /** P1.6.2：点状音效引擎——ExoPlayer 一次性复用池（≤6，LRU；可挂 LoudnessEnhancer） */
+    private val sfxPool = SfxPool()
+
+    /** P1.6.2：响度均衡开关（与人声/循环轨同一开关；10s 节流刷新） */
+    private var loudnessOn = false
+    private var loudnessCheckedAt = 0L
+    private val loudnessRepo: TtsServerCenterRepository? by lazy {
+        (appContext.applicationContext as? Application)?.let { TtsServerCenterRepository(it) }
+    }
 
     private var desiredAmbience: String? = null
     private var ambienceDwellAt: Long = 0L
@@ -134,6 +133,8 @@ class AudioLaneEngine(
         runCatching { AudioNetStore.warmUp(appContext) }
         // B33.4b：音频计划存储上下文（播放侧读取计划用）
         runCatching { AudioPlanStore.remember(appContext) }
+        // P1.6.2：声效响度均衡上下文（响度测量/查询用）
+        runCatching { SfxLoudnessNormalizer.remember(appContext) }
     }
 
     private val ticker: Job = scope.launch {
@@ -155,7 +156,17 @@ class AudioLaneEngine(
             ambMinDwellMs = settings.alAmbDwellS.coerceIn(0, 120) * 1000L,
             charsPerSec = estimateCharsPerSec(settings),
         )
+        // P1.6.2：响度均衡开关（与「朗读设置→响度均衡」同源；设置变化即时刷新）
+        refreshLoudnessFlag(force = true)
         if (!config.enabled) resetAll()
+    }
+
+    /** P1.6.2：响度均衡开关刷新（10s 节流；tick 兜底——运行中改开关最多 10s 生效） */
+    private fun refreshLoudnessFlag(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - loudnessCheckedAt < LOUDNESS_CHECK_MS) return
+        loudnessCheckedAt = now
+        loudnessOn = runCatching { loudnessRepo?.readLoudnessBalanceNow() ?: false }.getOrDefault(false)
     }
 
     /** B34.2·⑨：读速估算（字/秒）——基准 × 语速档；v1 估算（实际音频时长校准留 v2） */
@@ -373,18 +384,14 @@ class AudioLaneEngine(
         ticker.cancel()
         bgmLane.release()
         ambLane.release()
-        soundPool?.release()
-        soundPool = null
-        sfxLoaded.clear()
-        sfxLoading.clear()
-        sfxById.clear()
-        sfxWaiters.clear()
+        sfxPool.release()
     }
 
     // ---------------------------------------------------------------- tick
 
     private fun tick() {
         if (!config.enabled) return
+        refreshLoudnessFlag()
         val active = serviceActive()
 
         // 环境轨：目标 = 轨音量；暂停/停播 → 0；BGM 起乐时固定暂停环境（结束后恢复；B34 已拔除选项）
@@ -453,6 +460,8 @@ class AudioLaneEngine(
                 }
                 if (resolved != null) {
                     lane.playKeyword(desired, resolved.file, resolved.asset)
+                    // P1.6.2：响度均衡——未见样本则后台补测（本次按当前档播，测完自动接上）
+                    runCatching { SfxLoudnessNormalizer.ensureMeasured(appContext, resolved.file) }
                     if (kind == "BGM") bgmMissRetryAt = 0L else ambMissRetryAt = 0L
                 } else {
                     // 解析失败：10s 内不重复扫描；文件（合成/下载）落库后自动接上
@@ -476,7 +485,12 @@ class AudioLaneEngine(
             }
         }
         val volume = (if (active) target else 0f) * (meta?.volume ?: 1f)
-        val base = volume.coerceIn(0f, 1f)
+        // P1.6.2：声效响度均衡——trim 并入总增益（正增益走增强器、负增益走 volume）；
+        // 随「响度均衡」开关（同一体系）；未学习时 trim=0，后台补测后自动接上。
+        val trimDb = loudnessTrimDb(lane.asset?.relPath)
+        val gainTotal = volume * trimLinear(trimDb)
+        val base = gainTotal.coerceIn(0f, 1f)
+        val boostDb = boostDbOf(gainTotal)
 
         // B33.4 前置：循环交叉淡化（双播放器无缝衔接；时长未知/过短时退化为单曲循环）
         // P1.6·⑩：先推进「切换」交叉淡化（旧轨→新轨 1.2s 等功率交接），再走「循环内」交叉
@@ -484,11 +498,11 @@ class AudioLaneEngine(
             ?: lane.advanceCrossfade(allow = active && base > 0.02f)
         if (fade != null) {
             lane.setVolumesDirect(base * (1f - fade), base * fade)
-            applyLoopBoost(lane, p, base)
+            applyLoopBoost(lane, p, boostDb)
             return
         }
         approach(p, base)
-        applyLoopBoost(lane, p, base)
+        applyLoopBoost(lane, p, boostDb)
         // 暂停 / 互斥让位到静音时挂起播放器（恢复由上方 play() 逻辑拉起）
         if (base <= 0.015f && p.volume <= 0.015f && p.isPlaying) {
             runCatching { p.pause() }
@@ -506,20 +520,33 @@ class AudioLaneEngine(
         player.volume = (current + step).coerceIn(0f, 1f)
     }
 
-    /** 超 100% 音量：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB；按播放器各持一个） */
+    /** 超 100% 增益（含响度 trim 正部分）：ExoPlayer 上限 1.0，用 LoudnessEnhancer 补增益（≤ +12dB；按播放器各持一个） */
     @androidx.annotation.OptIn(UnstableApi::class)
-    private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, volume: Float) {
+    private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, boostDb: Float) {
         runCatching {
             val e = lane.enhancerFor(player)
-            if (volume <= 1.001f) {
+            if (boostDb <= 0.05f) {
                 e.enabled = false
                 return
             }
-            val gainDb = (20.0 * log10(volume.toDouble())).coerceIn(0.0, 12.0)
-            e.setTargetGain((gainDb * 100).toInt())
+            e.setTargetGain((boostDb * 100f).toInt().coerceIn(0, 1200))
             e.enabled = true
         }
     }
+
+    /** P1.6.2：该素材当前响度 trim（dB；未开「响度均衡」/未学习 → 0） */
+    private fun loudnessTrimDb(relPath: String?): Float {
+        if (!loudnessOn || relPath.isNullOrBlank()) return 0f
+        return runCatching { SfxLoudnessNormalizer.trimDbFor(relPath) }.getOrDefault(0f)
+    }
+
+    /** dB → 线性增益 */
+    private fun trimLinear(db: Float): Float =
+        if (db > -0.001f && db < 0.001f) 1f else 10.0.pow(db / 20.0).toFloat()
+
+    /** 总线性增益中超过 1.0 的部分 → 增强器 dB（≤12） */
+    private fun boostDbOf(total: Float): Float =
+        if (total > 1.0001f) (20.0 * log10(total.toDouble())).coerceIn(0.0, 12.0).toFloat() else 0f
 
     // ---------------------------------------------------------------- sfx
 
@@ -543,77 +570,46 @@ class AudioLaneEngine(
         return fireSfx(resolved, pick.hit.gain, delayMs)
     }
 
-    /** B33.4b：播放体（规则层 pick 与计划条目共用） */
+    /**
+     * B33.4b：播放体（规则层 pick 与计划条目共用）。
+     * P1.6.2：SoundPool → ExoPlayer 复用池（可挂 LoudnessEnhancer，供响度均衡）。
+     */
     private fun fireSfx(resolved: AudioLibrary.ResolvedAsset, gain: Float, delayMs: Long): Boolean {
-        val path = resolved.file.absolutePath
-        val fallbackAsset = resolved.asset
-        val fire: () -> Unit = {
-            val sid = sfxLoaded[path] ?: 0
-            if (sid > 0) {
-                runCatching {
-                    // 条目参数实时读取（音量；音速×音高 → SoundPool 速率近似）
-                    val meta = AudioLibrary.metaByRelPath(fallbackAsset.relPath) ?: fallbackAsset
-                    val v = (config.sfxVolume * gain * meta.volume).coerceIn(0f, 1f)
-                    val rate = (meta.speed * meta.pitch).coerceIn(0.5f, 2.0f)
-                    ensureSoundPool().play(sid, v, v, 1, 0, rate)
-                }
-            }
-        }
-        val delayedFire: () -> Unit = {
-            if (delayMs > 0) {
-                scope.launch {
-                    delay(delayMs)
-                    fire()
-                }
-            } else {
+        val file = resolved.file
+        if (!runCatching { file.isFile && file.length() > 0L }.getOrDefault(false)) return false
+        // P1.6.2：响度均衡——未见样本则后台补测（本次按当前档播，测完自动接上；不阻塞）
+        runCatching { SfxLoudnessNormalizer.ensureMeasured(appContext, file) }
+        val fire: () -> Unit = { playSfxNow(resolved, gain) }
+        if (delayMs > 0) {
+            scope.launch {
+                delay(delayMs)
                 fire()
             }
+        } else {
+            fire()
         }
-        val loaded = sfxLoaded[path]
-        return when {
-            loaded != null && loaded > 0 -> {
-                delayedFire()
-                true
-            }
-            loaded != null -> false // 已判定不可用（静默跳过）
-            sfxLoading.contains(path) -> {
-                sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
-                true
-            }
-            else -> {
-                val pool = ensureSoundPool()
-                val id = runCatching { pool.load(path, 1) }.getOrDefault(0)
-                if (id == 0) {
-                    sfxLoaded[path] = 0
-                    false
-                } else {
-                    sfxLoading.add(path)
-                    sfxById[id] = path
-                    sfxWaiters.getOrPut(path) { mutableListOf() }.add(delayedFire)
-                    true
-                }
-            }
-        }
+        return true
     }
 
-    private fun ensureSoundPool(): SoundPool = soundPool ?: SoundPool.Builder()
-        .setMaxStreams(4)
-        .setAudioAttributes(platformAudioAttributes)
-        .build()
-        .also { pool ->
-            pool.setOnLoadCompleteListener { _, sampleId, status ->
-                val p = sfxById.remove(sampleId) ?: return@setOnLoadCompleteListener
-                sfxLoading.remove(p)
-                if (status == 0) {
-                    sfxLoaded[p] = sampleId
-                    sfxWaiters.remove(p)?.forEach { it() }
-                } else {
-                    sfxLoaded[p] = 0
-                    sfxWaiters.remove(p)
-                }
-            }
-            soundPool = pool
+    /** 点状音效实际发声：取池实例 → 体积/速率/响度增益 → 起播（失败静默） */
+    private fun playSfxNow(resolved: AudioLibrary.ResolvedAsset, gain: Float) {
+        runCatching {
+            // 条目参数实时读取（音量/音速/音高；速率≈原 SoundPool rate=speed×pitch 听感）
+            val meta = AudioLibrary.metaByRelPath(resolved.asset.relPath) ?: resolved.asset
+            val rate = (meta.speed * meta.pitch).coerceIn(0.5f, 2.0f)
+            val trimDb = loudnessTrimDb(resolved.asset.relPath)
+            val total = (config.sfxVolume * gain * meta.volume) * trimLinear(trimDb)
+            val player = sfxPool.acquire()
+            player.stop()
+            player.clearMediaItems()
+            player.setMediaItem(MediaItem.fromUri(Uri.fromFile(resolved.file)))
+            player.volume = total.coerceIn(0f, 1f)
+            player.playbackParameters = PlaybackParameters(rate, rate)
+            sfxPool.setBoost(player, boostDbOf(total))
+            player.prepare()
+            player.play()
         }
+    }
 
     // ---------------------------------------------------------------- misc
 
@@ -860,6 +856,92 @@ class AudioLaneEngine(
         }
     }
 
+    /**
+     * P1.6.2 · 点状音效引擎（替换 SoundPool）：ExoPlayer 一次性复用池（≤[SFX_POOL_MAX]，LRU）。
+     * 每实例可挂 LoudnessEnhancer（响度均衡）+ PlaybackParameters(speed/pitch) + volume；
+     * 不抢音频焦点（与人声/循环轨纪律一致）；复用常驻，stop/clear 后即换曲。
+     */
+    private inner class SfxPool {
+        private val players = LinkedHashMap<ExoPlayer, Long>() // 实例 → 最近使用时间
+        private val enhancers = HashMap<ExoPlayer, LoudnessEnhancer>()
+        private val boostDb = HashMap<ExoPlayer, Float>()
+
+        /** 取实例：优先空闲（IDLE/ENDED）；不足新建；满 → LRU 复用 */
+        fun acquire(): ExoPlayer {
+            players.entries.firstOrNull { (p, _) -> isIdle(p) }?.let { (p, _) ->
+                players[p] = System.currentTimeMillis()
+                return p
+            }
+            if (players.size < SFX_POOL_MAX) {
+                val p = buildPlayer()
+                players[p] = System.currentTimeMillis()
+                return p
+            }
+            val lru = players.entries.minByOrNull { it.value }!!.key
+            players[lru] = System.currentTimeMillis()
+            return lru
+        }
+
+        /** 设置该实例的增强器增益（dB；audioSession 未就绪时先记录，就绪回调后应用） */
+        fun setBoost(player: ExoPlayer, db: Float) {
+            boostDb[player] = db
+            applyBoostNow(player)
+        }
+
+        private fun isIdle(p: ExoPlayer): Boolean = runCatching {
+            val st = p.playbackState
+            st == Player.STATE_IDLE || st == Player.STATE_ENDED
+        }.getOrDefault(true)
+
+        @androidx.annotation.OptIn(UnstableApi::class)
+        private fun applyBoostNow(player: ExoPlayer) {
+            runCatching {
+                val db = boostDb[player] ?: 0f
+                val e = enhancerFor(player) ?: return
+                if (db <= 0.05f) {
+                    e.enabled = false
+                    return
+                }
+                e.setTargetGain((db * 100f).toInt().coerceIn(0, 1200))
+                e.enabled = true
+            }
+        }
+
+        /** 增强器（懒建；audioSessionId 未分配=0 → null，等 onAudioSessionIdChanged 重建） */
+        @androidx.annotation.OptIn(UnstableApi::class)
+        private fun enhancerFor(player: ExoPlayer): LoudnessEnhancer? =
+            enhancers[player] ?: runCatching {
+                val sid = player.audioSessionId
+                if (sid == 0) null else LoudnessEnhancer(sid).also { enhancers[player] = it }
+            }.getOrNull()
+
+        private fun buildPlayer(): ExoPlayer {
+            val p = ExoPlayer.Builder(appContext).build()
+            p.setAudioAttributes(media3AudioAttributes, false)
+            p.volume = 0f
+            p.addListener(object : Player.Listener {
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    runCatching {
+                        enhancers.remove(p)?.release()
+                        if (audioSessionId != 0) {
+                            enhancers[p] = LoudnessEnhancer(audioSessionId)
+                        }
+                    }
+                    applyBoostNow(p)
+                }
+            })
+            return p
+        }
+
+        fun release() {
+            players.keys.forEach { p -> runCatching { p.release() } }
+            players.clear()
+            enhancers.values.forEach { e -> runCatching { e.release() } }
+            enhancers.clear()
+            boostDb.clear()
+        }
+    }
+
     private companion object {
         /** B34.2·⑨：中文朗读基准读速（字/秒，估算） */
         const val BASE_CHARS_PER_SEC = 4.2f
@@ -869,5 +951,11 @@ class AudioLaneEngine(
 
         /** 循环交叉淡化时长（ms） */
         const val CROSSFADE_MS = 1_200L
+
+        /** P1.6.2：点状音效复用池容量（拍板 ×4~6，取 6） */
+        const val SFX_POOL_MAX = 6
+
+        /** P1.6.2：响度均衡开关刷新节流（ms） */
+        const val LOUDNESS_CHECK_MS = 10_000L
     }
 }

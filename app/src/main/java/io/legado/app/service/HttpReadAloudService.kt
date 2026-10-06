@@ -71,6 +71,7 @@ import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
+import io.legado.app.help.readaloud.audio.SfxLoudnessNormalizer
 import io.legado.app.help.readaloud.audio.SynthLane
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
@@ -386,13 +387,14 @@ class HttpReadAloudService : BaseReadAloudService(),
     private fun refreshLoudnessFlags() {
         loudnessBalanceOn = runCatching { loudnessRepo.readLoudnessBalanceNow() }.getOrDefault(false)
         if (!loudnessBalanceOn) return
-        // B11.1：学习进度变化时留一条可见日志（无变化不刷）
+        // B11.1：学习进度变化时留一条可见日志（无变化不刷；P1.6.2 增记声效样本数）
         val voices = loudness.learnedVoiceCount()
         val samples = loudness.learnedSampleCount()
-        val summary = "$voices|$samples"
+        val sfxCount = runCatching { SfxLoudnessNormalizer.learnedCount() }.getOrDefault(0)
+        val summary = "$voices|$samples|$sfxCount"
         if (summary != lastLoudnessSummary) {
             lastLoudnessSummary = summary
-            AppLog.putAudio("【响度均衡】已启用：已学习 $voices 个声线 / $samples 条样本")
+            AppLog.putAudio("【响度均衡】已启用：已学习 $voices 个声线 / $samples 条样本 / 声效 $sfxCount 条")
         }
     }
 

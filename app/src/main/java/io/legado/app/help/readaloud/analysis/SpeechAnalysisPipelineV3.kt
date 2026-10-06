@@ -1686,16 +1686,17 @@ class SpeechAnalysisPipelineV3(
         }
     }
 
-    /** P1.5.1：本地建议预扫行（跳过 Ai 导演时）；计数=唯一条目（与「本地计划」/音频侧「剧本统计」同口径） */
+    /** P1.5.1/P1.6.2：本地建议预扫行（跳过 Ai 导演时）；计数=唯一条目（与「本地计划」/音频侧「剧本统计」同口径，bgm/环境声/音效三件齐全） */
     private fun logLaneFallbackSuggestions(
         reason: String,
         suggestions: List<List<AudioLaneScan.Suggestion>>,
     ) {
         val uniq = suggestions.flatten().distinctBy { it.lane to it.label }
+        val bgm = uniq.count { it.lane == SynthLane.BGM }
         val amb = uniq.count { it.lane == SynthLane.AMB }
         val sfx = uniq.count { it.lane == SynthLane.SFX }
         AppLog.putAnalysis(
-            "【分析V3·${chapterLabel}·音效与背景音】本地建议预扫（$reason）：环境声${amb}条、音效${sfx}条。"
+            "【分析V3·${chapterLabel}·音效与背景音】本地建议预扫（$reason）：bgm${bgm}条、环境声${amb}条、音效${sfx}条。"
         )
     }
 

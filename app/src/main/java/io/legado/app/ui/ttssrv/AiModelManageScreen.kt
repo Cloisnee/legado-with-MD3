@@ -183,6 +183,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var qValidate by remember { mutableStateOf("2") }
     var qTimeoutSec by remember { mutableStateOf("120") }
     var qDisableThinking by remember { mutableStateOf(true) }
+    var showQuotaMenu by remember { mutableStateOf(false) }
     var queueCtx by remember { mutableStateOf<String?>(null) }
     var selQueue by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -940,65 +941,136 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 模型分配 · 次数设置 ----------------
+    // ---------------- 模型分配 · 次数设置（P1.6.2：套 RuleEditSheet 模板——顶左 ✕ / 顶右 ⋮（恢复默认）/ 右下浮动保存） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
         show = quotaTarget != null,
         onDismissRequest = { quotaTarget = null },
         title = "模型设置：${quotaTarget?.name.orEmpty()}",
+        startAction = {
+            MediumTonalButton(
+                onClick = { quotaTarget = null },
+                icon = Icons.Default.Close,
+                contentDescription = stringResource(R.string.close),
+            )
+        },
+        endAction = {
+            Box {
+                MediumTonalButton(
+                    onClick = { showQuotaMenu = true },
+                    icon = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.more_menu),
+                )
+                RoundDropdownMenu(
+                    expanded = showQuotaMenu,
+                    onDismissRequest = { showQuotaMenu = false },
+                ) { dismiss ->
+                    RoundDropdownMenuItem(
+                        text = "恢复默认",
+                        onClick = {
+                            dismiss()
+                            qAttempts = "2"
+                            qValidate = "2"
+                            qTimeoutSec = "120"
+                            qDisableThinking = true
+                        },
+                    )
+                }
+            }
+        },
     ) {
         val quotaIsAudio = quotaTarget?.let { m ->
             cfg?.providers?.firstOrNull { it.id == m.providerId }?.kind == "audio"
         } ?: false
-        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            SheetField("响应尝试次数（1=只试一次）", qAttempts) { qAttempts = it }
-            if (!quotaIsAudio) {
-                SheetField("校验重试次数（0=不重试）", qValidate) { qValidate = it }
-            }
-            SheetField("超时（秒）", qTimeoutSec) { qTimeoutSec = it }
-            if (quotaIsAudio) {
-                AppText(
-                    text = "合成平台无「思考 / 内容校验」概念：仅 重试次数 与 超时 生效；不适用流式（按整段文件返回）。",
-                    style = LegadoTheme.typography.labelSmall,
-                    color = LegadoTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 120.dp),
+            ) {
+                AppTextField(
+                    value = qAttempts,
+                    onValueChange = { qAttempts = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "响应尝试次数（1=只试一次）",
+                    singleLine = true,
                 )
-            } else {
-                TinySwitchSettingItem(
-                    title = "关闭思考",
-                    description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
-                    checked = qDisableThinking,
-                    onCheckedChange = { qDisableThinking = it },
+                Spacer(modifier = Modifier.height(8.dp))
+                if (!quotaIsAudio) {
+                    AppTextField(
+                        value = qValidate,
+                        onValueChange = { qValidate = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = LegadoTheme.colorScheme.surface,
+                        label = "校验重试次数（0=不重试）",
+                        singleLine = true,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                AppTextField(
+                    value = qTimeoutSec,
+                    onValueChange = { qTimeoutSec = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = LegadoTheme.colorScheme.surface,
+                    label = "超时（秒）",
+                    singleLine = true,
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                if (quotaIsAudio) {
+                    AppText(
+                        text = "合成平台无「思考 / 内容校验」概念：仅 重试次数 与 超时 生效；不适用流式（按整段文件返回）。",
+                        style = LegadoTheme.typography.labelSmall,
+                        color = LegadoTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                } else {
+                    TinySwitchSettingItem(
+                        title = "关闭思考",
+                        description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
+                        checked = qDisableThinking,
+                        onCheckedChange = { qDisableThinking = it },
+                    )
+                }
             }
-            TinyClickableSettingItem(
-                title = "保存",
-                onClick = {
-                    val m = quotaTarget ?: return@TinyClickableSettingItem
-                    val isAudio = quotaIsAudio
-                    val attempts = (qAttempts.toIntOrNull() ?: 2).coerceIn(1, 5)
-                    val validate = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5)
-                    val timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
-                        .coerceIn(5L, 600L)) * 1000L
-                    val disableThinking = qDisableThinking
-                    quotaTarget = null
-                    scope.launch {
-                        val newM = if (isAudio) {
-                            m.copy(requestAttempts = attempts, timeoutMs = timeoutMs)
-                        } else {
-                            m.copy(
-                                requestAttempts = attempts,
-                                validateRetries = validate,
-                                timeoutMs = timeoutMs,
-                                disableThinking = disableThinking,
-                            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+            ) {
+                AppFloatingActionButton(
+                    onClick = {
+                        val m = quotaTarget
+                        if (m != null) {
+                            val isAudio = quotaIsAudio
+                            val attempts = (qAttempts.toIntOrNull() ?: 2).coerceIn(1, 5)
+                            val validate = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5)
+                            val timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
+                                .coerceIn(5L, 600L)) * 1000L
+                            val disableThinking = qDisableThinking
+                            quotaTarget = null
+                            scope.launch {
+                                val newM = if (isAudio) {
+                                    m.copy(requestAttempts = attempts, timeoutMs = timeoutMs)
+                                } else {
+                                    m.copy(
+                                        requestAttempts = attempts,
+                                        validateRetries = validate,
+                                        timeoutMs = timeoutMs,
+                                        disableThinking = disableThinking,
+                                    )
+                                }
+                                repo.upsertModel(newM)
+                                context.toastOnUi("已保存")
+                                reload()
+                            }
                         }
-                        repo.upsertModel(newM)
-                        context.toastOnUi("已保存")
-                        reload()
-                    }
-                },
-            )
+                    },
+                    tooltipText = stringResource(R.string.action_save),
+                    icon = Icons.Default.Save,
+                )
+            }
         }
     }
 
@@ -1563,20 +1635,4 @@ private fun SectionTitle(text: String) {
         color = LegadoTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp),
     )
-}
-
-// ============================================================
-// 通用
-// ============================================================
-
-@Composable
-private fun SheetField(label: String, value: String, onChange: (String) -> Unit) {
-    AppTextField(
-        value = value,
-        onValueChange = onChange,
-        modifier = Modifier.fillMaxWidth(),
-        label = label,
-        singleLine = true,
-    )
-    Spacer(modifier = Modifier.height(8.dp))
 }

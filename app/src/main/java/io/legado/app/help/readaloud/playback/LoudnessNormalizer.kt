@@ -1,13 +1,8 @@
 package io.legado.app.help.readaloud.playback
 
 import android.app.Application
-import android.media.AudioFormat
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import com.github.jing332.compat.fs.TtsDirProvider
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.log10
@@ -150,117 +145,16 @@ class LoudnessNormalizer(private val app: Application) {
     }
 
     /**
-     * 解码音频 → 有效区（首个/末个超过阈值的采样之间）均方值（0..1，16bit 满幅 = 1）。
-     * 无有效信号（静音）或解码失败返回 null。
+     * 解码音频 → 有效区均方值（0..1，16bit 满幅 = 1）。无有效信号（静音）或解码失败返回 null。
+     * P1.6.2：解码与度量已抽到 [AudioLoudnessMeasure]（与声效侧共用同一口径）。
      */
     private fun measurePower(audio: File): Double? = runCatching {
-        if (!audio.exists() || audio.length() <= 0L) return null
-        val extractor = MediaExtractor()
-        var codec: MediaCodec? = null
-        try {
-            extractor.setDataSource(audio.absolutePath)
-            var track = -1
-            for (i in 0 until extractor.trackCount) {
-                val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME).orEmpty()
-                if (mime.startsWith("audio/")) {
-                    track = i
-                    break
-                }
-            }
-            if (track < 0) return null
-            extractor.selectTrack(track)
-            val format = extractor.getTrackFormat(track)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
-            val c = MediaCodec.createDecoderByType(mime).also { codec = it }
-            c.configure(format, null, null, 0)
-            c.start()
-
-            val info = MediaCodec.BufferInfo()
-            val out = ByteArrayOutputStream(1 shl 20)
-            var inputDone = false
-            var guard = 0
-            while (guard++ < 2_000_000) {
-                if (!inputDone) {
-                    val inIdx = c.dequeueInputBuffer(10_000L)
-                    if (inIdx >= 0) {
-                        val inBuf = c.getInputBuffer(inIdx)
-                        val size = if (inBuf != null) extractor.readSampleData(inBuf, 0) else -1
-                        if (size < 0) {
-                            c.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            c.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
-                    }
-                }
-                val outIdx = c.dequeueOutputBuffer(info, 10_000L)
-                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val nf = c.outputFormat
-                    val enc = if (nf.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                        nf.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                    } else {
-                        AudioFormat.ENCODING_PCM_16BIT
-                    }
-                    if (enc != AudioFormat.ENCODING_PCM_16BIT) return null
-                } else if (outIdx >= 0) {
-                    val outBuf = c.getOutputBuffer(outIdx)
-                    if (outBuf != null && info.size > 0 &&
-                        (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
-                    ) {
-                        outBuf.position(info.offset)
-                        outBuf.limit(info.offset + info.size)
-                        val chunk = ByteArray(info.size)
-                        outBuf.get(chunk)
-                        out.write(chunk)
-                    }
-                    c.releaseOutputBuffer(outIdx, false)
-                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
-                }
-            }
-
-            val bytes = out.toByteArray()
-            val n = bytes.size / 2
-            if (n <= 0) return null
-
-            fun sampleAt(i: Int): Int {
-                val lo = bytes[2 * i].toInt() and 0xFF
-                val hi = bytes[2 * i + 1].toInt()
-                return (hi shl 8) or lo
-            }
-
-            var first = -1
-            var last = -1
-            for (i in 0 until n) {
-                val s = sampleAt(i)
-                if (s > SILENCE_THRESHOLD || s < -SILENCE_THRESHOLD) {
-                    if (first < 0) first = i
-                    last = i
-                }
-            }
-            if (first < 0) return null
-            if (last - first < 800) {
-                first = 0
-                last = n - 1
-            }
-            var acc = 0.0
-            for (i in first..last) {
-                val v = sampleAt(i) / 32768.0
-                acc += v * v
-            }
-            acc / (last - first + 1)
-        } finally {
-            runCatching { codec?.stop() }
-            runCatching { codec?.release() }
-            runCatching { extractor.release() }
-        }
+        val pcm = AudioLoudnessMeasure.decodePcm16(audio) ?: return null
+        AudioLoudnessMeasure.effectiveMeanSquare(pcm.bytes)
     }.getOrNull()
 
     companion object {
         /** 播放侧缓存补测封顶（每声线至多补学样本数） */
         private const val BACKFILL_CAP = 8
-
-        /** 有效信号阈值（16bit 满幅 32768） */
-        private const val SILENCE_THRESHOLD = 300
     }
 }

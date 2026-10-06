@@ -283,6 +283,8 @@ object AudioLibrary {
     ) {
         missCache.clear()
         registerFile(context, file, source, soundId, aliases)
+        // P1.6.2：声效响度均衡——落库即后台测（合成/下载/导入统一入口；失败静默、不阻塞）
+        runCatching { SfxLoudnessNormalizer.ensureMeasured(context, file) }
     }
 
     /** B33.3d/2c：规则表就绪后回填（名称→soundId 反查 + soundId→名称/别名），只补不覆盖 */

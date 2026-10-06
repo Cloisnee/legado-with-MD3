@@ -353,9 +353,11 @@ class AudioSynthQueue(
     fun entryStatus(lane: SynthLane, keyword: String): String =
         runCatching { entries["${lane.name}|$keyword"]?.status.orEmpty() }.getOrDefault("")
 
-    /** 日志 v3：跳过原因仅记录去重集合（散行静默），由章节总结统一呈现 */
+    /** P1.6.2：跳过原因（无模型/达上限/已关闭）一次性写入音频日志（不再只做内存去重） */
     private fun logSkipOnce(key: String, reason: String) {
-        skipLogged.add(key)
+        if (skipLogged.add(key)) {
+            AppLog.putAudio("【音效与背景音】补缺跳过：$reason")
+        }
     }
 
     private fun now(): Long = System.currentTimeMillis()
