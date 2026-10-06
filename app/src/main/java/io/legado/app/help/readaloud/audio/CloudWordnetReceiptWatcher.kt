@@ -80,6 +80,8 @@ object CloudWordnetReceiptWatcher {
         AppLog.putAudio(
             "【音效与背景音】云端处理完成（批次 $batch）：新增 $added、合并 $merged、失败 $errors → 词网热刷新"
         )
+        // P1.6.2+（第二刀）：上传账本——本批 pending → confirmed
+        runCatching { CloudUploadLedger.confirm(context, batch) }
         runCatching { AudioNetStore.ensureLoaded(context, force = true) }
     }
 

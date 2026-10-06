@@ -61,6 +61,7 @@ import io.legado.app.help.readaloud.audio.AudioMissingRow
 import io.legado.app.help.readaloud.audio.AudioNetStore
 import io.legado.app.help.readaloud.audio.AudioRemoteCatalog
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
+import io.legado.app.help.readaloud.audio.CloudUploadLedger
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
 import io.legado.app.help.readaloud.audio.CloudWordnetReceiptWatcher
 import io.legado.app.help.readaloud.audio.splitWordList
@@ -652,6 +653,24 @@ fun AudioLibraryScreen(
                             if (ui.pattern.isNotBlank()) {
                                 append(if (ui.isRegex) " · 正则" else " · 自定义")
                             }
+                            // P1.6.2+（第二刀）：云端上传状态（已上传 / 待同步；未上传不显示）
+                            runCatching {
+                                val lf = AudioLibrary.fileOf(context.applicationContext, ui)
+                                if (lf.isFile) {
+                                    val cloudLabel = CloudUploadLedger.statusText(
+                                        context.applicationContext,
+                                        ui.name,
+                                        if (!ui.isRegex && ui.pattern.isNotBlank()) {
+                                            splitWordList(ui.pattern)
+                                        } else {
+                                            emptyList()
+                                        },
+                                        lf.length(),
+                                        lf.lastModified(),
+                                    )
+                                    if (cloudLabel.isNotEmpty()) append(" · ").append(cloudLabel)
+                                }
+                            }
                         },
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
@@ -980,6 +999,8 @@ private suspend fun pushToCloud(
     }.getOrDefault(emptySet())
     var skipped = 0
     val items = ArrayList<CloudWordnetClient.Item>(picked.size)
+    // P1.6.2+（第二刀）：上传账本快照（实际提交的条目 → 名字/词集/文件指纹）
+    val ledgerRecords = ArrayList<CloudUploadLedger.Record>(picked.size)
     picked.forEach { a ->
         val lane = AudioLibrary.laneOf(a)
         val matched = (lane to a.name) in netKeys
@@ -995,13 +1016,21 @@ private suspend fun pushToCloud(
         }
         val ext = a.relPath.substringAfterLast('.', "mp3").lowercase()
             .let { if (it in setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")) it else "mp3" }
+        val words = if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList()
         items += CloudWordnetClient.Item(
             name = a.name,
             lane = lane,
-            words = if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList(),
+            words = words,
             aliases = a.aliases,
             filePath = filePath,
             ext = ext,
+        )
+        val lf = AudioLibrary.fileOf(appContext, a)
+        ledgerRecords += CloudUploadLedger.Record(
+            name = a.name,
+            words = words,
+            size = runCatching { lf.length() }.getOrDefault(0L),
+            mtime = runCatching { lf.lastModified() }.getOrDefault(0L),
         )
     }
     if (items.isEmpty()) return "没有可提交的条目（$skipped 条缺少文件）"
@@ -1014,6 +1043,8 @@ private suspend fun pushToCloud(
         val batch = res.batch
         if (slug != null && batch != null) {
             CloudWordnetReceiptWatcher.watch(appContext, slug, batch)
+            // P1.6.2+（第二刀）：上传账本——记录本批快照；回执后转「已上传」
+            runCatching { CloudUploadLedger.record(appContext, batch, ledgerRecords) }
         }
         buildString {
             append("已提交云端处理：上传 ${res.uploaded}、仅并词 ${res.mergeOnly}")
