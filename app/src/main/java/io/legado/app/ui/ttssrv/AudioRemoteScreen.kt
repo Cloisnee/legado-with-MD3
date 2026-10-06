@@ -94,7 +94,9 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     }
     fun reloadLocalNames() {
         scope.launch {
-            localNames = AudioLibrary.assets(context.applicationContext).map { it.name }.toSet()
+            // P1.6.2+：按「文件名」比对（含变体区分），替代过往按主名的粗比对
+            localNames = AudioLibrary.assets(context.applicationContext)
+                .map { it.relPath.substringAfterLast('/') }.toSet()
         }
     }
 
@@ -281,7 +283,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                 }
                 items(shown, key = { it.soundId }) { s ->
                     SelectionItemCard(
-                        title = s.name,
+                        title = s.displayName,
                         subtitle = buildString {
                             if (s.categoryName.isNotBlank()) {
                                 append(s.categoryName)
@@ -307,12 +309,12 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
                             {
                                 RemoteDownloadAction(
                                     state = jobStates[s.soundId],
-                                    inLibrary = localNames.contains(s.name),
+                                    inLibrary = localNames.contains(s.fileName),
                                     onDownload = { enqueue(s) },
                                 )
                             }
                         },
-                        contentDescription = s.name,
+                        contentDescription = s.displayName,
                     )
                 }
             }

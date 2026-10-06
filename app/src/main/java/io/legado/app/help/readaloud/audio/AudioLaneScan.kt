@@ -31,7 +31,8 @@ object AudioLaneScan {
                 texts.forEach { raw ->
                     val text = raw.trim()
                     if (text.length < 2) return@forEach
-                    for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
+                    // P1.6.2+：本地扫描只扫音效（环境/BGM 由 AI 导演判定）
+                    for (lane in listOf(DemoLanes.Lane.SFX)) {
                         val pick = AudioRuleEngine.pick(context, lane, text) ?: continue
                         add(Triple(toSynth(lane), pick.hit.label, pick.resolved != null))
                     }
@@ -69,10 +70,12 @@ object AudioLaneScan {
                     emptyList()
                 } else {
                     val out = ArrayList<Suggestion>(3)
+                    // P1.6.2+：本地扫描只扫音效（环境/BGM 由 AI 导演判定）
                     val net = runCatching { AudioNetStore.suggest(text) }.getOrDefault(emptyList())
+                        .filter { it.lane == SynthLane.SFX }
                     net.forEach { out.add(Suggestion(it.lane, it.name, it.ratio)) }
                     val covered = net.map { it.lane }.toSet()
-                    for (lane in listOf(DemoLanes.Lane.BGM, DemoLanes.Lane.AMBIENCE, DemoLanes.Lane.SFX)) {
+                    for (lane in listOf(DemoLanes.Lane.SFX)) {
                         if (toSynth(lane) in covered) continue
                         // M3：普通音效——词网之后、用户规则兜底前，先过「内置音效规则」
                         if (lane == DemoLanes.Lane.SFX) {

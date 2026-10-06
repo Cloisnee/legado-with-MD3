@@ -344,13 +344,20 @@ object AudioNetStore {
         for (m in matcher.matchAll(t)) {
             val alias = acPatterns.getOrNull(m.patternIndex) ?: continue
             if (alias.length < 2) continue
-            // 本地加词优先
+            // P1.6.2+：本地加词优先——命中用户挂词/本地别名 → 直接产出「本地条目名」（不再绕远程查名）
             val localName = localWordToName[alias]
-            val asset = if (localName != null) {
-                byId.values.firstOrNull { it.name == localName }
-            } else {
-                bestOf(aliasToIds[alias])
-            } ?: continue
+            if (localName != null) {
+                val localAsset = AudioLibrary.snapshot().firstOrNull { it.enabled && it.name == localName }
+                if (localAsset != null) {
+                    val lane = AudioLibrary.laneSynthOfAsset(localAsset)
+                    val ratio = AudioPositions.ratioOfMatch(m.start, t.length)
+                    val cand = Cand(lane, localName, ratio, m.length)
+                    val prev = best[lane]
+                    if (prev == null || cand.len > prev.len) best[lane] = cand
+                    continue
+                }
+            }
+            val asset = bestOf(aliasToIds[alias]) ?: continue
             if (asset.adult && !adultOk) continue
             val lane = laneOf(asset.lane) ?: continue
             val ratio = AudioPositions.ratioOfMatch(m.start, t.length)
@@ -369,7 +376,9 @@ object AudioNetStore {
             runCatching {
                 val root = TmDemoAssets.libRoot(context)
                 val ext = asset.file.substringAfterLast('.', "mp3").lowercase()
-                val name = sanitizeGeneratedName(asset.name) + "." + ext
+                // P1.6.2+：落库名=词网文件基名（含变体区分；如 手机按键_2.wav）
+                val baseName = asset.file.substringAfterLast('/').substringBeforeLast('.')
+                val name = sanitizeGeneratedName(baseName.ifBlank { asset.name }) + "." + ext
                 val folder = folderOf(asset.lane)
                 val out = File(root, "$folder/$name")
                 val relPath = out.relativeTo(root).path.replace(File.separatorChar, '/')
@@ -423,10 +432,19 @@ object AudioNetStore {
             }.getOrNull()
         }
 
-    private fun NetAsset.aliasesForNotify(): List<String> =
-        (listOf(name) + aliasToIds.filterValues { it.contains(id) }.keys.take(8)).distinct()
+    // P1.6.2+：下载只带主名（词林不再随文件下放；用户日后自行加词上传）
+    private fun NetAsset.aliasesForNotify(): List<String> = listOf(name)
 
     // ---------------- 纯函数（可单测） ----------------
+
+    /** P1.6.2+：本地词优先——该说法对应的「本地条目名」（含用户挂词/条目别名；无则 null）。播放链本地优先判定用 */
+    fun localAssetName(word: String): String? {
+        val w = norm(word)
+        if (w.isBlank()) return null
+        localWordToName[w]?.let { return it }
+        softVariants(w).forEach { v -> localWordToName[v]?.let { return it } }
+        return null
+    }
 
     /** 说法归一：去空白、去柔和后缀（音效/声效/的声音/声音） */
     internal fun norm(raw: String): String {

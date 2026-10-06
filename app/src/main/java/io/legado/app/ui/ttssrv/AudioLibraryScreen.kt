@@ -647,8 +647,11 @@ fun AudioLibraryScreen(
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
-                            // B34·⑤C：有匹配规则时给个标识（不显示规则内容）
-                            if (ui.pattern.isNotBlank()) append(" · 规则")
+                            // B34·⑤C / P1.6.2+：匹配规则标识三态（不显示规则内容）
+                            // 词林态保留：未来云端同步词来源（patternSource=net）时显示「· 词林」
+                            if (ui.pattern.isNotBlank()) {
+                                append(if (ui.isRegex) " · 正则" else " · 自定义")
+                            }
                         },
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),

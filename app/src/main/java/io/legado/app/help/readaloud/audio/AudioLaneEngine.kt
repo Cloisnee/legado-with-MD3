@@ -225,7 +225,7 @@ class AudioLaneEngine(
         driveCue(index, text, isTitle = false, para = cue.para)
     }
 
-    /** 三类轨命中驱动（正文行 / 章标题共用；isTitle 时仅「应用于标题」的自定规则参与） */
+    /** 命中驱动（正文行 / 章标题共用）。P1.6.2+：本地层只驱动音效（环境/BGM 交由 AI 导演判定） */
     private fun driveCue(index: Int, text: String, isTitle: Boolean, para: Int = 0) {
         // B33.4b：本章有 Ai 计划 → 计划层接管（无计划=规则层；「四条件兜底」天然成立）
         val plan = audioPlan
@@ -233,49 +233,7 @@ class AudioLaneEngine(
             driveCueByPlan(index, para, text)
             return
         }
-        // 1) 环境：命中新场景 → 切换（最短驻留防抖）；规则层 = 自定 > 示例 > CNB 意图
-        AudioRuleEngine.pick(appContext, DemoLanes.Lane.AMBIENCE, text, isTitle)?.let { pick ->
-            val keyword = pick.resolved?.asset?.name ?: pick.hit.label
-            if (keyword != desiredAmbience) {
-                val now = System.currentTimeMillis()
-                if (desiredAmbience == null || now - ambienceDwellAt >= config.ambMinDwellMs) {
-                    desiredAmbience = keyword
-                    ambienceDwellAt = now
-                    ambMissRetryAt = 0L
-                    laneLog(index, "环境→$keyword（${pick.hit.source.label}）")
-                } else {
-                    laneLog(index, "环境=$keyword（驻留未到，跳过）")
-                }
-            }
-        }
-
-        // 2) BGM：命中 → 起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
-        val bgmPick = AudioRuleEngine.pick(appContext, DemoLanes.Lane.BGM, text, isTitle)
-        if (bgmPick != null) {
-            val keyword = bgmPick.resolved?.asset?.name ?: bgmPick.hit.label
-            if (keyword != desiredBgm) {
-                val now = System.currentTimeMillis()
-                if (now - (lastBgmByKeyword[keyword] ?: 0L) >= config.bgmCooldownMs) {
-                    desiredBgm = keyword
-                    bgmHoldRemaining = bgmPick.hit.holdCues.coerceAtLeast(1)
-                    lastBgmByKeyword[keyword] = now
-                    bgmMissRetryAt = 0L
-                    laneLog(index, "BGM=$keyword（持续 ${bgmHoldRemaining} 行 · ${bgmPick.hit.source.label}）")
-                } else {
-                    laneLog(index, "BGM=$keyword（冷却中，跳过）")
-                }
-            } else if (bgmPick.hit.holdCues > 0) {
-                bgmHoldRemaining = maxOf(bgmHoldRemaining, bgmPick.hit.holdCues)
-            }
-        } else if (desiredBgm != null) {
-            bgmHoldRemaining--
-            if (bgmHoldRemaining <= 0) {
-                laneLog(index, "BGM 到期淡出（${desiredBgm}）")
-                desiredBgm = null
-            }
-        }
-
-        // 3) 音效：密度闸门（单条最多 1 个 + 全局间隔 + 素材冷却）
+        // P1.6.2+：本地扫描/规则层只服务音效（环境/BGM 由 AI 判定；本地不再兜底）
         AudioRuleEngine.pick(appContext, DemoLanes.Lane.SFX, text, isTitle)?.let { pick ->
             val keyword = pick.resolved?.asset?.name ?: pick.hit.label
             if (allowSfx(keyword)) {
@@ -352,15 +310,18 @@ class AudioLaneEngine(
         // 3) 音效：点事件逐条（同款闸门：全局间隔 + 同素材冷却）
         planSfxByPara[para]?.forEach { item ->
             // P1：词网归一——自由说法拉回库内规范名；词网有货则异步下载（落库后自动接上）
-            // P1.5：同栏严格——仅命中音效轨素材；异栏命中忽略并打日志（转补缺合成）
-            val net = AudioNetStore.lookupForLane(item.tag, SynthLane.SFX)
-            if (net == null) logCrossLaneIgnore(SynthLane.SFX, item.tag)
-            val keyword = net?.name ?: item.tag
+            // P1.6.2+：本地优先——本地（主名/别名/用户挂词）先于远程词网；词网仅同栏
+            val localFirst = resolveLocalFirst(item.tag, SynthLane.SFX)
+            val net = localFirst.second
+            if (net == null && localFirst.first == null) logCrossLaneIgnore(SynthLane.SFX, item.tag)
+            val keyword = localFirst.first?.asset?.name ?: net?.name ?: item.tag
             if (!allowSfx(keyword)) {
                 laneLog(index, "音效=$keyword（闸门跳过）")
                 return@forEach
             }
-            var resolved = AudioLibrary.resolveForLane(appContext, keyword, SynthLane.SFX)
+            var resolved = localFirst.first ?: net?.let {
+                AudioLibrary.resolveForLane(appContext, it.name, SynthLane.SFX)
+            }
             if (resolved == null && net != null) {
                 scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
             }
@@ -435,10 +396,12 @@ class AudioLaneEngine(
             val retryAt = if (kind == "BGM") bgmMissRetryAt else ambMissRetryAt
             if (now >= retryAt) {
                 // P1.5：环境轨同栏严格（异栏素材忽略 → 转补缺）；BGM 维持既有链
+                // P1.6.2+：本地优先——本地（主名/别名 → 用户挂词桥）先于词网
                 var resolved = if (kind == "环境") {
-                    AudioLibrary.resolveForLane(appContext, desired, SynthLane.AMB)
+                    resolveLocalFirst(desired, SynthLane.AMB).first
                 } else {
                     AudioLibrary.resolve(appContext, desired)
+                        ?: AudioNetStore.localAssetName(desired)?.let { AudioLibrary.resolve(appContext, it) }
                 }
                 if (resolved == null) {
                     // P1：词网归一——有货则异步下载（落库后由 10s 重试自动接上）
@@ -549,6 +512,18 @@ class AudioLaneEngine(
         if (total > 1.0001f) (20.0 * log10(total.toDouble())).coerceIn(0.0, 12.0).toFloat() else 0f
 
     // ---------------------------------------------------------------- sfx
+
+    /** P1.6.2+：本地优先解析——本地（主名/别名 → 用户挂词桥）优先；未命中再查同栏词网 */
+    private fun resolveLocalFirst(
+        word: String,
+        lane: SynthLane,
+    ): Pair<AudioLibrary.ResolvedAsset?, AudioNetStore.NetAsset?> {
+        AudioLibrary.resolveForLane(appContext, word, lane)?.let { return it to null }
+        AudioNetStore.localAssetName(word)?.let { name ->
+            AudioLibrary.resolveForLane(appContext, name, lane)?.let { return it to null }
+        }
+        return null to AudioNetStore.lookupForLane(word, lane)
+    }
 
     /** B33.3c：闸门滑条化（全局最小间隔 + 同素材冷却；0=不限） */
     private fun allowSfx(keyword: String): Boolean {

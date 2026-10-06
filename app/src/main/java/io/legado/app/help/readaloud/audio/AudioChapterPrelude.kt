@@ -300,6 +300,13 @@ class AudioChapterPrelude(
         }
     }
 
+    /** P1.6.2+：本地优先判定（主名/别名 → 用户挂词桥） */
+    private fun localResolved(tag: String, lane: SynthLane): Boolean =
+        AudioLibrary.resolveForLane(appContext, tag, lane) != null ||
+            AudioNetStore.localAssetName(tag)?.let {
+                AudioLibrary.resolveForLane(appContext, it, lane) != null
+            } == true
+
     /** 条目来源：本章音频计划（Ai 导演）优先；无计划回退规则层扫描（[AudioLaneScan]） */
     private suspend fun scanItems(chapterKey: String, texts: List<String>, book: String): List<Item> {
         val plan = loadPlan(chapterKey, book)
@@ -310,8 +317,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.AMB,
                         label = item.tag,
-                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）
-                        resolved = AudioLibrary.resolveForLane(appContext, item.tag, SynthLane.AMB) != null,
+                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）；P1.6.2+：本地优先（含用户挂词桥）
+                        resolved = localResolved(item.tag, SynthLane.AMB),
                         desc = item.desc,
                         bgm = null,
                     )
@@ -331,8 +338,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.SFX,
                         label = item.tag,
-                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）
-                        resolved = AudioLibrary.resolveForLane(appContext, item.tag, SynthLane.SFX) != null,
+                        // P1.5：同栏严格（异栏素材不算命中 → 进补缺链）；P1.6.2+：本地优先（含用户挂词桥）
+                        resolved = localResolved(item.tag, SynthLane.SFX),
                         desc = item.desc,
                         bgm = null,
                     )

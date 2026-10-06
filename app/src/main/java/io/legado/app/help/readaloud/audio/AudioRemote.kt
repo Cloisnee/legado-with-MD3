@@ -31,6 +31,8 @@ object AudioRemoteCatalog {
     data class RemoteSound(
         val soundId: String = "",
         val name: String = "",
+        /** P1.6.2+：词网文件名（含变体区分，如 手机按键_2.wav）；列表显示与落库比对用 */
+        val fileName: String = "",
         val aliases: List<String> = emptyList(),
         val category: String = "",
         val categoryName: String = "",
@@ -40,7 +42,10 @@ object AudioRemoteCatalog {
         val assetPath: String = "",
         val sha256: String = "",
         val tags: List<String> = emptyList(),
-    )
+    ) {
+        /** P1.6.2+：列表显示名 = 文件名去扩展名（含变体区分；空则回退 name） */
+        val displayName: String get() = fileName.substringBeforeLast('.').ifBlank { name }
+    }
 
     /** 清单：单一「声效库」（数量=词网资产数）；forceRefresh=远程页打开/刷新时强制复核词网 */
     suspend fun manifest(context: Context, forceRefresh: Boolean = false): List<RemotePack> {
@@ -60,6 +65,7 @@ object AudioRemoteCatalog {
             RemoteSound(
                 soundId = a.id,
                 name = a.name,
+                fileName = a.file.substringAfterLast('/'),
                 aliases = a.aliases,
                 category = a.lane,
                 categoryName = laneNameOf(a.lane),
