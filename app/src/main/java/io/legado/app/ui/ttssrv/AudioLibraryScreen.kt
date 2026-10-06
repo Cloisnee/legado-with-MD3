@@ -648,12 +648,19 @@ fun AudioLibraryScreen(
                                 AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
-                            // B34·⑤C / P1.6.2+：匹配规则标识三态（不显示规则内容）
-                            if (ui.pattern.isNotBlank()) {
-                                append(if (ui.isRegex) " · 正则" else " · 自定义")
+                            // P1.6.2+（第四刀v3）：匹配规则标识三态（不显示规则内容）
+                            // 正则=自写正则；词林=远程下载随带（未编辑）；自定义=本地自编（编辑过）
+                            if (ui.isRegex && ui.pattern.isNotBlank()) {
+                                append(" · 正则")
+                            } else if (ui.pattern.isNotBlank()) {
+                                append(
+                                    if (ui.patternSource == AudioLibrary.PATTERN_SOURCE_NET) {
+                                        " · 词林"
+                                    } else {
+                                        " · 自定义"
+                                    },
+                                )
                             }
-                            // P1.6.2+（第四刀v2）：词林态——素材带「词网词」（下载随带；≠主名）
-                            if (ui.aliases.any { it.isNotBlank() && it != ui.name }) append(" · 词林")
                             // P1.6.2+（第二刀）：云端上传状态（已上传 / 待同步；未上传不显示）
                             runCatching {
                                 val lf = AudioLibrary.fileOf(context.applicationContext, ui)
@@ -1027,7 +1034,8 @@ private suspend fun pushToCloud(
             name = a.name,
             lane = lane,
             words = words,
-            aliases = a.aliases,
+            // 第四刀v3：正则条目的规则不上云（别名置空）
+            aliases = if (a.isRegex) emptyList() else a.aliases,
             filePath = filePath,
             ext = ext,
             renamedFrom = renamedFrom,

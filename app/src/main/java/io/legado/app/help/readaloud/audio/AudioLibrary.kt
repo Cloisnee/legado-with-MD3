@@ -34,6 +34,10 @@ object AudioLibrary {
     const val SOURCE_GENERATED = "generated"
     const val SOURCE_REMOTE = "remote"
 
+    /** 匹配规则来源：local=本地自编（默认）；net=远程下载随带（词林） */
+    const val PATTERN_SOURCE_LOCAL = "local"
+    const val PATTERN_SOURCE_NET = "net"
+
     private val AUDIO_EXTS = setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")
 
     /** 解析负缓存 TTL（ms）：防热路径对未命中关键字重复深扫 */
@@ -66,6 +70,8 @@ object AudioLibrary {
         /** 预留（B33.2b zip 直读）：zip 文件相对路径 + 条目名 */
         val zipRel: String = "",
         val entry: String = "",
+        /** 匹配规则来源：local=本地自编；net=远程下载随带（词林态显示） */
+        val patternSource: String = PATTERN_SOURCE_LOCAL,
     ) {
         val id: String get() = if (zipRel.isBlank()) relPath else "$zipRel#$entry"
     }
@@ -280,9 +286,10 @@ object AudioLibrary {
         source: String = SOURCE_LOCAL,
         soundId: String = "",
         aliases: List<String> = emptyList(),
+        netWords: List<String> = emptyList(),
     ) {
         missCache.clear()
-        registerFile(context, file, source, soundId, aliases)
+        registerFile(context, file, source, soundId, aliases, netWords)
         // P1.6.2：声效响度均衡——落库即后台测（合成/下载/导入统一入口；失败静默、不阻塞）
         runCatching { SfxLoudnessNormalizer.ensureMeasured(context, file) }
     }
@@ -739,6 +746,7 @@ object AudioLibrary {
                 soundId = o.optString("soundId"),
                 zipRel = o.optString("zipRel"),
                 entry = o.optString("entry"),
+                patternSource = o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL },
             )
             map[asset.id] = asset
         }
@@ -768,6 +776,7 @@ object AudioLibrary {
                 if (a.soundId.isNotBlank()) put("soundId", a.soundId)
                 if (a.zipRel.isNotBlank()) put("zipRel", a.zipRel)
                 if (a.entry.isNotBlank()) put("entry", a.entry)
+                if (a.patternSource == PATTERN_SOURCE_NET) put("patternSource", a.patternSource)
             })
         }
         return JSONObject().apply {
@@ -867,6 +876,7 @@ object AudioLibrary {
         source: String,
         soundId: String = "",
         aliases: List<String> = emptyList(),
+        netWords: List<String> = emptyList(),
     ): AudioAsset? {
         val cur = index ?: return null
         if (!file.isFile) return null
@@ -894,6 +904,10 @@ object AudioLibrary {
             return updated
         }
         val recovered = if (soundId.isBlank()) recoverByName(file.nameWithoutExtension) else "" to emptyList()
+        // 第四刀v3：下载随带的「词林」词 → 写入匹配规则（词林模式、关正则；来源 net）
+        val cleanNet = netWords.map { it.trim() }
+            .filter { it.isNotBlank() && it != file.nameWithoutExtension }
+            .distinct()
         val asset = AudioAsset(
             name = file.nameWithoutExtension,
             relPath = rel,
@@ -903,6 +917,9 @@ object AudioLibrary {
             mtime = file.lastModified(),
             soundId = soundId.ifBlank { recovered.first },
             aliases = aliases.takeIf { it.isNotEmpty() } ?: recovered.second,
+            pattern = if (cleanNet.isNotEmpty()) cleanNet.joinToString("|") else "",
+            isRegex = false,
+            patternSource = if (cleanNet.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
         )
         index = cur + (asset.id to asset)
         scheduleSave(context.applicationContext)

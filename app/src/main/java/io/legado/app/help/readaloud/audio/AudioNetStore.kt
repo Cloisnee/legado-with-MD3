@@ -397,8 +397,10 @@ object AudioNetStore {
                 ) {
                     AudioLibrary.notifyFileAdded(
                         context, out, AudioLibrary.SOURCE_REMOTE, asset.id,
-                        asset.aliasesForNotify(),
+                        aliases = emptyList(),
+                        netWords = asset.netWordsForNotify(),
                     )
+                    runCatching { rebuildLocalWords(context) }
                     return@runCatching out
                 }
                 out.parentFile?.mkdirs()
@@ -436,14 +438,18 @@ object AudioNetStore {
                     tmp.delete()
                 }
                 AudioLibrary.notifyFileAdded(
-                    context, out, AudioLibrary.SOURCE_REMOTE, asset.id, asset.aliasesForNotify(),
+                    context, out, AudioLibrary.SOURCE_REMOTE, asset.id,
+                    aliases = emptyList(),
+                    netWords = asset.netWordsForNotify(),
                 )
+                // 词林词即时生效（落库即入本地词表）
+                runCatching { rebuildLocalWords(context) }
                 out
             }.getOrNull()
         }
 
-    // P1.6.2+（第四刀v2）：下载带「词林」——词网中挂在本 id 上的词（排除主名）；供本地显示「·词林」并参与解析
-    private fun NetAsset.aliasesForNotify(): List<String> =
+    // P1.6.2+（第四刀v3）：下载随带的「词林」词（词网反查、排除主名）→ 写入匹配规则（词林模式、关正则、来源 net）
+    private fun NetAsset.netWordsForNotify(): List<String> =
         aliasToIds.filterValues { it.contains(id) }.keys
             .filter { it.isNotBlank() && it != name }
             .distinct()

@@ -174,6 +174,12 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                     base.copy(
                         name = newName,
                         pattern = newPattern,
+                        // 第四刀v3：来源标记——词/正则被编辑过 → 自定义；未编辑保留原来源（下载词=词林）
+                        patternSource = if (newPattern != base.pattern || isRegex != base.isRegex) {
+                            AudioLibrary.PATTERN_SOURCE_LOCAL
+                        } else {
+                            base.patternSource
+                        },
                         tagDesc = tagDesc.trim(),
                         isRegex = isRegex,
                         scopeTitle = scopeTitle,
