@@ -1,12 +1,14 @@
 package io.legado.app.help.readaloud.audio
 
 import android.content.Context
+import com.github.jing332.compat.fs.TtsDirProvider
 import io.legado.app.constant.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
 
 /**
  * M3 · 内置音效规则（slim 回归版）：`assets/builtin_sfx_rules.json`
@@ -50,15 +52,25 @@ object AudioBuiltinSfxRules {
     @Volatile
     private var pack: Pack? = null
 
-    /** 载入（幂等；建议链调用前确保就绪；失败静默空转） */
+    /** 第三刀：改名重定向（旧名→新名；规则命中名应用） */
+    @Volatile
+    private var redirects: Map<String, String> = emptyMap()
+
+    @Volatile
+    private var redirectsLoaded = false
+
+    /**
+     * 载入（幂等；建议链调用前确保就绪；失败静默空转）。
+     * 第三刀：规则表外挂——优先云端缓存（`_store/audio_index/rules_builtin.json`），assets 兜底。
+     */
     suspend fun ensureLoaded(context: Context) {
+        loadRedirectsOnce(context)
         if (pack != null) return
         lock.withLock {
             if (pack != null) return
             val built = withContext(Dispatchers.IO) {
                 runCatching {
-                    val text = context.applicationContext.assets
-                        .open("builtin_sfx_rules.json").use { it.readBytes().decodeToString() }
+                    val text = readSourceText(context)
                     buildPack(text)
                 }.getOrNull()
             } ?: return
@@ -67,8 +79,71 @@ object AudioBuiltinSfxRules {
         }
     }
 
-    /** 命中：返回现行名 + 命中起点（未加载/无命中 = null） */
-    fun hit(text: String): Hit? = pack?.hit(text)
+    /** 规则表来源：云端缓存 → assets 兜底 */
+    private fun readSourceText(context: Context): String {
+        val cached = File(TtsDirProvider.baseDir(context), "_store/audio_index/rules_builtin.json")
+        if (cached.isFile) {
+            runCatching { cached.readText().removePrefix("\uFEFF") }.getOrNull()?.let { return it }
+        }
+        return context.applicationContext.assets
+            .open("builtin_sfx_rules.json").use { it.readBytes().decodeToString() }
+    }
+
+    /** 词网同步后热换载（云端规则表更新时由 AudioNetStore 调） */
+    fun invalidate() {
+        pack = null
+    }
+
+    /** 第三刀：改名联动——规则命中名「旧名→新名」重定向（内存 + `_store/rules_redirects.json`） */
+    suspend fun rememberRedirect(context: Context, oldName: String, newName: String) {
+        val o = oldName.trim()
+        val n = newName.trim()
+        if (o.isEmpty() || n.isEmpty() || o == n) return
+        loadRedirectsOnce(context)
+        redirects = redirects.toMutableMap().apply { put(o, n) }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val f = File(TtsDirProvider.baseDir(context), "_store/rules_redirects.json")
+                f.parentFile?.mkdirs()
+                val obj = JSONObject().apply {
+                    put(
+                        "redirects",
+                        JSONObject().apply { redirects.forEach { (k, v) -> put(k, v) } },
+                    )
+                }
+                val tmp = File(f.parentFile, f.name + ".tmp")
+                tmp.writeText(obj.toString())
+                if (!tmp.renameTo(f)) {
+                    tmp.copyTo(f, overwrite = true)
+                    tmp.delete()
+                }
+            }
+        }
+        AppLog.putAudio("【音效与背景音】规则重定向：$o → $n")
+    }
+
+    private suspend fun loadRedirectsOnce(context: Context) {
+        if (redirectsLoaded) return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val f = File(TtsDirProvider.baseDir(context), "_store/rules_redirects.json")
+                if (!f.isFile) return@runCatching
+                val root = JSONObject(f.readText().removePrefix("\uFEFF"))
+                val o = root.optJSONObject("redirects") ?: return@runCatching
+                val map = HashMap<String, String>()
+                o.keys().forEach { k -> map[k] = o.optString(k) }
+                redirects = map
+            }
+        }
+        redirectsLoaded = true
+    }
+
+    /** 命中：返回现行名 + 命中起点（未加载/无命中 = null）；应用改名重定向 */
+    fun hit(text: String): Hit? {
+        val h = pack?.hit(text) ?: return null
+        val r = redirects[h.name]
+        return if (r != null) Hit(r, h.start) else h
+    }
 
     // ------------------------------------------------------------ 解析（内部）
 

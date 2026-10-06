@@ -132,6 +132,13 @@ object CloudUploadLedger {
         return if (e.name != name || e.words.sorted() != words.sorted()) "待同步" else "已上传"
     }
 
+    /** 上次上传时的名字（无记录或与当前同名 → null）；上传修订（renamedFrom）判定用 */
+    fun lastDifferentName(context: Context, name: String, size: Long, mtime: Long): String? {
+        ensureLoaded(context)
+        val e = byKey[keyOf(size, mtime)] ?: byName[name] ?: return null
+        return e.name.takeIf { it.isNotBlank() && it != name }
+    }
+
     private fun save(context: Context) {
         runCatching {
             val f = file(context)

@@ -126,6 +126,7 @@ object AudioNetStore {
                 val catalogFile = File(dir, "catalog.json")
                 val aliasesFile = File(dir, "aliases.json")
                 val adultFile = File(dir, "aliases_adult.json")
+                val rulesFile = File(dir, "rules_builtin.json")
                 // 1) 首次：先用缓存
                 if (!loaded && catalogFile.isFile && aliasesFile.isFile) {
                     runCatching {
@@ -167,11 +168,19 @@ object AudioNetStore {
                                 val adultFetched = runCatching {
                                     fetchText(BASE + encodePath(INDEX_DIR + "aliases_adult.json"))
                                 }.getOrNull()
+                                // 第三刀：内置音效规则表外挂——随词网同步拉取（成功后热换载）
+                                val rulesFetched = runCatching {
+                                    fetchText(BASE + encodePath(INDEX_DIR + "rules_builtin.json"))
+                                }.getOrNull()
                                 dir.mkdirs()
                                 manifestFile.writeText(remoteManifest)
                                 writeAtomic(catalogFile, cat)
                                 writeAtomic(aliasesFile, ali)
                                 if (!adultFetched.isNullOrBlank()) writeAtomic(adultFile, adultFetched)
+                                if (!rulesFetched.isNullOrBlank()) {
+                                    writeAtomic(rulesFile, rulesFetched)
+                                    runCatching { AudioBuiltinSfxRules.invalidate() }
+                                }
                                 applyData(
                                     cat, ali,
                                     adultFetched
@@ -179,7 +188,8 @@ object AudioNetStore {
                                 )
                                 AppLog.putAudio(
                                     "【音效与背景音】词网更新 v$remoteVer：资产 ${byId.size}、" +
-                                        "别名 ${aliasToIds.size}（ADULT ${aliasToIdsAdult.size} 另存，开关开才并入）"
+                                        "别名 ${aliasToIds.size}（ADULT ${aliasToIdsAdult.size} 另存，开关开才并入）" +
+                                        (if (!rulesFetched.isNullOrBlank()) "；规则表已同步" else "")
                                 )
                             }
                         }

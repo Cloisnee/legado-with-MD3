@@ -36,6 +36,8 @@ object CloudWordnetClient {
         val aliases: List<String>,
         val filePath: String?,
         val ext: String,
+        /** 第三刀：改名修订——上次上传名（与当前名不同时非空；云端据此重命名而非新建/并词） */
+        val renamedFrom: String? = null,
     )
 
     data class PushResult(
@@ -107,6 +109,7 @@ object CloudWordnetClient {
                     put("words", JSONArray(item.words))
                     put("aliases", JSONArray(item.aliases))
                     put("asset", assetName ?: JSONObject.NULL)
+                    if (item.renamedFrom != null) put("renamedFrom", item.renamedFrom)
                 })
             }
             val payload = JSONObject().apply {

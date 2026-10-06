@@ -1017,6 +1017,11 @@ private suspend fun pushToCloud(
         val ext = a.relPath.substringAfterLast('.', "mp3").lowercase()
             .let { if (it in setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")) it else "mp3" }
         val words = if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList()
+        val lf = AudioLibrary.fileOf(appContext, a)
+        val lfSize = runCatching { lf.length() }.getOrDefault(0L)
+        val lfMtime = runCatching { lf.lastModified() }.getOrDefault(0L)
+        // 第三刀：改名修订——账本显示上次上传名与当前不同 → 云端重命名（而非新建/并词）
+        val renamedFrom = CloudUploadLedger.lastDifferentName(appContext, a.name, lfSize, lfMtime)
         items += CloudWordnetClient.Item(
             name = a.name,
             lane = lane,
@@ -1024,13 +1029,13 @@ private suspend fun pushToCloud(
             aliases = a.aliases,
             filePath = filePath,
             ext = ext,
+            renamedFrom = renamedFrom,
         )
-        val lf = AudioLibrary.fileOf(appContext, a)
         ledgerRecords += CloudUploadLedger.Record(
             name = a.name,
             words = words,
-            size = runCatching { lf.length() }.getOrDefault(0L),
-            mtime = runCatching { lf.lastModified() }.getOrDefault(0L),
+            size = lfSize,
+            mtime = lfMtime,
         )
     }
     if (items.isEmpty()) return "没有可提交的条目（$skipped 条缺少文件）"

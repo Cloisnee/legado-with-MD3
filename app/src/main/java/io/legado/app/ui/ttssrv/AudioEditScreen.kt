@@ -45,6 +45,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import io.legado.app.help.readaloud.audio.AudioBuiltinSfxRules
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.ui.replace.edit.QuickInputBar
 import io.legado.app.ui.replace.edit.keyboardAsState
@@ -130,10 +131,11 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
         val base = asset ?: return
         scope.launch {
             runCatching {
+                val newName = name.trim().ifBlank { base.name }
                 AudioLibrary.updateAsset(
                     app,
                     base.copy(
-                        name = name.trim().ifBlank { base.name },
+                        name = newName,
                         pattern = pattern.trim(),
                         tagDesc = tagDesc.trim(),
                         isRegex = isRegex,
@@ -141,6 +143,10 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                         scopeContent = scopeContent,
                     ),
                 )
+                // 第三刀：改名联动——本地规则「旧名→新名」重定向（防内置规则/离线名表找不到条目）
+                if (newName != base.name) {
+                    AudioBuiltinSfxRules.rememberRedirect(app, base.name, newName)
+                }
                 if (category != base.category) {
                     AudioLibrary.setCategory(app, setOf(base.id), category)
                 }
