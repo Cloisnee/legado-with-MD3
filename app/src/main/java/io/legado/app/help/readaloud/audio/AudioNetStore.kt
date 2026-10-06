@@ -442,8 +442,12 @@ object AudioNetStore {
             }.getOrNull()
         }
 
-    // P1.6.2+：下载只带主名（词林不再随文件下放；用户日后自行加词上传）
-    private fun NetAsset.aliasesForNotify(): List<String> = listOf(name)
+    // P1.6.2+（第四刀v2）：下载带「词林」——词网中挂在本 id 上的词（排除主名）；供本地显示「·词林」并参与解析
+    private fun NetAsset.aliasesForNotify(): List<String> =
+        aliasToIds.filterValues { it.contains(id) }.keys
+            .filter { it.isNotBlank() && it != name }
+            .distinct()
+            .take(64)
 
     // ---------------- 纯函数（可单测） ----------------
 

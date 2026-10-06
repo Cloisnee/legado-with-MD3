@@ -649,10 +649,11 @@ fun AudioLibraryScreen(
                                 AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
                             }
                             // B34·⑤C / P1.6.2+：匹配规则标识三态（不显示规则内容）
-                            // 词林态保留：未来云端同步词来源（patternSource=net）时显示「· 词林」
                             if (ui.pattern.isNotBlank()) {
                                 append(if (ui.isRegex) " · 正则" else " · 自定义")
                             }
+                            // P1.6.2+（第四刀v2）：词林态——素材带「词网词」（下载随带；≠主名）
+                            if (ui.aliases.any { it.isNotBlank() && it != ui.name }) append(" · 词林")
                             // P1.6.2+（第二刀）：云端上传状态（已上传 / 待同步；未上传不显示）
                             runCatching {
                                 val lf = AudioLibrary.fileOf(context.applicationContext, ui)

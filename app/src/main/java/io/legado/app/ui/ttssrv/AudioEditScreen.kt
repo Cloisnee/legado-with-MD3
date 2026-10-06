@@ -144,9 +144,23 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                 wordConflicts = hits
                 return@launch
             }
-            var tip = "已保存"
+            val notes = ArrayList<String>()
             runCatching {
-                val newName = name.trim().ifBlank { base.name }
+                var newName = name.trim().ifBlank { base.name }
+                // 第四刀v2：主名唯一——改名撞「同栏现有条目名」→ 自动 _2 系列化
+                run {
+                    if (newName == base.name) return@run
+                    val lane = AudioLibrary.laneOf(base)
+                    fun taken(n: String) = AudioLibrary.snapshot().any {
+                        it.id != base.id && AudioLibrary.laneOf(it) == lane && it.name == n
+                    }
+                    if (taken(newName)) {
+                        var k = 2
+                        while (taken("${newName}_$k")) k++
+                        notes += "主名重复，已自动改为 ${newName}_$k"
+                        newName = "${newName}_$k"
+                    }
+                }
                 var newPattern = pattern.trim()
                 // 第四刀·②：改名脱离系列 → 清掉「旧系列其他成员共享的词」（非同系列自留词保留）
                 if (AudioSeries.seriesKey(base.name) != AudioSeries.seriesKey(newName)) {
@@ -181,9 +195,9 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                 if (category != base.category) {
                     AudioLibrary.setCategory(app, setOf(base.id), category)
                 }
-                if (syncN > 0) tip = "已保存（同系列同步 $syncN 条）"
+                if (syncN > 0) notes += "同系列同步 $syncN 条"
             }
-            app.toastOnUi(tip)
+            app.toastOnUi(if (notes.isEmpty()) "已保存" else "已保存（${notes.joinToString("；")}）")
             onBack()
         }
     }
