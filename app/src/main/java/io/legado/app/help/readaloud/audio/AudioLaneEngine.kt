@@ -915,11 +915,13 @@ class AudioLaneEngine(
                 if (sid == 0) null else LoudnessEnhancer(sid).also { enhancers[player] = it }
             }.getOrNull()
 
+        @androidx.annotation.OptIn(UnstableApi::class)
         private fun buildPlayer(): ExoPlayer {
             val p = ExoPlayer.Builder(appContext).build()
             p.setAudioAttributes(media3AudioAttributes, false)
             p.volume = 0f
             p.addListener(object : Player.Listener {
+                @androidx.annotation.OptIn(UnstableApi::class)
                 override fun onAudioSessionIdChanged(audioSessionId: Int) {
                     runCatching {
                         enhancers.remove(p)?.release()
