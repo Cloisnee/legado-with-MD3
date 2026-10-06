@@ -18,7 +18,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.readaloud.audio.AudioLibrary
@@ -82,7 +82,7 @@ fun AudioRemoteScreen(onBack: () -> Unit) {
     var isSearch by remember { mutableStateOf(false) }
     var localNames by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedIds by remember { mutableStateOf<Set<Any>>(emptySet()) }
-    val jobStates by AudioRemoteDownloader.states.collectAsState()
+    val jobStates by AudioRemoteDownloader.states.collectAsStateWithLifecycle()
 
     val inSelectionMode = selectedIds.isNotEmpty()
 
