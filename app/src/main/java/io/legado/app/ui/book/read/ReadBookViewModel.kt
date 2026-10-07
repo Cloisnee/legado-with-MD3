@@ -36,6 +36,7 @@ import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadStyleGateway
 import io.legado.app.domain.gateway.ThemeSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.domain.usecase.ChangeBookSourceUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
@@ -1261,8 +1262,13 @@ class ReadBookViewModel(
             ReadBookIntent.BackToSpeakingPosition -> readAloudDelegate.backToSpeakingPosition()
             ReadBookIntent.ReadAloudFromHere -> ReadBook.readAloud()
             is ReadBookIntent.SetReadAloudTtsTimer -> readAloudDelegate.setTtsTimer(intent.value)
-            is ReadBookIntent.SetFinishCurrentChapterAfterTimer ->
-                readAloudDelegate.setFinishCurrentChapterAfterTimer(intent.value)
+            is ReadBookIntent.SetReadAloudTimerMode ->
+                readAloudDelegate.setTimerMode(ReadAloudTimerMode.fromStorage(intent.value))
+
+            is ReadBookIntent.SetReadAloudTimerChapters -> readAloudDelegate.setTimerChapters(intent.value)
+            is ReadBookIntent.SetFinishCurrentChapterAfterTimer -> readAloudDelegate.setFinishCurrentChapterAfterTimer(
+                intent.value
+            )
             is ReadBookIntent.SetReadAloudTtsFollowSys ->
                 readAloudDelegate.setTtsFollowSys(intent.value)
             is ReadBookIntent.SetReadAloudTtsSpeechRate ->

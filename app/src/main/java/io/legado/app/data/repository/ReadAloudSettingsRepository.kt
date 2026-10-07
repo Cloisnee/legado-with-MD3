@@ -9,6 +9,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.settings.ReadAloudSettings
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.config.compatDsInt
 import io.legado.app.help.config.compatDsString
@@ -96,6 +97,13 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsTimer = PlaybackTimer.normalize(compatDsValue(ReadAloudKeys.TtsTimer, 0)),
     finishCurrentChapterAfterTimer =
         compatDsValue(ReadAloudKeys.FinishCurrentChapterAfterTimer, false),
+    timerMode = compatDsValue(
+        ReadAloudKeys.TimerMode,
+        ReadAloudTimerMode.Minute.storageValue,
+    ),
+    timerChapters = PlaybackTimer.normalizeChapters(
+        compatDsValue(ReadAloudKeys.TimerChapters, 0)
+    ),
     ttsFollowSys = compatDsValue(ReadAloudKeys.TtsFollowSys, true),
     ttsSpeechRate = compatDsValue(ReadAloudKeys.TtsSpeechRate, 5),
     useMultiSpeaker = compatDsValue(ReadAloudKeys.UseMultiSpeaker, true),
@@ -146,6 +154,8 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
     PreferKey.ttsTimer to ttsTimer,
     PreferKey.finishCurrentChapterAfterTimer to finishCurrentChapterAfterTimer,
+    PreferKey.readAloudTimerMode to timerMode,
+    PreferKey.readAloudTimerChapters to timerChapters,
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
@@ -191,6 +201,8 @@ private object ReadAloudKeys {
     val TtsTimer = intPreferencesKey(PreferKey.ttsTimer)
     val FinishCurrentChapterAfterTimer =
         booleanPreferencesKey(PreferKey.finishCurrentChapterAfterTimer)
+    val TimerMode = stringPreferencesKey(PreferKey.readAloudTimerMode)
+    val TimerChapters = intPreferencesKey(PreferKey.readAloudTimerChapters)
     val TtsFollowSys = booleanPreferencesKey(PreferKey.ttsFollowSys)
     val TtsSpeechRate = intPreferencesKey(PreferKey.ttsSpeechRate)
     val UseMultiSpeaker = booleanPreferencesKey(PreferKey.useMultiSpeaker)

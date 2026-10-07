@@ -1860,6 +1860,10 @@
     <string name="finish_current_chapter_after_timer_summary">定時結束後繼續朗讀，讀完目前章節再停止</string>
     <string name="read_aloud_keep_on_exit">離開閱讀時繼續朗讀</string>
     <string name="read_aloud_keep_on_exit_summary">關閉閱讀介面後不停朗讀，繼續在背景播放</string>
+    <string name="read_aloud_timer_by_minute">按時間</string>
+    <string name="read_aloud_timer_by_chapter">按章節</string>
+    <string name="read_aloud_timer_chapter_summary">讀滿所選章數後，在章節末尾停止</string>
+    <string name="timer_chapters">%d 章</string>
     <string name="system_media_control_compatibility_change">系統媒體控制相容性</string>
     <string name="system_media_control_compatibility_change_summary">如果鎖定畫面上缺少系統媒體控制項，請啟用此選項（例如 OneUI 7.0、OriginOS）</string>
     <string name="read_aloud_pause_resume">暫停/繼續朗讀</string>

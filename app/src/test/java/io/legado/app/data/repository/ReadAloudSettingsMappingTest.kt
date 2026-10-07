@@ -2,20 +2,21 @@ package io.legado.app.data.repository
 
 import io.legado.app.constant.PreferKey
 import io.legado.app.domain.model.settings.ReadAloudSettings
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 39 键写映射逐字段对应`() {
+    fun `朗读设置 41 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 39 键读映射逐字段对应`() {
+    fun `朗读设置 41 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -120,6 +121,10 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(mediaButtonPerNext = true),
         base.copy(readAloudByPage = true),
         base.copy(keepReadAloudOnExit = false),
+        base.copy(
+            timerMode = ReadAloudTimerMode.Chapter.storageValue,
+            timerChapters = 3,
+        ),
         base.copy(androidMediaControlEnabled = true),
         base.copy(systemMediaControlCompatibilityChange = false),
         base.copy(streamReadAloudAudio = true),
@@ -148,6 +153,8 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     MEDIA_BUTTON_PER_NEXT to mediaButtonPerNext,
     PreferKey.readAloudByPage to readAloudByPage,
     PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
+    PreferKey.readAloudTimerMode to timerMode,
+    PreferKey.readAloudTimerChapters to timerChapters,
     PreferKey.readAloudAndroidMediaControl to androidMediaControlEnabled,
     PreferKey.systemMediaControlCompatibilityChange to systemMediaControlCompatibilityChange,
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,

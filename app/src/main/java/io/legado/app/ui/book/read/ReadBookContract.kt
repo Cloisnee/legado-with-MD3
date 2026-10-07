@@ -16,6 +16,7 @@ import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.domain.model.TextProcessStyle
 import io.legado.app.domain.model.readaloud.SpeechRoleType
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.domain.model.settings.ReadStyleItem
 import io.legado.app.domain.usecase.BookmarkTargetVerdict
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetTab
@@ -286,7 +287,12 @@ data class ReadBookUiState(
     val readAloudTtsFollowSys: Boolean = false,
     val readAloudTtsSpeechRate: Int = 10,
     val readAloudTtsTimer: Int = 0,
+    /** 分钟定时到点后读完本章再停；只对分钟模式有意义。 */
     val readAloudFinishCurrentChapterAfterTimer: Boolean = false,
+    /** 定时模式：分钟 / 章节（[ReadAloudTimerMode.storageValue]）。 */
+    val readAloudTimerMode: String = ReadAloudTimerMode.Minute.storageValue,
+    /** 章节定时剩余章数；0 表示未开启。 */
+    val readAloudTimerChapters: Int = 0,
     val useMultiSpeaker: Boolean = true,
     val defaultReadAloudInterface: String = ReadAloudSettingsRepository.DEFAULT_INTERFACE_CLASSIC,
     val readAloudParagraphInterval: Int = 0,
@@ -750,6 +756,12 @@ sealed interface ReadBookIntent {
     /** 页面脱离朗读位置后，从当前显示页重新开始朗读。 */
     data object ReadAloudFromHere : ReadBookIntent
     data class SetReadAloudTtsTimer(val value: Int) : ReadBookIntent
+
+    /** [value] 是 [ReadAloudTimerMode.storageValue]。 */
+    data class SetReadAloudTimerMode(val value: String) : ReadBookIntent
+    data class SetReadAloudTimerChapters(val value: Int) : ReadBookIntent
+
+    /** 分钟定时到点后是否读完本章再停。 */
     data class SetFinishCurrentChapterAfterTimer(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsFollowSys(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsSpeechRate(val value: Int) : ReadBookIntent

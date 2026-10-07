@@ -4,7 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
@@ -54,7 +52,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
-import io.legado.app.domain.model.PlaybackTimer
+import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.ui.book.read.ReadBookIntent
 import io.legado.app.ui.book.read.ReadBookUiState
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerIntent
@@ -65,8 +63,7 @@ import io.legado.app.ui.theme.ProvideAppDensity
 import io.legado.app.ui.theme.ProvideThemeOverride
 import io.legado.app.ui.theme.ThemeOverrideState
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
-import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
-import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
+import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 
@@ -206,11 +203,10 @@ fun ReadAloudContent(
     onGoToBackground: () -> Unit,
     onOpenMainMenu: () -> Unit,
     onShowReadAloudConfig: () -> Unit,
+    onShowTimerSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val timerMinute = state.readAloudTtsTimer
     val ttsSpeechRate = state.readAloudTtsSpeechRate
-    var timerMenuExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -253,24 +249,10 @@ fun ReadAloudContent(
 
         Spacer(Modifier.height(12.dp))
 
-        TinySliderSettingItem(
+        TinyClickableSettingItem(
             title = stringResource(R.string.set_timer),
-            description = stringResource(R.string.timer_m, timerMinute),
-            value = timerMinute.toFloat(),
-            valueRange = PlaybackTimer.MIN_MINUTES.toFloat()..PlaybackTimer.MAX_MINUTES.toFloat(),
-            steps = PlaybackTimer.MAX_MINUTES - PlaybackTimer.MIN_MINUTES - 1,
-            onValueChange = {
-                onIntent(ReadBookIntent.SetReadAloudTtsTimer(it.toInt()))
-            },
-        )
-
-        TinySwitchSettingItem(
-            title = stringResource(R.string.finish_current_chapter_after_timer),
-            description = stringResource(R.string.finish_current_chapter_after_timer_summary),
-            checked = state.readAloudFinishCurrentChapterAfterTimer,
-            onCheckedChange = {
-                onIntent(ReadBookIntent.SetFinishCurrentChapterAfterTimer(it))
-            },
+            description = readAloudTimerSummary(state),
+            onClick = onShowTimerSettings,
         )
 
         Spacer(Modifier.height(8.dp))
@@ -284,28 +266,6 @@ fun ReadAloudContent(
                 text = stringResource(R.string.previous_chapter),
                 modifier = Modifier.weight(1f),
             )
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                MediumTonalButton(
-                    onClick = { timerMenuExpanded = true },
-                    icon = Icons.Default.Alarm,
-                    contentDescription = stringResource(R.string.timer_m, timerMinute),
-                )
-                RoundDropdownMenu(
-                    expanded = timerMenuExpanded,
-                    onDismissRequest = { timerMenuExpanded = false },
-                ) {
-                    listOf(0, 5, 10, 15, 30, 60, 90).forEach { minute ->
-                        RoundDropdownMenuItem(
-                            text = stringResource(R.string.timer_m, minute),
-                            isSelected = minute == timerMinute,
-                            onClick = {
-                                onIntent(ReadBookIntent.SetReadAloudTtsTimer(minute))
-                                timerMenuExpanded = false
-                            },
-                        )
-                    }
-                }
-            }
             MediumTonalButton(
                 onClick = { onIntent(ReadBookIntent.ReadAloudNextChapter) },
                 text = stringResource(R.string.next_chapter),
@@ -363,6 +323,22 @@ fun ReadAloudContent(
             )
         }
     }
+}
+
+/**
+ * 定时入口的摘要：按当前模式显示剩余分钟或剩余章数，未开启显示「关闭」。
+ */
+@Composable
+private fun readAloudTimerSummary(state: ReadBookUiState): String = when {
+    state.readAloudTimerMode == ReadAloudTimerMode.Chapter.storageValue &&
+            state.readAloudTimerChapters > 0 ->
+        stringResource(R.string.timer_chapters, state.readAloudTimerChapters)
+
+    state.readAloudTimerMode == ReadAloudTimerMode.Minute.storageValue &&
+            state.readAloudTtsTimer > 0 ->
+        stringResource(R.string.timer_m, state.readAloudTtsTimer)
+
+    else -> stringResource(R.string.close)
 }
 
 @Composable

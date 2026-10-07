@@ -1,6 +1,22 @@
 package io.legado.app.domain.model.settings
 
 
+/**
+ * 朗读定时模式。两者互斥：同时只有一个倒计时在跑。
+ *
+ * [Minute] 到点即停（或按 [ReadAloudSettings.ttsTimer] 归零收尾）；
+ * [Chapter] 读满 [ReadAloudSettings.timerChapters] 章后停在章末。
+ */
+enum class ReadAloudTimerMode(val storageValue: String) {
+    Minute("minute"),
+    Chapter("chapter");
+
+    companion object {
+        fun fromStorage(value: String): ReadAloudTimerMode =
+            entries.firstOrNull { it.storageValue == value } ?: Minute
+    }
+}
+
 data class ReadAloudSettings(
     val ttsEngine: String? = null,
     val ttsParagraphInterval: Int = 0,
@@ -23,6 +39,9 @@ data class ReadAloudSettings(
     val streamReadAloudAudio: Boolean = false,
     val ttsTimer: Int = 0,
     val finishCurrentChapterAfterTimer: Boolean = false,
+    val timerMode: String = ReadAloudTimerMode.Minute.storageValue,
+    /** 章节定时：还剩几章；0 表示未开启。 */
+    val timerChapters: Int = 0,
     val ttsFollowSys: Boolean = true,
     val ttsSpeechRate: Int = 5,
     val useMultiSpeaker: Boolean = true,
