@@ -365,13 +365,11 @@ class SpeechAnalysisPipelineV3(
     ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        // 内容划分策略并入分析身份：切换划分方式 → 解析器版本变化 → 旧分析不命中（重析）
-        val resolverVersion = ReadAloudAnalysisPolicy.currentResolverVersion()
         // B19：标题映射 → 章节显示名（日志/消息统一用它；内部匹配仍用 index）
         val titleMap = runCatching { dataRepository.loadChapterTitles(bookName) }.getOrDefault(emptyMap())
         chapterLabel = ChapterLabels.of(titleMap[chapterIndex], chapterIndex)
         val existing = runCatching {
-            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, resolverVersion)
+            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
         }.getOrNull()
         if (!force && existing != null &&
             existing.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)
@@ -549,7 +547,7 @@ class SpeechAnalysisPipelineV3(
         }
 
         // ===== 落库 =====
-        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, resolverVersion)
+        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
         val status = if (dialogueSegs.isNotEmpty() && !usedAi2 && s2Refs.isNotEmpty()) {
             SpeechAnalysisStatus.Partial
         } else {
@@ -560,7 +558,7 @@ class SpeechAnalysisPipelineV3(
             bookUrl = bookUrl,
             chapterIndex = chapterIndex,
             contentHash = contentHash,
-            resolverVersion = resolverVersion,
+            resolverVersion = RESOLVER_VERSION,
             characterRevision = "",
             status = status,
         )
@@ -591,10 +589,6 @@ class SpeechAnalysisPipelineV3(
 
     /** 本地快速分段（点击朗读 → 先出声；与 A 阶段本地路径同源）：引号规则 v2 → 段落装配 */
     fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<ChapterSpeechSegment> {
-        if (!ReadAloudAnalysisPolicy.current().allowRoleSplits) {
-            // 整段/整页：单元即播放片段，不再段内按引号拆角色（对齐上游 segmenter 语义）
-            return assemble(paragraphs, emptyList())
-        }
         val ranges = ArrayList<SpRange>()
         paragraphs.forEach { p ->
             QuoteSpeechRules.quoteSpans(p.text).forEach { s ->
@@ -632,10 +626,8 @@ class SpeechAnalysisPipelineV3(
         val chLabel = runCatching { dataRepository.chapterLabelOf(name, chapterIndex) }
             .getOrDefault("第${chapterIndex + 1}章")
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        // 内容划分策略并入分析身份：与 run() 同源，读取/回写必须同版本
-        val resolverVersion = ReadAloudAnalysisPolicy.currentResolverVersion()
         val existing = runCatching {
-            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, resolverVersion)
+            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
         }.getOrNull()
         if (existing != null &&
             existing.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)
@@ -652,14 +644,14 @@ class SpeechAnalysisPipelineV3(
             if (logMiss) AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
             return@withContext null
         }
-        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, resolverVersion)
+        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
         val segments = ScriptFileBackfill.toSegments(aligned, bookUrl, chapterIndex, analysisId)
         val analysis = ChapterSpeechAnalysis(
             id = analysisId,
             bookUrl = bookUrl,
             chapterIndex = chapterIndex,
             contentHash = contentHash,
-            resolverVersion = resolverVersion,
+            resolverVersion = RESOLVER_VERSION,
             characterRevision = "",
             status = SpeechAnalysisStatus.Success,
         )
@@ -687,11 +679,6 @@ class SpeechAnalysisPipelineV3(
         useAi: Boolean,
         chapterIndex: Int,
     ): List<SpRange> {
-        // 整段/整页：不做段内话语检测——单元即播放片段（对齐上游 segmenter 语义）
-        if (!ReadAloudAnalysisPolicy.current().allowRoleSplits) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】整段/整页划分：不检测段内话语")
-            return emptyList()
-        }
         // 本地路径：引号包裹规则 v2
         val local = ArrayList<SpRange>()
         paragraphs.forEach { p ->

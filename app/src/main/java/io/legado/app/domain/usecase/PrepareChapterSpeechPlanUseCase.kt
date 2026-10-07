@@ -14,7 +14,6 @@ import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.ReadAloudAnalysisPolicy
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -60,7 +59,7 @@ class PrepareChapterSpeechPlanUseCase(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
                 contentHash = contentHash,
-                resolverVersion = ReadAloudAnalysisPolicy.currentResolverVersion(),
+                resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
             )
         }.onFailure {
             if (it is CancellationException) throw it
@@ -177,7 +176,7 @@ class PrepareChapterSpeechPlanUseCase(
                     bookUrl = bookUrl,
                     chapterIndex = chapterIndex,
                     contentHash = contentHash,
-                    resolverVersion = ReadAloudAnalysisPolicy.currentResolverVersion(),
+                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
                 )
             }.getOrNull()
             if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {

@@ -11,7 +11,7 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 5,
             finishedChapterIndex = 5,
             finishChapterAtIndex = 5,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.STOP, decision.action)
@@ -24,12 +24,11 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 5,
             finishedChapterIndex = 5,
             finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.ADVANCE, decision.action)
         assertEquals(false, decision.clearTimer)
-        assertEquals(null, decision.remainingChapters)
     }
 
     @Test
@@ -38,7 +37,20 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 5,
             finishedChapterIndex = 5,
             finishChapterAtIndex = 3,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
+        )
+
+        assertEquals(ChapterCompletionAction.ADVANCE, decision.action)
+        assertEquals(true, decision.clearTimer)
+    }
+
+    @Test
+    fun timerDisabledAfterArmingClearsAndContinues() {
+        val decision = decideChapterCompletion(
+            durChapterIndex = 5,
+            finishedChapterIndex = 5,
+            finishChapterAtIndex = 5,
+            finishChapterSettingEnabled = false,
         )
 
         assertEquals(ChapterCompletionAction.ADVANCE, decision.action)
@@ -53,7 +65,7 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 6,
             finishedChapterIndex = 5,
             finishChapterAtIndex = 5,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.STOP, decision.action)
@@ -66,7 +78,7 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 6,
             finishedChapterIndex = 5,
             finishChapterAtIndex = 3,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.SKIP, decision.action)
@@ -81,7 +93,7 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 6,
             finishedChapterIndex = 5,
             finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.SKIP, decision.action)
@@ -94,67 +106,11 @@ class ReadAloudChapterCompletionTest {
             durChapterIndex = 0,
             finishedChapterIndex = 0,
             finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = null,
+            finishChapterSettingEnabled = true,
         )
 
         assertEquals(ChapterCompletionAction.ADVANCE, decision.action)
         assertEquals(false, decision.clearTimer)
     }
 
-    @Test
-    fun chapterQuotaOneStopsAtFirstChapterBoundary() {
-        val decision = decideChapterCompletion(
-            durChapterIndex = 5,
-            finishedChapterIndex = 5,
-            finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = 1,
-        )
-
-        assertEquals(ChapterCompletionAction.STOP, decision.action)
-        assertEquals(0, decision.remainingChapters)
-    }
-
-    @Test
-    fun chapterQuotaDecrementsAndContinuesUntilExhausted() {
-        val first = decideChapterCompletion(
-            durChapterIndex = 5,
-            finishedChapterIndex = 5,
-            finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = 3,
-        )
-        assertEquals(ChapterCompletionAction.ADVANCE, first.action)
-        assertEquals(2, first.remainingChapters)
-
-        val second = decideChapterCompletion(
-            durChapterIndex = 6,
-            finishedChapterIndex = 6,
-            finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = first.remainingChapters,
-        )
-        assertEquals(ChapterCompletionAction.ADVANCE, second.action)
-        assertEquals(1, second.remainingChapters)
-
-        val third = decideChapterCompletion(
-            durChapterIndex = 7,
-            finishedChapterIndex = 7,
-            finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = second.remainingChapters,
-        )
-        assertEquals(ChapterCompletionAction.STOP, third.action)
-        assertEquals(0, third.remainingChapters)
-    }
-
-    @Test
-    fun raceSkipDoesNotConsumeChapterQuota() {
-        // 竞态下这一章的完结不属于本次朗读推进，配额不能被白扣
-        val decision = decideChapterCompletion(
-            durChapterIndex = 6,
-            finishedChapterIndex = 5,
-            finishChapterAtIndex = NO_FINISH_CHAPTER,
-            chapterQuota = 3,
-        )
-
-        assertEquals(ChapterCompletionAction.SKIP, decision.action)
-        assertEquals(null, decision.remainingChapters)
-    }
 }
