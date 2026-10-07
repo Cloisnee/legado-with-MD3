@@ -3,13 +3,8 @@ package io.legado.app.ui.book.readaloud.player
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.legado.app.R
-import io.legado.app.ui.book.read.sheet.ReadAloudConfigContent
-import io.legado.app.ui.book.read.sheet.asReadBookUiState
 import io.legado.app.ui.theme.ProvideThemeOverride
-import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import org.koin.compose.koinInject
 
 /**
@@ -21,13 +16,11 @@ import org.koin.compose.koinInject
  * 这类窗口级 sheet 容器，也不自己驱动位移，没有「弹层里再开弹层」的
  * shape / 宽度 / 返回键特判；代价是没有下拉关闭手势。
  *
- * 设置卡片用的是全局 [ReadAloudPlayerViewModel] 的设置快照，不依赖阅读器 ViewModel，
- * 所以从胶囊直接进听书页时同样能改朗读设置。
+ * 朗读设置统一归口「我的 → 朗读设置」；播放页不设设置入口——原齿轮位自 W1 起固定为
+ * 「朗读日志」，不要把上游播放页的设置入口随批加回。
  */
 @Composable
 fun ReadAloudPlayerRouteScreen(
-    showReadAloudConfig: Boolean,
-    onReadAloudConfigVisibleChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     /**
      * 「经典控制」按钮：交给宿主决定回到已有阅读界面还是新开阅读界面。
@@ -41,7 +34,6 @@ fun ReadAloudPlayerRouteScreen(
 ) {
     val playerViewModel: ReadAloudPlayerViewModel = koinInject()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
-    val settingsState by playerViewModel.readAloudSettings.collectAsStateWithLifecycle()
     val playerTheme = rememberPlayerThemeOverride(playerState)
 
     LaunchedEffect(playerViewModel) {
@@ -62,21 +54,7 @@ fun ReadAloudPlayerRouteScreen(
             state = playerState,
             onIntent = playerViewModel::onIntent,
             onBack = onBack,
-            onOpenConfig = { onReadAloudConfigVisibleChange(true) },
             onOpenScriptReview = onOpenScriptReview,
-        )
-    }
-    // 播放页自己是一层全屏目的地，这里只叠一层设置卡片，全屏只有这一层 scrim。
-    AppModalBottomSheet(
-        show = showReadAloudConfig,
-        onDismissRequest = { onReadAloudConfigVisibleChange(false) },
-        title = stringResource(R.string.aloud_config),
-    ) {
-        ReadAloudConfigContent(
-            state = settingsState.asReadBookUiState(),
-            playerState = playerState,
-            onIntent = playerViewModel::applyReadBookConfigIntent,
-            onPlayerIntent = playerViewModel::onIntent,
         )
     }
 }

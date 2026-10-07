@@ -24,7 +24,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
@@ -1260,10 +1259,7 @@ fun MainActivity.mainEntryProvider(
     ) {
         // 听书播放界面独立于阅读器：从胶囊或媒体按键打开时，阅读器可能根本不在栈上，
         // 因此这里不复用阅读器的状态宿主，只依赖全局朗读会话状态。
-        var readAloudConfigOpen by rememberSaveable { mutableStateOf(false) }
         ReadAloudPlayerRouteScreen(
-            showReadAloudConfig = readAloudConfigOpen,
-            onReadAloudConfigVisibleChange = { readAloudConfigOpen = it },
             onBack = { onNavigateBack() },
             onSwitchToClassic = { bookUrl ->
                 // 上级是阅读界面（从阅读界面进入听书页）：回退到它，并让它直接落在经典朗读控制页。

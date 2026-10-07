@@ -47,7 +47,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TheaterComedy
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
@@ -131,7 +130,6 @@ fun ReadAloudPlayerScreenContent(
     onIntent: (ReadAloudPlayerIntent) -> Unit,
     onBack: () -> Unit,
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
-    onOpenConfig: () -> Unit,
 ) {
     val horizontalPagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
     var isTextPageUserScrolling by remember { mutableStateOf(false) }
@@ -213,11 +211,6 @@ fun ReadAloudPlayerScreenContent(
                         onClick = { onIntent(ReadAloudPlayerIntent.OpenReadAloudLogs) },
                         icon = Icons.Default.BugReport,
                         contentDescription = "朗读日志",
-                    )
-                    MediumTonalButton(
-                        onClick = onOpenConfig,
-                        icon = Icons.Default.Settings,
-                        contentDescription = stringResource(R.string.setting),
                     )
                 }
             }
