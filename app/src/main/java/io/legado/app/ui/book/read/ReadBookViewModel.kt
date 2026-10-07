@@ -2030,7 +2030,10 @@ class ReadBookViewModel(
         request: ReadBookInitRequest,
         initialBook: Book? = null,
         success: (() -> Unit)? = null,
-    ) = loadDelegate.initData(request, initialBook, success)
+    ) {
+        _uiState.update { it.copy(inBookshelf = request.inBookshelf) }
+        loadDelegate.initData(request, initialBook, success)
+    }
 
     fun markJustInitData() {
         justInitData = true
@@ -2099,7 +2102,7 @@ class ReadBookViewModel(
             }
             ReadBook.inBookshelf = true
         }.onSuccess {
-            _uiState.update { it.copy(activeDialog = null) }
+            _uiState.update { it.copy(activeDialog = null, inBookshelf = true) }
             stopReadAloudForClose()
             _effects.tryEmit(ReadBookEffect.Finish)
         }.onError {

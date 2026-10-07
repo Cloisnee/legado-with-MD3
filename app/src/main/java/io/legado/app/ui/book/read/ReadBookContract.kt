@@ -262,6 +262,8 @@ data class ReadBookUiState(
     val delRubyTag: Boolean = false,
     val delHTag: Boolean = false,
     val sameTitleRemoved: Boolean = false,
+    /** 当前书是否在书架——云端进度入口只对书架书显示（与上游口径一致）。 */
+    val inBookshelf: Boolean = true,
     val isReadingProgressSyncConfigured: Boolean = false,
     // Content edit
     // 正文编辑域状态见 ContentEditUiState —— 由 ReadContentEditDelegate 独立持有
