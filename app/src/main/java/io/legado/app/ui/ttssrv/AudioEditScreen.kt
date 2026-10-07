@@ -140,10 +140,8 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
             val added = inputWords.filter { it !in oldWords }
             // 第四刀·①：跨系列词硬拦截——新增词撞「同栏、非同系列」条目 → 弹窗并中止（先改对方或换词）
             val hits = AudioSeries.crossSeriesConflicts(base, added)
-            if (hits.isNotEmpty()) {
-                wordConflicts = hits
-                return@launch
-            }
+            val blocked = hits.map { it.first }.toSet()
+            val effectiveInput = inputWords.filter { it !in blocked }
             val notes = ArrayList<String>()
             runCatching {
                 var newName = name.trim().ifBlank { base.name }
@@ -161,7 +159,7 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                         newName = "${newName}_$k"
                     }
                 }
-                var newPattern = pattern.trim()
+                var newPattern = if (blocked.isEmpty()) pattern.trim() else AudioSeries.joinWords(effectiveInput)
                 // 第四刀·②：改名脱离系列 → 清掉「旧系列其他成员共享的词」（非同系列自留词保留）
                 if (AudioSeries.seriesKey(base.name) != AudioSeries.seriesKey(newName)) {
                     val shared = AudioSeries.members(app, base).flatMap { AudioSeries.wordsOf(it) }.toSet()
@@ -202,6 +200,11 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                     AudioLibrary.setCategory(app, setOf(base.id), category)
                 }
                 if (syncN > 0) notes += "同系列同步 $syncN 条"
+                // 第四刀v4：被拦词未添加（其余已保存）→ 保存后弹窗提示
+                if (blocked.isNotEmpty()) {
+                    notes += "有 ${blocked.size} 个词未添加（与其他系列重复）"
+                    wordConflicts = hits
+                }
             }
             app.toastOnUi(if (notes.isEmpty()) "已保存" else "已保存（${notes.joinToString("；")}）")
             onBack()
@@ -418,17 +421,17 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
         },
     )
 
-    // 第四刀：跨系列词冲突提示（硬拦截——同系列共享词从任一条添加即可，会自动同步）
+    // 第四刀v4：跨系列词冲突提示（被拦词未添加；其余修改照常保存）
     AppAlertDialog(
         show = wordConflicts.isNotEmpty(),
         onDismissRequest = { wordConflicts = emptyList() },
-        title = "词被其他系列占用",
+        title = "部分词未添加（与其他系列重复）",
         text = buildString {
-            append("以下词已被同栏的其他条目使用（跨系列唯一）：\n\n")
+            append("以下词已被同栏的其他条目使用，本次未添加（其余修改已保存）：\n\n")
             wordConflicts.forEach { (w, owner) ->
                 append("・「").append(w).append("」→ ").append(owner).append("\n")
             }
-            append("\n请先修改对方条目，或改用别的词；\n同系列共享词只需给其中一条添加，会自动同步到全系列。")
+            append("\n可先修改对方条目或改用其他词；\n同系列共享词只需给其中一条添加，会自动同步到全系列。")
         },
         confirmText = "知道了",
         onConfirm = { wordConflicts = emptyList() },
