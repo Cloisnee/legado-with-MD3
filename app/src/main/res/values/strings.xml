@@ -1737,6 +1737,8 @@
     <string name="read_aloud_android_media_control_summary">Replace the default read-aloud notification with Android system media controls when enabled</string>
     <string name="finish_current_chapter_after_timer">Finish current chapter after timer</string>
     <string name="finish_current_chapter_after_timer_summary">When the timer expires, continue reading until the current chapter finishes</string>
+    <string name="read_aloud_keep_on_exit">Keep reading aloud after exit</string>
+    <string name="read_aloud_keep_on_exit_summary">Keep reading aloud in the background after leaving the reader</string>
     <string name="system_media_control_compatibility_change">System Media Control Compatibility</string>
     <string name="system_media_control_compatibility_change_summary">Enable if system media controls are missing on lock screen (e.g. OneUI 7.0, OriginOS)</string>
     <string name="read_aloud_pause_resume">Pause/Resume Reading Aloud</string>

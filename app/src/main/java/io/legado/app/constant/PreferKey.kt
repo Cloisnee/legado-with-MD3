@@ -40,6 +40,8 @@ object PreferKey {
     const val hideNavigationBar = "hideNavigationBar"
     const val precisionSearch = "precisionSearch"
     const val readAloudByPage = "readAloudByPage"
+    // 退出阅读时继续朗读（默认开；可在 我的→朗读设置 关闭）
+    const val keepReadAloudOnExit = "keepReadAloudOnExit"
     const val ttsEngine = "appTtsEngine"
     const val ttsFollowSys = "ttsFollowSys"
     const val ttsSpeechRate = "ttsSpeechRate"

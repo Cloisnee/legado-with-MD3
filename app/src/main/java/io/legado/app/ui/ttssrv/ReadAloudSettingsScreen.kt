@@ -231,6 +231,12 @@ fun ReadAloudSettingsScreen(
                         onCheckedChange = { v -> update { it.copy(readAloudWakeLock = v) } },
                     )
                     TinySwitchSettingItem(
+                        title = stringResource(R.string.read_aloud_keep_on_exit),
+                        description = stringResource(R.string.read_aloud_keep_on_exit_summary),
+                        checked = st.keepReadAloudOnExit,
+                        onCheckedChange = { v -> update { it.copy(keepReadAloudOnExit = v) } },
+                    )
+                    TinySwitchSettingItem(
                         title = "待命启动（防误触）",
                         description = "点「开始朗读」先进入待命（不发声、不合成、不分析）；再点一次（界面/通知）才真正开始",
                         checked = st.standbyStart,

@@ -88,6 +88,7 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     capsuleOffsetY = compatDsValue(ReadAloudKeys.CapsuleOffsetY, 0f),
     mediaButtonPerNext = compatDsValue(ReadAloudKeys.MediaButtonPerNext, false),
     readAloudByPage = compatDsValue(ReadAloudKeys.ReadAloudByPage, false),
+    keepReadAloudOnExit = compatDsValue(ReadAloudKeys.KeepReadAloudOnExit, true),
     androidMediaControlEnabled = compatDsValue(ReadAloudKeys.AndroidMediaControlEnabled, false),
     systemMediaControlCompatibilityChange =
         compatDsValue(ReadAloudKeys.SystemMediaControlCompatibilityChange, false),
@@ -139,6 +140,7 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     ReadAloudKeys.CapsuleOffsetY.name to capsuleOffsetY,
     PreferKey.mediaButtonPerNext to mediaButtonPerNext,
     PreferKey.readAloudByPage to readAloudByPage,
+    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
     PreferKey.readAloudAndroidMediaControl to androidMediaControlEnabled,
     PreferKey.systemMediaControlCompatibilityChange to systemMediaControlCompatibilityChange,
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
@@ -180,6 +182,7 @@ private object ReadAloudKeys {
     val CapsuleOffsetY = floatPreferencesKey("read_aloud_capsule_offset_y")
     val MediaButtonPerNext = booleanPreferencesKey(PreferKey.mediaButtonPerNext)
     val ReadAloudByPage = booleanPreferencesKey(PreferKey.readAloudByPage)
+    val KeepReadAloudOnExit = booleanPreferencesKey(PreferKey.keepReadAloudOnExit)
     val AndroidMediaControlEnabled =
         booleanPreferencesKey(PreferKey.readAloudAndroidMediaControl)
     val SystemMediaControlCompatibilityChange =

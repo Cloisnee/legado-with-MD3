@@ -10,6 +10,8 @@ data class ReadAloudSettings(
     val readAloudByMediaButton: Boolean = false,
     val pauseReadAloudWhilePhoneCalls: Boolean = false,
     val readAloudWakeLock: Boolean = false,
+    /** 退出阅读时继续朗读（默认开）：关闭阅读界面后不停朗读，继续在后台播放 */
+    val keepReadAloudOnExit: Boolean = true,
     val showReadAloudCapsule: Boolean = true,
     val capsuleAutoCollapse: Boolean = true,
     val capsuleOffsetX: Float = 0f,

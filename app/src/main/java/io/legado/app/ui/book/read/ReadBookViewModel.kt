@@ -2084,6 +2084,11 @@ class ReadBookViewModel(
         if (closeReadBookKeepReadAloud || !BaseReadAloudService.isRun) {
             return
         }
+        // 「退出阅读时继续朗读」：读的是持久设置，不依赖本次退出来源
+        // （标题栏关闭、返回手势、后台按钮走的是同一个 closeReadBook）。
+        if (readAloudSettingsRepository.currentSettings.keepReadAloudOnExit) {
+            return
+        }
         ReadAloud.stop(context)
         _uiState.update { it.copy(isReadAloudRunning = false, isReadAloudPaused = false) }
     }
