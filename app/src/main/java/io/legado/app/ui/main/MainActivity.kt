@@ -675,7 +675,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                     ) {
                         ReadAloudShellHost(
                             showCapsule = pageShellShowCapsule,
-                            hidden = currentRoute.isReaderDomainRoute(),
+                            hidden = useHomeCapsule,
                             anchorPreview = capsuleAnchorPreview,
                             onCapsulePositionChanged = { x, y ->
                                 pageShellCapsuleScope.launch {
@@ -954,16 +954,6 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         // 歌词暂不在界面展示
     }
 
-}
-
-/**
- * 朗读域路由：这些页面内不显示全局朗读胶囊（阅读器内一律不显示，离开阅读域才显示）。
- *
- * 覆盖：阅读页 / 剧本审查 / 朗读日志 / 听书播放页。配音与角色管理页不纳入。
- */
-private fun NavKey?.isReaderDomainRoute(): Boolean = when (this) {
-    is MainRouteReadBook, is MainRouteScriptReview, MainRouteTtsCache, MainRouteReadAloudPlayer -> true
-    else -> false
 }
 
 data class TextSheetData(
