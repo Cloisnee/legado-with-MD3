@@ -746,7 +746,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
  *
  * 覆盖：阅读页 / 剧本审查 / 朗读日志 / 听书播放页。配音与角色管理页不纳入。
  */
-private fun MainRoute.isReaderDomainRoute(): Boolean = when (this) {
+private fun NavKey?.isReaderDomainRoute(): Boolean = when (this) {
     is MainRouteReadBook, is MainRouteScriptReview, MainRouteTtsCache, MainRouteReadAloudPlayer -> true
     else -> false
 }
