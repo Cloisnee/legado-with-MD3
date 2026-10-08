@@ -19,7 +19,6 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -94,7 +93,6 @@ import io.legado.app.ui.replace.ReplaceEditRoute
 import io.legado.app.ui.replace.ReplaceRuleActivity
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.LocalAppUiConfiguration
-import io.legado.app.ui.widget.components.image.cover.sharedCoverSourceRadius
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.utils.StartActivityContract
 import io.legado.app.utils.takePersistablePermissionSafely
@@ -987,30 +985,6 @@ private fun sampleReaderSystemBarInsets(
         cutoutRightPx = cutout?.right ?: 0,
         cutoutBottomPx = cutout?.bottom ?: 0,
     )
-}
-
-/**
- * 阅读页 sharedBounds 转场期的裁剪圆角：起点 = 封面在源页面的圆角
- * （sharedCoverSourceRadius，与封面端动画同源），终点 = 设备屏幕圆角；
- * 非转场返回 null，不参与裁剪。镜像 CoilBookCover.rememberSharedCoverTransitionRadius。
- */
-@OptIn(ExperimentalSharedTransitionApi::class)
-@Composable
-private fun rememberReaderSharedClipRadiusDp(
-    sharedCoverKey: String?,
-    animatedVisibilityScope: AnimatedVisibilityScope?,
-    targetRadiusPx: Float,
-    density: Float,
-): Dp? {
-    if (sharedCoverKey == null || animatedVisibilityScope == null) return null
-    val targetRadius = (targetRadiusPx / density).dp
-    val startRadius = sharedCoverSourceRadius(sharedCoverKey) ?: targetRadius
-    val animatedRadius by animatedVisibilityScope.transition.animateFloat(
-        label = "reader-clip-corner-radius",
-    ) { state ->
-        if (state == EnterExitState.Visible) targetRadius.value else startRadius.value
-    }
-    return animatedRadius.dp
 }
 
 @Composable

@@ -732,6 +732,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                             readAloudMorph = readAloudMorph.takeIf { useHomeCapsule },
                             homePlaybackCapsuleEnabled = useHomeCapsule,
                             capsuleAnchorPreview = capsuleAnchorPreview,
+                            )
                         )
                     }
                     // 全局胶囊与导航容器并列，始终画在阅读等 Nav3 叠层之上。
