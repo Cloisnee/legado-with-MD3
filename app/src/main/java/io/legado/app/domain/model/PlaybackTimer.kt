@@ -1,5 +1,8 @@
 package io.legado.app.domain.model
 
+import io.legado.app.domain.model.PlaybackTimer.MAX_CHAPTERS
+
+
 object PlaybackTimer {
 
     const val MIN_MINUTES = 0

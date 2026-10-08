@@ -38,6 +38,12 @@ data class ReadAloudSettings(
     val systemMediaControlCompatibilityChange: Boolean = false,
     val streamReadAloudAudio: Boolean = false,
     val ttsTimer: Int = 0,
+    /**
+     * 分钟定时到点后不立刻停，读完当前章再停。
+     *
+     * 只对 [ReadAloudTimerMode.Minute] 有意义：章节模式本身就是「读满 N 章后在章末停」，
+     * 不需要这个修饰。
+     */
     val finishCurrentChapterAfterTimer: Boolean = false,
     val timerMode: String = ReadAloudTimerMode.Minute.storageValue,
     /** 章节定时：还剩几章；0 表示未开启。 */

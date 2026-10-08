@@ -275,6 +275,7 @@ data class ReadBookUiState(
     val readAloudIgnoreAudioFocus: Boolean = false,
     val readAloudPauseOnPhoneCall: Boolean = false,
     val readAloudWakeLock: Boolean = false,
+    val readAloudKeepOnExit: Boolean = false,
     val showReadAloudCapsule: Boolean = true,
     val capsuleAutoCollapse: Boolean = true,
     val readAloudCapsuleOffsetX: Float = 0f,
@@ -305,6 +306,10 @@ data class ReadBookUiState(
 ) {
     val menuVisible: Boolean
         get() = menuState.visible
+
+    /** 朗读设置卡片是否打开；经典控制面板与听书播放界面共用同一份设置内容。 */
+    val isReadAloudConfigOpen: Boolean
+        get() = activeSheet is ReadBookSheet.ReadAloudConfig
 }
 
 /** 护眼模式设置，来源是 ThemeSettings，与外观设置共用同一份值。 */
@@ -736,11 +741,13 @@ sealed interface ReadBookIntent {
     data class SetReadAloudIgnoreAudioFocus(val value: Boolean) : ReadBookIntent
     data class SetReadAloudPauseOnPhoneCall(val value: Boolean) : ReadBookIntent
     data class SetReadAloudWakeLock(val value: Boolean) : ReadBookIntent
+    data class SetReadAloudKeepOnExit(val value: Boolean) : ReadBookIntent
     data class SetShowReadAloudCapsule(val value: Boolean) : ReadBookIntent
     data class SetCapsuleAutoCollapse(val value: Boolean) : ReadBookIntent
     data object ResetReadAloudCapsulePosition : ReadBookIntent
     data class SetReadAloudCapsulePosition(val x: Float, val y: Float) : ReadBookIntent
     data class SetReadAloudMediaButtonPerNext(val value: Boolean) : ReadBookIntent
+
     data class SetReadAloudByPage(val value: Boolean) : ReadBookIntent
     data class SetReadAloudSystemMediaCompat(val value: Boolean) : ReadBookIntent
     data class SetReadAloudAndroidMediaControl(val value: Boolean) : ReadBookIntent
@@ -907,6 +914,14 @@ sealed interface ReadBookEffect {
     data class OpenMenuCustomIconPicker(val id: String) : ReadBookEffect
     data class OpenTitleBarCustomIconPicker(val id: String) : ReadBookEffect
     data object OpenSystemTtsSettings : ReadBookEffect
+
+    /**
+     * 打开听书播放界面。
+     *
+     * 播放界面是 Navigation 3 目的地（[io.legado.app.ui.main.MainRouteReadAloudPlayer]），
+     * 不再是阅读器内的弹层，因此这里只发导航意图，不写 `activeSheet`。
+     */
+    data object OpenReadAloudPlayer : ReadBookEffect
     data object OpenTtsEnginesAndVoices : ReadBookEffect
     data object OpenTtsCache : ReadBookEffect
     data object OpenHighlightRuleImportPicker : ReadBookEffect
@@ -963,7 +978,6 @@ sealed interface ReadBookSheet {
     data object MoreConfig : ReadBookSheet
     data object BgTextConfig : ReadBookSheet
     data object ReadAloudConfig : ReadBookSheet
-    data object ReadAloudPlayer : ReadBookSheet
     data object PreDownloadConfig : ReadBookSheet
     data object PreSynthesisConcurrencyConfig : ReadBookSheet
     data object AudioCacheCleanConfig : ReadBookSheet

@@ -55,6 +55,14 @@ class ReadAloudSettingsMappingTest {
     }
 
     @Test
+    fun `定时默认按时间且未开启`() {
+        val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
+
+        assertEquals(ReadAloudTimerMode.Minute.storageValue, settings.timerMode)
+        assertEquals(0, settings.timerChapters)
+    }
+
+    @Test
     fun `定时到点后读完本章默认关闭`() {
         val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
 

@@ -1236,6 +1236,8 @@ class ReadBookViewModel(
             is ReadBookIntent.SetReadAloudPauseOnPhoneCall ->
                 readAloudDelegate.setPauseOnPhoneCall(intent.value)
             is ReadBookIntent.SetReadAloudWakeLock -> readAloudDelegate.setWakeLock(intent.value)
+            is ReadBookIntent.SetReadAloudKeepOnExit ->
+                readAloudDelegate.setKeepOnExit(intent.value)
             is ReadBookIntent.SetShowReadAloudCapsule ->
                 readAloudDelegate.setShowCapsule(intent.value)
             is ReadBookIntent.SetCapsuleAutoCollapse ->
@@ -1679,6 +1681,13 @@ class ReadBookViewModel(
                     )
                 }
                 emitEffectWhenSubscribed(ReadBookEffect.UpdateReaderConfig(actions))
+            }
+        }
+        viewModelScope.launch {
+            // 听书播放界面的「经典控制」返回阅读界面时，直接落到经典朗读控制页。
+            // 播放界面盖上来后阅读器子树已销毁，只能靠这条通道把意图带回存活的 ViewModel。
+            ReadAloudControlsRequestBus.events.collect {
+                onIntent(ReadBookIntent.OpenClassicReadAloudControls)
             }
         }
         viewModelScope.launch {

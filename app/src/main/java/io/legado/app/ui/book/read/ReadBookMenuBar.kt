@@ -84,10 +84,10 @@ import io.legado.app.ui.book.readaloud.ReadAloudTimerConfig
 import io.legado.app.ui.book.readaloud.ReadAloudTimerSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.button.series.SmallTonalButton
-import io.legado.app.ui.widget.components.reader.ReaderMenuEffect
 import io.legado.app.ui.widget.components.reader.ReaderMenuAnimatedBottom
 import io.legado.app.ui.widget.components.reader.ReaderMenuAnimatedTop
 import io.legado.app.ui.widget.components.reader.ReaderMenuDismissLayer
+import io.legado.app.ui.widget.components.reader.ReaderMenuEffect
 import io.legado.app.ui.widget.components.reader.ReaderMenuPlacement
 import io.legado.app.ui.widget.components.reader.ReaderMenuTintStyle
 import io.legado.app.ui.widget.components.reader.ReaderMenuVisualState

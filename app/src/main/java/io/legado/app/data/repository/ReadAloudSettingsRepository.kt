@@ -47,6 +47,16 @@ class ReadAloudSettingsRepository : ReadAloudSettingsGateway {
         )
     }
 
+    /** 悬浮胶囊位置；两个分量同批写入，避免只落一个导致胶囊跳位。 */
+    suspend fun putCapsulePosition(x: Float, y: Float) {
+        AppConfigStore.putAllAndAwait(
+            mapOf(
+                ReadAloudKeys.CapsuleOffsetX.name to x,
+                ReadAloudKeys.CapsuleOffsetY.name to y,
+            )
+        )
+    }
+
     companion object {
         const val DEFAULT_INTERFACE_CLASSIC = "classic"
         const val DEFAULT_INTERFACE_PLAYER = "player"
@@ -83,13 +93,13 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     pauseReadAloudWhilePhoneCalls =
         compatDsValue(ReadAloudKeys.PauseReadAloudWhilePhoneCalls, false),
     readAloudWakeLock = compatDsValue(ReadAloudKeys.ReadAloudWakeLock, false),
+    keepReadAloudOnExit = compatDsValue(ReadAloudKeys.KeepReadAloudOnExit, true),
     showReadAloudCapsule = compatDsValue(ReadAloudKeys.ShowReadAloudCapsule, true),
     capsuleAutoCollapse = compatDsValue(ReadAloudKeys.CapsuleAutoCollapse, true),
     capsuleOffsetX = compatDsValue(ReadAloudKeys.CapsuleOffsetX, 0f),
     capsuleOffsetY = compatDsValue(ReadAloudKeys.CapsuleOffsetY, 0f),
     mediaButtonPerNext = compatDsValue(ReadAloudKeys.MediaButtonPerNext, false),
     readAloudByPage = compatDsValue(ReadAloudKeys.ReadAloudByPage, false),
-    keepReadAloudOnExit = compatDsValue(ReadAloudKeys.KeepReadAloudOnExit, true),
     androidMediaControlEnabled = compatDsValue(ReadAloudKeys.AndroidMediaControlEnabled, false),
     systemMediaControlCompatibilityChange =
         compatDsValue(ReadAloudKeys.SystemMediaControlCompatibilityChange, false),
@@ -142,13 +152,13 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.readAloudByMediaButton to readAloudByMediaButton,
     PreferKey.pauseReadAloudWhilePhoneCalls to pauseReadAloudWhilePhoneCalls,
     PreferKey.readAloudWakeLock to readAloudWakeLock,
+    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
     PreferKey.showReadAloudCapsule to showReadAloudCapsule,
     PreferKey.capsuleAutoCollapse to capsuleAutoCollapse,
     ReadAloudKeys.CapsuleOffsetX.name to capsuleOffsetX,
     ReadAloudKeys.CapsuleOffsetY.name to capsuleOffsetY,
     PreferKey.mediaButtonPerNext to mediaButtonPerNext,
     PreferKey.readAloudByPage to readAloudByPage,
-    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
     PreferKey.readAloudAndroidMediaControl to androidMediaControlEnabled,
     PreferKey.systemMediaControlCompatibilityChange to systemMediaControlCompatibilityChange,
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
@@ -186,13 +196,13 @@ private object ReadAloudKeys {
     val PauseReadAloudWhilePhoneCalls =
         booleanPreferencesKey(PreferKey.pauseReadAloudWhilePhoneCalls)
     val ReadAloudWakeLock = booleanPreferencesKey(PreferKey.readAloudWakeLock)
+    val KeepReadAloudOnExit = booleanPreferencesKey(PreferKey.keepReadAloudOnExit)
     val ShowReadAloudCapsule = booleanPreferencesKey(PreferKey.showReadAloudCapsule)
     val CapsuleAutoCollapse = booleanPreferencesKey(PreferKey.capsuleAutoCollapse)
     val CapsuleOffsetX = floatPreferencesKey("read_aloud_capsule_offset_x")
     val CapsuleOffsetY = floatPreferencesKey("read_aloud_capsule_offset_y")
     val MediaButtonPerNext = booleanPreferencesKey(PreferKey.mediaButtonPerNext)
     val ReadAloudByPage = booleanPreferencesKey(PreferKey.readAloudByPage)
-    val KeepReadAloudOnExit = booleanPreferencesKey(PreferKey.keepReadAloudOnExit)
     val AndroidMediaControlEnabled =
         booleanPreferencesKey(PreferKey.readAloudAndroidMediaControl)
     val SystemMediaControlCompatibilityChange =
