@@ -281,7 +281,6 @@ data class ReadBookUiState(
     val readAloudCapsuleOffsetX: Float = 0f,
     val readAloudCapsuleOffsetY: Float = 0f,
     val readAloudMediaButtonPerNext: Boolean = false,
-    val readAloudByPage: Boolean = false,
     val readAloudSystemMediaCompat: Boolean = true,
     val readAloudAndroidMediaControl: Boolean = false,
     val readAloudStreamAudio: Boolean = false,
@@ -748,7 +747,6 @@ sealed interface ReadBookIntent {
     data class SetReadAloudCapsulePosition(val x: Float, val y: Float) : ReadBookIntent
     data class SetReadAloudMediaButtonPerNext(val value: Boolean) : ReadBookIntent
 
-    data class SetReadAloudByPage(val value: Boolean) : ReadBookIntent
     data class SetReadAloudSystemMediaCompat(val value: Boolean) : ReadBookIntent
     data class SetReadAloudAndroidMediaControl(val value: Boolean) : ReadBookIntent
     data class SetReadAloudStreamAudio(val value: Boolean) : ReadBookIntent

@@ -145,6 +145,20 @@ object QuoteSpeechRules {
             }
         }
         flush(text.length)
+        // 2026-10-08 加固：段首纯标点片并入后片。原逻辑只把「非段首」的纯标点片并回前片，
+        // 段首落单会产生独立标点单元（如 `”`），最终被判空静音，表现为「对话被割断 + 静音空洞」。
+        // 整段皆为纯标点时不给单元，交由上层跳过（不产出语音）。
+        if (units.isNotEmpty()) {
+            val first = units[0]
+            if (!hasSubstantive(text.substring(first.start, first.end))) {
+                if (units.size > 1) {
+                    units[0] = SplitUnit(first.start, units[1].end)
+                    units.removeAt(1)
+                } else {
+                    units.clear()
+                }
+            }
+        }
         return units
     }
 

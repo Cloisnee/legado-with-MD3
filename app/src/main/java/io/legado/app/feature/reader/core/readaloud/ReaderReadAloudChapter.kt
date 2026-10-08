@@ -15,7 +15,6 @@ data class ReaderReadAloudChapter(
     val title: String,
     val pageStarts: List<Int>,
     val paragraphs: List<ReaderReadAloudParagraph>,
-    val pageParagraphs: List<ReaderReadAloudParagraph>,
     val chapterLength: Int,
 ) {
     val pageCount: Int get() = pageStarts.size
@@ -27,11 +26,8 @@ data class ReaderReadAloudChapter(
         .coerceAtLeast(0)
         .coerceAtMost((pageStarts.size - 1).coerceAtLeast(0))
 
-    fun paragraphs(splitByPage: Boolean): List<ReaderReadAloudParagraph> =
-        if (splitByPage) pageParagraphs else paragraphs
-
-    fun paragraphIndexAtOrAfter(position: Int, splitByPage: Boolean): Int =
-        paragraphs(splitByPage).indexOfFirst { it.endPosition >= position }
+    fun paragraphIndexAtOrAfter(position: Int): Int =
+        paragraphs.indexOfFirst { it.endPosition >= position }
 
     fun canonicalSpeechParagraphs(): List<CanonicalSpeechParagraph> = paragraphs.mapIndexed {
         index, paragraph ->
@@ -53,28 +49,11 @@ data class ReaderReadAloudChapter(
                 .toList()
                 .ifEmpty { listOf(0) }
             val paragraphs = semanticContent.lineParagraphs()
-            val pageParagraphs = paragraphs.flatMap { paragraph ->
-                val cuts = normalizedStarts.filter { it > paragraph.chapterPosition && it < paragraph.endPosition }
-                buildList {
-                    var start = paragraph.chapterPosition
-                    (cuts + paragraph.endPosition).forEach { end ->
-                        if (end > start) {
-                            add(ReaderReadAloudParagraph(
-                                text = semanticContent.substring(start, end),
-                                chapterPosition = start,
-                                isParagraphEnd = end == paragraph.endPosition,
-                            ))
-                        }
-                        start = end
-                    }
-                }
-            }
             return ReaderReadAloudChapter(
                 chapterIndex = chapterIndex,
                 title = title,
                 pageStarts = normalizedStarts,
                 paragraphs = paragraphs,
-                pageParagraphs = pageParagraphs,
                 chapterLength = paragraphs.lastOrNull()?.endPosition ?: 0,
             )
         }

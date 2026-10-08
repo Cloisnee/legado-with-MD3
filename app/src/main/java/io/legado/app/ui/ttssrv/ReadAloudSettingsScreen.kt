@@ -249,15 +249,6 @@ fun ReadAloudSettingsScreen(
                         onCheckedChange = { v -> update { it.copy(mediaButtonPerNext = v) } },
                     )
                     TinySwitchSettingItem(
-                        title = stringResource(R.string.read_aloud_by_page),
-                        description = stringResource(R.string.read_aloud_by_page_summary),
-                        checked = st.readAloudByPage,
-                        onCheckedChange = { v ->
-                            update { it.copy(readAloudByPage = v) }
-                            if (v) postEvent(EventBus.MEDIA_BUTTON, false)
-                        },
-                    )
-                    TinySwitchSettingItem(
                         title = stringResource(R.string.read_aloud_android_media_control),
                         description = stringResource(R.string.read_aloud_android_media_control_summary),
                         checked = st.androidMediaControlEnabled,

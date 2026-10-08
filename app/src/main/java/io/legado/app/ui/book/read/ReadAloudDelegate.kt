@@ -84,7 +84,6 @@ class ReadAloudDelegate(
                         readAloudCapsuleOffsetX = prefs.capsuleOffsetX,
                         readAloudCapsuleOffsetY = prefs.capsuleOffsetY,
                         readAloudMediaButtonPerNext = prefs.mediaButtonPerNext,
-                        readAloudByPage = prefs.readAloudByPage,
                         readAloudSystemMediaCompat =
                             prefs.systemMediaControlCompatibilityChange,
                         readAloudAndroidMediaControl = prefs.androidMediaControlEnabled,
@@ -377,11 +376,6 @@ class ReadAloudDelegate(
 
     fun setAndroidMediaControl(value: Boolean) =
         updateSettings { it.copy(androidMediaControlEnabled = value) }
-
-    fun setByPage(value: Boolean) {
-        updateSettings { it.copy(readAloudByPage = value) }
-        if (value) postEvent(EventBus.MEDIA_BUTTON, false)
-    }
 
     fun setStreamAudio(value: Boolean) {
         updateSettings { it.copy(streamReadAloudAudio = value) }

@@ -779,7 +779,6 @@
     <string name="read_aloud_timer_by_chapter">By chapters</string>
     <string name="read_aloud_timer_chapter_summary">Stop at the end of the chapter once the selected number of chapters is read</string>
     <string name="brightness_auto">Auto-Brightness %s</string>
-    <string name="read_aloud_by_page">Speak by pages</string>
     <string name="speak_engine">Speak Engine</string>
     <string name="speak_engine_apply_scope">Choose where to apply the selected speak engine</string>
     <string name="bg_image">Background Images</string>
@@ -1206,7 +1205,6 @@
     <string name="custom_group_summary">Turn off Replace Group / Turn on Add Group</string>
     <string name="pref_media_button_per_next">Media Buttons • Previous | Next</string>
     <string name="pref_media_button_per_next_summary">Previous Paragraph|Next Paragraph/Previous Chapter|Next Chapter</string>
-    <string name="read_aloud_by_page_summary">Turning pages in time, with a pause when the page is turned</string>
     <string name="check_source_show_debug_message">Check book source shows debug message</string>
     <string name="check_source_show_debug_message_summary">Show network status and timestamp during source checking</string>
     <string name="need_login">Require Login</string>

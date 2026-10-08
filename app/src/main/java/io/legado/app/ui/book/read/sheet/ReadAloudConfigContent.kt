@@ -152,14 +152,6 @@ fun ReadAloudConfigContent(
                         },
                     )
                     TinySwitchSettingItem(
-                        title = stringResource(R.string.read_aloud_by_page),
-                        description = stringResource(R.string.read_aloud_by_page_summary),
-                        checked = state.readAloudByPage,
-                        onCheckedChange = {
-                            onIntent(ReadBookIntent.SetReadAloudByPage(it))
-                        },
-                    )
-                    TinySwitchSettingItem(
                         title = stringResource(R.string.read_aloud_android_media_control),
                         description = stringResource(R.string.read_aloud_android_media_control_summary),
                         checked = state.readAloudAndroidMediaControl,

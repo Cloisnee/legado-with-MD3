@@ -246,8 +246,6 @@ abstract class BaseReadAloudService : BaseService(),
     var pageChanged = false
     private var toLast = false
     var paragraphStartPos = 0
-    var readAloudByPage = false
-        private set
 
     /** 当前朗读段在章节语义文本中的绝对起始位置；页内切段不引入换行符，进度必须以它为准 */
     protected fun paragraphChapterPositionAt(index: Int): Int? =
@@ -477,10 +475,9 @@ abstract class BaseReadAloudService : BaseService(),
             )
             val pageIndex = start.pageIndex
             val startPos = start.offsetInPage
-            val preparedReadAloudByPage = ReadConfig.readAloudByPage
             var preparedReadAloudNumber = preparedChapter.pageStart(pageIndex) + startPos
             val startsAtChapterBeginning = preparedReadAloudNumber == 0
-            val preparedParagraphs = preparedChapter.paragraphs(preparedReadAloudByPage)
+            val preparedParagraphs = preparedChapter.paragraphs
             var preparedContentList = preparedParagraphs
                 .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
             var preparedContentChapterPositions: List<Int?> =
@@ -520,10 +517,7 @@ abstract class BaseReadAloudService : BaseService(),
             var preparedPlaybackCursor = preparedPlaybackQueue.cursorAt(preparedReadAloudNumber)
             var pos = startPos
             val usePreparedPlaybackQueue = useSpeechPlaybackQueue && !preparedPlaybackQueue.isEmpty
-            var preparedNowSpeak = preparedChapter.paragraphIndexAtOrAfter(
-                preparedReadAloudNumber + 1,
-                preparedReadAloudByPage,
-            )
+            var preparedNowSpeak = preparedChapter.paragraphIndexAtOrAfter(preparedReadAloudNumber + 1)
             if (!usePreparedPlaybackQueue && preparedNowSpeak !in preparedContentList.indices) {
                 AppLog.put(
                     "启动朗读失败：无法定位朗读段落 position=$preparedReadAloudNumber " +
@@ -582,7 +576,6 @@ abstract class BaseReadAloudService : BaseService(),
             if (generation != prepareReadAloudGeneration) return@execute
             this@BaseReadAloudService.pageIndex = pageIndex
             readerReadAloudChapter = preparedChapter
-            readAloudByPage = preparedReadAloudByPage
             contentList = preparedContentList
             contentChapterPositions = preparedContentChapterPositions
             speechPlan = preparedSpeechPlan
