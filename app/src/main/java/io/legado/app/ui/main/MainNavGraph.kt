@@ -1060,7 +1060,7 @@ fun MainActivity.mainEntryProvider(
         )
     }
 
-    entry<MainRouteCloudTtsEngines> { route ->
+    entry<MainRouteCloudTtsEngines>(metadata = ModalOverlaySceneStrategy.pageSlide(onNavigateBack)) { route ->
         val viewModel = koinViewModel<CloudTtsViewModel>()
         LaunchedEffect(route.bookUrl) {
             viewModel.onIntent(CloudTtsIntent.SetBookContext(route.bookUrl))
@@ -1099,7 +1099,7 @@ fun MainActivity.mainEntryProvider(
         )
     }
 
-    entry<MainRouteTtsCache> {
+    entry<MainRouteTtsCache>(metadata = ModalOverlaySceneStrategy.pageSlide(onNavigateBack)) {
         TtsCacheRouteScreen(
             onBackClick = { onNavigateBack() },
         )
@@ -1156,7 +1156,7 @@ fun MainActivity.mainEntryProvider(
         )
     }
 
-    entry<MainRouteScriptReview> { route ->
+    entry<MainRouteScriptReview>(metadata = ModalOverlaySceneStrategy.pageSlide(onNavigateBack)) { route ->
         io.legado.app.ui.ttssrv.ScriptReviewRouteScreen(
             bookName = route.bookName,
             bookUrl = route.bookUrl,
