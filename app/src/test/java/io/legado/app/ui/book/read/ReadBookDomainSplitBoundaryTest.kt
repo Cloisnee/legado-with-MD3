@@ -181,16 +181,61 @@ class ReadBookDomainSplitBoundaryTest {
      *   会话快照投影 `readAloudFollow`——与既有朗读分支同款。
      * - `backToSpeakingPosition()` 本体（恢复跟随 + 跳章/跳字符）已下沉到
      *   `ReadAloudDelegate`，未占本线额度。
+     *
+     * 2674 → 2698：定位流重构（8aac671bc 融合）。`seekProgress` / `seekMax` /
+     * `readingAnchorAvailable` 摘进 `ReadSeekUiState`（底栏进度条与锚点胶囊各自 collect）；
+     * `time` / `battery` 摘成 `@Volatile` 直读；`durPageIndex` 从全屏 state 删除。
+     * 净增行数全是投影接线（`refreshFromReadBook` / `publishSeek`），无处可摘；
+     * 已摘字段由 `screenWideStateFields` 守门。
      */
     @Test
-    fun `ReadBookViewModel 不超过 R2 验收的 2674 行`() {
+    @Test
+    fun `ReadBookViewModel 不超过 R2 验收的 2698 行`() {
         val lineCount = mainSourceFile("io/legado/app/ui/book/read/ReadBookViewModel.kt")
             .readLines().size
         assertTrue(
-            "ReadBookViewModel 涨到了 $lineCount 行，超过 R2 验收线 2674。\n" +
+            "ReadBookViewModel 涨到了 $lineCount 行，超过 R2 验收线 2698。\n" +
                 "新功能请摘成 io/legado/app/ui/book/read/ 下的 XxxDelegate，" +
                 "并在本测试的 DOMAINS 里加一条边界。",
-            lineCount <= 2674,
+            lineCount <= 2698,
+        )
+    }
+
+    /**
+     * 已从 [ReadBookUiState] 摘出的字段，一律不许挂回去。
+     *
+     * 阅读屏在屏幕作用域读整份 `ReadBookUiState`，所以任何一个字段变化都会重组正文画布
+     * 之外的全部 chrome。这些字段恰好都是高频刷新源：
+     * - `seekProgress` / `seekMax` / `readingAnchorAvailable`：翻页、拖进度条、
+     *   `upSeekBarThrottle`（200 ms）都会刷，已摘进 `ReadBookViewModel.seekState`，
+     *   只有 `MenuBottomBar` 与 `ReadBookFloatingActionBar` 各自收集；
+     * - `time` / `battery`：EventBus 每分钟广播，已摘成 VM 的 `@Volatile` 直读字段，
+     *   消费方只有 `ReadBookController` 建 decoration 时；
+     * - `durPageIndex`：只写不读（Canvas 页位置经 `composePagePosition` 同步），
+     *   留在全屏 state 里等于每次翻页白付一次整屏重组。
+     */
+    private val screenWideStateFields = setOf(
+        "seekProgress",
+        "seekMax",
+        "readingAnchorAvailable",
+        "time",
+        "battery",
+        "durPageIndex",
+    )
+
+    @Test
+    fun `高频定位与页眉字段不挂回 ReadBookUiState`() {
+        val leaked = constructorParameterNames(ReadBookUiState::class).intersect(screenWideStateFields)
+        assertTrue(
+            "这些字段又挂回了 ReadBookUiState：${leaked.joinToString()}。\n" +
+                "它们一刷新就让整个阅读屏重组，请回到各自的窄流 / 直读字段，" +
+                "理由见本测试的文档注释。",
+            leaked.isEmpty(),
+        )
+        assertEquals(
+            "ReadSeekUiState 的字段变了，请同步 screenWideStateFields 与消费方",
+            setOf("seekProgress", "seekMax", "readingAnchorAvailable"),
+            constructorParameterNames(ReadSeekUiState::class),
         )
     }
 

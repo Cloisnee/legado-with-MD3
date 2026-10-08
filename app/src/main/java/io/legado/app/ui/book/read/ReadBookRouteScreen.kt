@@ -847,9 +847,14 @@ fun ReadBookRouteScreen(
                 onBrightnessPreview = host::previewBrightness,
                 backdrop = menuBackdrop,
                 hazeState = if (useMenuHazeSource) menuHazeState else null,
+                seekState = viewModel.seekState,
             )
             ReadBookSearchBar(state = state, onIntent = viewModel::onIntent)
-            ReadBookFloatingActionBar(state = state, onIntent = viewModel::onIntent)
+            ReadBookFloatingActionBar(
+                state = state,
+                onIntent = viewModel::onIntent,
+                seekState = viewModel.seekState,
+            )
             // 朗读胶囊改由全局叠层（ReadAloudShellHost）承载，本页不再内联渲染，避免双胶囊。
             if (featureOverlaysInitialized) {
                 ReadBookOverlayRoute(
