@@ -419,7 +419,6 @@ fun ReadBookRouteScreen(
                             }
                             ReadBookEffect.OpenTtsEnginesAndVoices -> onOpenTtsEnginesAndVoices()
                             ReadBookEffect.OpenTtsCache -> onOpenTtsCache()
-                            ReadBookEffect.OpenReadAloudPlayer -> onOpenReadAloudPlayer()
                             is ReadBookEffect.MenuSettingReplace -> {
                                 replaceLauncher.launch(
                                     ReplaceRuleActivity.startIntent(

@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.constant.ReadAloudBgMode
+import io.legado.app.feature.readaloud.overlay.ReadAloudOverlayPermissionRoute
 import io.legado.app.ui.book.read.ReadBookIntent
 import io.legado.app.ui.book.read.ReadBookUiState
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerIntent
@@ -109,6 +110,7 @@ fun ReadAloudConfigContent(
                         },
                     )
                     if (state.showReadAloudCapsule) {
+                        ReadAloudOverlayPermissionRoute()
                         TinySwitchSettingItem(
                             title = stringResource(R.string.capsule_auto_collapse),
                             description = stringResource(R.string.capsule_auto_collapse_summary),

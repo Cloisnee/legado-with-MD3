@@ -78,7 +78,6 @@ class ReadAloudPlayerViewModel(
             ReadAloudPlayerIntent.NextChapter -> coordinator.nextChapter()
             ReadAloudPlayerIntent.OpenReadAloudLogs -> effect(ReadAloudPlayerEffect.OpenReadAloudLogs)
             ReadAloudPlayerIntent.SwitchToClassic -> effect(ReadAloudPlayerEffect.ReturnToClassic)
-            ReadAloudPlayerIntent.OpenSettings -> effect(ReadAloudPlayerEffect.ReturnToReaderSettings)
             ReadAloudPlayerIntent.CycleBgMode -> cycleBgMode()
             is ReadAloudPlayerIntent.SelectChapter -> coordinator.selectChapter(intent.index)
             is ReadAloudPlayerIntent.SetBgMode -> AppConfigStore.putInt(
@@ -189,6 +188,32 @@ class ReadAloudPlayerViewModel(
         AppConfigStore.putInt(PreferKey.readAloudPlayerBgMode, next)
     }
 
+    /**
+     * 目录列表映射缓存。
+     *
+     * `toUiState` 会随每个 TTS 进度事件（逐词回调）重跑，但目录只在 Room 章节流发新值时变化；
+     * 长书上每次重映射几千个章节是纯浪费。
+     */
+    private var chaptersCacheSource: ImmutableList<ReadAloudChapterSourceState>? = null
+    private var chaptersCache: ImmutableList<PlayerChapterUi> = persistentListOf()
+
+    private fun chaptersOf(
+        source: ImmutableList<ReadAloudChapterSourceState>,
+    ): ImmutableList<PlayerChapterUi> {
+        chaptersCacheSource?.takeIf { it == source }?.let { return chaptersCache }
+        return source.map { chapter ->
+            PlayerChapterUi(
+                index = chapter.index,
+                title = chapter.title,
+                isVolume = chapter.isVolume,
+                tocLevel = chapter.tocLevel,
+            )
+        }.toImmutableList().also {
+            chaptersCacheSource = source
+            chaptersCache = it
+        }
+    }
+
     private fun toUiState(
         source: ReadAloudPlayerSourceState,
         bgMode: Int,
@@ -197,14 +222,7 @@ class ReadAloudPlayerViewModel(
         val activeIndex = source.textLines.indexOfLast {
             it.chapterPosition <= source.chapterPosition
         }
-        val chapters = source.chapters.map { chapter ->
-            PlayerChapterUi(
-                index = chapter.index,
-                title = chapter.title,
-                isVolume = chapter.isVolume,
-                tocLevel = chapter.tocLevel,
-            )
-        }.toImmutableList()
+        val chapters = chaptersOf(source.chapters)
         return ReadAloudPlayerUiState(
             bookUrl = source.bookUrl,
             bookName = source.bookName,

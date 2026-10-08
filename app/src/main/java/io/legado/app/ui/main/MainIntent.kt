@@ -15,6 +15,7 @@ object MainIntent {
     const val EXTRA_BOOK_URL = "bookUrl"
     const val EXTRA_BOOK_ORIGIN = "origin"
     const val EXTRA_BOOK_COVER = "coverPath"
+    const val EXTRA_OPEN_READ_ALOUD_PLAYER = "openReadAloudPlayer"
     const val EXTRA_READ_ALOUD = "readAloud"
     const val EXTRA_IN_BOOKSHELF = "inBookshelf"
     const val EXTRA_CHAPTER_CHANGED = "chapterChanged"
