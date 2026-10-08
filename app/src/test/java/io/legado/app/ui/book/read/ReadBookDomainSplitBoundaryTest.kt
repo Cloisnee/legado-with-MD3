@@ -189,7 +189,6 @@ class ReadBookDomainSplitBoundaryTest {
      * 已摘字段由 `screenWideStateFields` 守门。
      */
     @Test
-    @Test
     fun `ReadBookViewModel 不超过 R2 验收的 2698 行`() {
         val lineCount = mainSourceFile("io/legado/app/ui/book/read/ReadBookViewModel.kt")
             .readLines().size
