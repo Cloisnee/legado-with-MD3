@@ -85,8 +85,7 @@ fun BookInfoRouteScreen(
     val canMorphBack = uiState.dialog == null &&
             uiState.sheet == BookInfoSheet.None &&
             !showSelectBooksDirSheet &&
-            !uiState.showAppLogSheet &&
-            !uiState.showPrivatePasswordDialog
+            !uiState.showAppLogSheet
     val effectiveCoverKey = sharedCoverKey ?: bookCoverSharedElementKey(bookUrl)
     var isDismissed by remember { mutableStateOf(false) }
     var finishResultCode by remember { mutableStateOf<Int?>(null) }

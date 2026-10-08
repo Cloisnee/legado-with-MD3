@@ -565,7 +565,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                             rememberViewModelStoreNavEntryDecorator(),
                         ),
                         sceneStrategies = listOf(
-                            ModalOverlaySceneStrategy(),
+                            remember { ModalOverlaySceneStrategy() },
                             SinglePaneSceneStrategy(),
                         ),
                         transitionSpec = {
@@ -629,75 +629,6 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                         onBack = { MainNavigator.navigateBack(this@MainActivity, backStack) },
                         entryProvider = mainEntryProvider(
                             backStack = backStack,
-                            entryDecorators = listOf(
-                                rememberSaveableStateHolderNavEntryDecorator(),
-                                rememberViewModelStoreNavEntryDecorator(),
-                            ),
-                            sceneStrategies = listOf(
-                                remember { ModalOverlaySceneStrategy() },
-                                SinglePaneSceneStrategy(),
-                            ),
-                            transitionSpec = {
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    initialOffset = { fullWidth -> fullWidth }
-                                ) + fadeIn(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                )) togetherWith (slideOutOfContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    targetOffset = { fullWidth -> fullWidth / 4 }
-                                ) + fadeOut(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                ))
-                            },
-                            popTransitionSpec = {
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    initialOffset = { fullWidth -> -fullWidth / 4 }
-                                ) + fadeIn(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                )) togetherWith (scaleOut(
-                                    targetScale = 0.8f,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    )
-                                ) + fadeOut(animationSpec = tween(durationMillis = NAV_FADE_DURATION_MILLIS)))
-                            },
-                            predictivePopTransitionSpec = { _ ->
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(easing = FastOutSlowInEasing),
-                                    initialOffset = { fullWidth -> -fullWidth / 4 }
-                                ) + fadeIn(animationSpec = tween(easing = LinearOutSlowInEasing))) togetherWith (scaleOut(
-                                    targetScale = 0.8f,
-                                    animationSpec = tween(easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween()))
-                            },
-                            onBack = { MainNavigator.navigateBack(this@MainActivity, backStack) },
-                            entryProvider = mainEntryProvider(
-                                backStack = backStack,
                                 configuration = configuration,
                                 showMangaUi = mangaSettings.showMangaUi,
                                 useRail = useRail,
@@ -712,16 +643,15 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                                                     inBookshelf = route.inBookshelf,
                                                 )
                                             )
+                                        }
+                                    } else {
+                                        MainNavigator.navigateToRoute(
+                                            backStack,
+                                            route,
+                                            navRouteTracker
                                         )
                                     }
-                                } else {
-                                    MainNavigator.navigateToRoute(
-                                        backStack,
-                                        route,
-                                        navRouteTracker
-                                    )
-                                }
-                            },
+                                },
                             onNavigateBack = {
                                 MainNavigator.navigateBack(
                                     this@MainActivity,
@@ -773,6 +703,24 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                                 MainNavigator.navigateToRoute(
                                     backStack,
                                     MainRouteReadBook(bookUrl = bookUrl.ifBlank { null }),
+                                    navRouteTracker,
+                                )
+                            }
+                        },
+                        onOpenReadAloudLogs = {
+                            MainNavigator.navigateToRoute(
+                                backStack,
+                                MainRouteTtsCache,
+                                navRouteTracker,
+                            )
+                        },
+                        onOpenScriptReview = { bookName, bookUrl, chapterIndex ->
+                            pageShellCapsuleScope.launch {
+                                readAloudMorph.animateTo(0f)
+                                readAloudPlayerVisible = false
+                                MainNavigator.navigateToRoute(
+                                    backStack,
+                                    MainRouteScriptReview(bookName, bookUrl, chapterIndex),
                                     navRouteTracker,
                                 )
                             }

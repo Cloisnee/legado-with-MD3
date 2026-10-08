@@ -429,7 +429,12 @@ fun MainActivity.mainEntryProvider(
                 if (book.isAudio) {
                     this@mainEntryProvider.startActivityForBook(book)
                 } else if (!book.isLocal && book.isImage && showMangaUi) {
-                    onNavigateToRoute(MainRouteReadManga(bookUrl = book.bookUrl))
+                    onNavigateToRoute(
+                        MainRouteReadManga(
+                            bookUrl = book.bookUrl,
+                            sharedCoverKey = sharedCoverKey,
+                        )
+                    )
                 } else {
                     onNavigateToRoute(
                         MainRouteReadBook(
@@ -783,6 +788,9 @@ fun MainActivity.mainEntryProvider(
             openRequestId = route.openRequestId,
             viewModel = mangaViewModel,
             restoreSystemBarsVisible = configuration.appShell.showStatusBar,
+            sharedTransitionScope = sharedTransitionScope,
+            animatedVisibilityScope = LocalNavAnimatedContentScope.current,
+            sharedCoverKey = route.sharedCoverKey,
             onFinish = { onNavigateBack() },
             onOpenBookInfo = { name, author, bookUrl ->
                 onNavigateToRoute(MainRouteBookInfo(name, author, bookUrl))
@@ -1037,6 +1045,8 @@ fun MainActivity.mainEntryProvider(
                         inBookshelf = inBookshelf,
                         chapterChanged = chapterChanged,
                         openRequestId = System.nanoTime(),
+                        sharedCoverKey = route.sharedCoverKey
+                            ?: bookCoverSharedElementKey(route.bookUrl),
                     )
                 )
             },

@@ -120,6 +120,7 @@ data class MainRouteReadManga(
     val chapterChanged: Boolean = false,
     /** Distinguishes repeated open requests for the same book after an external TOC selection. */
     val openRequestId: Long = 0L,
+    val sharedCoverKey: String? = null,
 ) : MainRoute
 
 @Serializable

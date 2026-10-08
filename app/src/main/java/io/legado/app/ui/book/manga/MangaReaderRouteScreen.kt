@@ -37,6 +37,7 @@ import io.legado.app.utils.share
 import io.legado.app.utils.toggleSystemBar
 import kotlinx.coroutines.flow.collectLatest
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun MangaReaderRouteScreen(
     bookUrl: String?,
@@ -45,6 +46,9 @@ fun MangaReaderRouteScreen(
     openRequestId: Long,
     viewModel: MangaReaderViewModel,
     restoreSystemBarsVisible: Boolean,
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    sharedCoverKey: String? = null,
     onFinish: (bookshelfChanged: Boolean) -> Unit,
     onOpenBookInfo: (name: String, author: String, bookUrl: String) -> Unit,
     onOpenSourceLogin: (sourceUrl: String) -> Unit,
