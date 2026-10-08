@@ -71,6 +71,7 @@ import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.ReadMenuBlurMode
+import io.legado.app.core.ui.morph.BookMorphHost
 import io.legado.app.feature.reader.ReaderBackgroundSurface
 import io.legado.app.feature.reader.ReaderCanvasSurface
 import io.legado.app.feature.reader.core.gesture.ReaderTapActionGrid
@@ -88,7 +89,6 @@ import io.legado.app.ui.book.read.sheet.TextSelectMenuConfigSheet
 import io.legado.app.ui.book.searchContent.SearchContentResult
 import io.legado.app.ui.book.toc.TocActivityResult
 import io.legado.app.ui.login.SourceLoginType
-import io.legado.app.ui.main.AndroidPlatformCapabilities
 import io.legado.app.ui.main.MainActivity
 import io.legado.app.ui.replace.ReplaceEditRoute
 import io.legado.app.ui.replace.ReplaceRuleActivity
@@ -157,6 +157,7 @@ fun ReadBookRouteScreen(
     onOpenTtsCache: () -> Unit = {},
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
     onOpenReadAloudPlayer: () -> Unit = {},
+    onNavigateBack: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val readPreferences by viewModel.readPreferences.collectAsStateWithLifecycle()
@@ -199,7 +200,13 @@ fun ReadBookRouteScreen(
                     !state.menuConfig.readMenuFloatingBottomBar &&
                             state.menuConfig.readMenuBottomBarBlurMode == ReadMenuBlurMode.LiquidGlass
                     )
-    BackHandler {
+    val canMorphBack = state.activeSheet == null &&
+            !state.isShowingSearchResult &&
+            !state.isAutoPage &&
+            !state.menuState.canNavigateBack &&
+            state.activeDialog == null
+
+    BackHandler(enabled = !canMorphBack) {
         when {
             state.activeSheet != null -> viewModel.onIntent(ReadBookIntent.DismissSheet)
             state.isShowingSearchResult -> viewModel.onIntent(ReadBookIntent.ExitSearch)
@@ -649,43 +656,37 @@ fun ReadBookRouteScreen(
             readerContentRevealAllowed = true
         }
     }
-    // 阅读页 sharedBounds 的裁剪圆角动画：从封面源圆角渐变到设备屏幕圆角，
-    // 转场收尾时正文页与物理圆角贴合（Compose 不会自动插值两端 clip，需自行驱动）。
-    val platformCapabilities = remember(controller) { AndroidPlatformCapabilities(controller.activity) }
-    val displayConfiguration = LocalConfiguration.current
-    val displayCornerRadiusPx = remember(displayConfiguration) { platformCapabilities.displayCornerRadiusPx }
-    val readerClipRadiusDp = rememberReaderSharedClipRadiusDp(
-        sharedCoverKey = sharedCoverKey,
-        animatedVisibilityScope = animatedVisibilityScope,
-        targetRadiusPx = displayCornerRadiusPx,
-        density = density,
-    )
-    Box(
-        Modifier
-            .fillMaxSize()
-            .then(
-                with(sharedTransitionScope) {
-                    if (this != null &&
-                        animatedVisibilityScope != null &&
-                        sharedCoverKey != null &&
-                        readerClipRadiusDp != null
-                    ) {
-                        Modifier.sharedBounds(
-                            sharedContentState = rememberSharedContentState(sharedCoverKey),
-                            animatedVisibilityScope = animatedVisibilityScope,
-                            enter = fadeIn(animationSpec = tween(600)),
-                            exit = fadeOut(animationSpec = tween(600)),
-                            clipInOverlayDuringTransition = OverlayClip(
-                                RoundedCornerShape(readerClipRadiusDp)
-                            ),
-                        )
-                    } else {
-                        Modifier
-                    }
-                }
-            )
-            .background(readerSurfaceColor)
-    ) {
+    var isDismissed by remember { mutableStateOf(false) }
+    var closingFromController by remember { mutableStateOf(false) }
+    val dismissReader: () -> Unit = {
+        if (!isDismissed) {
+            isDismissed = true
+            if (!closingFromController) {
+                viewModel.onIntent(ReadBookIntent.CloseReadBook())
+            }
+            onNavigateBack()
+        }
+    }
+
+    BookMorphHost(
+        anchorKey = sharedCoverKey,
+        backgroundColor = readerSurfaceColor,
+        backEnabled = canMorphBack,
+        predictiveBackEnabled = true,
+        onDismiss = dismissReader,
+    ) { onCollapse ->
+        LaunchedEffect(onCollapse) {
+            controller.onClose = {
+                closingFromController = true
+                onCollapse()
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .semantics { testTagsAsResourceId = true }
+                .background(readerSurfaceColor)
+        ) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -944,6 +945,8 @@ fun ReadBookRouteScreen(
             )
         }
     }
+    }
+    ReaderPerfTrace.marker("compose.screen.end")
 }
 
 /**

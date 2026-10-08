@@ -36,15 +36,20 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.withSave
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import io.legado.app.core.ui.morph.BookCoverMorphAnchors
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.LocalAppUiConfiguration
 import org.koin.compose.koinInject
@@ -238,6 +243,23 @@ fun CoilBookCover(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     sharedCoverKey: String? = null,
+    /**
+     * 内容模糊半径，作用于封面图与占位文字这些**共享元素内部的子节点**。
+     *
+     * 之所以要传进来而不是让调用方在外面套 `Modifier.blur`：共享元素转场时，
+     * overlay 只会搬运 sharedBounds 节点自己的内容，加在祖先上的模糊会被落下，
+     * 表现就是"动画一开始模糊突然没了"。
+     */
+    contentBlur: Dp = 0.dp,
+    /**
+     * 盖在封面之上的叠加层（遮罩、点阵、锁标…），渲染在共享节点**内部**。
+     *
+     * 放成兄弟节点的话转场时不会被 overlay 带走，会出现"装饰停在原地、只有封面在飞"。
+     */
+    overlayContent: (@Composable BoxScope.() -> Unit)? = null,
+    badgeText: String? = null,
+    showBadgeDot: Boolean = false,
+    leftBottomText: String? = null,
 ) {
     val coverSettings = LocalAppUiConfiguration.current.cover
     val isNight = LegadoTheme.isDark
@@ -274,9 +296,30 @@ fun CoilBookCover(
     )
     val shape = remember(transitionRadius) { RoundedCornerShape(transitionRadius) }
 
+    val coilDensity = LocalDensity.current
     Box(
         modifier = modifier
             .aspectRatio(5f / 7f)
+            .graphicsLayer {
+                alpha = if (BookCoverMorphAnchors.isOriginCoverHidden(sharedCoverKey)) 0f else 1f
+            }
+            .onGloballyPositioned { coordinates ->
+                if (sharedCoverKey != null) {
+                    BookCoverMorphAnchors.report(
+                        key = sharedCoverKey,
+                        bounds = coordinates.boundsInRoot(),
+                        cornerRadiusPx = with(coilDensity) { transitionRadius.toPx() },
+                        bookName = name,
+                        author = author,
+                        coverPath = finalPath ?: path,
+                        sourceOrigin = sourceOrigin,
+                        bookUrl = bookUrl,
+                        badgeText = badgeText,
+                        showBadgeDot = showBadgeDot,
+                        leftBottomText = leftBottomText,
+                    )
+                }
+            }
             .then(
                 with(sharedTransitionScope) {
                     if (this != null && animatedVisibilityScope != null && sharedCoverKey != null) {

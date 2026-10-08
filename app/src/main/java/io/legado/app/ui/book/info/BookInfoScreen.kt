@@ -105,6 +105,7 @@ import coil3.compose.AsyncImage
 import coil3.size.Size
 import io.legado.app.R
 import io.legado.app.constant.BookType
+import io.legado.app.core.ui.morph.trackBookMorphCover
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
@@ -1010,24 +1011,26 @@ private fun BookInfoHeader(
                             contentDescription = coverDescription
                         }
                 ) {
-                    CoilBookCover(
-                        name = book.name,
-                        author = book.author,
-                        path = if (usesDefaultCover) null else book.coverPath,
-                        sourceOrigin = if (usesDefaultCover) null else book.origin,
-                        // 传 bookUrl 供别名缓存键。详情页故意不设 preferCache：
-                        // 在线时仍走完整链路拉新链接并刷新别名，保证封面换图后书架也能更新；
-                        // 精确命中时同样不跑脚本。
-                        bookUrl = book.bookUrl,
-                        onError = onNetworkCoverLoadError,
-                        modifier = Modifier
-                            .width(112.dp)
-                            .aspectRatio(5f / 7f),
-                        showLoadingPlaceholder = sharedCoverKey == null,
-                        sharedTransitionScope = sharedTransitionScope,
-                        animatedVisibilityScope = animatedVisibilityScope,
-                        sharedCoverKey = sharedCoverKey
-                    )
+                    
+                        CoilBookCover(
+                            name = book.name,
+                            author = book.author,
+                            path = if (usesDefaultCover) null else book.coverPath,
+                            sourceOrigin = if (usesDefaultCover) null else book.origin,
+                            // 传 bookUrl 供别名缓存键。详情页故意不设 preferCache：
+                            // 在线时仍走完整链路拉新链接并刷新别名，保证封面换图后书架也能更新；
+                            // 精确命中时同样不跑脚本。
+                            bookUrl = book.bookUrl,
+                            onError = onNetworkCoverLoadError,
+                            modifier = Modifier
+                                .width(112.dp)
+                                .aspectRatio(5f / 7f)
+                                .trackBookMorphCover(4.dp),
+                            showLoadingPlaceholder = sharedCoverKey == null,
+                            sharedTransitionScope = sharedTransitionScope,
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            sharedCoverKey = sharedCoverKey
+                        )
                 }
                 Column(
                     modifier = Modifier
