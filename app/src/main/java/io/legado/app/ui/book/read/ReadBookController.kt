@@ -2234,12 +2234,8 @@ class ReadBookController(
             is ReadBookEffect.OpenReadStyleExport,
             is ReadBookEffect.OpenMenuCustomIconPicker,
             is ReadBookEffect.OpenTitleBarCustomIconPicker,
-            is ReadBookEffect.OpenSystemTtsSettings,
-            ReadBookEffect.OpenTtsEnginesAndVoices,
-            ReadBookEffect.OpenTtsCache,
             is ReadBookEffect.OpenHighlightRuleImportPicker,
             is ReadBookEffect.OpenHighlightRuleExportPicker,
-            is ReadBookEffect.TtsCacheCleared,
             is ReadBookEffect.ExportJson,
             // DB query + bookmark effects — handled by ViewModel, ignored here
             is ReadBookEffect.MenuChangeSource,

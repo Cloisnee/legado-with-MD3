@@ -18,7 +18,6 @@ import io.legado.app.model.ReadAloudSessionStore
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.readaloud.ReadAloudPlayerOverlayBus
-import io.legado.app.utils.TTSCacheUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -245,27 +244,6 @@ class ReadAloudDelegate(
     fun openClassicControls() {
         host.updateState { it.copy(activeSheet = null) }
         host.openReadMenuRoute(ReadBookMenuRoute.ReadAloud)
-    }
-
-    fun openTtsEnginesAndVoices() {
-        host.updateState { it.copy(activeSheet = null) }
-        host.emitEffect(ReadBookEffect.OpenTtsEnginesAndVoices)
-    }
-
-    fun openTtsCache() {
-        host.updateState { it.copy(activeSheet = null) }
-        host.emitEffect(ReadBookEffect.OpenTtsCache)
-    }
-
-    fun openSystemTtsSettings() {
-        host.emitEffect(ReadBookEffect.OpenSystemTtsSettings)
-    }
-
-    fun clearTtsCache() {
-        TTSCacheUtils.clearTtsCache()
-        host.emitEffect(
-            ReadBookEffect.TtsCacheCleared(context.getString(R.string.clear_cache_success))
-        )
     }
 
     fun setTtsFollowSys(value: Boolean) {

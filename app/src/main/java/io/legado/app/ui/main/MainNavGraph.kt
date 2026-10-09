@@ -837,12 +837,6 @@ fun MainActivity.mainEntryProvider(
                     )
                 )
             },
-            onOpenTtsEnginesAndVoices = {
-                onNavigateToRoute(MainRouteCloudTtsEngines(route.bookUrl))
-            },
-            onOpenTtsCache = {
-                onNavigateToRoute(MainRouteTtsCache)
-            },
             onOpenScriptReview = { bookName, bookUrl, chapterIndex ->
                 onNavigateToRoute(MainRouteScriptReview(bookName, bookUrl, chapterIndex))
             },

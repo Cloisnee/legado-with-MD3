@@ -80,7 +80,6 @@ import io.legado.app.feature.reader.core.model.readerBackgroundAlpha
 import io.legado.app.feature.reader.core.transition.ReaderTransitionMode
 import io.legado.app.feature.reader.core.transition.ReaderViewportLayerPolicy
 import io.legado.app.feature.reader.platform.ReaderPerfTrace
-import io.legado.app.help.IntentHelp
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.book.read.page.entities.PageDirection
@@ -153,8 +152,6 @@ fun ReadBookRouteScreen(
     onOpenBookInfo: (name: String, author: String, bookUrl: String) -> Unit,
     onOpenToc: (bookUrl: String, initialPage: Int) -> Unit,
     onOpenReplaceRule: (bookUrl: String?, editor: ReplaceEditRoute?) -> Unit,
-    onOpenTtsEnginesAndVoices: () -> Unit = {},
-    onOpenTtsCache: () -> Unit = {},
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
     onOpenReadAloudPlayer: () -> Unit = {},
     onNavigateBack: () -> Unit = {},
@@ -402,8 +399,6 @@ fun ReadBookRouteScreen(
                             is ReadBookEffect.OpenSearch -> {
                                 onOpenSearch(effect.word, effect.bookUrl, effect.autoFocus)
                             }
-                            ReadBookEffect.OpenTtsEnginesAndVoices -> onOpenTtsEnginesAndVoices()
-                            ReadBookEffect.OpenTtsCache -> onOpenTtsCache()
                             is ReadBookEffect.MenuSettingReplace -> {
                                 onOpenReplaceRule(ReadBook.book?.bookUrl, null)
                             }
@@ -460,12 +455,6 @@ fun ReadBookRouteScreen(
                             is ReadBookEffect.OpenTitleBarCustomIconPicker -> {
                                 pendingTitleBarCustomIconId = effect.id
                                 titleBarCustomIconPicker.launch("image/*")
-                            }
-                            is ReadBookEffect.OpenSystemTtsSettings -> {
-                                IntentHelp.openTTSSetting()
-                            }
-                            is ReadBookEffect.TtsCacheCleared -> {
-                                context.toastOnUi(effect.message)
                             }
                             is ReadBookEffect.OpenHighlightRuleImportPicker -> {
                                 importHighlightRulePicker.launch(

@@ -1253,10 +1253,6 @@ class ReadBookViewModel(
                 readAloudDelegate.setTtsFollowSys(intent.value)
             is ReadBookIntent.SetReadAloudTtsSpeechRate ->
                 readAloudDelegate.setTtsSpeechRate(intent.value)
-            is ReadBookIntent.OpenSystemTtsSettings -> readAloudDelegate.openSystemTtsSettings()
-            is ReadBookIntent.ClearTtsCache -> readAloudDelegate.clearTtsCache()
-            ReadBookIntent.OpenTtsEnginesAndVoices -> readAloudDelegate.openTtsEnginesAndVoices()
-            ReadBookIntent.OpenTtsCache -> readAloudDelegate.openTtsCache()
             ReadBookIntent.OpenReadAloudPlayer -> readAloudDelegate.openPlayer()
             ReadBookIntent.OpenClassicReadAloudControls -> readAloudDelegate.openClassicControls()
 

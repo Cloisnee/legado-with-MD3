@@ -751,10 +751,6 @@ sealed interface ReadBookIntent {
     data class SetFinishCurrentChapterAfterTimer(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsFollowSys(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsSpeechRate(val value: Int) : ReadBookIntent
-    data object OpenSystemTtsSettings : ReadBookIntent
-    data object ClearTtsCache : ReadBookIntent
-    data object OpenTtsEnginesAndVoices : ReadBookIntent
-    data object OpenTtsCache : ReadBookIntent
     data object OpenReadAloudPlayer : ReadBookIntent
     data object OpenClassicReadAloudControls : ReadBookIntent
     data class SelectFont(val path: String) : ReadBookIntent
@@ -788,7 +784,6 @@ sealed interface ReadBookEffect {
     // Toast
     data class ShowToast(val message: String) : ReadBookEffect
     data class LongToast(val message: String) : ReadBookEffect
-    data class TtsCacheCleared(val message: String) : ReadBookEffect
 
     // Navigation / lifecycle
     data object Finish : ReadBookEffect
@@ -890,9 +885,6 @@ sealed interface ReadBookEffect {
     data class OpenReadStyleExport(val fileName: String) : ReadBookEffect
     data class OpenMenuCustomIconPicker(val id: String) : ReadBookEffect
     data class OpenTitleBarCustomIconPicker(val id: String) : ReadBookEffect
-    data object OpenSystemTtsSettings : ReadBookEffect
-    data object OpenTtsEnginesAndVoices : ReadBookEffect
-    data object OpenTtsCache : ReadBookEffect
     data object OpenHighlightRuleImportPicker : ReadBookEffect
     data object OpenHighlightRuleExportPicker : ReadBookEffect
 
