@@ -654,6 +654,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     expandedStages = expandedStages,
                     queueCtx = queueCtx,
                     selQueue = selQueue,
+                    onSelQueueChange = { selQueue = it },
                     contentPaddingTop = padding.calculateTopPadding(),
                     contentPaddingBottom = padding.calculateBottomPadding(),
                     onToggleExpand = { key ->
@@ -1421,6 +1422,7 @@ private fun AllocationPage(
     onOpenAddSheet: (String) -> Unit,
     onQueueItemClick: (String, String) -> Unit,
     onQueueItemLongClick: (String, String) -> Unit,
+    onSelQueueChange: (Set<String>) -> Unit,
 ) {
     val listState = rememberLazyListState()
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1661,10 +1663,12 @@ private fun AllocationPage(
                 items = queueForCtx0,
                 selectedIds = selQueue.map { "q_${ctx0}_$it" }.toSet(),
                 onSelectionChange = { ids0 ->
-                    selQueue = ids0.mapNotNull { raw ->
-                        val str0 = raw as? String ?: return@mapNotNull null
-                        if (str0.startsWith("q_${ctx0}_")) str0.removePrefix("q_${ctx0}_") else null
-                    }.toSet()
+                    onSelQueueChange(
+                        ids0.mapNotNull { raw ->
+                            val str0 = raw as? String ?: return@mapNotNull null
+                            if (str0.startsWith("q_${ctx0}_")) str0.removePrefix("q_${ctx0}_") else null
+                        }.toSet()
+                    )
                 },
                 idProvider = { "q_${ctx0}_$it" },
                 modifier = Modifier
