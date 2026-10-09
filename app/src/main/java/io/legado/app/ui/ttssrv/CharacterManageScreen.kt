@@ -96,6 +96,8 @@ import kotlinx.coroutines.launch
 private data class JoinLibRequest(
     val words: List<String>,
     val aliasToRemove: String? = null,
+    /** 从「主名」旁的入库触发：保存角色信息时联动转池 / 章节后缀 / 剧本同步。 */
+    val linkRole: Boolean = false,
 )
 
 private val ROLES = listOf("全部", "路人", "核心", "特殊")
@@ -166,6 +168,8 @@ fun CharacterManageScreen(
     var auditionIdx by remember { mutableStateOf<Int?>(null) }
     var auditionText by remember { mutableStateOf("你好，这是一段试听语音。") }
     var joinLib by remember { mutableStateOf<JoinLibRequest?>(null) }
+    // 入库联动（主名侧）：保存角色信息时统一执行「转池 / 加【第N章】后缀 / 剧本同步」
+    var pendingJoinKind by remember { mutableStateOf<String?>(null) }
 
     fun reload() {
         scope.launch {
@@ -190,6 +194,7 @@ fun CharacterManageScreen(
     fun openEdit(idx: Int) {
         val r = records.getOrNull(idx) ?: return
         editIdx = idx
+        pendingJoinKind = null
         edName = r.name
         edAliases = r.aliases
         edRole = r.roletype.ifBlank { "核心" }
@@ -212,22 +217,41 @@ fun CharacterManageScreen(
             return
         }
         val actualAge = if (edRole == "特殊") "系统" else edAge
+        // 入库联动：保存时统一落「转池 / 加【第N章】后缀（n=首次出场章节）/ 剧本同步」
+        val joinKind = pendingJoinKind
+        var finalName = newName
+        val finalRole = when (joinKind) {
+            "裸属" -> "路人"
+            "特殊" -> "特殊"
+            else -> edRole
+        }
+        if (joinKind == "裸属") {
+            val first = target.appearanceChapters.minOrNull()
+            if (first != null) finalName = newName + "【第${first + 1}章】"
+        }
         scope.launch {
-            target.name = newName
-            target.aliases = edAliases
-            target.roletype = edRole
-            target.gender = edGender
-            target.age = actualAge
-            target.voice = edVoice
-            repo.saveRecords(currentBook, records)
+            // 「复制元素 + 换新列表」：原地修改 + 结构等价会让 Compose 判无变化、不重组
+            val updated = target.copy(
+                name = finalName,
+                aliases = edAliases,
+                roletype = finalRole,
+                gender = edGender,
+                age = actualAge,
+                voice = edVoice,
+            )
+            val list = records.toMutableList()
+            list[idx] = updated
+            records = list
+            repo.saveRecords(currentBook, list)
             var syncCount = 0
-            if (oldName != newName) {
-                syncCount = repo.rewriteMarkersAll(currentBook, oldName, newName, false).replaced
-                repo.renameMergeLogTokens(currentBook, oldName, newName)
+            if (oldName != finalName) {
+                syncCount = repo.rewriteMarkersAll(currentBook, oldName, finalName, false).replaced
+                repo.renameMergeLogTokens(currentBook, oldName, finalName)
             }
             context.toastOnUi(
                 if (syncCount > 0) "已保存角色信息（剧本同步 $syncCount 处）" else "已保存角色信息"
             )
+            pendingJoinKind = null
             editIdx = null
             mismatchConfirm = false
             reload()
@@ -455,7 +479,7 @@ fun CharacterManageScreen(
                     r.voice.lowercase().contains(q)
             }
         }
-    }
+    }.sortedByDescending { (_, r) -> r.appearanceCount }
 
     AppScaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -793,7 +817,7 @@ fun CharacterManageScreen(
                 description = edName,
                 trailingContent = {
                     SmallPlainButton(
-                        onClick = { joinLib = JoinLibRequest(listOf(edName.trim())) },
+                        onClick = { joinLib = JoinLibRequest(listOf(edName.trim()), linkRole = true) },
                         icon = Icons.Default.FileDownload,
                         contentDescription = "入库",
                     )
@@ -1066,7 +1090,14 @@ fun CharacterManageScreen(
                     onClick = {
                         val ageStore = if (r.roletype == "特殊") "系统" else r.age
                         picker = VoiceTagPickRequest(r.roletype, r.gender, ageStore, "更换声线") { v ->
-                            r.voice = v
+                            // 以「复制元素」方式替换：原地修改 + 结构等价会让 Compose 判无变化、不重组
+                            // （现象：更换后当前页标签不变，必须退出重进才看到）
+                            val i0 = records.indexOfFirst { it === r }
+                            if (i0 >= 0) {
+                                val list = records.toMutableList()
+                                list[i0] = r.copy(voice = v)
+                                records = list
+                            }
                             scope.launch {
                                 repo.saveRecords(currentBook, records)
                                 context.toastOnUi("声线已更新：$v")
@@ -1103,7 +1134,11 @@ fun CharacterManageScreen(
                                 edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
                             }
-                            context.toastOnUi("已加入裸属类词库（新增 $n 个）")
+                            if (req.linkRole) pendingJoinKind = "裸属"
+                            context.toastOnUi(
+                                if (req.linkRole) "已加入裸属类词库（新增 $n 个）；保存角色信息后转入路人池"
+                                else "已加入裸属类词库（新增 $n 个）"
+                            )
                             joinLib = null
                         }
                     },
@@ -1117,7 +1152,11 @@ fun CharacterManageScreen(
                                 edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
                             }
-                            context.toastOnUi("已加入特殊类词库（新增 $n 个）")
+                            if (req.linkRole) pendingJoinKind = "特殊"
+                            context.toastOnUi(
+                                if (req.linkRole) "已加入特殊类词库（新增 $n 个）；保存角色信息后转入特殊池"
+                                else "已加入特殊类词库（新增 $n 个）"
+                            )
                             joinLib = null
                         }
                     },
