@@ -1,5 +1,6 @@
 package io.legado.app.data.repository
 
+import io.legado.app.utils.AppLog
 import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.ChapterLabels
 import android.app.Application
@@ -79,6 +80,10 @@ class ReadAloudDataRepository(private val app: Application) {
     companion object {
         const val DEFAULT_BOOK = "默认"
         private val CHAPTER_MARKER = Regex("^\\[chapter:(\\d+)\\]\\s*$")
+
+        /** 剧本文件格式版本（`all_clean_text` 头行 `[script-version:N]`）；回填要求版本匹配，防跨版本污染。 */
+        private const val SCRIPT_FILE_VERSION = 1
+        private val SCRIPT_VERSION_MARKER = Regex("^\\[script-version:(\\d+)\\]\\s*$")
         private val EMO_HEAD = Regex("^(\\[\\[emo:[^\\]]*\\]\\])+")
         private val EMO_VALUE = Regex("\\[\\[emo:([^\\]]*)\\]\\]")
     }
@@ -735,12 +740,20 @@ class ReadAloudDataRepository(private val app: Application) {
             val sig = rows.joinToString("|") { "${it.speaker}:${it.text}:${it.emotion}" }.hashCode().toString()
             if (seen.add(sig)) out.add(rows)
         }
-        addRows(loadChapterScript(book, chapter))
+        // 文件候选要求版本匹配：无版本头（旧文件）或跨版本 → 不回填（防跨版本回填污染）
+        val fileText = readText(bookFile(book, "all_clean_text_$book.txt"))
+        val fileVersion = scriptFileVersionOf(fileText)
+        if (fileVersion == SCRIPT_FILE_VERSION) {
+            addRows(loadChapterScript(book, chapter))
+        } else if (fileText.isNotEmpty()) {
+            AppLog.putAnalysis("【剧本回填】文件版本不匹配（v$fileVersion → v$SCRIPT_FILE_VERSION），已跳过文件候选")
+        }
         val cache = runCatching { JSONObject(readText(bookFile(book, "chapter_cache.$book.json"))) }.getOrNull()
         if (cache != null) {
             fun rowsOf(key: String): List<ScriptLineRow>? {
                 val entry = cache.optJSONObject(key) ?: return null
                 if (entry.optString("state") != "success") return null
+                if (entry.optInt("scriptVersion", 0) != SCRIPT_FILE_VERSION) return null
                 val scriptText = entry.optString("scriptText")
                 if (scriptText.isBlank()) return null
                 return parseScriptLines(scriptText.split("\n"), base = 0)
@@ -778,6 +791,7 @@ class ReadAloudDataRepository(private val app: Application) {
                     key,
                     JSONObject().apply {
                         put("state", "success")
+                        put("scriptVersion", SCRIPT_FILE_VERSION)
                         put("scriptText", scriptText)
                     },
                 )
@@ -791,6 +805,19 @@ class ReadAloudDataRepository(private val app: Application) {
         if (bookUrl.isBlank()) return@withContext ""
         runCatching { appDb.bookDao.getBook(bookUrl)?.name.orEmpty() }.getOrDefault("")
     }
+
+    /** 剧本文件头版本（`[script-version:N]`；无版本头=0=旧文件）。 */
+    private fun scriptFileVersionOf(txt: String): Int {
+        for (line in txt.lineSequence().take(8)) {
+            val v = SCRIPT_VERSION_MARKER.find(line)?.groupValues?.get(1)?.toIntOrNull()
+            if (v != null) return v
+        }
+        return 0
+    }
+
+    /** 版本头规范化：清掉旧版本行后写入当前版本（重析=按当前版本重建）。 */
+    private fun ensureScriptVersionHeader(prefix: List<String>): List<String> =
+        listOf("[script-version:$SCRIPT_FILE_VERSION]") + prefix.filterNot(SCRIPT_VERSION_MARKER::matches)
 
     /** 剧本行解析（all_clean_text 章节段 / chapter_cache.scriptText 共用；base=首个元素对应的绝对行号） */
     private fun parseScriptLines(lines: List<String>, base: Int): List<ScriptLineRow> = buildList {
@@ -1292,7 +1319,7 @@ class ReadAloudDataRepository(private val app: Application) {
             val raw = if (f.exists()) readText(f) else ""
             val (prefix, sections) = ScriptSectionStore.parse(raw)
             sections[chapter] = scriptText.split("\n").filter { it.isNotEmpty() }.toMutableList()
-            writeText(f, ScriptSectionStore.serialize(prefix, sections))
+            writeText(f, ScriptSectionStore.serialize(ensureScriptVersionHeader(prefix), sections))
             // 章节缓存（键=bookUrl|chapter；与既有同步逻辑同构）
             val cacheFile = bookFile(book, "chapter_cache.$book.json")
             val cache = runCatching { JSONObject(readText(cacheFile)) }.getOrDefault(JSONObject())
@@ -1301,6 +1328,7 @@ class ReadAloudDataRepository(private val app: Application) {
                 key,
                 JSONObject().apply {
                     put("state", "success")
+                    put("scriptVersion", SCRIPT_FILE_VERSION)
                     put("scriptText", scriptText)
                 },
             )
