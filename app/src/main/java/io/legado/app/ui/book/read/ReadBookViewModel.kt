@@ -92,7 +92,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1234,46 +1233,6 @@ class ReadBookViewModel(
             is ReadBookIntent.ConfirmAddCurrentBookToBookshelf -> addCurrentBookToBookshelfAndFinish()
             is ReadBookIntent.ExitWithoutAddingCurrentBookToBookshelf -> removeCurrentNotShelfBookAndFinish()
 
-            is ReadBookIntent.ShowReadAloudConfig -> readAloudDelegate.openConfigSheet()
-            is ReadBookIntent.OpenPreDownloadNumPicker ->
-                readAloudDelegate.openPreDownloadNumPicker()
-            is ReadBookIntent.OpenPreSynthesisConcurrencyPicker ->
-                readAloudDelegate.openPreSynthesisConcurrencyPicker()
-            is ReadBookIntent.OpenParagraphIntervalPicker ->
-                readAloudDelegate.openParagraphIntervalPicker()
-            is ReadBookIntent.OpenCacheCleanTimePicker ->
-                readAloudDelegate.openCacheCleanTimePicker()
-            is ReadBookIntent.ApplyPreDownloadNum ->
-                readAloudDelegate.applyPreDownloadNum(intent.value)
-            is ReadBookIntent.ApplyPreSynthesisConcurrency ->
-                readAloudDelegate.applyPreSynthesisConcurrency(intent.value)
-            is ReadBookIntent.ApplyAudioCacheCleanTime ->
-                readAloudDelegate.applyAudioCacheCleanTime(intent.value)
-            is ReadBookIntent.ApplyParagraphInterval ->
-                readAloudDelegate.applyParagraphInterval(intent.value)
-            is ReadBookIntent.SetReadAloudIgnoreAudioFocus ->
-                readAloudDelegate.setIgnoreAudioFocus(intent.value)
-            is ReadBookIntent.SetReadAloudPauseOnPhoneCall ->
-                readAloudDelegate.setPauseOnPhoneCall(intent.value)
-            is ReadBookIntent.SetReadAloudWakeLock -> readAloudDelegate.setWakeLock(intent.value)
-            is ReadBookIntent.SetReadAloudKeepOnExit ->
-                readAloudDelegate.setKeepOnExit(intent.value)
-            is ReadBookIntent.SetShowReadAloudCapsule ->
-                readAloudDelegate.setShowCapsule(intent.value)
-            is ReadBookIntent.SetCapsuleAutoCollapse ->
-                readAloudDelegate.setCapsuleAutoCollapse(intent.value)
-            ReadBookIntent.ResetReadAloudCapsulePosition ->
-                readAloudDelegate.resetCapsulePosition()
-            is ReadBookIntent.SetReadAloudCapsulePosition ->
-                readAloudDelegate.setCapsulePosition(intent.x, intent.y)
-            is ReadBookIntent.SetReadAloudMediaButtonPerNext ->
-                readAloudDelegate.setMediaButtonPerNext(intent.value)
-            is ReadBookIntent.SetReadAloudSystemMediaCompat ->
-                readAloudDelegate.setSystemMediaCompat(intent.value)
-            is ReadBookIntent.SetReadAloudAndroidMediaControl ->
-                readAloudDelegate.setAndroidMediaControl(intent.value)
-            is ReadBookIntent.SetReadAloudStreamAudio ->
-                readAloudDelegate.setStreamAudio(intent.value)
             is ReadBookIntent.ReadAloudPrevParagraph -> readAloudDelegate.prevParagraph()
             is ReadBookIntent.ReadAloudTogglePause -> _effects.tryEmit(ReadBookEffect.ToggleReadAloud)
             is ReadBookIntent.ReadAloudStop -> readAloudDelegate.stop()
@@ -1294,10 +1253,6 @@ class ReadBookViewModel(
                 readAloudDelegate.setTtsFollowSys(intent.value)
             is ReadBookIntent.SetReadAloudTtsSpeechRate ->
                 readAloudDelegate.setTtsSpeechRate(intent.value)
-            is ReadBookIntent.SetUseMultiSpeaker ->
-                readAloudDelegate.setUseMultiSpeaker(intent.value)
-            is ReadBookIntent.SetDefaultReadAloudInterface ->
-                readAloudDelegate.setDefaultInterface(intent.value)
             is ReadBookIntent.OpenSystemTtsSettings -> readAloudDelegate.openSystemTtsSettings()
             is ReadBookIntent.ClearTtsCache -> readAloudDelegate.clearTtsCache()
             ReadBookIntent.OpenTtsEnginesAndVoices -> readAloudDelegate.openTtsEnginesAndVoices()

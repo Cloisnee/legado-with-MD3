@@ -5,10 +5,7 @@ import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.domain.gateway.ReadSettingsGateway
-import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
-import io.legado.app.domain.model.settings.ReadSettings
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.config.compatDsInt
 import io.legado.app.service.BaseReadAloudService
@@ -21,36 +18,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class ReadAloudPlayerViewModel(
     private val coordinator: ReadAloudPlayerCoordinator,
     private val readAloudSettingsGateway: ReadAloudSettingsGateway,
-    private val readSettingsGateway: ReadSettingsGateway,
 ) : ViewModel() {
 
     private val activeSheet = MutableStateFlow<ReadAloudPlayerSheet?>(null)
 
-    /**
-     * 朗读设置快照。
-     *
-     * 听书播放界面是独立目的地，不依赖阅读器 ViewModel，所以设置直接从全局设置源投影；
-     * 阅读界面里的配置卡片仍用 `ReadBookUiState`（内容相同，只是宿主不同）。
-     */
-    val readAloudSettings = combine(
-        readAloudSettingsGateway.settings,
-        readSettingsGateway.settings,
-    ) { aloud, read ->
-        toReadAloudSettingsUiState(aloud, read)
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = toReadAloudSettingsUiState(
-            aloud = readAloudSettingsGateway.currentSettings,
-            read = readSettingsGateway.currentSettings,
-        ),
-    )
+    /** 悬浮胶囊显隐（全局叠层用；直读设置源）。 */
+    val showReadAloudCapsule = readAloudSettingsGateway.settings
+        .map { it.showReadAloudCapsule }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = readAloudSettingsGateway.currentSettings.showReadAloudCapsule,
+        )
 
     val uiState = combine(
         coordinator.state,
@@ -109,72 +95,6 @@ class ReadAloudPlayerViewModel(
                 chapterPosition = intent.chapterPosition,
                 chapterLength = uiState.value.chapterLength,
             )
-        }
-    }
-
-    /** 听书页配置卡片的设置写入；与阅读界面共用同一份设置语义。 */
-    fun onConfigIntent(
-        option: ReadAloudConfigOption,
-        value: String = "",
-        selected: Boolean = false,
-        intValue: Int = 0,
-    ) {
-        viewModelScope.launch {
-            when (option) {
-                ReadAloudConfigOption.DefaultInterface ->
-                    readAloudSettingsGateway.update { it.copy(defaultInterface = value) }
-
-                ReadAloudConfigOption.ShowCapsule ->
-                    readAloudSettingsGateway.update { it.copy(showReadAloudCapsule = selected) }
-
-                ReadAloudConfigOption.CapsuleAutoCollapse ->
-                    readAloudSettingsGateway.update { it.copy(capsuleAutoCollapse = selected) }
-
-                ReadAloudConfigOption.IgnoreAudioFocus ->
-                    readAloudSettingsGateway.update { it.copy(ignoreAudioFocus = selected) }
-
-                ReadAloudConfigOption.PauseOnPhoneCall -> readAloudSettingsGateway.update {
-                    it.copy(pauseReadAloudWhilePhoneCalls = selected)
-                }
-
-                ReadAloudConfigOption.WakeLock ->
-                    readAloudSettingsGateway.update { it.copy(readAloudWakeLock = selected) }
-
-                ReadAloudConfigOption.KeepOnExit ->
-                    readAloudSettingsGateway.update { it.copy(keepReadAloudOnExit = selected) }
-
-                ReadAloudConfigOption.MediaButtonPerNext ->
-                    readAloudSettingsGateway.update { it.copy(mediaButtonPerNext = selected) }
-
-                ReadAloudConfigOption.AndroidMediaControl -> readAloudSettingsGateway.update {
-                    it.copy(androidMediaControlEnabled = selected)
-                }
-
-                ReadAloudConfigOption.SystemMediaCompat -> readAloudSettingsGateway.update {
-                    it.copy(systemMediaControlCompatibilityChange = selected)
-                }
-
-                ReadAloudConfigOption.StreamAudio ->
-                    readAloudSettingsGateway.update { it.copy(streamReadAloudAudio = selected) }
-
-                ReadAloudConfigOption.UseMultiSpeaker ->
-                    readAloudSettingsGateway.update { it.copy(useMultiSpeaker = selected) }
-
-                ReadAloudConfigOption.PreDownloadNum ->
-                    readSettingsGateway.update { it.copy(preDownloadNum = intValue) }
-
-                ReadAloudConfigOption.PreSynthesisConcurrency -> readAloudSettingsGateway.update {
-                    it.copy(ttsPreSynthesisConcurrency = intValue.coerceIn(1, 8))
-                }
-
-                ReadAloudConfigOption.ParagraphInterval -> readAloudSettingsGateway.update {
-                    it.copy(ttsParagraphInterval = intValue)
-                }
-
-                ReadAloudConfigOption.AudioCacheCleanTime -> readAloudSettingsGateway.update {
-                    it.copy(audioCacheCleanTime = intValue)
-                }
-            }
         }
     }
 
@@ -264,25 +184,3 @@ class ReadAloudPlayerViewModel(
 
 
 }
-
-private fun toReadAloudSettingsUiState(
-    aloud: ReadAloudSettings,
-    read: ReadSettings,
-): ReadAloudSettingsUiState = ReadAloudSettingsUiState(
-    defaultReadAloudInterface = aloud.defaultInterface,
-    showReadAloudCapsule = aloud.showReadAloudCapsule,
-    capsuleAutoCollapse = aloud.capsuleAutoCollapse,
-    readAloudIgnoreAudioFocus = aloud.ignoreAudioFocus,
-    readAloudPauseOnPhoneCall = aloud.pauseReadAloudWhilePhoneCalls,
-    readAloudWakeLock = aloud.readAloudWakeLock,
-    readAloudKeepOnExit = aloud.keepReadAloudOnExit,
-    readAloudMediaButtonPerNext = aloud.mediaButtonPerNext,
-    readAloudAndroidMediaControl = aloud.androidMediaControlEnabled,
-    readAloudSystemMediaCompat = aloud.systemMediaControlCompatibilityChange,
-    readAloudStreamAudio = aloud.streamReadAloudAudio,
-    useMultiSpeaker = aloud.useMultiSpeaker,
-    preDownloadNum = read.preDownloadNum,
-    preSynthesisConcurrency = aloud.ttsPreSynthesisConcurrency,
-    readAloudParagraphInterval = aloud.ttsParagraphInterval,
-    audioCacheCleanTime = aloud.audioCacheCleanTime,
-)

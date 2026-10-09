@@ -311,9 +311,6 @@ data class ReadBookUiState(
     val menuVisible: Boolean
         get() = menuState.visible
 
-    /** 朗读设置卡片是否打开；经典控制面板与听书播放界面共用同一份设置内容。 */
-    val isReadAloudConfigOpen: Boolean
-        get() = activeSheet is ReadBookSheet.ReadAloudConfig
 }
 
 /** 护眼模式设置，来源是 ThemeSettings，与外观设置共用同一份值。 */
@@ -733,28 +730,7 @@ sealed interface ReadBookIntent {
     data object ExitWithoutAddingCurrentBookToBookshelf : ReadBookIntent
 
     // Read aloud config (needs Activity for DialogFragment)
-    data object ShowReadAloudConfig : ReadBookIntent
-    data object OpenPreDownloadNumPicker : ReadBookIntent
-    data object OpenPreSynthesisConcurrencyPicker : ReadBookIntent
-    data object OpenParagraphIntervalPicker : ReadBookIntent
-    data object OpenCacheCleanTimePicker : ReadBookIntent
-    data class ApplyPreDownloadNum(val value: Int) : ReadBookIntent
-    data class ApplyPreSynthesisConcurrency(val value: Int) : ReadBookIntent
-    data class ApplyAudioCacheCleanTime(val value: Int) : ReadBookIntent
-    data class ApplyParagraphInterval(val value: Int) : ReadBookIntent
-    data class SetReadAloudIgnoreAudioFocus(val value: Boolean) : ReadBookIntent
-    data class SetReadAloudPauseOnPhoneCall(val value: Boolean) : ReadBookIntent
-    data class SetReadAloudWakeLock(val value: Boolean) : ReadBookIntent
-    data class SetReadAloudKeepOnExit(val value: Boolean) : ReadBookIntent
-    data class SetShowReadAloudCapsule(val value: Boolean) : ReadBookIntent
-    data class SetCapsuleAutoCollapse(val value: Boolean) : ReadBookIntent
-    data object ResetReadAloudCapsulePosition : ReadBookIntent
-    data class SetReadAloudCapsulePosition(val x: Float, val y: Float) : ReadBookIntent
-    data class SetReadAloudMediaButtonPerNext(val value: Boolean) : ReadBookIntent
 
-    data class SetReadAloudSystemMediaCompat(val value: Boolean) : ReadBookIntent
-    data class SetReadAloudAndroidMediaControl(val value: Boolean) : ReadBookIntent
-    data class SetReadAloudStreamAudio(val value: Boolean) : ReadBookIntent
     data object ReadAloudPrevParagraph : ReadBookIntent
     data object ReadAloudTogglePause : ReadBookIntent
     data object ReadAloudStop : ReadBookIntent
@@ -775,8 +751,6 @@ sealed interface ReadBookIntent {
     data class SetFinishCurrentChapterAfterTimer(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsFollowSys(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsSpeechRate(val value: Int) : ReadBookIntent
-    data class SetUseMultiSpeaker(val value: Boolean) : ReadBookIntent
-    data class SetDefaultReadAloudInterface(val value: String) : ReadBookIntent
     data object OpenSystemTtsSettings : ReadBookIntent
     data object ClearTtsCache : ReadBookIntent
     data object OpenTtsEnginesAndVoices : ReadBookIntent
@@ -972,11 +946,6 @@ sealed interface ReadBookSheet {
     data object Marking : ReadBookSheet
     data object MoreConfig : ReadBookSheet
     data object BgTextConfig : ReadBookSheet
-    data object ReadAloudConfig : ReadBookSheet
-    data object PreDownloadConfig : ReadBookSheet
-    data object PreSynthesisConcurrencyConfig : ReadBookSheet
-    data object AudioCacheCleanConfig : ReadBookSheet
-    data object ParagraphIntervalConfig : ReadBookSheet
     data object ClickActionConfig : ReadBookSheet
     data object PageKeyConfig : ReadBookSheet
     data object InfoConfig : ReadBookSheet

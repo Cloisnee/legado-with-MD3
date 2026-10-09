@@ -36,9 +36,8 @@ import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
+import io.legado.app.feature.readaloud.overlay.ReadAloudOverlayPermissionRoute
 import io.legado.app.help.config.AppConfigStore
-import io.legado.app.model.ReadBook
-import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -59,7 +58,6 @@ import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
-import io.legado.app.utils.TTSCacheUtils
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
@@ -190,6 +188,7 @@ fun ReadAloudSettingsScreen(
                         onCheckedChange = { v -> update { it.copy(showReadAloudCapsule = v) } },
                     )
                     if (st.showReadAloudCapsule) {
+                        ReadAloudOverlayPermissionRoute()
                         TinySwitchSettingItem(
                             title = stringResource(R.string.capsule_auto_collapse),
                             description = stringResource(R.string.capsule_auto_collapse_summary),

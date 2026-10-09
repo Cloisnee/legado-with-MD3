@@ -426,9 +426,8 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         val pageShellPlayerViewModel: ReadAloudPlayerViewModel =
             org.koin.compose.koinInject()
         val pageShellPlayerState by pageShellPlayerViewModel.uiState.collectAsStateWithLifecycle()
-        val pageShellAloudSettings by pageShellPlayerViewModel.readAloudSettings
+        val pageShellShowCapsule by pageShellPlayerViewModel.showReadAloudCapsule
             .collectAsStateWithLifecycle()
-        val pageShellShowCapsule = pageShellAloudSettings.showReadAloudCapsule
         val pageShellCapsuleScope = rememberCoroutineScope()
 
         // 两种播放页共享同窗口形变容器，导航栈保留原页面作为动画背景。

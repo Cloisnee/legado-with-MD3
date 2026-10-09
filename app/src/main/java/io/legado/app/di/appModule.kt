@@ -588,7 +588,7 @@ val appModule = module {
      * 若各自持有实例，`activeSheet` 之类的瞬态状态与设置快照就会各改各的。
      * 播放状态本身在 `ReadAloudSessionStore`/服务里，这里只是界面投影。
      */
-    single { ReadAloudPlayerViewModel(get(), get(), get()) }
+    single { ReadAloudPlayerViewModel(get(), get()) }
     viewModelOf(::MangaReaderViewModel)
     viewModelOf(::ReaderSessionViewModel)
     viewModel {

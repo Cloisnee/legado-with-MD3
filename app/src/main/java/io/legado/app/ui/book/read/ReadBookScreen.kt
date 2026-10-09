@@ -17,7 +17,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
 import io.legado.app.data.repository.ReadPreferences
 import io.legado.app.domain.usecase.BookmarkTargetVerdict
-import io.legado.app.help.coil.CoverExtras
 import io.legado.app.ui.book.read.sheet.BgTextConfigSheet
 import io.legado.app.ui.book.read.sheet.ChangeChapterSourceSheet
 import io.legado.app.ui.book.read.sheet.CharsetConfigSheet
@@ -32,15 +31,12 @@ import io.legado.app.ui.book.read.sheet.MoreConfigSheet
 import io.legado.app.ui.book.read.sheet.PageAnimConfigSheet
 import io.legado.app.ui.book.read.sheet.PageKeyConfigSheet
 import io.legado.app.ui.book.read.sheet.PhotoSheet
-import io.legado.app.ui.book.read.sheet.ReadAloudConfigContent
-import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.book.read.sheet.ReaderMoreActionsSheet
 import io.legado.app.ui.book.read.sheet.ShadowSetSheet
 import io.legado.app.ui.book.read.sheet.SimulatedReadingSheet
 import io.legado.app.ui.book.read.sheet.TextProcessingSheet
 import io.legado.app.ui.book.read.sheet.ToolButtonConfigSheet
 import io.legado.app.ui.book.read.sheet.UnderlineConfigSheet
-import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerViewModel
 import io.legado.app.ui.dict.DictSheet
 import io.legado.app.ui.widget.components.FontFolderState
 import io.legado.app.ui.widget.components.FontSelectSheet
@@ -388,62 +384,6 @@ fun ReadBookScreen(
         onPickBookmarkBadgeImage = onPickBookmarkBadgeImage,
         onResetBookmarkBadge = onResetBookmarkBadge,
     )
-    ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.PreDownloadConfig,
-        title = stringResource(R.string.read_aloud_preload),
-        description = stringResource(R.string.read_aloud_preload_summary, state.preDownloadNum),
-        value = state.preDownloadNum,
-        defaultValue = 10,
-        valueRange = 0f..100f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyPreDownloadNum(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
-    ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.PreSynthesisConcurrencyConfig,
-        title = stringResource(R.string.tts_pre_synthesis_concurrency),
-        description = stringResource(
-            R.string.tts_pre_synthesis_concurrency_summary, state.preSynthesisConcurrency,
-        ),
-        value = state.preSynthesisConcurrency,
-        defaultValue = 3,
-        valueRange = 1f..8f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyPreSynthesisConcurrency(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
-    ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.AudioCacheCleanConfig,
-        title = stringResource(R.string.audio_cache_clean_time),
-        description = stringResource(
-            R.string.audio_cache_clean_time_summary,
-            state.audioCacheCleanTime
-        ),
-        value = state.audioCacheCleanTime,
-        defaultValue = 0,
-        valueRange = 0f..10080f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyAudioCacheCleanTime(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
-    ReadAloudNumberConfigSheet(
-        show = state.activeSheet is ReadBookSheet.ParagraphIntervalConfig,
-        title = stringResource(R.string.tts_paragraph_interval),
-        description = stringResource(
-            R.string.tts_paragraph_interval_summary,
-            state.readAloudParagraphInterval
-        ),
-        value = state.readAloudParagraphInterval,
-        defaultValue = 0,
-        valueRange = 0f..5000f,
-        onValueChange = { onIntent(ReadBookIntent.ApplyParagraphInterval(it)) },
-        onDismissRequest = {
-            onIntent(ReadBookIntent.DismissSheet)
-        },
-    )
     AppLogSheet(
         show = state.activeSheet is ReadBookSheet.AppLog,
         onDismissRequest = dismissSheet,
@@ -460,24 +400,6 @@ fun ReadBookScreen(
         onExportConfig = { onIntent(ReadBookIntent.OpenReadStyleExport) },
         styleConfig = state.styleConfig,
     )
-
-    val aloudPlayerViewModel: ReadAloudPlayerViewModel =
-        org.koin.compose.koinInject()
-    val aloudPlayerShellState by aloudPlayerViewModel.uiState.collectAsStateWithLifecycle()
-    // 听书播放页是 Activity 级 morph 浮层（见 ReadAloudPlayerMorphHost），阅读器内
-    // 只保留经典控制面板自己的朗读配置卡片；两者共用同一份配置内容。
-    AppModalBottomSheet(
-        show = state.activeSheet is ReadBookSheet.ReadAloudConfig,
-        onDismissRequest = dismissSheet,
-        title = stringResource(R.string.aloud_config),
-    ) {
-        ReadAloudConfigContent(
-            state = state,
-            playerState = aloudPlayerShellState,
-            onIntent = onIntent,
-            onPlayerIntent = aloudPlayerViewModel::onIntent,
-        )
-    }
 
     val dictSheet = state.activeSheet as? ReadBookSheet.Dict
     DictSheet(
