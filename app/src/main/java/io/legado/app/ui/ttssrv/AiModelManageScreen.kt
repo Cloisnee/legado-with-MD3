@@ -505,13 +505,27 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             GlassMediumFlexibleTopAppBar(
-                title = "模型管理",
+                title = when {
+                    libActive -> "已选 ${if (libCtx == "vendor") selVendors.size else selModels.size} 项"
+                    queueActive -> "已选 ${selQueue.size} 项"
+                    else -> "模型管理"
+                },
+                useCharMode = selActive,
                 subtitle = "模型库 / 模型分配",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
-                    TopBarNavigationButton(onClick = onBack)
+                    if (selActive) {
+                        TopBarNavigationButton(
+                            onClick = { clearSel() },
+                            imageVector = AppIcons.Close,
+                            contentDescription = "取消选择",
+                        )
+                    } else {
+                        TopBarNavigationButton(onClick = onBack)
+                    }
                 },
                 actions = {
+                    if (!selActive) {
                     Box {
                         TopBarActionButton(
                             onClick = { showTopMenu = true },
@@ -537,6 +551,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 },
                             )
                         }
+                    }
                     }
                 },
                 bottomContent = {
@@ -1407,7 +1422,10 @@ private fun AllocationPage(
     onQueueItemClick: (String, String) -> Unit,
     onQueueItemLongClick: (String, String) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = adaptiveContentPadding(
             top = contentPaddingTop + 8.dp,
@@ -1507,7 +1525,7 @@ private fun AllocationPage(
                             subtitle = m?.let {
                                 "${it.modelId} · 尝试${it.requestAttempts}/校验${it.validateRetries} · ${it.timeoutMs / 1000}s"
                             },
-                            inSelectionMode = thisCtx,
+                            inSelectionMode = thisCtx && selQueue.isNotEmpty(),
                             isSelected = selected,
                         )
                     }
@@ -1606,7 +1624,7 @@ private fun AllocationPage(
                                     "${it.modelId} · 尝试${it.requestAttempts}/校验${it.validateRetries} · ${it.timeoutMs / 1000}s"
                                 }
                             },
-                            inSelectionMode = thisCtx,
+                            inSelectionMode = thisCtx && selQueue.isNotEmpty(),
                             isSelected = selected,
                         )
                     }
@@ -1625,6 +1643,38 @@ private fun AllocationPage(
             )
         }
     }
+        val ctx0 = queueCtx
+        if (ctx0 != null && selQueue.isNotEmpty()) {
+            val queueForCtx0 = when (ctx0) {
+                "stage1" -> config?.stages?.stage1
+                "stage2" -> config?.stages?.stage2
+                "stage4" -> config?.stages?.stage4
+                "emotion" -> config?.stages?.emotion
+                "audioDirector" -> config?.stages?.audioDirector
+                "synthSfx" -> config?.stages?.synthSfx
+                "synthBgm" -> config?.stages?.synthBgm
+                "synthAmb" -> config?.stages?.synthAmb
+                else -> null
+            }.orEmpty()
+            DraggableSelectionHandler(
+                listState = listState,
+                items = queueForCtx0,
+                selectedIds = selQueue.map { "q_${ctx0}_$it" }.toSet(),
+                onSelectionChange = { ids0 ->
+                    selQueue = ids0.mapNotNull { raw ->
+                        val str0 = raw as? String ?: return@mapNotNull null
+                        if (str0.startsWith("q_${ctx0}_")) str0.removePrefix("q_${ctx0}_") else null
+                    }.toSet()
+                },
+                idProvider = { "q_${ctx0}_$it" },
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(60.dp)
+                    .align(Alignment.TopStart),
+            )
+        }
+        }
+
 }
 
 @Composable
