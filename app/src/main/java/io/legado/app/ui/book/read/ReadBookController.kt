@@ -895,16 +895,12 @@ class ReadBookController(
             val streamed = directReaderStreamedPages.getOrPut(chapterIndex) { mutableListOf() }
             if (streamed.any { it.id == page.id }) return@launch
             streamed += page
-            val currentPage =
-                directReaderPageIndex?.let { index -> directReaderPages.getOrNull(index) }
-            directReaderPages = directReaderPages
+            replaceDirectReaderPages(
+                directReaderPages
                 .filterNot { it.id.chapterIndex == chapterIndex }
                 .plus(streamed)
                 .sortedWith(compareBy({ it.id.chapterIndex }, { it.id.pageIndex }))
-            currentPage?.let { keep ->
-                val index = directReaderPages.indexOfFirst { it === keep }
-                if (index >= 0) directReaderPageIndex = index
-            }
+            )
             if (shouldPublishStreamedReaderPage(chapterIndex, page)) {
                 publishStreamedReaderWindow(chapterIndex)
             }
@@ -912,22 +908,19 @@ class ReadBookController(
     }
 
     /**
-     * 主线程：重发窗口。当前页还在别的章（邻章提前流出）时只换窗、不动阅读位置，
-     * 否则会把阅读位置提前推进到邻章。
+     * 主线程：按会话目标章重发窗口。目标页就绪后替换保留的旧章页面；邻章提前流出
+     * 只能刷新已经定位的窗口，不能在当前页尚未就绪时充当首屏。
      */
     private fun publishStreamedReaderWindow(chapterIndex: Int) {
         val currentIndex = directReaderPageIndex
-        val currentChapterIndex =
-            currentIndex?.let { directReaderPages.getOrNull(it)?.id?.chapterIndex }
-        val index = if (currentIndex != null && currentChapterIndex != chapterIndex) {
-            currentIndex
-        } else {
-            ReaderPageNavigator.locateOrNull(
+        val index = if (chapterIndex == ReadBook.durChapterIndex) {
+            ReaderPageNavigator.locateReadyPage(
                 directReaderPages,
                 chapterIndex,
                 ReadBook.durChapterPos,
-            ) ?: currentIndex ?: return
-        }
+                chapterStreaming = chapterIndex in directReaderStreamingChapters,
+            ) ?: return
+        } else currentIndex ?: return
         publishDirectReaderWindow(index)
     }
 
@@ -968,10 +961,16 @@ class ReadBookController(
         val dropping = directReaderStreamedPages.filterKeys { it != keepChapterIndex }
         if (dropping.isNotEmpty()) {
             val partialIds = dropping.values.flatten().mapTo(mutableSetOf()) { it.id }
-            directReaderPages = directReaderPages.filterNot { it.id in partialIds }
+            replaceDirectReaderPages(directReaderPages.filterNot { it.id in partialIds })
         }
         directReaderStreamedPages.keys.removeAll { it != keepChapterIndex }
         directReaderStreamingChapters.removeAll { it != keepChapterIndex }
+    }
+
+    private fun replaceDirectReaderPages(pages: List<ReaderPage>) {
+        val currentId = directReaderPageIndex?.let { directReaderPages.getOrNull(it)?.id }
+        directReaderPages = pages
+        directReaderPageIndex = ReaderPageNavigator.rebasePageIndex(pages, currentId)
     }
 
     /**
@@ -1189,7 +1188,10 @@ class ReadBookController(
             // 阅读位置跳回书首；此时不发布窗口，交给相邻章预排与后续批次补页
             // （排版失败时 updateReaderPaginationError 会给出重试入口）。
             ReaderPageNavigator
-                .locateOrNull(directReaderPages, chapter.chapter.index, ReadBook.durChapterPos)
+                .locateReadyPage(
+                    directReaderPages, chapter.chapter.index, ReadBook.durChapterPos,
+                    chapterStreaming = chapter.chapter.index in directReaderStreamingChapters,
+                )
                 ?.let { index ->
                     directReaderPageIndex = index
                     publishDirectReaderWindow(index)
@@ -1206,13 +1208,12 @@ class ReadBookController(
         directReaderPages
             .takeIf { pages -> pages.any { it.id.chapterIndex == chapter.chapter.index && !it.isPlaceholder } }
             ?.let { pages ->
-                publishDirectReaderWindow(
-                    ReaderPageNavigator.locate(
-                        pages,
-                        chapter.chapter.index,
-                        ReadBook.durChapterPos,
-                    )
-                )
+                ReaderPageNavigator.locateReadyPage(
+                    pages,
+                    chapter.chapter.index,
+                    ReadBook.durChapterPos,
+                    chapterStreaming = chapter.chapter.index in directReaderStreamingChapters,
+                )?.let(::publishDirectReaderWindow)
             }
         if (directReaderLayoutKey != key) {
             val environmentChanged = directReaderPaginationEnvironmentKey != null &&
