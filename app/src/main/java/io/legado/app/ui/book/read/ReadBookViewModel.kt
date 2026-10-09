@@ -220,12 +220,15 @@ class ReadBookViewModel(
         highlightRuleRepository = highlightRuleRepository,
         saveMarkingUseCase = saveMarkingUseCase,
         host = object : MarkingDelegate.Host {
-            override fun reloadCurrentChapter() {
-                contentProcessDelegate.reloadCurrentChapterPreservingSnapshot()
+            override val activeSheet: ReadBookSheet?
+                get() = _uiState.value.activeSheet
+
+            override fun setActiveSheet(sheet: ReadBookSheet?) {
+                _uiState.update { it.copy(activeSheet = sheet) }
             }
 
-            override fun dismissMarkingSheet() {
-                restoreMarkingReturnSheet()
+            override fun reloadCurrentChapter() {
+                contentProcessDelegate.reloadCurrentChapterPreservingSnapshot()
             }
 
             override fun showToast(message: String) {
@@ -235,17 +238,6 @@ class ReadBookViewModel(
     ) }
 
     val markingState get() = markingDelegate.uiState
-    /**
-     * 划线笔记编辑可能从目录 Sheet 进入：保存/删除/取消后应回到原 sheet（目录），
-     * 而不是被丢回阅读页。从划词菜单新建时无原 sheet，回 null。
-     */
-    private var markingReturnSheet: ReadBookSheet? = null
-
-    private fun restoreMarkingReturnSheet() {
-        val returnSheet = markingReturnSheet
-        markingReturnSheet = null
-        _uiState.update { it.copy(activeSheet = returnSheet) }
-    }
 
     // --- 跳转校验域：书签/笔记跳转前比对源与章节标题 ---
 
@@ -1326,22 +1318,11 @@ class ReadBookViewModel(
 
             is ReadBookIntent.TextActionBookmark -> bookmarkDelegate.openEditor(intent.bookmark)
 
-            is ReadBookIntent.OpenMarking -> {
-                // 从划词菜单新建：无原 sheet 可回
-                markingReturnSheet = null
-                markingDelegate.open(intent.selection)
-                _uiState.update { it.copy(activeSheet = ReadBookSheet.Marking) }
-            }
+            is ReadBookIntent.OpenMarking -> markingDelegate.openFromMenu(intent.selection)
 
-            is ReadBookIntent.OpenQuickMarking -> {
-                markingReturnSheet = null
-                markingDelegate.open(intent.selection, inlineMode = true)
-            }
+            is ReadBookIntent.OpenQuickMarking -> markingDelegate.openQuick(intent.selection)
 
-            is ReadBookIntent.OpenQuickMarkingEdit -> {
-                markingReturnSheet = null
-                markingDelegate.openForEdit(intent.id, inlineMode = true)
-            }
+            is ReadBookIntent.OpenQuickMarkingEdit -> markingDelegate.openQuickForEdit(intent.id)
 
             is ReadBookIntent.ApplyQuickMarking -> {
                 viewModelScope.launch {
@@ -1357,17 +1338,9 @@ class ReadBookViewModel(
 
             ReadBookIntent.DismissQuickMarking -> markingDelegate.closeInlineSession()
 
-            is ReadBookIntent.EditMarking -> {
-                // 从目录 Sheet 进入：记住原 sheet，保存/删除/取消后返回
-                markingReturnSheet = _uiState.value.activeSheet
-                markingDelegate.openForEdit(intent.id)
-                _uiState.update { it.copy(activeSheet = ReadBookSheet.Marking) }
-            }
+            is ReadBookIntent.EditMarking -> markingDelegate.openForEditFromSheet(intent.id)
 
-            is ReadBookIntent.DismissMarking -> {
-                markingDelegate.onSheetDismissed()
-                restoreMarkingReturnSheet()
-            }
+            ReadBookIntent.DismissMarking -> markingDelegate.dismissSheetByUser()
 
             is ReadBookIntent.SaveMarking -> {
                 markingDelegate.save(intent.style, intent.note)
