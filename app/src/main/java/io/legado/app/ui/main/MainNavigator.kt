@@ -360,25 +360,31 @@ object MainNavigator {
         tracker?.onBackStackChanged(backStack)
     }
 
-    fun navigateBack(activity: Activity, backStack: MutableList<NavKey>) {
-        navigateBack(activity, backStack, null)
-    }
-
-    /** [tracker] 非空时同步栈顶快照，供 Activity 级叠层立即重算显隐。 */
+    /**
+     * [tracker] 非空时同步栈顶快照，供 Activity 级叠层立即重算显隐。
+     * [fromRoute] 非空时要求它仍在栈顶（子页覆盖层返回守卫）；返回是否真正退栈。
+     */
     fun navigateBack(
         activity: Activity,
         backStack: MutableList<NavKey>,
-        tracker: MainNavRouteTracker?,
-    ) {
-        if (backNavigationInProgress) {
-            return
+        tracker: MainNavRouteTracker? = null,
+        fromRoute: NavKey? = null,
+    ): Boolean {
+        if (fromRoute != null) {
+            if (backStack.lastOrNull() != fromRoute) {
+                return false
+            }
+        } else if (backNavigationInProgress) {
+            return false
         }
         if (backStack.size > 1) {
             backNavigationInProgress = true
             backStack.removeLastOrNull()
             tracker?.onBackStackChanged(backStack)
+            return true
         } else {
             activity.finish()
+            return true
         }
     }
 

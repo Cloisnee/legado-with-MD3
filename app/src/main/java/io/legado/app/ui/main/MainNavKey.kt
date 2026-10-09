@@ -140,6 +140,7 @@ data class MainRouteReadManga(
 data class MainRouteAudioPlay(
     val bookUrl: String? = null,
     val inBookshelf: Boolean = true,
+    val sharedCoverKey: String? = null,
 ) : MainRoute
 
 @Serializable

@@ -33,6 +33,7 @@ import io.legado.app.help.book.isLocal
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.ui.main.bookCoverSharedElementKey
+import io.legado.app.ui.main.bookInfoCoverSharedElementKey
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.utils.RealPathUtil

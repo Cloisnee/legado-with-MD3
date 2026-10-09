@@ -1,6 +1,6 @@
 package io.legado.app.data.repository
 
-import io.legado.app.utils.AppLog
+import io.legado.app.constant.AppLog
 import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.ChapterLabels
 import android.app.Application
