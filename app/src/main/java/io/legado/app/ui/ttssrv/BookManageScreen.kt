@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,13 +38,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -688,14 +685,53 @@ fun BookManageScreen(
                                 tagPanelFor = selLines.toList()
                             }
                         },
-                        secondaryActions = if (pending.isNotEmpty()) {
-                            listOf(
-                                ActionItem("放弃修改", Icons.Default.Close) {
-                                    pending.clear()
-                                    selLines = emptySet()
+                        secondaryActions = buildList {
+                            add(
+                                ActionItem("复制", Icons.Default.ContentCopy) {
+                                    // 多选复制：文本格式对齐剧本页显示（旁白/人物+情绪+声效一行，台词一行）
+                                    val picked = shown
+                                        .filter { it.absIndex in selLines }
+                                        .sortedBy { it.absIndex }
+                                    if (picked.isNotEmpty()) {
+                                        val text = picked.joinToString("\n\n") { row ->
+                                            val sp = (pending[row.absIndex] ?: row.speaker)
+                                                .ifBlank { "旁白" }
+                                            buildString {
+                                                append(sp)
+                                                if (row.emotion.isNotBlank()) {
+                                                    append(" ").append(row.emotion)
+                                                }
+                                                if (row.audio.isNotBlank()) {
+                                                    append(" ")
+                                                        .append(AudioTagCodec.chipsText(row.audio))
+                                                }
+                                                append('\n')
+                                                append(
+                                                    row.text.trimStart {
+                                                        it.isWhitespace() || it == '\u3000'
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        val cm = context.getSystemService(
+                                            android.content.ClipboardManager::class.java
+                                        )
+                                        cm?.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("剧本", text)
+                                        )
+                                        context.toastOnUi("已复制 ${picked.size} 行")
+                                    }
                                 }
                             )
-                        } else emptyList(),
+                            if (pending.isNotEmpty()) {
+                                add(
+                                    ActionItem("放弃修改", Icons.Default.Close) {
+                                        pending.clear()
+                                        selLines = emptySet()
+                                    }
+                                )
+                            }
+                        },
                         confirmAction = if (pending.isNotEmpty()) {
                             ActionItem("保存", Icons.Default.Check) { savePending() }
                         } else null,

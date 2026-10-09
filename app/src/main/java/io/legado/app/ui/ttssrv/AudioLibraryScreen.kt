@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.SnackbarHostState
@@ -70,7 +69,6 @@ import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.theme.adaptiveHorizontalPadding
 import io.legado.app.ui.widget.components.ActionItem
 import io.legado.app.ui.widget.components.DraggableSelectionHandler
-import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.ReorderableSelectionItem
@@ -85,6 +83,7 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
+import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
@@ -145,6 +144,11 @@ fun AudioLibraryScreen(
     var mergeTargetId by remember { mutableStateOf<String?>(null) }
     var cloudPushing by remember { mutableStateOf(false) }
     var generatedOnly by rememberSaveable { mutableStateOf(false) }
+    // 组合筛选（作用于当前栏目）：来源 / 上传状态 / 规则来源；每栏单选、跨栏 AND
+    var fltSource by rememberSaveable { mutableStateOf<String?>(null) }  // null=全部 / "generated"
+    var fltUpload by rememberSaveable { mutableStateOf<String?>(null) }  // null=全部 / "uploaded" / "not"
+    var fltRule by rememberSaveable { mutableStateOf<String?>(null) }    // null=全部 / "local" / "net" / "regex"
+    var filterSheet by rememberSaveable { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
 
@@ -284,7 +288,10 @@ fun AudioLibraryScreen(
         localOrder = null
     }
 
-    val shownItems = remember(allAssets, selectedCategory, searchKey, sortMode, localOrder, generatedOnly) {
+    val shownItems = remember(
+        allAssets, selectedCategory, searchKey, sortMode, localOrder, generatedOnly,
+        fltSource, fltUpload, fltRule,
+    ) {
         val local = localOrder
         if (local != null) {
             local
@@ -294,6 +301,41 @@ fun AudioLibraryScreen(
                 list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
             }
             selectedCategory?.let { c -> list = list.filter { it.category == c } }
+            if (fltSource == "generated") {
+                list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
+            }
+            when (fltUpload) {
+                "uploaded", "not" -> {
+                    val uploaded = allAssets.filter { a ->
+                        val lf = AudioLibrary.fileOf(context.applicationContext, a)
+                        lf.isFile && CloudUploadLedger.statusText(
+                            context.applicationContext,
+                            a.name,
+                            if (!a.isRegex && a.pattern.isNotBlank()) {
+                                splitWordList(a.pattern)
+                            } else {
+                                emptyList()
+                            },
+                            lf.length(),
+                            lf.lastModified(),
+                        ).isNotEmpty()
+                    }.map { it.id }.toSet()
+                    list = if (fltUpload == "uploaded") {
+                        list.filter { it.id in uploaded }
+                    } else {
+                        list.filterNot { it.id in uploaded }
+                    }
+                }
+            }
+            when (fltRule) {
+                "local" -> list = list.filter {
+                    it.patternSource == AudioLibrary.PATTERN_SOURCE_LOCAL
+                }
+                "net" -> list = list.filter {
+                    it.patternSource == AudioLibrary.PATTERN_SOURCE_NET
+                }
+                "regex" -> list = list.filter { it.isRegex }
+            }
             val q = searchKey.trim()
             if (q.isNotEmpty()) {
                 list = list.filter { a ->
@@ -371,6 +413,59 @@ fun AudioLibraryScreen(
         }
     }
 
+    // 筛选面板（每栏单选、跨栏 AND；作用于当前栏目）
+    AppModalBottomSheet(
+        animateContentSize = false,
+        show = filterSheet,
+        onDismissRequest = { filterSheet = false },
+        title = "筛选",
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SplicedColumnGroup(title = "来源") {
+                TinyClickableSettingItem(
+                    title = (if (fltSource == null) "✓ " else "") + "全部（所有音频）",
+                    onClick = { fltSource = null },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltSource == "generated") "✓ " else "") + "合成音频",
+                    onClick = { fltSource = "generated" },
+                )
+            }
+            SplicedColumnGroup(title = "上传状态") {
+                TinyClickableSettingItem(
+                    title = (if (fltUpload == null) "✓ " else "") + "全部",
+                    onClick = { fltUpload = null },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltUpload == "uploaded") "✓ " else "") + "已上传",
+                    onClick = { fltUpload = "uploaded" },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltUpload == "not") "✓ " else "") + "未上传",
+                    onClick = { fltUpload = "not" },
+                )
+            }
+            SplicedColumnGroup(title = "规则来源") {
+                TinyClickableSettingItem(
+                    title = (if (fltRule == null) "✓ " else "") + "全部",
+                    onClick = { fltRule = null },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltRule == "local") "✓ " else "") + "自定义",
+                    onClick = { fltRule = "local" },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltRule == "net") "✓ " else "") + "词林",
+                    onClick = { fltRule = "net" },
+                )
+                TinyClickableSettingItem(
+                    title = (if (fltRule == "regex") "✓ " else "") + "正则",
+                    onClick = { fltRule = "regex" },
+                )
+            }
+        }
+    }
+
     val uiState = AudioLibUiState(
         items = shownItems,
         selectedIds = selectedIds,
@@ -388,6 +483,11 @@ fun AudioLibraryScreen(
         onSearchQueryChange = { searchKey = it },
         searchPlaceholder = "搜索音频 / 分组 / 规则",
         topBarActions = {
+            TopBarActionButton(
+                onClick = { filterSheet = true },
+                imageVector = AppIcons.Filter,
+                contentDescription = "筛选",
+            )
             TopBarActionButton(
                 onClick = { rescanNow() },
                 imageVector = AppIcons.Replay,
@@ -559,13 +659,6 @@ fun AudioLibraryScreen(
                         missingRows = AudioSynthQueue.missingRows(context.applicationContext)
                         missingSheet = true
                     }
-                },
-            )
-            RoundDropdownMenuItem(
-                text = if (generatedOnly) "显示全部条目" else "只看生成产物",
-                onClick = {
-                    generatedOnly = !generatedOnly
-                    dismiss()
                 },
             )
             PillDivider()
