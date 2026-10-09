@@ -56,7 +56,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -401,10 +400,22 @@ fun CharacterManageScreen(
             return
         }
         scope.launch {
+            // 仅在「已选声线池」（配置列表勾选）内解析：
+            // 标签不绑定插件，试听应跟随当前已选池；否则同名标签会命中未选旧池的条目。
+            val active = repo.loadActiveVoiceBanks().toSet()
             val groups = centerRepo.loadGroups()
-            val entry = groups.flatMap { it.entries }.firstOrNull { it.tag == tag }
+            val entry = groups
+                .filter { it.name in active }
+                .flatMap { it.entries }
+                .firstOrNull { it.tag == tag }
             if (entry == null) {
-                context.toastOnUi("当前声线库中没有标签「$tag」")
+                context.toastOnUi(
+                    if (active.isEmpty()) {
+                        "未选择声线池：请到 我的→朗读→引擎与音色→配置列表 选中声线池后再试听"
+                    } else {
+                        "当前已选声线池中没有标签「$tag」"
+                    }
+                )
                 return@launch
             }
             val out = if (entry.id != 0L) {
