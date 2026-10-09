@@ -158,6 +158,7 @@ fun MainScreen(
     onNavigateToExploreShow: (title: String?, sourceUrl: String, exploreUrl: String?) -> Unit,
     onNavigateToSourceLogin: (type: io.legado.app.ui.login.SourceLoginType, sourceUrl: String) -> Unit,
     onNavigateToBookSourceManage: () -> Unit,
+    onNavigateToReplaceRules: () -> Unit,
     onNavigateToBookSourceEdit: (String?) -> Unit,
     onNavigateToRssSourceManage: () -> Unit,
     onNavigateToRssSourceEdit: (String?) -> Unit,
@@ -635,6 +636,7 @@ fun MainScreen(
                                         PrefClickEvent.OpenRoleScriptManage -> onNavigateToRoleScriptManage()
                                         PrefClickEvent.OpenAudioLibrary -> onNavigateToAudioLibrary()
                                         PrefClickEvent.OpenBookSourceManage -> onNavigateToBookSourceManage()
+                                        PrefClickEvent.OpenReplaceRules -> onNavigateToReplaceRules()
                                         PrefClickEvent.OpenReadRecord -> onNavigateToReadRecord()
                                         else -> onIntent(MainUiIntent.HandlePreferenceClick(event))
                                     }

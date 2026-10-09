@@ -107,7 +107,9 @@ fun BookMorphHost(
             BookCoverMorphAnchors.setActiveMorph(anchorKey, morph)
         }
         onDispose {
-            BookCoverMorphAnchors.clearActiveMorph(anchorKey)
+            if (!anchorKey.isNullOrBlank() && BookCoverMorphAnchors.activeMorphState === morph) {
+                BookCoverMorphAnchors.clearActiveMorph(anchorKey)
+            }
         }
     }
 

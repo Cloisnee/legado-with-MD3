@@ -1,6 +1,5 @@
 package io.legado.app.ui.book.info
 
-import android.app.Activity
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,14 +31,11 @@ import io.legado.app.help.book.isAudio
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
 import io.legado.app.model.SourceCallBack
-import io.legado.app.ui.book.info.edit.BookInfoEditActivity
-import io.legado.app.ui.book.toc.TocActivityResult
 import io.legado.app.ui.login.SourceLoginJsExtensions
 import io.legado.app.ui.main.bookCoverSharedElementKey
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.utils.RealPathUtil
-import io.legado.app.utils.StartActivityContract
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.openFileUri
@@ -66,6 +62,8 @@ fun BookInfoRouteScreen(
     onOpenSearch: (String) -> Unit,
     onOpenBookSourceEdit: (String) -> Unit,
     onOpenSourceLogin: (String) -> Unit,
+    onOpenToc: (String) -> Unit,
+    onOpenInfoEdit: (String) -> Unit,
     onOpenReader: (bookUrl: String, inBookshelf: Boolean, chapterChanged: Boolean) -> Unit = { _, _, _ -> },
     onOpenMangaReader: (bookUrl: String, inBookshelf: Boolean, chapterChanged: Boolean) -> Unit = { _, _, _ -> },
     onOpenAudioPlay: (bookUrl: String, inBookshelf: Boolean) -> Unit = { _, _ -> },
@@ -74,6 +72,10 @@ fun BookInfoRouteScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     sharedCoverKey: String? = null,
+    useCoverMorph: Boolean = true,
+    detailCoverKey: String = bookInfoCoverSharedElementKey(bookUrl),
+    predictiveBackEnabled: Boolean = true,
+    isTopRoute: Boolean = true,
 ) {
     val context = LocalContext.current
     val activity = context as AppCompatActivity
@@ -82,11 +84,14 @@ fun BookInfoRouteScreen(
     val showMangaUi by rememberUpdatedState(uiState.showMangaUi)
     var showSelectBooksDirSheet by remember { mutableStateOf(false) }
 
-    val canMorphBack = uiState.dialog == null &&
+    val canMorphBack = isTopRoute &&
+            uiState.dialog == null &&
             uiState.sheet == BookInfoSheet.None &&
             !showSelectBooksDirSheet &&
             !uiState.showAppLogSheet
-    val effectiveCoverKey = sharedCoverKey ?: bookCoverSharedElementKey(bookUrl)
+    val effectiveCoverKey = if (useCoverMorph) {
+        sharedCoverKey ?: bookCoverSharedElementKey(bookUrl)
+    } else null
     var isDismissed by remember { mutableStateOf(false) }
     var finishResultCode by remember { mutableStateOf<Int?>(null) }
     var finishAfterTransition by remember { mutableStateOf(false) }
@@ -108,9 +113,6 @@ fun BookInfoRouteScreen(
         }
     }
 
-    val tocActivityResult = rememberLauncherForActivityResult(TocActivityResult()) {
-        viewModel.onTocResult(it)
-    }
     val localBookTreeSelect =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
@@ -122,13 +124,6 @@ fun BookInfoRouteScreen(
             }
             viewModel.onIntent(BookInfoIntent.SetDefaultBookTreeUri(uri.toString()))
         }
-    val infoEditResult = rememberLauncherForActivityResult(
-        StartActivityContract(BookInfoEditActivity::class.java)
-    ) {
-        if (it.resultCode == Activity.RESULT_OK) {
-            viewModel.onInfoEdited()
-        }
-    }
 
     LaunchedEffect(bookUrl, name, author, origin, coverPath, viewModel) {
         viewModel.initData(
@@ -169,9 +164,7 @@ fun BookInfoRouteScreen(
                 }
 
                 is BookInfoEffect.OpenBookInfoEdit -> {
-                    infoEditResult.launch {
-                        putExtra("bookUrl", effect.bookUrl)
-                    }
+                    onOpenInfoEdit(effect.bookUrl)
                 }
 
                 is BookInfoEffect.OpenReader -> {
@@ -198,7 +191,9 @@ fun BookInfoRouteScreen(
                     }
                 }
 
-                is BookInfoEffect.OpenToc -> tocActivityResult.launch(effect.bookUrl)
+                is BookInfoEffect.OpenToc -> {
+                    onOpenToc(effect.bookUrl)
+                }
                 is BookInfoEffect.OpenBookSourceEdit -> {
                     onOpenBookSourceEdit(effect.sourceUrl)
                 }
@@ -235,7 +230,7 @@ fun BookInfoRouteScreen(
         anchorKey = effectiveCoverKey,
         backgroundColor = LegadoTheme.colorScheme.background,
         backEnabled = canMorphBack,
-        predictiveBackEnabled = true,
+        predictiveBackEnabled = predictiveBackEnabled,
         hasTargetCover = true,
         onDismiss = dismissBookInfo,
     ) { onCollapse ->
@@ -259,7 +254,7 @@ fun BookInfoRouteScreen(
             onBack = handleBack,
             sharedTransitionScope = null,
             animatedVisibilityScope = null,
-            sharedCoverKey = null,
+            sharedCoverKey = detailCoverKey,
         )
     }
 }

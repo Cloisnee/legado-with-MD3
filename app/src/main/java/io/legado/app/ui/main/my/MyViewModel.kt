@@ -35,6 +35,7 @@ sealed class PrefClickEvent {
     object OpenRoleScriptManage : PrefClickEvent()
     object OpenAudioLibrary : PrefClickEvent()
     object OpenBookSourceManage : PrefClickEvent()
+    object OpenReplaceRules : PrefClickEvent()
     object OpenHighlightTagRule : PrefClickEvent()
     object OpenAbout : PrefClickEvent()
     object ToggleWebService : PrefClickEvent()
