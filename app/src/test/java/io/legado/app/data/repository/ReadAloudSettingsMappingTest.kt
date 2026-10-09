@@ -77,7 +77,7 @@ class ReadAloudSettingsMappingTest {
         assertEquals(90, settings.alSfxCooldownS)
         assertEquals(225, settings.alBgmCooldownS)
         assertEquals(37, settings.alAmbDwellS)
-        assertEquals(10, settings.alChapterSynthCap)
+        assertEquals(50, settings.alChapterSynthCap)
     }
 }
 

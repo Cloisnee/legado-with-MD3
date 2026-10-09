@@ -131,10 +131,15 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 20).coerceIn(0, 100),
     alBgmVolume = compatDsValue(ReadAloudKeys.AlBgmVolume, 20).coerceIn(0, 100),
     // B33.3c：新闸门键未写过时，回退映射旧「音效密度」（low/mid/high → 数值档）
-    alSfxMinGapS = (compatDsInt(PreferKey.alSfxMinGapS) ?: 3).coerceIn(0, 30),
-    alSfxCooldownS = (compatDsInt(PreferKey.alSfxCooldownS) ?: 0).coerceIn(0, 300),
-    alBgmCooldownS = (compatDsInt(PreferKey.alBgmCooldownS) ?: 60).coerceIn(0, 600),
-    alAmbDwellS = (compatDsInt(PreferKey.alAmbDwellS) ?: 15).coerceIn(0, 120),
+    // 新闸门键未写过时回退「旧密度档」映射；无旧键（新装）时由 AL_DENSITY_BASE 提供新默认
+    alSfxMinGapS = (compatDsInt(PreferKey.alSfxMinGapS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[0]).coerceIn(0, 30),
+    alSfxCooldownS = (compatDsInt(PreferKey.alSfxCooldownS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[1]).coerceIn(0, 300),
+    alBgmCooldownS = (compatDsInt(PreferKey.alBgmCooldownS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[2]).coerceIn(0, 600),
+    alAmbDwellS = (compatDsInt(PreferKey.alAmbDwellS)
+        ?: densityMappedValues(compatDsString(LEGACY_KEY_AL_SFX_DENSITY))[3]).coerceIn(0, 120),
     alChapterSynthCap = compatDsValue(ReadAloudKeys.AlChapterSynthCap, 50).coerceIn(0, 50),
 )
 
@@ -231,7 +236,7 @@ private object ReadAloudKeys {
 
 private const val LEGACY_KEY_AL_SFX_DENSITY = "alSfxDensity"
 
-private val AL_DENSITY_BASE = intArrayOf(6, 60, 150, 25)
+private val AL_DENSITY_BASE = intArrayOf(3, 0, 60, 15)
 
 /** 旧密度档 → 新四闸门（最小间隔 / 音效冷却 / BGM 冷却 / 环境驻留） */
 private fun densityMappedValues(density: String?): IntArray = when (density?.lowercase()) {
