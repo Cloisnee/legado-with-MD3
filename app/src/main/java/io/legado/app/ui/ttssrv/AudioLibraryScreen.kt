@@ -126,8 +126,7 @@ private fun sourceTag(a: AudioLibrary.AudioAsset): String = when (a.source) {
 private fun ruleTag(a: AudioLibrary.AudioAsset): String = when {
     a.pattern.isBlank() -> "未填"
     a.isRegex -> "正则"
-    a.patternSource == AudioLibrary.PATTERN_SOURCE_NET -> "词林"
-    else -> "词表"
+    else -> "词林"
 }
 
 private fun modifiedTag(a: AudioLibrary.AudioAsset): String = if (a.modified) "已修改" else "未修改"
@@ -403,9 +402,7 @@ fun AudioLibraryScreen(
             }
             when (fltRule) {
                 "regex" -> list = list.filter { it.isRegex && it.pattern.isNotBlank() }
-                "net" -> list = list.filter {
-                    it.patternSource == AudioLibrary.PATTERN_SOURCE_NET
-                }
+                "net" -> list = list.filter { !it.isRegex && it.pattern.isNotBlank() }
                 "unset" -> list = list.filter { it.pattern.isBlank() }
             }
             when (fltMod) {
@@ -799,11 +796,12 @@ fun AudioLibraryScreen(
                         title = ui.name,
                         subtitle = buildString {
                             append(ui.category)
-                            append(" · ").append(sourceTag(ui))
-                            append(" · ").append(ruleTag(ui))
-                            append(" · ").append(modifiedTag(ui))
-                            append(" · ").append(uploadTag(context, ui))
+                            append("·").append(sourceTag(ui))
+                            append("·").append(ruleTag(ui))
+                            append("·").append(modifiedTag(ui))
+                            append("·").append(uploadTag(context, ui))
                         },
+                        subtitleMaxLines = 2,
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
                         inSelectionMode = inSelectionMode,
@@ -1183,6 +1181,10 @@ private suspend fun pushToCloud(
             CloudWordnetReceiptWatcher.watch(appContext, slug, batch)
             // P1.6.2+（第二刀）：上传账本——记录本批快照；回执后转「已上传」
             runCatching { CloudUploadLedger.record(appContext, batch, ledgerRecords) }
+        }
+        // 提交成功：修改复位（origin=当前）——「未修改·已上传」
+        picked.forEach { a ->
+            runCatching { AudioLibrary.resetModifiedOrigin(appContext, a.id) }
         }
         buildString {
             append("已提交云端处理：上传 ${res.uploaded}、仅并词 ${res.mergeOnly}")

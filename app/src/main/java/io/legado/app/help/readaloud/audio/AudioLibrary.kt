@@ -72,10 +72,20 @@ object AudioLibrary {
         val entry: String = "",
         /** 匹配规则来源：local=本地自编；net=远程下载随带（词林态显示） */
         val patternSource: String = PATTERN_SOURCE_LOCAL,
-        /** 是否修改过（改名 / 改匹配规则 / 切换规则模式；保存时对比旧值置位） */
-        val modified: Boolean = false,
+        /** 基线（首次注册/创建时的值）：与基线不同=已修改，改回原值自动复原 */
+        val originName: String = "",
+        val originPattern: String = "",
+        val originIsRegex: Boolean = true,
+        val originPatternSource: String = PATTERN_SOURCE_LOCAL,
     ) {
         val id: String get() = if (zipRel.isBlank()) relPath else "$zipRel#$entry"
+
+        /** 是否修改过：与基线比对（改回原值自动视为未修改；无基线=未修改） */
+        val modified: Boolean
+            get() = originName.isNotEmpty() && (
+                name != originName || pattern != originPattern ||
+                    isRegex != originIsRegex || patternSource != originPatternSource
+                )
     }
 
     data class ResolvedAsset(val asset: AudioAsset, val file: File)
@@ -203,6 +213,7 @@ object AudioLibrary {
             relPath = relOf(context, f),
             category = categoryOf(relOf(context, f)),
             source = SOURCE_LOCAL,
+            originName = f.nameWithoutExtension,
         )
         missCache.remove(cacheKey)
         return ResolvedAsset(asset, f)
@@ -343,13 +354,27 @@ object AudioLibrary {
     suspend fun updateAsset(context: Context, asset: AudioAsset): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
             val cur = index ?: return@withLock false
-            val old = cur[asset.id] ?: return@withLock false
-            // 「已修改」= 改名 / 改匹配规则 / 切换规则模式（一旦动过即置位；上传确认可复位）
-            val modified = old.modified || old.name != asset.name || old.pattern != asset.pattern ||
-                old.isRegex != asset.isRegex || old.patternSource != asset.patternSource
-            index = cur + (asset.id to asset.copy(modified = modified))
+            if (asset.id !in cur) return@withLock false
+            index = cur + (asset.id to asset)
             persist(context, index.orEmpty().values)
             missCache.clear()
+            true
+        }
+    }
+
+    /** 上传提交成功后：修改复位（origin=当前）——「未修改·已上传」 */
+    suspend fun resetModifiedOrigin(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val cur = index ?: return@withLock false
+            val a = cur[id] ?: return@withLock false
+            val updated = a.copy(
+                originName = a.name,
+                originPattern = a.pattern,
+                originIsRegex = a.isRegex,
+                originPatternSource = a.patternSource,
+            )
+            index = cur + (id to updated)
+            persist(context, index.orEmpty().values)
             true
         }
     }
@@ -752,7 +777,11 @@ object AudioLibrary {
                 zipRel = o.optString("zipRel"),
                 entry = o.optString("entry"),
                 patternSource = o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL },
-                modified = o.optBoolean("modified", false),
+                originName = o.optString("originName"),
+                originPattern = o.optString("originPattern"),
+                originIsRegex = o.optBoolean("originIsRegex", true),
+                originPatternSource = o.optString("originPatternSource")
+                    .ifBlank { PATTERN_SOURCE_LOCAL },
             )
             map[asset.id] = asset
         }
@@ -783,7 +812,14 @@ object AudioLibrary {
                 if (a.zipRel.isNotBlank()) put("zipRel", a.zipRel)
                 if (a.entry.isNotBlank()) put("entry", a.entry)
                 if (a.patternSource == PATTERN_SOURCE_NET) put("patternSource", a.patternSource)
-                if (a.modified) put("modified", true)
+                if (a.originName.isNotEmpty()) {
+                    put("originName", a.originName)
+                    put("originPattern", a.originPattern)
+                    put("originIsRegex", a.originIsRegex)
+                    if (a.originPatternSource != PATTERN_SOURCE_LOCAL) {
+                        put("originPatternSource", a.originPatternSource)
+                    }
+                }
             })
         }
         return JSONObject().apply {
@@ -840,6 +876,7 @@ object AudioLibrary {
                 mtime = f.lastModified(),
                 soundId = recovered.first,
                 aliases = recovered.second,
+                originName = f.nameWithoutExtension,
             )
             map[asset.id] = asset
         }
@@ -927,6 +964,10 @@ object AudioLibrary {
             pattern = if (cleanNet.isNotEmpty()) cleanNet.joinToString("|") else "",
             isRegex = false,
             patternSource = if (cleanNet.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
+            originName = file.nameWithoutExtension,
+            originPattern = if (cleanNet.isNotEmpty()) cleanNet.joinToString("|") else "",
+            originIsRegex = false,
+            originPatternSource = if (cleanNet.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
         )
         index = cur + (asset.id to asset)
         scheduleSave(context.applicationContext)
