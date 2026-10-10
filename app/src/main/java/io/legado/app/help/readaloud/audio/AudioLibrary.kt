@@ -72,6 +72,8 @@ object AudioLibrary {
         val entry: String = "",
         /** 匹配规则来源：local=本地自编；net=远程下载随带（词林态显示） */
         val patternSource: String = PATTERN_SOURCE_LOCAL,
+        /** 是否修改过（改名 / 改匹配规则 / 切换规则模式；保存时对比旧值置位） */
+        val modified: Boolean = false,
     ) {
         val id: String get() = if (zipRel.isBlank()) relPath else "$zipRel#$entry"
     }
@@ -341,8 +343,11 @@ object AudioLibrary {
     suspend fun updateAsset(context: Context, asset: AudioAsset): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
             val cur = index ?: return@withLock false
-            if (asset.id !in cur) return@withLock false
-            index = cur + (asset.id to asset)
+            val old = cur[asset.id] ?: return@withLock false
+            // 「已修改」= 改名 / 改匹配规则 / 切换规则模式（一旦动过即置位；上传确认可复位）
+            val modified = old.modified || old.name != asset.name || old.pattern != asset.pattern ||
+                old.isRegex != asset.isRegex || old.patternSource != asset.patternSource
+            index = cur + (asset.id to asset.copy(modified = modified))
             persist(context, index.orEmpty().values)
             missCache.clear()
             true
@@ -747,6 +752,7 @@ object AudioLibrary {
                 zipRel = o.optString("zipRel"),
                 entry = o.optString("entry"),
                 patternSource = o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL },
+                modified = o.optBoolean("modified", false),
             )
             map[asset.id] = asset
         }
@@ -777,6 +783,7 @@ object AudioLibrary {
                 if (a.zipRel.isNotBlank()) put("zipRel", a.zipRel)
                 if (a.entry.isNotBlank()) put("entry", a.entry)
                 if (a.patternSource == PATTERN_SOURCE_NET) put("patternSource", a.patternSource)
+                if (a.modified) put("modified", true)
             })
         }
         return JSONObject().apply {

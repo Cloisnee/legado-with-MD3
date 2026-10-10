@@ -1671,6 +1671,16 @@ private fun AllocationPage(
                     )
                 },
                 idProvider = { "q_${ctx0}_$it" },
+                resolveIds = { raw ->
+                    // 只认「本舞台」的模型行；划过舞台卡/标题等行一律跳过（空集=不参与），
+                    // 否则会把非模型 key 混进选集、甚至把选集清空导致拖选条消失。
+                    val str0 = raw as? String
+                    if (str0 != null && str0.startsWith("q_${ctx0}_")) {
+                        setOf(str0.removePrefix("q_${ctx0}_"))
+                    } else {
+                        emptySet()
+                    }
+                },
                 modifier = Modifier
                     .fillMaxHeight()
                     .width(60.dp)

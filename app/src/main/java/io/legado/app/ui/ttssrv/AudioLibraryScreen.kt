@@ -6,7 +6,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +45,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -83,7 +89,6 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.rules.RuleListScaffold
-import io.legado.app.ui.widget.components.SplicedColumnGroup
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
@@ -112,6 +117,88 @@ fun AudioLibraryRouteScreen(
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+private fun sourceTag(a: AudioLibrary.AudioAsset): String = when (a.source) {
+    AudioLibrary.SOURCE_GENERATED -> "合成"
+    AudioLibrary.SOURCE_REMOTE -> "远程"
+    else -> "本地"
+}
+
+private fun ruleTag(a: AudioLibrary.AudioAsset): String = when {
+    a.pattern.isBlank() -> "未填"
+    a.isRegex -> "正则"
+    a.patternSource == AudioLibrary.PATTERN_SOURCE_NET -> "词林"
+    else -> "词表"
+}
+
+private fun modifiedTag(a: AudioLibrary.AudioAsset): String = if (a.modified) "已修改" else "未修改"
+
+private fun isUploadedNow(context: android.content.Context, a: AudioLibrary.AudioAsset): Boolean {
+    if (a.source == AudioLibrary.SOURCE_REMOTE) return true
+    if (a.modified) return false
+    val lf = AudioLibrary.fileOf(context.applicationContext, a)
+    if (!lf.isFile) return false
+    return CloudUploadLedger.statusText(
+        context.applicationContext,
+        a.name,
+        if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList(),
+        lf.length(),
+        lf.lastModified(),
+    ).isNotEmpty()
+}
+
+private fun uploadTag(context: android.content.Context, a: AudioLibrary.AudioAsset): String =
+    if (isUploadedNow(context, a)) "已上传" else "未上传"
+
+@Composable
+private fun FilterChipRow(
+    title: String,
+    options: List<Pair<String, String?>>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+    ) {
+        AppText(
+            text = title,
+            style = LegadoTheme.typography.labelMedium,
+            color = LegadoTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 6.dp),
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            options.forEach { (label, value) ->
+                val sel = selected == value
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (sel) LegadoTheme.colorScheme.primaryContainer
+                            else LegadoTheme.colorScheme.onSheetContent,
+                        )
+                        .selectable(
+                            selected = sel,
+                            role = Role.RadioButton,
+                            onClick = { onSelect(value) },
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    AppText(
+                        text = label,
+                        style = LegadoTheme.typography.labelMedium,
+                        color = if (sel) LegadoTheme.colorScheme.onPrimaryContainer
+                        else LegadoTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun AudioLibraryScreen(
     onBack: () -> Unit,
@@ -144,10 +231,11 @@ fun AudioLibraryScreen(
     var mergeTargetId by remember { mutableStateOf<String?>(null) }
     var cloudPushing by remember { mutableStateOf(false) }
     var generatedOnly by rememberSaveable { mutableStateOf(false) }
-    // 组合筛选（作用于当前栏目）：来源 / 上传状态 / 规则来源；每栏单选、跨栏 AND
+    // 组合筛选（作用于当前栏目）：来源 / 规则 / 修改 / 上传；每排单选、跨排 AND
     var fltSource by rememberSaveable { mutableStateOf<String?>(null) }  // null=全部 / "generated"
     var fltUpload by rememberSaveable { mutableStateOf<String?>(null) }  // null=全部 / "uploaded" / "not"
-    var fltRule by rememberSaveable { mutableStateOf<String?>(null) }    // null=全部 / "local" / "net" / "regex"
+    var fltRule by rememberSaveable { mutableStateOf<String?>(null) }    // null=全部 / "regex" / "net" / "unset"
+    var fltMod by rememberSaveable { mutableStateOf<String?>(null) }     // null=全部 / "modified" / "unmodified"
     var filterSheet by rememberSaveable { mutableStateOf(false) }
     var missingSheet by remember { mutableStateOf(false) }
     var missingRows by remember { mutableStateOf<List<AudioMissingRow>>(emptyList()) }
@@ -290,7 +378,7 @@ fun AudioLibraryScreen(
 
     val shownItems = remember(
         allAssets, selectedCategory, searchKey, sortMode, localOrder, generatedOnly,
-        fltSource, fltUpload, fltRule,
+        fltSource, fltUpload, fltRule, fltMod,
     ) {
         val local = localOrder
         if (local != null) {
@@ -301,40 +389,28 @@ fun AudioLibraryScreen(
                 list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
             }
             selectedCategory?.let { c -> list = list.filter { it.category == c } }
-            if (fltSource == "generated") {
-                list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
+            when (fltSource) {
+                "generated" -> list = list.filter { it.source == AudioLibrary.SOURCE_GENERATED }
+                "remote" -> list = list.filter { it.source == AudioLibrary.SOURCE_REMOTE }
+                "local" -> list = list.filter {
+                    it.source != AudioLibrary.SOURCE_GENERATED &&
+                        it.source != AudioLibrary.SOURCE_REMOTE
+                }
             }
             when (fltUpload) {
-                "uploaded", "not" -> {
-                    val uploaded = allAssets.filter { a ->
-                        val lf = AudioLibrary.fileOf(context.applicationContext, a)
-                        lf.isFile && CloudUploadLedger.statusText(
-                            context.applicationContext,
-                            a.name,
-                            if (!a.isRegex && a.pattern.isNotBlank()) {
-                                splitWordList(a.pattern)
-                            } else {
-                                emptyList()
-                            },
-                            lf.length(),
-                            lf.lastModified(),
-                        ).isNotEmpty()
-                    }.map { it.id }.toSet()
-                    list = if (fltUpload == "uploaded") {
-                        list.filter { it.id in uploaded }
-                    } else {
-                        list.filterNot { it.id in uploaded }
-                    }
-                }
+                "uploaded" -> list = list.filter { isUploadedNow(context, it) }
+                "not" -> list = list.filterNot { isUploadedNow(context, it) }
             }
             when (fltRule) {
-                "local" -> list = list.filter {
-                    it.patternSource == AudioLibrary.PATTERN_SOURCE_LOCAL
-                }
+                "regex" -> list = list.filter { it.isRegex && it.pattern.isNotBlank() }
                 "net" -> list = list.filter {
                     it.patternSource == AudioLibrary.PATTERN_SOURCE_NET
                 }
-                "regex" -> list = list.filter { it.isRegex }
+                "unset" -> list = list.filter { it.pattern.isBlank() }
+            }
+            when (fltMod) {
+                "modified" -> list = list.filter { it.modified }
+                "unmodified" -> list = list.filterNot { it.modified }
             }
             val q = searchKey.trim()
             if (q.isNotEmpty()) {
@@ -413,7 +489,7 @@ fun AudioLibraryScreen(
         }
     }
 
-    // 筛选面板（每栏单选、跨栏 AND；作用于当前栏目）
+    // 筛选面板（四排小标签；每排单选、跨排 AND；作用于当前栏目）
     AppModalBottomSheet(
         animateContentSize = false,
         show = filterSheet,
@@ -421,48 +497,34 @@ fun AudioLibraryScreen(
         title = "筛选",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            SplicedColumnGroup(title = "来源") {
-                TinyClickableSettingItem(
-                    title = (if (fltSource == null) "✓ " else "") + "全部（所有音频）",
-                    onClick = { fltSource = null },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltSource == "generated") "✓ " else "") + "合成音频",
-                    onClick = { fltSource = "generated" },
-                )
-            }
-            SplicedColumnGroup(title = "上传状态") {
-                TinyClickableSettingItem(
-                    title = (if (fltUpload == null) "✓ " else "") + "全部",
-                    onClick = { fltUpload = null },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltUpload == "uploaded") "✓ " else "") + "已上传",
-                    onClick = { fltUpload = "uploaded" },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltUpload == "not") "✓ " else "") + "未上传",
-                    onClick = { fltUpload = "not" },
-                )
-            }
-            SplicedColumnGroup(title = "规则来源") {
-                TinyClickableSettingItem(
-                    title = (if (fltRule == null) "✓ " else "") + "全部",
-                    onClick = { fltRule = null },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltRule == "local") "✓ " else "") + "自定义",
-                    onClick = { fltRule = "local" },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltRule == "net") "✓ " else "") + "词林",
-                    onClick = { fltRule = "net" },
-                )
-                TinyClickableSettingItem(
-                    title = (if (fltRule == "regex") "✓ " else "") + "正则",
-                    onClick = { fltRule = "regex" },
-                )
-            }
+            FilterChipRow(
+                title = "来源",
+                options = listOf(
+                    "全部" to null, "远程" to "remote", "合成" to "generated", "本地" to "local",
+                ),
+                selected = fltSource,
+                onSelect = { fltSource = it },
+            )
+            FilterChipRow(
+                title = "规则",
+                options = listOf(
+                    "全部" to null, "正则" to "regex", "词林" to "net", "未填" to "unset",
+                ),
+                selected = fltRule,
+                onSelect = { fltRule = it },
+            )
+            FilterChipRow(
+                title = "修改",
+                options = listOf("全部" to null, "已修改" to "modified", "未修改" to "unmodified"),
+                selected = fltMod,
+                onSelect = { fltMod = it },
+            )
+            FilterChipRow(
+                title = "上传",
+                options = listOf("全部" to null, "已上传" to "uploaded", "未上传" to "not"),
+                selected = fltUpload,
+                onSelect = { fltUpload = it },
+            )
         }
     }
 
@@ -737,41 +799,10 @@ fun AudioLibraryScreen(
                         title = ui.name,
                         subtitle = buildString {
                             append(ui.category)
-                            when (ui.source) {
-                                AudioLibrary.SOURCE_GENERATED -> append(" · 合成")
-                                AudioLibrary.SOURCE_REMOTE -> append(" · 远程")
-                            }
-                            // P1.6.2+（第四刀v3）：匹配规则标识三态（不显示规则内容）
-                            // 正则=自写正则；词林=远程下载随带（未编辑）；自定义=本地自编（编辑过）
-                            if (ui.isRegex && ui.pattern.isNotBlank()) {
-                                append(" · 正则")
-                            } else if (ui.pattern.isNotBlank()) {
-                                append(
-                                    if (ui.patternSource == AudioLibrary.PATTERN_SOURCE_NET) {
-                                        " · 词林"
-                                    } else {
-                                        " · 自定义"
-                                    },
-                                )
-                            }
-                            // P1.6.2+（第二刀）：云端上传状态（已上传 / 待同步；未上传不显示）
-                            runCatching {
-                                val lf = AudioLibrary.fileOf(context.applicationContext, ui)
-                                if (lf.isFile) {
-                                    val cloudLabel = CloudUploadLedger.statusText(
-                                        context.applicationContext,
-                                        ui.name,
-                                        if (!ui.isRegex && ui.pattern.isNotBlank()) {
-                                            splitWordList(ui.pattern)
-                                        } else {
-                                            emptyList()
-                                        },
-                                        lf.length(),
-                                        lf.lastModified(),
-                                    )
-                                    if (cloudLabel.isNotEmpty()) append(" · ").append(cloudLabel)
-                                }
-                            }
+                            append(" · ").append(sourceTag(ui))
+                            append(" · ").append(ruleTag(ui))
+                            append(" · ").append(modifiedTag(ui))
+                            append(" · ").append(uploadTag(context, ui))
                         },
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
