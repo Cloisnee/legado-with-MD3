@@ -115,6 +115,7 @@ fun SelectionItemCard(
         SelectionItemCardContent(
             title = title,
             subtitle = subtitle,
+            subtitleMaxLines = subtitleMaxLines,
             supportingContent = supportingContent,
             isEnabled = isEnabled,
             isSelected = isSelected,
@@ -135,6 +136,7 @@ fun SelectionItemCard(
 fun SelectionItemCardContent(
     title: String,
     subtitle: String? = null,
+    subtitleMaxLines: Int = 1,
     supportingContent: @Composable (() -> Unit)? = null,
     isEnabled: Boolean = true,
     isSelected: Boolean = false,
