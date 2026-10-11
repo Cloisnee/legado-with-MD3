@@ -28,15 +28,6 @@ object AudioPositions {
         return (matchStart.toFloat() / textLength).coerceIn(0.05f, 0.95f)
     }
 
-    /** 本地切分函数：按字数三等分（前/中/后段的字符区间；空串返回三个空区间） */
-    fun splitThirds(text: String): Triple<IntRange, IntRange, IntRange> {
-        val len = text.length
-        if (len <= 0) return Triple(IntRange.EMPTY, IntRange.EMPTY, IntRange.EMPTY)
-        val a = ((len + 2) / 3).coerceAtMost(len)
-        val b = ((2 * len + 2) / 3).coerceAtMost(len)
-        return Triple(0 until a, a until b, b until len)
-    }
-
     /** 片段起点 + 片内比例（pos 映射或规则命中位）→ 所在剧本行的句内比例（钳 0..1） */
     fun ratioOfUnit(
         segStart: Int,

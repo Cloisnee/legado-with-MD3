@@ -69,22 +69,11 @@ class ReadAloudSettingsMappingTest {
         assertEquals(false, settings.finishCurrentChapterAfterTimer)
     }
 
-    @Test
-    fun `旧音效密度档回退映射到新闸门键`() {
-        val settings = mapOf(LEGACY_AL_SFX_DENSITY to "low").toTestPreferences().toReadAloudSettings()
-
-        assertEquals(12, settings.alSfxMinGapS)
-        assertEquals(90, settings.alSfxCooldownS)
-        assertEquals(225, settings.alBgmCooldownS)
-        assertEquals(37, settings.alAmbDwellS)
-        assertEquals(50, settings.alChapterSynthCap)
-    }
 }
 
 private const val CAPSULE_OFFSET_X = "read_aloud_capsule_offset_x"
 private const val CAPSULE_OFFSET_Y = "read_aloud_capsule_offset_y"
 private const val MEDIA_BUTTON_PER_NEXT = "mediaButtonPerNext"
-private const val LEGACY_AL_SFX_DENSITY = "alSfxDensity"
 
 private fun readAloudMappingSamples(): List<ReadAloudSettings> {
     val base = ReadAloudSettings(

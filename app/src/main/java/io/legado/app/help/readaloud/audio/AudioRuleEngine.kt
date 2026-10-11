@@ -169,24 +169,3 @@ object AudioRuleEngine {
         return null
     }
 }
-
-/**
- * B33.3d · 兜底层启用口径（「四条件」，B33 方案 §8.1）：
- *
- *  ① 本章无 AI 音频计划（未分析 / 无标记）
- *  ② AI 分析失败（回退）
- *  ③ 未配置音频导演模型（AI 不可用）
- *  ④ 首章 或 非连续章节（跳读 / 快速播放链）
- *
- * 任一满足 → 本地规则层驱动四轨；AI 计划就绪且非上述情形 → 由计划层接管（B33.4 接线）。
- */
-object AudioFallbackPolicy {
-
-    fun shouldUseRules(
-        hasPlan: Boolean,
-        aiFailed: Boolean = false,
-        aiConfigured: Boolean = true,
-        isFirstChapter: Boolean = false,
-        isNonContiguous: Boolean = false,
-    ): Boolean = !hasPlan || aiFailed || !aiConfigured || isFirstChapter || isNonContiguous
-}

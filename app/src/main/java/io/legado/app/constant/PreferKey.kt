@@ -446,7 +446,7 @@ object PreferKey {
     const val alSfxVolume = "alSfxVolume"
     const val alAmbVolume = "alAmbVolume"
     const val alBgmVolume = "alBgmVolume"
-    // B33.3c：补缺闸门滑条（替代旧「音效密度」低/中/高；旧键 alSfxDensity 一次性迁移后废弃）
+    // 音效/环境闸门（最小间隔、同素材冷却、BGM 冷却、环境驻留）
     const val alSfxMinGapS = "alSfxMinGapS"
     const val alSfxCooldownS = "alSfxCooldownS"
     const val alBgmCooldownS = "alBgmCooldownS"

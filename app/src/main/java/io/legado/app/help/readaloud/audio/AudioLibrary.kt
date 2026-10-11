@@ -307,49 +307,6 @@ object AudioLibrary {
         runCatching { SfxLoudnessNormalizer.ensureMeasured(context, file) }
     }
 
-    /** B33.3d/2c：规则表就绪后回填（名称→soundId 反查 + soundId→名称/别名），只补不覆盖 */
-    suspend fun backfillFromRules(
-        context: Context,
-        namesOf: (String) -> List<String>,
-        sidOfName: (String) -> String = { "" },
-    ): Int {
-        ensureLoaded(context)
-        return withContext(Dispatchers.IO) {
-            lock.withLock {
-                val cur = index ?: return@withLock 0
-                var changed = 0
-                val next = LinkedHashMap<String, AudioAsset>(cur.size)
-                cur.values.forEach { a ->
-                    var soundId = a.soundId
-                    var aliases = a.aliases
-                    if (soundId.isBlank()) {
-                        soundId = runCatching { sidOfName(a.name) }.getOrDefault("")
-                    }
-                    if (aliases.isEmpty() && soundId.isNotBlank()) {
-                        aliases = runCatching { namesOf(soundId) }.getOrDefault(emptyList())
-                            .asSequence()
-                            .filter { it.isNotBlank() && it != a.name }
-                            .distinct()
-                            .take(12)
-                            .toList()
-                    }
-                    if (soundId != a.soundId || aliases != a.aliases) {
-                        next[a.id] = a.copy(soundId = soundId, aliases = aliases)
-                        changed++
-                    } else {
-                        next[a.id] = a
-                    }
-                }
-                if (changed > 0) {
-                    index = next
-                    persist(context, next.values)
-                    missCache.clear()
-                }
-                changed
-            }
-        }
-    }
-
     /** 更新单个条目（编辑保存：名称 / 分组 / 规则 / 参数等） */
     suspend fun updateAsset(context: Context, asset: AudioAsset): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {

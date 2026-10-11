@@ -1642,7 +1642,6 @@ class TtsServerCenterRepository(private val app: Application) {
                 runCatching { JSONObject(f.readText().removePrefix("\uFEFF")) }
                     .getOrElse { JSONObject() }
             } else JSONObject()
-            o.remove("activeVoiceBank")
             o.put("activeVoiceBanks", org.json.JSONArray(names.distinct()))
             f.parentFile?.mkdirs()
             f.writeText(o.toString())
