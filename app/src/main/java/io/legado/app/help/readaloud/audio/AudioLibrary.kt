@@ -777,11 +777,26 @@ object AudioLibrary {
                 zipRel = o.optString("zipRel"),
                 entry = o.optString("entry"),
                 patternSource = o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL },
-                originName = o.optString("originName"),
-                originPattern = o.optString("originPattern"),
-                originIsRegex = o.optBoolean("originIsRegex", true),
-                originPatternSource = o.optString("originPatternSource")
-                    .ifBlank { PATTERN_SOURCE_LOCAL },
+                // 基线回填：旧数据无 origin 时，以当前值作为基线（此后修改即对比正确）
+                // ——「未修改」起点=入库值；改名/改规则→已修改，改回原值→自动复原
+                originName = o.optString("originName").ifBlank {
+                    o.optString("name").ifBlank { rel.substringAfterLast('/') }
+                },
+                originPattern = if (o.optString("originName").isNotBlank()) {
+                    o.optString("originPattern")
+                } else {
+                    o.optString("pattern")
+                },
+                originIsRegex = if (o.optString("originName").isNotBlank()) {
+                    o.optBoolean("originIsRegex", true)
+                } else {
+                    o.optBoolean("isRegex", true)
+                },
+                originPatternSource = if (o.optString("originName").isNotBlank()) {
+                    o.optString("originPatternSource").ifBlank { PATTERN_SOURCE_LOCAL }
+                } else {
+                    o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL }
+                },
             )
             map[asset.id] = asset
         }

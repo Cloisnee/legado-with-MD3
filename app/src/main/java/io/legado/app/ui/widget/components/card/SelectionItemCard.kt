@@ -60,7 +60,6 @@ fun SelectionItemCard(
     title: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    subtitleMaxLines: Int = 1,
     supportingContent: @Composable (() -> Unit)? = null,
     isEnabled: Boolean = true,
     isSelected: Boolean = false,
@@ -115,7 +114,6 @@ fun SelectionItemCard(
         SelectionItemCardContent(
             title = title,
             subtitle = subtitle,
-            subtitleMaxLines = subtitleMaxLines,
             supportingContent = supportingContent,
             isEnabled = isEnabled,
             isSelected = isSelected,
@@ -136,7 +134,6 @@ fun SelectionItemCard(
 fun SelectionItemCardContent(
     title: String,
     subtitle: String? = null,
-    subtitleMaxLines: Int = 1,
     supportingContent: @Composable (() -> Unit)? = null,
     isEnabled: Boolean = true,
     isSelected: Boolean = false,
@@ -201,7 +198,7 @@ fun SelectionItemCardContent(
                         AppText(
                             text = subtitle,
                             style = LegadoTheme.typography.bodySmall,
-                            maxLines = subtitleMaxLines,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -217,7 +214,7 @@ fun SelectionItemCardContent(
                             AppText(
                                 text = subtitle,
                                 style = LegadoTheme.typography.bodySmall,
-                                maxLines = subtitleMaxLines,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
@@ -296,7 +293,6 @@ fun LazyItemScope.ReorderableSelectionItem(
     title: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    subtitleMaxLines: Int = 1,
     supportingContent: @Composable (() -> Unit)? = null,
     isEnabled: Boolean = true,
     isSelected: Boolean = false,
@@ -337,7 +333,6 @@ fun LazyItemScope.ReorderableSelectionItem(
         SelectionItemCard(
             title = title,
             subtitle = subtitle,
-            subtitleMaxLines = subtitleMaxLines,
             supportingContent = supportingContent,
             isEnabled = isEnabled,
             isSelected = isSelected,

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -123,6 +124,13 @@ private fun sourceTag(a: AudioLibrary.AudioAsset): String = when (a.source) {
     else -> "本地"
 }
 
+/** ① 卡片小字·类别代号：环境声→AMB、音效→SFX（短代号让卡片尺寸统一；BGM 本身即代号） */
+private fun laneTag(a: AudioLibrary.AudioAsset): String = when (a.category) {
+    "环境声" -> "AMB"
+    "音效" -> "SFX"
+    else -> a.category
+}
+
 private fun ruleTag(a: AudioLibrary.AudioAsset): String = when {
     a.pattern.isBlank() -> "未填"
     a.isRegex -> "正则"
@@ -166,32 +174,41 @@ private fun FilterChipRow(
             color = LegadoTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 6.dp),
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            options.forEach { (label, value) ->
-                val sel = selected == value
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (sel) LegadoTheme.colorScheme.primaryContainer
-                            else LegadoTheme.colorScheme.onSheetContent,
+        // ⑧ 等大矩形标签：宽度＝「一行四个」的平均宽（右侧留 1 个间距富余，不撑满左右边界）；
+        //    R 角/上下高度对齐「音频编辑页·使用正则」小标签（12dp 圆角 + 垂直 8dp + labelMediumEmphasized）
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val gap = 8.dp
+            val itemWidth = (maxWidth - gap * 4) / 4
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(gap),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                options.forEach { (label, value) ->
+                    val sel = selected == value
+                    Box(
+                        modifier = Modifier
+                            .width(itemWidth)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (sel) LegadoTheme.colorScheme.primaryContainer
+                                else LegadoTheme.colorScheme.onSheetContent,
+                            )
+                            .selectable(
+                                selected = sel,
+                                role = Role.RadioButton,
+                                onClick = { onSelect(value) },
+                            )
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AppText(
+                            text = label,
+                            style = LegadoTheme.typography.labelMediumEmphasized,
+                            maxLines = 1,
+                            color = if (sel) LegadoTheme.colorScheme.onPrimaryContainer
+                            else LegadoTheme.colorScheme.onSurface,
                         )
-                        .selectable(
-                            selected = sel,
-                            role = Role.RadioButton,
-                            onClick = { onSelect(value) },
-                        )
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    AppText(
-                        text = label,
-                        style = LegadoTheme.typography.labelMedium,
-                        color = if (sel) LegadoTheme.colorScheme.onPrimaryContainer
-                        else LegadoTheme.colorScheme.onSurface,
-                    )
+                    }
                 }
             }
         }
@@ -795,13 +812,12 @@ fun AudioLibraryScreen(
                         onMoveItem = { from, to -> moveLocal(from, to) },
                         title = ui.name,
                         subtitle = buildString {
-                            append(ui.category)
+                            append(laneTag(ui))
                             append("·").append(sourceTag(ui))
                             append("·").append(ruleTag(ui))
                             append("·").append(modifiedTag(ui))
                             append("·").append(uploadTag(context, ui))
                         },
-                        subtitleMaxLines = 2,
                         isEnabled = ui.enabled,
                         isSelected = selectedIds.contains(ui.id),
                         inSelectionMode = inSelectionMode,
