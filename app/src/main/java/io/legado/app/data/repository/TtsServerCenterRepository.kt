@@ -15,6 +15,7 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
+import io.legado.app.help.readaloud.audio.SfxLoudnessNormalizer
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
@@ -183,6 +184,25 @@ class TtsServerCenterRepository(private val app: Application) {
      */
     suspend fun ensureRoleTypesFrozen(): Int = withContext(Dispatchers.IO) {
         runCatching {
+            // 快路径：基于（缓存）当前结构判断是否还存在「缺 roleType 且有标签」的分组——
+            // 常规（早已冻结）零额外解析；慢路径仅在首次/手工清过 roleType 时执行。
+            val cached = TtsConfigStore.loadVoices(ctx)
+            var needFreeze = false
+            loop@ for (i in 0 until cached.length()) {
+                val grp = cached.optJSONObject(i) ?: continue@loop
+                val gObj = grp.optJSONObject("group") ?: continue@loop
+                if (VoiceBankRoleType.normalize(gObj.optString("roleType")).isNotBlank()) continue@loop
+                val list = grp.optJSONArray("list") ?: continue@loop
+                for (j in 0 until list.length()) {
+                    val tag = list.optJSONObject(j)?.optJSONObject("config")
+                        ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
+                    if (tag.isNotEmpty()) {
+                        needFreeze = true
+                        break@loop
+                    }
+                }
+            }
+            if (!needFreeze) return@runCatching 0
             val file = TtsConfigStore.voicesFile(ctx)
             if (!file.exists()) return@runCatching 0
             val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
@@ -1585,11 +1605,14 @@ class TtsServerCenterRepository(private val app: Application) {
                 o.remove("loudnessBalance")
                 f.writeText(o.toString())
             }
-            listOf("loudness_stats.json", "loudness_learn.json").forEach { name ->
+            // ⑥ 两类一起清：声线响度（loudness_stats.json）与 声效/环境响度（sfx_loudness_stats.json）
+            listOf("loudness_stats.json", "loudness_learn.json", "sfx_loudness_stats.json").forEach { name ->
                 runCatching {
                     File(TtsDirProvider.baseDir(ctx), name).takeIf { it.exists() }?.delete()
                 }
             }
+            // 声效响度对象持有内存态：同步清空（否则本次会话仍按旧数据调增益）
+            runCatching { SfxLoudnessNormalizer.onDataReset() }
             true
         }.getOrDefault(false)
     }

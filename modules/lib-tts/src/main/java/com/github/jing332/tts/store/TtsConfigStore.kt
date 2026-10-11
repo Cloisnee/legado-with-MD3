@@ -47,14 +47,40 @@ object TtsConfigStore {
         }.onFailure { KLog.logger(TAG).debug { "write failed: ${file.name}: ${it.message}" } }
     }
 
-    // ---------------- 插件 ----------------
-    fun pluginsFile(context: Context) = File(storeDir(context), "plugins.json")
+    // ---------------- 解析缓存 ----------------
+    // plugins.json（可达数 MB）/ voices.json（数百 KB）的每次全量解析是列表页载入卡顿的主因；
+    // 以「mtime×31+length」为键缓存解析结果——任何写盘都会改变键，下次读取自动重读。
+    // 约定：load* 返回值一律"只读"使用；写路径自行读文件（parseFile），不经过缓存。
 
-    fun loadPlugins(context: Context): JSONArray {
-        val t = readSafe(pluginsFile(context)).trim()
+    private class ParseCache {
+        var key: Long = Long.MIN_VALUE
+        var data: JSONArray? = null
+    }
+
+    private val pluginsCache = ParseCache()
+    private val voicesCache = ParseCache()
+
+    private fun parseFile(file: File): JSONArray {
+        val t = readSafe(file).trim()
         if (t.isEmpty()) return JSONArray()
         return runCatching { JSONArray(t) }.getOrElse { JSONArray() }
     }
+
+    private fun cachedParse(file: File, cache: ParseCache): JSONArray {
+        val key = if (file.exists()) file.lastModified() * 31L + file.length() else Long.MIN_VALUE
+        synchronized(cache) {
+            cache.data?.let { if (cache.key == key) return it }
+            val arr = parseFile(file)
+            cache.key = key
+            cache.data = arr
+            return arr
+        }
+    }
+
+    // ---------------- 插件 ----------------
+    fun pluginsFile(context: Context) = File(storeDir(context), "plugins.json")
+
+    fun loadPlugins(context: Context): JSONArray = cachedParse(pluginsFile(context), pluginsCache)
 
     private fun effectivePluginId(o: JSONObject): String =
         o.optString("pluginId").takeIf { it.isNotBlank() }
@@ -63,7 +89,7 @@ object TtsConfigStore {
 
     /** 合并导入：同 pluginId 覆盖，否则追加。返回 新增/覆盖/跳过 */
     fun importPlugins(context: Context, incoming: JSONArray): Triple<Int, Int, Int> {
-        val current = loadPlugins(context)
+        val current = parseFile(pluginsFile(context))
         val ordered = linkedMapOf<String, JSONObject>()
         for (i in 0 until current.length()) {
             val o = current.optJSONObject(i) ?: continue
@@ -143,15 +169,11 @@ object TtsConfigStore {
     // ---------------- 配置列表/声线池 ----------------
     fun voicesFile(context: Context) = File(storeDir(context), "voices.json")
 
-    fun loadVoices(context: Context): JSONArray {
-        val t = readSafe(voicesFile(context)).trim()
-        if (t.isEmpty()) return JSONArray()
-        return runCatching { JSONArray(t) }.getOrElse { JSONArray() }
-    }
+    fun loadVoices(context: Context): JSONArray = cachedParse(voicesFile(context), voicesCache)
 
     /** 合并导入：group 按 id 合并，list 条目按 id 覆盖/追加。返回 新增条目/覆盖条目/新增分组 */
     fun importVoices(context: Context, incoming: JSONArray): Triple<Int, Int, Int> {
-        val current = loadVoices(context)
+        val current = parseFile(voicesFile(context))
         val groups = linkedMapOf<String, JSONObject>()
         for (i in 0 until current.length()) {
             val g = current.optJSONObject(i) ?: continue
@@ -231,7 +253,7 @@ object TtsConfigStore {
 
     /** 删除某 tag 对应配置；true=删除成功 */
     fun deleteConfig(context: Context, engineId: String, tag: String): Boolean {
-        val arr = loadVoices(context)
+        val arr = parseFile(voicesFile(context))
         var changed = false
         for (g in 0 until arr.length()) {
             val grp = arr.optJSONObject(g) ?: continue
@@ -251,7 +273,7 @@ object TtsConfigStore {
 
     /** 改配置显示名；true=修改成功 */
     fun updateDisplayName(context: Context, engineId: String, tag: String, newName: String): Boolean {
-        val arr = loadVoices(context)
+        val arr = parseFile(voicesFile(context))
         var changed = false
         for (g in 0 until arr.length()) {
             val list = arr.optJSONObject(g)?.optJSONArray("list") ?: continue

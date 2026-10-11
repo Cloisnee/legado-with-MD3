@@ -340,13 +340,21 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
+    // ⑤ 列表性能：大列表派生量随数据缓算（原实现每次重组全量遍历/线性查找，条目多时掉帧）
+    val pluginNameById = remember(plugins) { plugins.associate { it.pluginId to it.name } }
+    val missingPluginIds = remember(groups, plugins) {
+        groups.flatMap { it.entries }.map { it.pluginId }
+            .filter { it.isNotBlank() }.toSet() -
+            plugins.map { it.pluginId }.toSet()
+    }
+    val groupEntryKeys = remember(groups) { groups.map { g -> g.entries.map { entryKeyOf(it) } } }
+
     fun uniqueEntryList(src: List<EntryRow>): List<EntryRow> {
         val seen = HashSet<String>()
         return src.filter { seen.add(entryKeyOf(it)) }
     }
 
-    fun pluginNameOf(id: String): String =
-        plugins.firstOrNull { it.pluginId == id }?.name ?: id
+    fun pluginNameOf(id: String): String = pluginNameById[id] ?: id
 
     fun matchedEntries(): List<EntryRow> {
         val all = groups.flatMap { it.entries }
@@ -1023,15 +1031,12 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         )
                     }
                 } else {
-                    val missingIds = groups.flatMap { it.entries }.map { it.pluginId }
-                        .filter { it.isNotBlank() }.toSet() -
-                            plugins.map { it.pluginId }.toSet()
-                    if (missingIds.isNotEmpty()) {
+                    if (missingPluginIds.isNotEmpty()) {
                         item {
                             SplicedColumnGroup(title = "⚠ 缺失插件") {
                                 TinyClickableSettingItem(
-                                    title = "有 ${missingIds.size} 个插件未安装",
-                                    description = missingIds.joinToString() +
+                                    title = "有 ${missingPluginIds.size} 个插件未安装",
+                                    description = missingPluginIds.joinToString() +
                                             "（相关声线合成会失败；导入对应插件即可）",
                                     onClick = {},
                                 )
@@ -1085,7 +1090,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         }
                     } else {
                         groups.forEachIndexed { gi, g ->
-                            val groupKeys = g.entries.map { entryKeyOf(it) }
+                            val groupKeys = groupEntryKeys.getOrElse(gi) { emptyList() }
                             item(key = "g_${gi}_${g.name}") {
                                 val gSel = groupKeyOf(g) in selGroupNames
                                 LevelRow(

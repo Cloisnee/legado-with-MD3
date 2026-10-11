@@ -69,6 +69,12 @@ object SfxLoudnessNormalizer {
         baseDirPath = TtsDirProvider.baseDir(app).absolutePath
     }
 
+    /** 「重置响度数据」链路：清空内存学习结果（磁盘文件由调用方统一删除；之后播放会重新学习） */
+    fun onDataReset() = synchronized(lock) {
+        items.clear()
+        loaded = true
+    }
+
     /** 已学习声效条数（日志展示用） */
     fun learnedCount(): Int = synchronized(lock) {
         runCatching {
