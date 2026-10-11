@@ -173,7 +173,7 @@ class AudioSynthQueue(
         // P1.5：同栏严格——仅取任务同轨素材（异栏命中视为未命中，继续走合成）
         val remoteFile = runCatching {
             val net = AudioNetStore.lookupForLane(task.keyword, task.lane)
-            if (net != null) AudioNetStore.fetchAsset(appContext, net) else null
+            if (net != null) AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) else null
         }.getOrNull()
         if (remoteFile != null) {
             val rel = runCatching {

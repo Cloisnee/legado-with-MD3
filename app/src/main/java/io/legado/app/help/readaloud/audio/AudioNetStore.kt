@@ -97,6 +97,60 @@ object AudioNetStore {
     /** 词网快照（远程素材库页/镜像用） */
     fun snapshot(): List<NetAsset> = byId.values.sortedBy { it.id }
 
+    /** 云端当前名（按云端 id 查；未加载/未命中 → null） */
+    fun nameOf(id: String): String? = byId[id]?.name
+
+    /**
+     * 批212 · 族类多变体下载选择：以已选中条目为基准，在「同栏同族」成员中
+     * **优先选本地未下载者并随机取一**（全已下载时随机取一）；无族/异常时原样返回。
+     * （修此前恒选 _01 的行为）
+     */
+    fun rollVariant(context: Context, base: NetAsset): NetAsset = runCatching {
+        val key = normalizeFamilyKey(base.name)
+        val fam = byId.values.filter {
+            it.lane == base.lane && normalizeFamilyKey(it.name) == key
+        }
+        if (fam.size <= 1) return@runCatching base
+        val pending = fam.filter { !isDownloaded(context, it) }
+        (pending.ifEmpty { fam }).random()
+    }.getOrDefault(base)
+
+    /** 族基名（去尾部全部 _N 段；与本地系列口径一致） */
+    private fun normalizeFamilyKey(name: String): String {
+        var t = name.trim()
+        var cut = true
+        while (cut) {
+            cut = false
+            val i = t.lastIndexOf('_')
+            if (i > 0 && i < t.length - 1 && t.substring(i + 1).all { it.isDigit() }) {
+                t = t.substring(0, i)
+                cut = true
+            }
+        }
+        return t.ifBlank { name.trim() }
+    }
+
+    /** 该词网条目是否已下载落库（落库名=fetchAsset 同款公式） */
+    private fun isDownloaded(context: Context, na: NetAsset): Boolean = runCatching {
+        val root = TmDemoAssets.libRoot(context)
+        val ext = na.file.substringAfterLast('.', "mp3").lowercase()
+        val baseName = na.file.substringAfterLast('/').substringBeforeLast('.')
+        val name = sanitizeGeneratedName(baseName.ifBlank { na.name }) + "." + ext
+        File(root, "${folderOf(na.lane)}/$name").isFile
+    }.getOrDefault(false)
+
+    /** 反查：给定云端 id 集 → 关联词（含各 id 主名；ADULT 开关开启时并入 ADULT 池） */
+    fun wordsForIds(ids: Set<String>): List<String> {
+        if (ids.isEmpty()) return emptyList()
+        val out = LinkedHashSet<String>()
+        ids.forEach { id -> byId[id]?.let { out.add(it.name) } }
+        aliasToIds.forEach { (alias, list) -> if (list.any { it in ids }) out.add(alias) }
+        if (adultEnabled()) {
+            aliasToIdsAdult.forEach { (alias, list) -> if (list.any { it in ids }) out.add(alias) }
+        }
+        return out.toList()
+    }
+
     /** 媒体 URL（媒体根 + 逐段编码） */
     fun urlOf(file: String): String = BASE + encodePath(file)
 

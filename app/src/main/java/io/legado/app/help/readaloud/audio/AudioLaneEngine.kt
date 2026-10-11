@@ -276,7 +276,7 @@ class AudioLaneEngine(
             val local = AudioBgmPicker.pickLocal(appContext, q)
             val net = if (local == null) AudioBgmPicker.pickNet(q) else null
             if (local == null && net != null) {
-                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
             }
             val keyword = local?.asset?.name
                 ?: AudioLibrary.resolve(appContext, bgmItem.tag)?.asset?.name
@@ -323,7 +323,7 @@ class AudioLaneEngine(
                 AudioLibrary.resolveForLane(appContext, it.name, SynthLane.SFX)
             }
             if (resolved == null && net != null) {
-                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
             }
             if (resolved == null) {
                 markMissing("音效", keyword, item.desc)
@@ -413,7 +413,7 @@ class AudioLaneEngine(
                         AudioNetStore.lookup(desired)
                     }
                     if (net != null) {
-                        scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
+                        scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
                         resolved = if (kind == "环境") {
                             AudioLibrary.resolveForLane(appContext, net.name, SynthLane.AMB)
                         } else {

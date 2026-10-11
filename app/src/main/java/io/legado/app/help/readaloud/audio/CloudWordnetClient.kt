@@ -38,6 +38,12 @@ object CloudWordnetClient {
         val ext: String,
         /** 第三刀：改名修订——上次上传名（与当前名不同时非空；云端据此重命名而非新建/并词） */
         val renamedFrom: String? = null,
+        /** 批212：云端身份（本地 soundId；云端据此精确定位旧条目做「照单更新」） */
+        val cloudId: String? = null,
+        /** 批212·C1：改类型且未动规则 → 清空该条目全部别名映射 */
+        val clearAliases: Boolean = false,
+        /** 批212：已编辑条目 → 词映射按本集全量对齐（增减一致；不再"只增不删"） */
+        val replaceWords: Boolean = false,
     )
 
     data class PushResult(
@@ -110,6 +116,9 @@ object CloudWordnetClient {
                     put("aliases", JSONArray(item.aliases))
                     put("asset", assetName ?: JSONObject.NULL)
                     if (item.renamedFrom != null) put("renamedFrom", item.renamedFrom)
+                    if (item.cloudId != null) put("cloudId", item.cloudId)
+                    if (item.clearAliases) put("clearAliases", true)
+                    if (item.replaceWords) put("replaceWords", true)
                 })
             }
             val payload = JSONObject().apply {

@@ -1149,25 +1149,36 @@ private suspend fun pushToCloud(
     val ledgerRecords = ArrayList<CloudUploadLedger.Record>(picked.size)
     picked.forEach { a ->
         val lane = AudioLibrary.laneOf(a)
+        // 批212：编辑检测（对比基线）——有编辑的条目走「照单更新」（改名/改类型/词全量对齐）
+        val nameChanged = a.originName.isNotEmpty() && a.name != a.originName
+        val ruleChanged = a.originName.isNotEmpty() && (
+            a.pattern != a.originPattern || a.isRegex != a.originIsRegex ||
+                a.patternSource != a.originPatternSource
+            )
+        val laneChanged = a.originCategory.isNotEmpty() && a.category != a.originCategory
+        val hasEdits = nameChanged || ruleChanged || laneChanged
+        val cloudName = a.soundId.takeIf { it.isNotBlank() }?.let { AudioNetStore.nameOf(it) }
+        val lf = AudioLibrary.fileOf(appContext, a)
+        val lfSize = runCatching { lf.length() }.getOrDefault(0L)
+        val lfMtime = runCatching { lf.lastModified() }.getOrDefault(0L)
+        // 改名来源（优先级）：云端实名（最准）→ 账本 → 基线兜底
+        val renamedFrom = cloudName?.takeIf { it != a.name }
+            ?: CloudUploadLedger.lastDifferentName(appContext, a.name, lfSize, lfMtime)
+            ?: (if (nameChanged) a.originName else null)
         val matched = (lane to a.name) in netKeys
-        val filePath = if (matched) {
+        // 有编辑的条目：即使云端已有同名也照发（变更单）；无文件时云端用同 blob 树级重命名
+        val filePath = if (matched && !hasEdits) {
             null
         } else {
-            val f = AudioLibrary.fileOf(appContext, a)
-            if (a.zipRel.isBlank() && f.isFile && f.length() > 0L) f.absolutePath else null
+            if (a.zipRel.isBlank() && lf.isFile && lf.length() > 0L) lf.absolutePath else null
         }
-        if (!matched && filePath == null) {
+        if (!matched && !hasEdits && filePath == null) {
             skipped++
             return@forEach
         }
         val ext = a.relPath.substringAfterLast('.', "mp3").lowercase()
             .let { if (it in setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")) it else "mp3" }
         val words = if (!a.isRegex && a.pattern.isNotBlank()) splitWordList(a.pattern) else emptyList()
-        val lf = AudioLibrary.fileOf(appContext, a)
-        val lfSize = runCatching { lf.length() }.getOrDefault(0L)
-        val lfMtime = runCatching { lf.lastModified() }.getOrDefault(0L)
-        // 第三刀：改名修订——账本显示上次上传名与当前不同 → 云端重命名（而非新建/并词）
-        val renamedFrom = CloudUploadLedger.lastDifferentName(appContext, a.name, lfSize, lfMtime)
         items += CloudWordnetClient.Item(
             name = a.name,
             lane = lane,
@@ -1177,6 +1188,11 @@ private suspend fun pushToCloud(
             filePath = filePath,
             ext = ext,
             renamedFrom = renamedFrom,
+            cloudId = a.soundId.takeIf { it.isNotBlank() },
+            // C1：改类型且未动主名/规则 → 云端清空该条目全部别名映射
+            clearAliases = laneChanged && !nameChanged && !ruleChanged,
+            // 有编辑 → 词映射按本集全量对齐（增减一致）
+            replaceWords = hasEdits,
         )
         ledgerRecords += CloudUploadLedger.Record(
             name = a.name,

@@ -34,6 +34,57 @@ object AudioSeries {
         }
     }
 
+    /** 变体号：尾部 _N（无后缀=1；取最后一段数字，如 推门_2_2 → 2） */
+    fun variantOf(name: String): Int {
+        val t = name.trim()
+        val i = t.lastIndexOf('_')
+        if (i <= 0 || i >= t.length - 1) return 1
+        return t.substring(i + 1).toIntOrNull() ?: 1
+    }
+
+    /** 云端 id 尾号（SFX_打雷_02 → 2；无尾号 → 1） */
+    private fun variantFromId(id: String): Int =
+        id.substringAfterLast('_').toIntOrNull() ?: 1
+
+    /** 同族·云端成员（含未下载；同栏口径=显示名；excludeCloudId=本地条目的 soundId） */
+    fun cloudFamilyMembers(lane: String, key: String, excludeCloudId: String): List<AudioNetStore.NetAsset> =
+        runCatching {
+            AudioNetStore.snapshot().filter {
+                it.id != excludeCloudId &&
+                    AudioRemoteCatalog.laneNameOf(it.lane) == lane &&
+                    seriesKey(it.name) == key
+            }
+        }.getOrDefault(emptyList())
+
+    /** 同族·本地成员（不含本条） */
+    fun localFamilyMembers(lane: String, key: String, selfId: String): List<AudioLibrary.AudioAsset> =
+        AudioLibrary.snapshot().filter {
+            it.id != selfId && AudioLibrary.laneOf(it) == lane && seriesKey(it.name) == key
+        }
+
+    /** 族最大号（云端含未下载 + 本地 取最大） */
+    fun maxVariant(lane: String, key: String, selfId: String, selfCloudId: String): Int {
+        var max = 0
+        cloudFamilyMembers(lane, key, selfCloudId).forEach {
+            max = maxOf(max, variantFromId(it.id), variantOf(it.name))
+        }
+        localFamilyMembers(lane, key, selfId).forEach {
+            max = maxOf(max, variantOf(it.name))
+        }
+        return max
+    }
+
+    /** 族词集（云端成员关联词 ∪ 本地成员词；「抄同族别名」用） */
+    fun familyWords(lane: String, key: String, selfId: String, selfCloudId: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val cloudIds = cloudFamilyMembers(lane, key, selfCloudId).map { it.id }.toSet()
+        out += AudioNetStore.wordsForIds(cloudIds)
+        localFamilyMembers(lane, key, selfId).forEach { a ->
+            out += wordsOf(a)
+        }
+        return out.toList()
+    }
+
     /**
      * 跨系列冲突（硬拦截用）：
      * added 词中，与「同栏、非同系列」条目的词集重复者 → (词, 占用条目名)。
@@ -62,22 +113,28 @@ object AudioSeries {
         return out.distinctBy { it.first }
     }
 
-    /** 同步加词给同系列成员：返回实际同步条目数（跳过正则条目/已含全部词者） */
-    suspend fun syncWordsToSeries(
+    /**
+     * B2 · 全族词集同步（增 + 减）：把本条目词集的增减应用到同系列其它成员
+     * （正则条目不动；返回实际变更条目数）。
+     */
+    suspend fun syncWordsDelta(
         context: Context,
         self: AudioLibrary.AudioAsset,
         add: List<String>,
+        remove: List<String>,
     ): Int {
         val addClean = add.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (addClean.isEmpty()) return 0
+        val remSet = remove.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        if (addClean.isEmpty() && remSet.isEmpty()) return 0
         var n = 0
         for (m in members(context, self)) {
             if (m.isRegex) continue // 正则条目不动
             val before = wordsOf(m)
-            val merged = (before + addClean).distinct()
-            if (merged.size == before.size) continue // 无新增
+            var after = (before + addClean).distinct()
+            if (remSet.isNotEmpty()) after = after.filter { it !in remSet }
+            if (after == before) continue
             runCatching {
-                AudioLibrary.updateAsset(context, m.copy(pattern = joinWords(merged)))
+                AudioLibrary.updateAsset(context, m.copy(pattern = joinWords(after)))
             }.onSuccess { if (it) n++ }
         }
         return n

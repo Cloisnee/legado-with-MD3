@@ -77,6 +77,8 @@ object AudioLibrary {
         val originPattern: String = "",
         val originIsRegex: Boolean = true,
         val originPatternSource: String = PATTERN_SOURCE_LOCAL,
+        /** 基线·类型（音效/环境声/BGM；用于「改类型→同步云端」识别） */
+        val originCategory: String = "",
     ) {
         val id: String get() = if (zipRel.isBlank()) relPath else "$zipRel#$entry"
 
@@ -84,7 +86,8 @@ object AudioLibrary {
         val modified: Boolean
             get() = originName.isNotEmpty() && (
                 name != originName || pattern != originPattern ||
-                    isRegex != originIsRegex || patternSource != originPatternSource
+                    isRegex != originIsRegex || patternSource != originPatternSource ||
+                    (originCategory.isNotEmpty() && category != originCategory)
                 )
     }
 
@@ -319,6 +322,30 @@ object AudioLibrary {
         }
     }
 
+    /** 回执回写：按条目名把云端 targetId 补写为本地 soundId（仅补空白，不动既有） */
+    suspend fun applyReceiptSoundIds(context: Context, pairs: List<Pair<String, String>>): Int =
+        withContext(Dispatchers.IO) {
+            if (pairs.isEmpty()) return@withContext 0
+            lock.withLock {
+                val cur = index ?: return@withLock 0
+                var changed = 0
+                val next = cur.toMutableMap()
+                pairs.forEach { (name, targetId) ->
+                    if (name.isBlank() || targetId.isBlank()) return@forEach
+                    val hit = next.values.firstOrNull {
+                        it.soundId.isBlank() && it.name == name
+                    } ?: return@forEach
+                    next[hit.id] = hit.copy(soundId = targetId)
+                    changed++
+                }
+                if (changed > 0) {
+                    index = next
+                    persist(context, next.values)
+                }
+                changed
+            }
+        }
+
     /** 上传提交成功后：修改复位（origin=当前）——「未修改·已上传」 */
     suspend fun resetModifiedOrigin(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
@@ -329,6 +356,7 @@ object AudioLibrary {
                 originPattern = a.pattern,
                 originIsRegex = a.isRegex,
                 originPatternSource = a.patternSource,
+                originCategory = a.category,
             )
             index = cur + (id to updated)
             persist(context, index.orEmpty().values)
@@ -754,6 +782,10 @@ object AudioLibrary {
                 } else {
                     o.optString("patternSource").ifBlank { PATTERN_SOURCE_LOCAL }
                 },
+                // 类型基线：旧数据缺失时以当前值回填（视为未变），当前值优先
+                originCategory = o.optString("originCategory").ifBlank {
+                    o.optString("category")
+                },
             )
             map[asset.id] = asset
         }
@@ -791,6 +823,7 @@ object AudioLibrary {
                     if (a.originPatternSource != PATTERN_SOURCE_LOCAL) {
                         put("originPatternSource", a.originPatternSource)
                     }
+                    if (a.originCategory.isNotEmpty()) put("originCategory", a.originCategory)
                 }
             })
         }

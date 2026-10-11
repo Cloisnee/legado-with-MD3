@@ -21,6 +21,8 @@ object AppConst {
     const val channelIdBookSourceCheck = "channel_book_source_check"
     const val channelIdReadAloud = "channel_read_aloud"
     const val channelIdWeb = "channel_web"
+    /** 批212：云端词网处理完成通知（后台可见） */
+    const val channelIdCloudWord = "channel_cloud_word"
 
     const val UA_NAME = "User-Agent"
 

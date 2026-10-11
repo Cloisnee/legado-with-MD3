@@ -144,29 +144,79 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
             val effectiveInput = inputWords.filter { it !in blocked }
             val notes = ArrayList<String>()
             runCatching {
+                val baseLane = AudioLibrary.laneOf(base)
+                val baseKey = AudioSeries.seriesKey(base.name)
+                val baseHasSuffix = base.name != baseKey
+                val cloudId = base.soundId
                 var newName = name.trim().ifBlank { base.name }
-                // 第四刀v2：主名唯一——改名撞「同栏现有条目名」→ 自动 _2 系列化
-                run {
-                    if (newName == base.name) return@run
-                    val lane = AudioLibrary.laneOf(base)
-                    fun taken(n: String) = AudioLibrary.snapshot().any {
-                        it.id != base.id && AudioLibrary.laneOf(it) == lane && it.name == n
-                    }
-                    if (taken(newName)) {
+                val nameChanged = newName != base.name
+                val patternChanged = pattern.trim() != base.pattern || isRegex != base.isRegex
+                val categoryChanged = category != base.category
+                fun takenIn(n: String, laneName: String) = AudioLibrary.snapshot().any {
+                    it.id != base.id && AudioLibrary.laneOf(it) == laneName && it.name == n
+                }
+                var newPattern = if (blocked.isEmpty()) pattern.trim() else AudioSeries.joinWords(effectiveInput)
+
+                // ---------- 主名 / 族处理（A1 / A2） ----------
+                if (nameChanged) {
+                    val wantedKey = AudioSeries.seriesKey(newName)
+                    val wantedMax = AudioSeries.maxVariant(baseLane, wantedKey, base.id, cloudId)
+                    val userSuffix = newName != wantedKey
+                    if (wantedMax > 0 && !userSuffix) {
+                        // A1a/A2b：无后缀进入已有族 → 自动编入 _最大+1（云端含未下载成员）
+                        newName = "${wantedKey}_${wantedMax + 1}"
+                        notes += "已编入族：$newName"
+                    } else if (takenIn(newName, baseLane)) {
+                        // A1b/A1c：撞名（手动带后缀或普通改名）→ 自动 _k 递增
                         var k = 2
-                        while (taken("${newName}_$k")) k++
+                        while (takenIn("${newName}_$k", baseLane)) k++
                         notes += "主名重复，已自动改为 ${newName}_$k"
                         newName = "${newName}_$k"
                     }
+                    val finalKey = AudioSeries.seriesKey(newName)
+                    val finalMax = AudioSeries.maxVariant(baseLane, finalKey, base.id, cloudId)
+                    val finalInFamily = newName != finalKey && finalMax > 0
+                    // A1a/A1b/A2b：进入/处于已有族且未改规则 → 抄同族别名
+                    if (finalInFamily && !patternChanged) {
+                        val famWords = AudioSeries.familyWords(baseLane, finalKey, base.id, cloudId)
+                        if (famWords.isNotEmpty()) {
+                            newPattern = AudioSeries.joinWords(famWords)
+                            notes += "已带同族别名 ${famWords.size} 个"
+                        }
+                    }
+                    // A2a：从族退出（原来带后缀、去到无族的新名）且未改规则 → 清空规则
+                    if (baseHasSuffix && newName == finalKey && finalMax == 0 && !finalInFamily && !patternChanged) {
+                        if (newPattern.isNotEmpty()) {
+                            newPattern = ""
+                            notes += "已退出族（清空匹配规则）"
+                        }
+                    }
+                    // 换族/退族：清掉旧族共享词（新抄的词不在旧族词集内，安全）
+                    if (finalKey != baseKey) {
+                        val shared = AudioSeries.localFamilyMembers(baseLane, baseKey, base.id)
+                            .flatMap { AudioSeries.wordsOf(it) }.toSet()
+                        val cur = splitWordList(newPattern)
+                        val kept = cur.filter { it !in shared }
+                        if (kept.size != cur.size) newPattern = AudioSeries.joinWords(kept)
+                    }
+                } else if (categoryChanged && baseHasSuffix) {
+                    // C2：族成员改类型（未改名）→ 去后缀（退出族）+ 未改规则时清空规则
+                    val laneName = category
+                    val bare = baseKey
+                    newName = if (takenIn(bare, laneName)) {
+                        var k = 2
+                        while (takenIn("${bare}_$k", laneName)) k++
+                        "${bare}_$k"
+                    } else {
+                        bare
+                    }
+                    notes += "已退出族（去后缀）：$newName"
+                    if (!patternChanged && newPattern.isNotEmpty()) {
+                        newPattern = ""
+                        notes += "已清空匹配规则"
+                    }
                 }
-                var newPattern = if (blocked.isEmpty()) pattern.trim() else AudioSeries.joinWords(effectiveInput)
-                // 第四刀·②：改名脱离系列 → 清掉「旧系列其他成员共享的词」（非同系列自留词保留）
-                if (AudioSeries.seriesKey(base.name) != AudioSeries.seriesKey(newName)) {
-                    val shared = AudioSeries.members(app, base).flatMap { AudioSeries.wordsOf(it) }.toSet()
-                    val cur = splitWordList(newPattern)
-                    val kept = cur.filter { it !in shared }
-                    if (kept.size != cur.size) newPattern = AudioSeries.joinWords(kept)
-                }
+
                 AudioLibrary.updateAsset(
                     app,
                     base.copy(
@@ -188,11 +238,15 @@ fun AudioEditScreen(app: Application, assetId: String, onBack: () -> Unit) {
                 if (newName != base.name) {
                     AudioBuiltinSfxRules.rememberRedirect(app, base.name, newName)
                 }
-                // 第四刀·③：同系列词同步——本次新增的词 → 同步给同系列其他成员
+                // 第四刀·③ / B2：同系列词同步（仍同族键时；增 + 减）
                 val after = AudioLibrary.snapshot().firstOrNull { it.id == base.id }
-                val syncN = if (after != null && !after.isRegex) {
-                    val addedFinal = splitWordList(after.pattern).filter { it !in oldWords }
-                    AudioSeries.syncWordsToSeries(app, after, addedFinal)
+                val syncN = if (after != null && !after.isRegex &&
+                    AudioSeries.seriesKey(after.name) == AudioSeries.seriesKey(base.name)
+                ) {
+                    val afterWords = splitWordList(after.pattern)
+                    val addFinal = afterWords.filter { it !in oldWords }
+                    val remFinal = oldWords.filter { it !in afterWords }
+                    AudioSeries.syncWordsDelta(app, after, addFinal, remFinal)
                 } else {
                     0
                 }
