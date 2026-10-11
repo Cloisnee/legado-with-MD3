@@ -662,7 +662,7 @@ private fun CloudWordnetConfigSheet(
                     onValueChange = { repo = it; testMsg = null },
                     modifier = Modifier.fillMaxWidth(),
                     backgroundColor = LegadoTheme.colorScheme.surface,
-                    label = "仓库（如 Cloisnee/yinpin）",
+                    label = "仓库（如 Cloisnee/sfx）",
                 )
                 AppTextField(
                     value = token,

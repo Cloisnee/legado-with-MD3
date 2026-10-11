@@ -89,7 +89,7 @@ object CloudWordnetReceiptWatcher {
         val encoded = RECEIPT_PATH.split('/').joinToString("/") { seg ->
             URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
         }
-        val url = "https://cnb.cool/$slug/-/git/raw/master/$encoded"
+        val url = "https://cnb.cool/$slug/-/git/raw/main/$encoded"
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", "legado-audio-net")

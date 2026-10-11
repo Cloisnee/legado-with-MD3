@@ -12,13 +12,13 @@ import java.util.concurrent.TimeUnit
 
 /**
  * P1.4 · 云端词网客户端：把本地条目（新音频 + 词/别名）推送到 CNB 仓库，
- * 由仓库流水线（`api_trigger_cloudwords`）合并进词网并回推 master；App 下次听书自动拉取新索引。
+ * 由仓库流水线（`api_trigger_cloudwords`）合并进词网并回推 main；App 下次听书自动拉取新索引。
  *
  * 流程（对齐 tools/cloud_words_merge.py）：
  *  1) 读 master 头提交 sha；
  *  2) 需上传的新音频 → commit-asset 直传（asset-upload-url → PUT → verify；7 天 TTL，处理后可删/自清）；
  *  3) `build/start(event=api_trigger_cloudwords, env.CW_PAYLOAD=批载荷)` 触发流水线（异步）；
- *  4) 仓库侧：SHA-256/git 指纹判重（固有=只并词）→ 新音频落库 → 更新索引 → 回推 master。
+ *  4) 仓库侧：SHA-256/git 指纹判重（固有=只并词）→ 新音频落库 → 更新索引 → 回推 main。
  */
 object CloudWordnetClient {
 
@@ -71,7 +71,7 @@ object CloudWordnetClient {
     suspend fun testConnection(repo: String, token: String): String {
         val slug = encodeRepo(repo)
         val sha = fetchMasterHead(slug, token)
-        return "连接正常：master=${sha.take(12)}"
+        return "连接正常：main=${sha.take(12)}"
     }
 
     /** 全流程：逐条上传新音频（可跳过）→ 触发云端合并流水线 */
@@ -128,7 +128,7 @@ object CloudWordnetClient {
 
     private suspend fun fetchMasterHead(slug: String, token: String): String {
         val req = Request.Builder()
-            .url("$API/$slug/-/git/commits?branch=master&page=1&page_size=1")
+            .url("$API/$slug/-/git/commits?branch=main&page=1&page_size=1")
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "application/json")
             .get()
@@ -137,7 +137,7 @@ object CloudWordnetClient {
         val text = resp.body?.string().orEmpty()
         require(resp.isSuccessful) { "读取仓库失败 HTTP ${resp.code}: ${text.take(160)}" }
         val sha = JSONArray(text).optJSONObject(0)?.optString("sha").orEmpty()
-        require(sha.isNotBlank()) { "未取到 master 头提交" }
+        require(sha.isNotBlank()) { "未取到 main 头提交" }
         return sha
     }
 
@@ -192,7 +192,7 @@ object CloudWordnetClient {
         payload: String,
     ): Pair<String, String> {
         val body = JSONObject().apply {
-            put("branch", "master")
+            put("branch", "main")
             put("event", EVENT)
             put("title", "云端词网批次 $batch")
             put("sync", "false")

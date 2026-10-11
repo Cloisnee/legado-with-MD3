@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit
  */
 object AudioNetStore {
 
-    private const val BASE = "https://cnb.cool/Cloisnee/yinpin/-/git/raw/master/"
+    private const val BASE = "https://cnb.cool/Cloisnee/sfx/-/git/raw/main/"
     private const val INDEX_DIR = "声效/index/"
     private const val CACHE_DIR = "_store/audio_index"
 
