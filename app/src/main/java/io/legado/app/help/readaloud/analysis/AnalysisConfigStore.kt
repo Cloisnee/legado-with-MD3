@@ -9,7 +9,7 @@ import java.io.File
 
 /**
  * 分析配置（提示词/上下文参数）· 暴露给用户随时修改：`_store/analysis_config.json`。
- *  - stage1Prompt/stage2Prompt/stage4Prompt/emotionPrompt/audioDirectorPrompt：提示词（留空 = 用内置默认，即朗读脚本同款）；
+ *  - stage1Prompt/stage2Prompt/stage4Prompt/emotionPrompt/audioDirectorPrompt：提示词（默认=内置提示词；留空 = 用内置默认，即朗读脚本同款）；
  *  - timeoutSec：AI 分析统一超时（B10.4·A3，30..600s，默认 120；覆盖模型级 timeoutMs）；
  *  - waitAnalysisSec：等分析就绪最长等待（B10.4·A4，30..600s，默认 600）；
  *  - fallbackDefaultVoice：分析未就绪先用默认声线出声（B10.4·S1，默认 false；false=等待分析就绪后再出声）；
@@ -25,7 +25,7 @@ class AnalysisConfigStore(private val app: Application) {
         val stage2Prompt: String = "",
         val stage4Prompt: String = "",
         val emotionPrompt: String = "",
-        val audioDirectorPrompt: String = "",
+        val audioDirectorPrompt: String = SpeechAnalysisPipelineV3.defaultPrompt("audioDirector"),
         val prevLimit: Int = 600,
         val nextLimit: Int = 400,
         val emotionJoinTimeoutMs: Long = 120_000L,
