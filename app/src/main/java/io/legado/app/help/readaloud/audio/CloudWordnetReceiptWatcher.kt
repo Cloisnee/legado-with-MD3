@@ -2,8 +2,11 @@ package io.legado.app.help.readaloud.audio
 
 import android.app.PendingIntent
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.NotificationId
@@ -108,6 +111,14 @@ object CloudWordnetReceiptWatcher {
 
     /** 批212：完成提示升级为系统通知（后台可见；点击打开 App） */
     private fun postCompletionNotification(context: Context, msg: String) {
+        // Android 13+ 通知权限显式检查（未授予则静默跳过；Lint MissingPermission 要求）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
         val pi = PendingIntent.getActivity(
             context, 0, launch,
