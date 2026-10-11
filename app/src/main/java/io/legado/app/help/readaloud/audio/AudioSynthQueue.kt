@@ -37,7 +37,7 @@ enum class SynthLane(val label: String, val folderRel: String, val assignKey: St
  * 口径（《B33 施工方案》§8.7）：
  *  - 触发：四轨解析素材缺失时由 [AudioLaneEngine] 上报（缺失自动合成默认开）；
  *  - 限流：串行；每章 ≤ 上限（默认 10，0=关闭）；同词只补一次；失败冷却 30 分钟；
- *  - 派单：按「模型分配 → 合成·音效 / 合成·BGM / 合成·环境底噪」队列顺序逐模型尝试，失败自动换下一个；
+ *  - 派单：按「模型分配 → 合成·音效 / 合成·BGM / 合成·环境声」队列顺序逐模型尝试，失败自动换下一个；
  *  - 落库：`data/audio_lib/<轨目录>/<中文关键词>.mp3`（原子落盘 + .json sidecar + 音频日志）；
  *  - 状态：`_store/audio_missing.json`（pending / running / done / failed + 来源）。
  */

@@ -65,7 +65,7 @@ data class AiStageAssignments(
     val synthSfx: List<String> = emptyList(),
     /** 合成 · BGM 模型队列 */
     val synthBgm: List<String> = emptyList(),
-    /** 合成 · 环境底噪 模型队列 */
+    /** 合成 · 环境声 模型队列 */
     val synthAmb: List<String> = emptyList(),
 )
 

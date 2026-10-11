@@ -236,8 +236,8 @@ fun ReadAloudSettingsScreen(
                         onCheckedChange = { v -> update { it.copy(keepReadAloudOnExit = v) } },
                     )
                     TinySwitchSettingItem(
-                        title = "待命启动（防误触）",
-                        description = "点「开始朗读」先进入待命（不发声、不合成、不分析）；再点一次（界面/通知）才真正开始",
+                        title = "防误触启动",
+                        description = "点「开始朗读」不会立即发声，再点一次才开始（避免误触）",
                         checked = st.standbyStart,
                         onCheckedChange = { v -> update { it.copy(standbyStart = v) } },
                     )
@@ -292,10 +292,10 @@ fun ReadAloudSettingsScreen(
                 }
             }
             item {
-                SplicedColumnGroup(title = "音效与音乐（四轨）") {
+                SplicedColumnGroup(title = "音效与音乐") {
                     TinySwitchSettingItem(
-                        title = "四轨音效",
-                        description = "在朗读人声之上叠加 BGM / 环境底噪 / 音效 三条音轨（独立音量、场景联动）",
+                        title = "声效",
+                        description = "朗读时自动叠加 BGM、环境声与音效（音量独立、随场景联动）",
                         checked = st.alEnabled,
                         onCheckedChange = { v -> update { it.copy(alEnabled = v) } },
                     )
@@ -489,7 +489,7 @@ fun ReadAloudSettingsScreen(
     ReadAloudNumberConfigSheet(
         show = showAlAmb,
         title = "环境音量",
-        description = "环境底噪轨音量（0–100%）",
+        description = "环境声轨音量（0–100%）",
         value = st.alAmbVolume,
         defaultValue = 35,
         valueRange = 0f..100f,
@@ -539,7 +539,7 @@ fun ReadAloudSettingsScreen(
     ReadAloudNumberConfigSheet(
         show = showAlAmbDwell,
         title = "环境驻留",
-        description = "环境底噪切换的最短驻留（0–120 秒）",
+        description = "环境声切换的最短驻留（0–120 秒）",
         value = st.alAmbDwellS,
         defaultValue = 25,
         valueRange = 0f..120f,

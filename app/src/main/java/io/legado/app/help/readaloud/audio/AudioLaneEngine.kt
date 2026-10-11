@@ -30,7 +30,7 @@ import kotlin.math.pow
  * B33 · 四轨音频引擎（音频小闭环版）。
  *
  * 职责：在朗读人声（HttpReadAloudService 既有 dialogue 轨）之上叠加——
- *   · ambience 环境底噪（loop）              → 1 个 ExoPlayer
+ *   · ambience 环境声（loop）                → 1 个 ExoPlayer
  *   · bgm 背景音乐（loop + 行数到期淡出；BGM 起乐时环境暂停）→ 1 个 ExoPlayer
  *   · sfx 音效（点状，低延迟池）              → ExoPlayer 复用池（P1.6.2：可挂 LoudnessEnhancer）
  *

@@ -77,7 +77,7 @@ data class ReadAloudSettings(
     val alSfxCooldownS: Int = 60,
     /** BGM 同素材冷却（秒，0–600） */
     val alBgmCooldownS: Int = 150,
-    /** 环境底噪最短驻留（秒，0–120） */
+    /** 环境声最短驻留（秒，0–120） */
     val alAmbDwellS: Int = 25,
     /** 每章自动补缺上限（条，0–50；0=关闭自动补缺） */
     val alChapterSynthCap: Int = 10,

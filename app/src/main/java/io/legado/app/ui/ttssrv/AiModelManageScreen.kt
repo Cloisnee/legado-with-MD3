@@ -129,12 +129,12 @@ private val STAGE_CARDS = listOf(
     "emotion" to "情绪分析",
 )
 
-/** B33 背景音乐与音效：分析（音频导演·判插点）+ 三路合成（音效/BGM/环境底噪），均可多选轮换 */
+/** B33 背景音乐与音效：分析（音频导演·判插点）+ 三路合成（音效/BGM/环境声），均可多选轮换 */
 private val SOUND_CARDS = listOf(
     "audioDirector" to "音频导演 · 分析模型",
     "synthSfx" to "合成 · 音效",
     "synthBgm" to "合成 · BGM",
-    "synthAmb" to "合成 · 环境底噪",
+    "synthAmb" to "合成 · 环境声",
 )
 
 private fun stageTitle(key: String?): String =
