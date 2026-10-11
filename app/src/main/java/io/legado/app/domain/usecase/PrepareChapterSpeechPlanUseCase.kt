@@ -198,8 +198,15 @@ class PrepareChapterSpeechPlanUseCase(
         return runCatching {
             val catalog = voiceGateway.getEnabledVoices()
                 .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-            fun byTag(tag: String): ReadAloudVoice? = tag.takeIf { it.isNotBlank() }
-                ?.let { t -> catalog.firstOrNull { v -> v.speakerId == t } }
+            // 批212b：同名标签只在「当前启用池」内解析（与试听链同口径）
+            val activeTagRules = runCatching { recordsStore.loadActivePoolTagRules() }
+                .getOrDefault(emptyMap())
+            fun byTag(tag: String): ReadAloudVoice? {
+                val t = tag.trim()
+                if (t.isBlank()) return null
+                val rid = activeTagRules[t] ?: return null
+                return catalog.firstOrNull { it.speakerId == t && it.engineId == rid }
+            }
             val groups = recordsStore.loadActiveVoiceGroups()
             val narratorGroup = groups.firstOrNull {
                 it.effectiveRoleType() == VoiceBankRoleType.NARRATOR && it.tags.isNotEmpty()

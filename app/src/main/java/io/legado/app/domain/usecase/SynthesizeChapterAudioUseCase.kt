@@ -66,8 +66,16 @@ class SynthesizeChapterAudioUseCase(
         )
         val voices = voiceGateway.getEnabledVoices()
             .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-        fun byTag(tag: String): ReadAloudVoice? =
-            tag.takeIf { it.isNotBlank() }?.let { t -> voices.firstOrNull { it.speakerId == t } }
+        // 批212b：同名标签只在「当前启用池」内解析（与角色试听链同口径）——
+        // 避免命中未选旧池的残留条目（如换池后仍解析到旧插件）。
+        val activeTagRules = runCatching { dataRepository.loadActivePoolTagRules() }
+            .getOrDefault(emptyMap())
+        fun byTag(tag: String): ReadAloudVoice? {
+            val t = tag.trim()
+            if (t.isBlank()) return null
+            val rid = activeTagRules[t] ?: return null
+            return voices.firstOrNull { it.speakerId == t && it.engineId == rid }
+        }
 
         val groups = dataRepository.loadActiveVoiceGroups()
         val narrator = byTag(

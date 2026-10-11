@@ -1268,6 +1268,50 @@ class ReadAloudDataRepository(private val app: Application) {
     }
 
     /** 读取「已选中」声线库分组（activeVoiceBanks ↔ voices.json；tags 保持列表顺序=配置列表显示顺序，首=置顶） */
+    /**
+     * 批212b · 「当前启用池」标签→规则映射（合成/章节计划解析用；与角色试听链同口径）——
+     * 同名标签只认启用池内的条目（先出现者胜），避免命中未选旧池的残留条目；
+     * 插件壳被显式禁用的条目跳过（「关闭插件」= 不参与合成）。
+     */
+    suspend fun loadActivePoolTagRules(): Map<String, String> = withContext(Dispatchers.IO) {
+        val banks = loadActiveVoiceBanks().toSet()
+        if (banks.isEmpty()) return@withContext emptyMap()
+        val out = LinkedHashMap<String, String>()
+        runCatching {
+            val disabledPlugins = runCatching {
+                val arr = TtsConfigStore.loadPlugins(app)
+                buildSet {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val id = o.optString("pluginId").takeIf { it.isNotBlank() }
+                            ?: o.optString("id").takeIf { it.isNotBlank() } ?: continue
+                        val en = if (o.has("isEnabled")) o.optBoolean("isEnabled", true)
+                        else o.optBoolean("enabled", true)
+                        if (!en) add(id)
+                    }
+                }
+            }.getOrDefault(emptySet())
+            val voices = TtsConfigStore.loadVoices(app)
+            for (gi in 0 until voices.length()) {
+                val grp = voices.optJSONObject(gi) ?: continue
+                val info = grp.optJSONObject("group") ?: continue
+                if (info.optString("name") !in banks) continue
+                val list = grp.optJSONArray("list") ?: continue
+                for (i in 0 until list.length()) {
+                    val cfg = list.optJSONObject(i)?.optJSONObject("config") ?: continue
+                    val sr = cfg.optJSONObject("speechRule") ?: continue
+                    val tag = sr.optString("tag").trim()
+                    val rid = sr.optString("tagRuleId")
+                    if (tag.isBlank() || rid.isBlank() || out.containsKey(tag)) continue
+                    val pluginId = cfg.optJSONObject("source")?.optString("pluginId").orEmpty()
+                    if (pluginId.isNotBlank() && pluginId in disabledPlugins) continue
+                    out[tag] = rid
+                }
+            }
+        }
+        out
+    }
+
     suspend fun loadActiveVoiceGroups(): List<VoiceGroupInfo> = withContext(Dispatchers.IO) {
         val banks = loadActiveVoiceBanks().toSet()
         if (banks.isEmpty()) return@withContext emptyList()
