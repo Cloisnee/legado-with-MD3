@@ -279,7 +279,8 @@ class AudioLaneEngine(
             val local = AudioBgmPicker.pickLocal(appContext, q)
             val net = if (local == null) AudioBgmPicker.pickNet(q) else null
             if (local == null && net != null) {
-                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
+                // 批214b：BGM 不走 rollVariant（pickNet 已确定性）；fetchAsset 幂等 → 最多下载 1 条
+                scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, net) } }
             }
             // 批214：本地未命中 → 缺失链（词网同栏/合成）；keyword 恒为四维显示名（可被 parseQuery 还原）
             // desc=AI 配乐描述（平台合成提示词，与预合成链一致）
@@ -427,7 +428,16 @@ class AudioLaneEngine(
                         desiredBgmQuery?.let { bq -> AudioBgmPicker.pickNet(bq) }
                     }
                     if (net != null) {
-                        scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
+                        // 批214b：BGM 不走 rollVariant（pickNet 已确定性）
+                        scope.launch {
+                            runCatching {
+                                if (kind == "环境") {
+                                    AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net))
+                                } else {
+                                    AudioNetStore.fetchAsset(appContext, net)
+                                }
+                            }
+                        }
                         resolved = if (kind == "环境") {
                             AudioLibrary.resolveForLane(appContext, net.name, SynthLane.AMB)
                         } else {

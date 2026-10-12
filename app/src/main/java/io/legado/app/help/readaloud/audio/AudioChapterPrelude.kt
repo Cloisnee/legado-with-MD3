@@ -246,7 +246,14 @@ class AudioChapterPrelude(
                             // P1.5：同栏严格（异栏素材不采用 → 落补缺队列走合成）
                             AudioNetStore.lookupForLane(item.label, item.lane)
                         }
-                        if (net != null) fetched = AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) != null
+                        // 批214b：BGM 不走 rollVariant（pickNet 已确定性）；音效/环境保持多变体随机
+                        if (net != null) {
+                            fetched = if (item.bgm != null) {
+                                AudioNetStore.fetchAsset(appContext, net) != null
+                            } else {
+                                AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) != null
+                            }
+                        }
                     }
                     if (!fetched) {
                         // P1.4：同步注册（否则后续终态等待会在注册完成前空转）

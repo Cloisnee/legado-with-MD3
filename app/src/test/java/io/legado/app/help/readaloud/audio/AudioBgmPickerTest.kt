@@ -103,6 +103,17 @@ class AudioBgmPickerTest {
     }
 
     @Test
+    fun `匹配规则含四维词时可被命中（下载写四维链路）`() {
+        // 模拟 BGM 下载条目：文件名叫"现代-雨夜-街头-单簧管"，但 pattern 写了四维
+        // haystack 含 pattern 词 → 四维查询可命中
+        val haystack = "现代-雨夜-街头-单簧管 现代雨夜 现代 雨夜 悬疑 慢速"
+        val q = query(theme = "现代", scene = "雨夜", mood = "悬疑", speed = "慢速")
+        val m = AudioBgmPicker.matchOf(haystack, q)
+        assertTrue(m.matched)
+        assertEquals(1, m.level)
+    }
+
+    @Test
     fun `dimsOf 解析 顺序与不复用`() {
         assertEquals(listOf("古风"), AudioBgmPicker.dimsOf("古风"))
         // 悬疑(题材位) 取走后不再复用；紧张(场景位词表内) 与 中速(速度)

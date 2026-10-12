@@ -116,6 +116,10 @@ object AudioBgmPicker {
             append(a.relPath.substringAfterLast('/').substringBeforeLast('.'))
             append(' ').append(a.name)
             a.aliases.forEach { append(' ').append(it) }
+            // 批214b：匹配规则（词林/四维写入）参与匹配——BGM 下载条目靠它被四维命中
+            if (!a.isRegex && a.pattern.isNotBlank()) {
+                splitWordList(a.pattern).forEach { append(' ').append(it) }
+            }
         }
 
     private fun haystackOf(a: AudioNetStore.NetAsset): String =
@@ -142,9 +146,19 @@ object AudioBgmPicker {
         return pick
     }
 
-    /** 远程词网 BGM 池选曲（命中后由调用方 [AudioNetStore.fetchAsset] 下载落库）。 */
+    /**
+     * 远程词网 BGM 池选曲（命中后由调用方 [AudioNetStore.fetchAsset] 下载落库）。
+     *
+     * 批214b · **优中选优 + 首选定盘**（甲方定稿）：
+     * - 先取"层级最高（L1>L2>L3）"的候选组；组内"宽松维最少"优先；
+     * - 该组**仅 1 条 → 直接选它**；多条 → **随机选一条**（一次性）；
+     * - 选定结果**按查询记忆**（同查询后续直接返回同一条）——保证最多下载 1 条、播放稳定。
+     */
     fun pickNet(q: Query): AudioNetStore.NetAsset? {
         if (q.isBlank) return null
+        val key = "net|${q.theme}|${q.scene}|${q.mood}|${q.speed}"
+        // 首选定盘：同查询已有选定 → 直接复用（对象仍有效时）
+        pickMemo[key]?.let { id -> AudioNetStore.snapshot().firstOrNull { it.id == id }?.let { return it } }
         val candidates = ArrayList<Pair<AudioNetStore.NetAsset, MatchInfo>>(8)
         AudioNetStore.snapshot().forEach { a ->
             if (a.lane != "bgm") return@forEach
@@ -152,9 +166,12 @@ object AudioBgmPicker {
             if (info.matched) candidates += a to info
         }
         val pick = choose(candidates) { it.id } ?: return null
-        remember(pick.id)
+        pickMemo[key] = pick.id
         return pick
     }
+
+    /** 首选定盘（批214b）：查询键 → 选定条目 id（防重复触发时重选/重复下载） */
+    private val pickMemo = HashMap<String, String>()
 
     /** 同池选取（批214）：命中层级最高优先（L1>L2>L3）；同级内宽松维最少优先；组内随机（优先排除最近使用） */
     private fun <T> choose(candidates: List<Pair<T, MatchInfo>>, idOf: (T) -> String): T? {

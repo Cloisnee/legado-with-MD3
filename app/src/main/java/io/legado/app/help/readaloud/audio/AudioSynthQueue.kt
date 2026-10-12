@@ -179,7 +179,11 @@ class AudioSynthQueue(
             } else {
                 AudioNetStore.lookupForLane(task.keyword, task.lane)
             }
-            if (net != null) AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) else null
+            // 批214b：BGM 不走 rollVariant（pickNet 已确定性）
+            if (net != null) {
+                if (task.lane == SynthLane.BGM) AudioNetStore.fetchAsset(appContext, net)
+                else AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net))
+            } else null
         }.getOrNull()
         if (remoteFile != null) {
             val rel = runCatching {

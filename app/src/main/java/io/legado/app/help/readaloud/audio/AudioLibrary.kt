@@ -940,11 +940,25 @@ object AudioLibrary {
             } else {
                 existing.source
             }
+            // 批214b：BGM 条目 pattern 为空时，用四维词补（老下载条目自愈）
+            val isBgmExisting = existing.category == "BGM"
+            val patchedPattern = if (isBgmExisting && existing.pattern.isBlank() && aliases.isNotEmpty()) {
+                aliases.map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString("|")
+            } else {
+                existing.pattern
+            }
+            val patchedSource = if (patchedPattern != existing.pattern && patchedPattern.isNotBlank()) {
+                PATTERN_SOURCE_NET
+            } else {
+                existing.patternSource
+            }
             val updated = existing.copy(
                 size = file.length(),
                 mtime = file.lastModified(),
                 soundId = existing.soundId.ifBlank { soundId },
                 aliases = (existing.aliases + aliases).distinct(),
+                pattern = patchedPattern,
+                patternSource = patchedSource,
                 source = upgradedSource,
             )
             if (updated == existing) return existing
@@ -957,6 +971,17 @@ object AudioLibrary {
         val cleanNet = netWords.map { it.trim() }
             .filter { it.isNotBlank() && it != file.nameWithoutExtension }
             .distinct()
+        // 批214b：BGM 下载——四维词（条目 aliases，来自 catalog）写入匹配规则
+        // （BGM 已退出 aliases.json，netWords 捞不到；四维词即其"匹配规则"）
+        val isBgmFile = categoryOf(rel) == "BGM"
+        val cleanBgm = if (isBgmFile) {
+            aliases.map { it.trim() }
+                .filter { it.isNotBlank() && it != file.nameWithoutExtension }
+                .distinct()
+        } else {
+            emptyList()
+        }
+        val patternWords = if (isBgmFile) cleanBgm else cleanNet
         val asset = AudioAsset(
             name = file.nameWithoutExtension,
             relPath = rel,
@@ -966,13 +991,13 @@ object AudioLibrary {
             mtime = file.lastModified(),
             soundId = soundId.ifBlank { recovered.first },
             aliases = aliases.takeIf { it.isNotEmpty() } ?: recovered.second,
-            pattern = if (cleanNet.isNotEmpty()) cleanNet.joinToString("|") else "",
+            pattern = if (patternWords.isNotEmpty()) patternWords.joinToString("|") else "",
             isRegex = false,
-            patternSource = if (cleanNet.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
+            patternSource = if (patternWords.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
             originName = file.nameWithoutExtension,
-            originPattern = if (cleanNet.isNotEmpty()) cleanNet.joinToString("|") else "",
+            originPattern = if (patternWords.isNotEmpty()) patternWords.joinToString("|") else "",
             originIsRegex = false,
-            originPatternSource = if (cleanNet.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
+            originPatternSource = if (patternWords.isNotEmpty()) PATTERN_SOURCE_NET else PATTERN_SOURCE_LOCAL,
         )
         index = cur + (asset.id to asset)
         scheduleSave(context.applicationContext)
