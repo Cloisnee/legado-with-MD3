@@ -1209,6 +1209,9 @@ class ReadBookController(
             scheduleAdjacentReaderChapterPagination(
                 chapters, chapter, width, height, contentPadding, resolvedPaginationStyle
             )
+            // 批212f：当前章已有页时补发窗口快照——换章 clearReaderPagination 后该路径
+            // 不会重排当前章，若不补发，朗读换章会因「章节分页未完成」静默放弃。
+            publishPaginationSnapshotsFromPages()
             return true
         }
         // A neighboring chapter may already have a complete page set from the preceding
@@ -1268,6 +1271,9 @@ class ReadBookController(
                 padding = contentPadding,
                 style = resolvedPaginationStyle,
             )
+            // 批212f：换章 clear 后，当前章若已有完整页（邻章预热产物）不会重排——
+            // 按现有页表补发快照，保证朗读换章能就绪（幂等；分页任务收尾还会再发）。
+            publishPaginationSnapshotsFromPages()
         }
         return false
     }
@@ -1534,29 +1540,42 @@ class ReadBookController(
                     ?: directReaderPageIndex?.coerceIn(pages.indices)
                     ?: 0
             }
-            val snapshotRange = ReadBook.durChapterIndex.let { it - 1..it + 1 }
-            ReadBook.publishReaderPagination(
-                directReaderPages.groupBy { it.id.chapterIndex }.mapNotNull { (index, pages) ->
-                    // 与旧 `chapters` 窗口等价：只有窗口内的章才值得发快照。
-                    if (index !in snapshotRange) return@mapNotNull null
-                    // 占位页不是分页结果：把它当成该章的分页快照会以 pageCount=1 污染整书页数
-                    // 估算（wholeBookPageCoordinator.correctChapter 拿 realPageCount 校正）。
-                    // 邻章正文已缓存但还没排版时也会预置占位页，必须显式排除。
-                    if (pages.all { it.isPlaceholder }) return@mapNotNull null
-                    val contentEnd = ReaderPageNavigator.pageContext(
-                        pages,
-                        pages.lastIndex,
-                    )?.endPosition ?: return@mapNotNull null
-                    ReaderChapterPaginationSnapshot(
-                        chapterIndex = index,
-                        pageStarts = pages.map(ReaderPageNavigator::pageStart),
-                        contentEnd = contentEnd,
-                        generation = paginationGeneration,
-                    )
-                }
-            )
+            publishPaginationSnapshotsFromPages()
             directReaderPageIndex?.let(::publishDirectReaderWindow)
         }
+    }
+
+    /**
+     * 批212f：从当前页表为「窗口内各章」补发分页快照（幂等）。
+     *
+     * 背景：换章时 `clearReaderPagination()` 会清空快照，而"当前章已有页"的路径
+     * （邻章预热产物 / 早退分支）不会重排当前章——若不补发，朗读服务在换章时
+     * 拿不到目标章快照，`newReadAloud` 会在「章节分页未完成」处静默放弃（表现为换章后朗读停止）。
+     * 本函数同时是 `resumeReadAloudWaitingForChapter`（朗读补重启）的触发信号源。
+     */
+    private fun publishPaginationSnapshotsFromPages() {
+        val paginationGeneration = ReadBook.readerPaginationGeneration
+        val snapshotRange = ReadBook.durChapterIndex.let { it - 1..it + 1 }
+        ReadBook.publishReaderPagination(
+            directReaderPages.groupBy { it.id.chapterIndex }.mapNotNull { (index, pages) ->
+                // 与旧 `chapters` 窗口等价：只有窗口内的章才值得发快照。
+                if (index !in snapshotRange) return@mapNotNull null
+                // 占位页不是分页结果：把它当成该章的分页快照会以 pageCount=1 污染整书页数
+                // 估算（wholeBookPageCoordinator.correctChapter 拿 realPageCount 校正）。
+                // 邻章正文已缓存但还没排版时也会预置占位页，必须显式排除。
+                if (pages.all { it.isPlaceholder }) return@mapNotNull null
+                val contentEnd = ReaderPageNavigator.pageContext(
+                    pages,
+                    pages.lastIndex,
+                )?.endPosition ?: return@mapNotNull null
+                ReaderChapterPaginationSnapshot(
+                    chapterIndex = index,
+                    pageStarts = pages.map(ReaderPageNavigator::pageStart),
+                    contentEnd = contentEnd,
+                    generation = paginationGeneration,
+                )
+            }
+        )
     }
 
     fun onAppThemeChanged(isDarkTheme: Boolean) {

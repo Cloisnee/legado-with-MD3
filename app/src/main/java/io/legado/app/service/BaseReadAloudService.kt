@@ -247,6 +247,10 @@ abstract class BaseReadAloudService : BaseService(),
     private var chapterQuota: Int? = null
     private var prepareReadAloudJob: Coroutine<*>? = null
     private var prepareReadAloudGeneration = 0L
+
+    /** 批212f：分页快照等待窗口（换章瞬间排版批次在飞时，短暂等待而非静默放弃） */
+    private val PAGINATION_WAIT_TIMEOUT_MS = 3000L
+    private val PAGINATION_WAIT_STEP_MS = 150L
     private var cover: Bitmap =
         BitmapFactory.decodeResource(appCtx.resources, R.drawable.ic_launcher)
     var pageChanged = false
@@ -478,8 +482,22 @@ abstract class BaseReadAloudService : BaseService(),
         prepareReadAloudJob?.cancel()
         prepareReadAloudJob = execute(executeContext = IO) {
             val input = ReadBook.readerChapterInputWindow.current ?: return@execute
-            val pagination = ReadBook.readerPagination(input.chapter.index) ?: run {
-                AppLog.putAnalysis("启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}")
+            // 批212f：分页快照就绪等待——换章瞬间快照可能尚未发布（排版批次在飞），
+            // 旧实现静默放弃且无重试（换章后朗读停止）。这里短时轮询等待快照落地；
+            // 期间任何新会话（generation 变化）立即放弃本次等待。
+            var pagination = ReadBook.readerPagination(input.chapter.index)
+            var waited = 0
+            while (pagination == null && waited < PAGINATION_WAIT_TIMEOUT_MS) {
+                delay(PAGINATION_WAIT_STEP_MS)
+                waited += PAGINATION_WAIT_STEP_MS
+                if (generation != prepareReadAloudGeneration) return@execute
+                pagination = ReadBook.readerPagination(input.chapter.index)
+            }
+            if (pagination == null) {
+                AppLog.putAnalysis(
+                    "启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}" +
+                        "（已等待 ${waited}ms；分页落地后由换章恢复机制补重启）"
+                )
                 return@execute
             }
             val preparedChapter = ReaderReadAloudChapter.create(
