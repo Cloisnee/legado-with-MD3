@@ -531,9 +531,16 @@ abstract class BaseReadAloudService : BaseService(),
                     scheduler.startSession(bookUrl, ReadBook.durChapterIndex)
                 }
             }.onFailure {
-                AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
+                // 批212g：会话取消是预期语义（换章/换书/停止），静默
+                if (it !is io.legado.app.help.coroutine.ActivelyCancelException &&
+                    it !is kotlinx.coroutines.CancellationException
+                ) {
+                    AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
+                }
             }
             // B10.5·Q4：记录「最近朗读的书」（非嵌入入口的书籍管理/角色管理自动切换用；cunfang 由入口 switchBook 同步）
+            // 批212g：会话取消（换章/换书/停止时旧 prepareJob 被 cancel）是预期语义，静默；
+            // 仅真实失败记日志（此前取消噪音会刷满分析日志）。
             runCatching {
                 val bookName: String = ReadBook.book?.name.orEmpty()
                 if (bookName.isNotEmpty()) {
@@ -541,7 +548,11 @@ abstract class BaseReadAloudService : BaseService(),
                     readAloudRepo.setRecentReadBook(bookName)
                 }
             }.onFailure {
-                AppLog.putAnalysis("记录最近朗读书名失败: ${it.localizedMessage}", it)
+                if (it !is io.legado.app.help.coroutine.ActivelyCancelException &&
+                    it !is kotlinx.coroutines.CancellationException
+                ) {
+                    AppLog.putAnalysis("记录最近朗读书名失败: ${it.localizedMessage}", it)
+                }
             }
             val preparedSpeechPlan = buildSpeechPlan(
                 bookUrl = ReadBook.book?.bookUrl.orEmpty(),

@@ -1211,7 +1211,10 @@ class ReadBookController(
             )
             // 批212f：当前章已有页时补发窗口快照——换章 clearReaderPagination 后该路径
             // 不会重排当前章，若不补发，朗读换章会因「章节分页未完成」静默放弃。
-            publishPaginationSnapshotsFromPages()
+            // 仅当快照缺失时补发（updateSnapshotUi=false 防重绘循环）；快照在时热路径零开销。
+            if (ReadBook.readerPagination() == null) {
+                publishPaginationSnapshotsFromPages(updateSnapshotUi = false)
+            }
             return true
         }
         // A neighboring chapter may already have a complete page set from the preceding
@@ -1272,8 +1275,10 @@ class ReadBookController(
                 style = resolvedPaginationStyle,
             )
             // 批212f：换章 clear 后，当前章若已有完整页（邻章预热产物）不会重排——
-            // 按现有页表补发快照，保证朗读换章能就绪（幂等；分页任务收尾还会再发）。
-            publishPaginationSnapshotsFromPages()
+            // 按现有页表补发快照（静默，防重绘循环），保证朗读换章能就绪。
+            if (ReadBook.readerPagination() == null) {
+                publishPaginationSnapshotsFromPages(updateSnapshotUi = false)
+            }
         }
         return false
     }
@@ -1540,7 +1545,9 @@ class ReadBookController(
                     ?: directReaderPageIndex?.coerceIn(pages.indices)
                     ?: 0
             }
-            publishPaginationSnapshotsFromPages()
+            // 批次提交：保持原语义（发 UI 快照 + 朗读补重启）——此时不会成环：
+            // 由此引发的 upContent 走早退分支时快照已存在，静默跳过。
+            publishPaginationSnapshotsFromPages(updateSnapshotUi = true)
             directReaderPageIndex?.let(::publishDirectReaderWindow)
         }
     }
@@ -1553,11 +1560,13 @@ class ReadBookController(
      * 拿不到目标章快照，`newReadAloud` 会在「章节分页未完成」处静默放弃（表现为换章后朗读停止）。
      * 本函数同时是 `resumeReadAloudWaitingForChapter`（朗读补重启）的触发信号源。
      */
-    private fun publishPaginationSnapshotsFromPages() {
+    private fun publishPaginationSnapshotsFromPages(updateSnapshotUi: Boolean) {
         val paginationGeneration = ReadBook.readerPaginationGeneration
         val snapshotRange = ReadBook.durChapterIndex.let { it - 1..it + 1 }
+        // updateSnapshotUi=false：只补快照数据（不触发 UI 快照——防重绘循环，见 ReadBook 注释）；
+        // 补重启语义单独显式调（幂等；守卫在 ReadBook 内）。
         ReadBook.publishReaderPagination(
-            directReaderPages.groupBy { it.id.chapterIndex }.mapNotNull { (index, pages) ->
+            snapshots = directReaderPages.groupBy { it.id.chapterIndex }.mapNotNull { (index, pages) ->
                 // 与旧 `chapters` 窗口等价：只有窗口内的章才值得发快照。
                 if (index !in snapshotRange) return@mapNotNull null
                 // 占位页不是分页结果：把它当成该章的分页快照会以 pageCount=1 污染整书页数
@@ -1574,8 +1583,13 @@ class ReadBookController(
                     contentEnd = contentEnd,
                     generation = paginationGeneration,
                 )
-            }
+            },
+            updateSnapshotUi = updateSnapshotUi,
         )
+        if (!updateSnapshotUi) {
+            // 补发路径仍需要「朗读换章补重启」语义：显式调一次（幂等；守卫在 ReadBook 内）。
+            ReadBook.resumeReadAloudIfWaiting()
+        }
     }
 
     fun onAppThemeChanged(isDarkTheme: Boolean) {

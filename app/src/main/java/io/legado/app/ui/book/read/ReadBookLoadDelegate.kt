@@ -24,6 +24,7 @@ import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalModified
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.localBook.LocalBook
@@ -154,6 +155,12 @@ class ReadBookLoadDelegate(
         if (isSameBook) {
             ReadBook.upData(book)
         } else {
+            // 批212g（甲方定稿）：换书=停止朗读——旧行为是朗读会话跟随到新书
+            // （isRun+跟随中 → 打开任何书自动朗读，并连带 startSession 自动分析新书）。
+            // 明确停服，让用户手动决定是否朗读新书。
+            if (BaseReadAloudService.isRun) {
+                ReadAloud.stop(context)
+            }
             ReadBook.resetData(book)
         }
         host.setInitFinish()

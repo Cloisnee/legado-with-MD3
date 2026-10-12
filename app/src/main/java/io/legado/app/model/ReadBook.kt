@@ -584,7 +584,19 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             .takeIf { it > 0 }
     }
 
-    fun publishReaderPagination(snapshots: List<ReaderChapterPaginationSnapshot>) {
+    /**
+     * 发布分页快照。
+     *
+     * 批212f-hotfix：新增 [updateSnapshotUi]——「补发快照」路径（ReadBookController 的
+     * publishPaginationSnapshotsFromPages）传 false：只更新快照数据 + 页数校正，
+     * **不触发** UI 快照重发与朗读补重启。原因：该路径由 upContent→handleEffect 链触发，
+     * 若再走 publishSnapshot→restoreReadAloudFollowIfBackOnPosition→upTextChapterAloudSpan→upContent，
+     * 会形成重绘循环（表现：跟随中回阅读器持续掉帧；翻页脱离后循环断开故不掉帧）。
+     */
+    fun publishReaderPagination(
+        snapshots: List<ReaderChapterPaginationSnapshot>,
+        updateSnapshotUi: Boolean = true,
+    ) {
         readerPaginationSnapshots = snapshots.associateBy { it.chapterIndex }
         snapshots.forEach { snapshot ->
             wholeBookPageCoordinator.correctChapter(
@@ -593,6 +605,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 layoutGeneration = snapshot.generation,
             )
         }
+        if (!updateSnapshotUi) return
         publishSnapshot()
         resumeReadAloudWaitingForChapter(snapshots)
     }
@@ -605,10 +618,19 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
      * 服务章节与当前章节一致的同章重排不受影响。
      */
     private fun resumeReadAloudWaitingForChapter(snapshots: List<ReaderChapterPaginationSnapshot>) {
+        if (snapshots.none { it.chapterIndex == durChapterIndex }) return
+        resumeReadAloudIfWaiting()
+    }
+
+    /**
+     * 批212f-hotfix：朗读换章补重启（幂等，可独立调用）——快照落地且服务仍停在旧章时补一次重启。
+     * 守卫：朗读在跑 + 跟随中 + 当前章快照存在 + 服务章 != 当前章。
+     */
+    fun resumeReadAloudIfWaiting() {
         if (!BaseReadAloudService.isRun) return
         // 脱离后朗读位置归用户：分页批次落地不代表朗读要跟到页面所在章节
         if (!readAloudSessionStore.state.value.followReadAloudPosition) return
-        if (snapshots.none { it.chapterIndex == durChapterIndex }) return
+        if (readerPagination() == null) return
         if (BaseReadAloudService.currentChapterIndex == durChapterIndex) return
         readAloud(play = !BaseReadAloudService.pause)
     }
