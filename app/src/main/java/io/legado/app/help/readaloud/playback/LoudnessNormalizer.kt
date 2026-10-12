@@ -2,6 +2,8 @@ package io.legado.app.help.readaloud.playback
 
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
+import com.github.jing332.tts.store.TtsConfigStore
+import io.legado.app.constant.AppLog
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -29,6 +31,9 @@ class LoudnessNormalizer(private val app: Application) {
     private val inflight = ConcurrentHashMap.newKeySet<String>()
     private val stats = HashMap<String, VoiceStat>()
     private var loadedStamp = Long.MIN_VALUE
+
+    /** 批212e：旧键迁移只做一次/进程（迁完文件里不再有旧键） */
+    private var legacyMigrated = false
     private val file: File get() = File(TtsDirProvider.baseDir(app), "loudness_stats.json")
 
     /** 声线身份键（跨插件唯一） */
@@ -114,7 +119,86 @@ class LoudnessNormalizer(private val app: Application) {
                 stats[k] = VoiceStat(o.optInt("n", 0), o.optDouble("p", 0.0))
             }
         }
-        loadedStamp = lm
+        val migrated = runCatching { migrateLegacyTtsServerKeys() }.getOrDefault(false)
+        loadedStamp = if (migrated) {
+            if (file.exists()) file.lastModified() else -1L
+        } else {
+            lm
+        }
+    }
+
+    /**
+     * 批212e · 声线身份重构（tagRuleId → 条目 id）后的一次性键迁移：
+     * 旧键 `tts_server|<tagRuleId>|<tag>` 若能在 voices.json 找到同 (tagRuleId, tag) 的条目
+     * （即声线本体没变、只是身份写法变了），改写为 `tts_server|<条目 id>|<tag>`（同键合并取加权平均）；
+     * 找不到对应条目的旧键（声线已不存在）丢弃。读不到 voices.json 时不动（防误伤，下次再试）。
+     * 幂等：迁移完成后 legacyMigrated=true，本进程不再扫描。
+     */
+    private fun migrateLegacyTtsServerKeys(): Boolean {
+        if (legacyMigrated) return false
+        val legacy = stats.keys.filter {
+            it.startsWith("tts_server|") && it.count { c -> c == '|' } == 2
+        }
+        if (legacy.isEmpty()) {
+            legacyMigrated = true
+            return false
+        }
+        val voices = runCatching { TtsConfigStore.loadVoices(app) }.getOrNull() ?: return false
+        val idSet = HashSet<String>()
+        val byRuleTag = HashMap<String, String>()
+        for (g in 0 until voices.length()) {
+            val list = voices.optJSONObject(g)?.optJSONArray("list") ?: continue
+            for (i in 0 until list.length()) {
+                val entry = list.optJSONObject(i) ?: continue
+                val id = entry.optString("id").trim()
+                if (id.isEmpty()) continue
+                idSet.add(id)
+                val sr = entry.optJSONObject("config")?.optJSONObject("speechRule") ?: continue
+                val tag = sr.optString("tag").trim()
+                val rid = sr.optString("tagRuleId").trim()
+                if (tag.isNotEmpty() && rid.isNotEmpty()) {
+                    byRuleTag.putIfAbsent("$rid\u0000$tag", id)
+                }
+            }
+        }
+        if (idSet.isEmpty()) return false
+        var migrated = 0
+        var dropped = 0
+        // 两段式：先收集（遍历快照），再统一落盘到 stats——避免边遍历边写 map
+        val additions = HashMap<String, VoiceStat>()
+        stats.keys.toList().forEach { k ->
+            if (!k.startsWith("tts_server|")) return@forEach
+            val seg = k.split('|')
+            if (seg.size != 3) return@forEach
+            val x = seg[1]
+            val t = seg[2]
+            if (x in idSet) return@forEach
+            val st = stats[k] ?: return@forEach
+            val nid = byRuleTag["$x\u0000$t"]
+            stats.remove(k)
+            if (nid != null) {
+                val nk = "tts_server|$nid|$t"
+                val old = stats[nk] ?: additions[nk]
+                if (old == null) {
+                    additions[nk] = st
+                } else {
+                    val n = old.n + st.n
+                    old.p = if (n > 0) (old.p * old.n + st.p * st.n) / n else 0.0
+                    old.n = n
+                }
+                migrated++
+            } else {
+                dropped++
+            }
+        }
+        additions.forEach { (k, v) -> stats[k] = v }
+        legacyMigrated = true
+        if (migrated > 0 || dropped > 0) {
+            AppLog.putAudio("【响度均衡】声线键迁移：改写 $migrated 条、清理 $dropped 条（身份重构）")
+            save()
+            return true
+        }
+        return false
     }
 
     private fun save() {

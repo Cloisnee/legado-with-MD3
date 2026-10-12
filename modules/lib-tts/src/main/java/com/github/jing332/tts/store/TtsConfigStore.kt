@@ -290,6 +290,53 @@ object TtsConfigStore {
         return changed
     }
 
+    /** 批212e：按条目 id 删除（UI 精确路径——同 tag 多条目/跨池同名时不误删） */
+    fun deleteConfigById(context: Context, entryId: Long): Boolean {
+        if (entryId == 0L) return false
+        val arr = parseFile(voicesFile(context))
+        var changed = false
+        for (g in 0 until arr.length()) {
+            val grp = arr.optJSONObject(g) ?: continue
+            val list = grp.optJSONArray("list") ?: continue
+            var groupChanged = false
+            val kept = JSONArray()
+            for (i in 0 until list.length()) {
+                val entry = list.optJSONObject(i) ?: continue
+                if (entry.optLong("id") == entryId) {
+                    groupChanged = true
+                } else {
+                    kept.put(entry)
+                }
+            }
+            if (groupChanged) {
+                grp.put("list", kept)
+                changed = true
+            }
+        }
+        if (changed) writeSafe(voicesFile(context), arr.toString())
+        return changed
+    }
+
+    /** 批212e：按条目 id 改显示名（UI 精确路径） */
+    fun updateDisplayNameById(context: Context, entryId: Long, newName: String): Boolean {
+        if (entryId == 0L) return false
+        val arr = parseFile(voicesFile(context))
+        var changed = false
+        for (g in 0 until arr.length()) {
+            val list = arr.optJSONObject(g)?.optJSONArray("list") ?: continue
+            for (i in 0 until list.length()) {
+                val entry = list.optJSONObject(i) ?: continue
+                if (entry.optLong("id") == entryId) {
+                    entry.put("displayName", newName)
+                    changed = true
+                    break
+                }
+            }
+        }
+        if (changed) writeSafe(voicesFile(context), arr.toString())
+        return changed
+    }
+
     // ---------------- 朗读规则（基础支撑） ----------------
     fun rulesFile(context: Context) = File(storeDir(context), "speech_rules.json")
 

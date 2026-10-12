@@ -408,6 +408,14 @@ class TtsServerCenterRepository(private val app: Application) {
     suspend fun deleteEntry(ruleId: String, tag: String): Boolean =
         withContext(Dispatchers.IO) { TtsConfigStore.deleteConfig(ctx, ruleId, tag) }
 
+    /** 批212e：按条目 id 精确删除（管理页用——同 tag 多条目/跨池同名时不误删） */
+    suspend fun deleteEntryById(entryId: Long): Boolean =
+        withContext(Dispatchers.IO) { TtsConfigStore.deleteConfigById(ctx, entryId) }
+
+    /** 批212e：按条目 id 精确重命名（管理页用） */
+    suspend fun renameEntryById(entryId: Long, newName: String): Boolean =
+        withContext(Dispatchers.IO) { TtsConfigStore.updateDisplayNameById(ctx, entryId, newName) }
+
     /** 试听（详细诊断版）：报告逐步写入 _audition/last_synth_result.txt；成功时返回文件路径 */
     suspend fun auditionDetailed(ruleId: String, tag: String, text: String): AuditionOutcome =
         withContext(Dispatchers.IO) {
@@ -1052,12 +1060,11 @@ class TtsServerCenterRepository(private val app: Application) {
                 val kept = JSONArray()
                 for (i in 0 until list.length()) {
                     val e = list.optJSONObject(i) ?: continue
-                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
+                    // 批212e：key 统一为条目 id（不再用 tagRuleId）
                     val key = when {
                         e.optLong("groupId") != 0L && e.optLong("id") != 0L ->
                             "g${e.optLong("groupId")}_e${e.optLong("id")}"
-                        e.optLong("id") != 0L -> "e_${e.optLong("id")}"
-                        else -> "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
+                        else -> "e_${e.optLong("id")}"
                     }
                     if (key in keys) {
                         moved.add(JSONObject(e.toString()))
@@ -1379,13 +1386,10 @@ class TtsServerCenterRepository(private val app: Application) {
                 for (i in 0 until list.length()) {
                     val e = list.optJSONObject(i) ?: continue
                     val eid = e.optLong("id")
+                    // 批212e：key 统一为条目 id
                     val key = when {
                         gid != 0L && eid != 0L -> "g${gid}_e$eid"
-                        eid != 0L -> "e_$eid"
-                        else -> {
-                            val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                            "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                        }
+                        else -> "e_$eid"
                     }
                     if (key in keys) hit = true else kept.put(e)
                 }
@@ -1407,56 +1411,6 @@ class TtsServerCenterRepository(private val app: Application) {
 
     // ---------------- 条目排序（分类内拖动 / 置顶置底） ----------------
 
-    /** 组内某分类条目重新排序（orderedKeys 为该分类的新顺序） */
-    suspend fun setEntriesOrderInGroup(
-        groupName: String,
-        categoryPath: String,
-        orderedKeys: List<String>,
-    ): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            val file = TtsConfigStore.voicesFile(ctx)
-            val arr = JSONArray(file.readText().removePrefix("\uFEFF"))
-            var hit = false
-            for (gi in 0 until arr.length()) {
-                val grp = arr.optJSONObject(gi) ?: continue
-                if (grp.optJSONObject("group")?.optString("name") != groupName) continue
-                val list = grp.optJSONArray("list") ?: continue
-                val entriesAll = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
-                fun keyOf(e: JSONObject): String {
-                    val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                    return "${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                }
-                fun catOf(e: JSONObject) = e.optString("categoryPath").ifBlank { "未分类" }
-                val catEntries = LinkedHashMap<String, JSONObject>()
-                entriesAll.forEach { e ->
-                    if (catOf(e) == categoryPath) catEntries[keyOf(e)] = e
-                }
-                if (catEntries.isEmpty()) continue
-                val ordered = ArrayList<JSONObject>()
-                orderedKeys.forEach { k -> catEntries.remove(k)?.let { ordered.add(it) } }
-                ordered.addAll(catEntries.values)
-                var oi = 0
-                val result = ArrayList<JSONObject>()
-                entriesAll.forEach { e ->
-                    if (catOf(e) == categoryPath) {
-                        if (oi < ordered.size) {
-                            result.add(ordered[oi]); oi++
-                        }
-                    } else {
-                        result.add(e)
-                    }
-                }
-                val outList = JSONArray()
-                result.forEach { outList.put(it) }
-                grp.put("list", outList)
-                hit = true
-                break
-            }
-            if (hit) file.writeText(arr.toString())
-            hit
-        }.getOrDefault(false)
-    }
-
     /** 批量置顶/置底（各自分类内，保持选中项相对顺序） */
     suspend fun moveEntriesToEdge(keys: Set<String>, toTop: Boolean): Boolean =
         withContext(Dispatchers.IO) {
@@ -1469,15 +1423,12 @@ class TtsServerCenterRepository(private val app: Application) {
                     val gid = grp.optJSONObject("group")?.optLong("id") ?: 0L
                     val list = grp.optJSONArray("list") ?: continue
                     val entriesAll = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+                    // 批212e：key 统一为条目 id
                     fun keyOf(e: JSONObject): String {
                         val eid = e.optLong("id")
                         return when {
                             gid != 0L && eid != 0L -> "g${gid}_e$eid"
-                            eid != 0L -> "e_$eid"
-                            else -> {
-                                val sr = e.optJSONObject("config")?.optJSONObject("speechRule")
-                                "k_${sr?.optString("tagRuleId").orEmpty()}|${sr?.optString("tag").orEmpty()}"
-                            }
+                            else -> "e_$eid"
                         }
                     }
                     fun catOf(e: JSONObject) = e.optString("categoryPath").ifBlank { "未分类" }

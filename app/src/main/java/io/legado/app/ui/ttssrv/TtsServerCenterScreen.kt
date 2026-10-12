@@ -306,8 +306,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     fun entryKeyOf(e: EntryRow): String = when {
         e.groupId != 0L && e.id != 0L -> "g${e.groupId}_e${e.id}"
-        e.id != 0L -> "e_${e.id}"
-        else -> "k_${e.tagRuleId}|${e.tag}"
+        else -> "e_${e.id}"
     }
 
     /** 拖选回调过滤：仅接受严格条目 key（g{digits}_e{digits} / e_{digits} / k_*），杜绝组/分类行 key 混入 */
@@ -2673,7 +2672,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             val e = showDeleteEntry ?: return@AppAlertDialog
             showDeleteEntry = null
             scope.launch {
-                repo.deleteEntry(e.tagRuleId, e.tag)
+                // 批212e：条目 id 优先（同 tag 多条目/跨池同名时精确删除）；缺 id 的防御性回退旧法
+                if (e.id != 0L) repo.deleteEntryById(e.id) else repo.deleteEntry(e.tagRuleId, e.tag)
                 context.toastOnUi("已删除")
                 reload()
             }
@@ -2703,7 +2703,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             renameTarget = null
             if (name.isNotBlank()) {
                 scope.launch {
-                    val ok = repo.renameEntry(e.tagRuleId, e.tag, name)
+                    // 批212e：条目 id 优先；缺 id 的防御性回退旧法
+                    val ok = if (e.id != 0L) repo.renameEntryById(e.id, name)
+                    else repo.renameEntry(e.tagRuleId, e.tag, name)
                     context.toastOnUi(if (ok) "已重命名" else "未找到条目")
                     reload()
                 }
