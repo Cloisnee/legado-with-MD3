@@ -486,7 +486,7 @@ abstract class BaseReadAloudService : BaseService(),
             // 旧实现静默放弃且无重试（换章后朗读停止）。这里短时轮询等待快照落地；
             // 期间任何新会话（generation 变化）立即放弃本次等待。
             var pagination = ReadBook.readerPagination(input.chapter.index)
-            var waited = 0
+            var waited = 0L
             while (pagination == null && waited < PAGINATION_WAIT_TIMEOUT_MS) {
                 delay(PAGINATION_WAIT_STEP_MS)
                 waited += PAGINATION_WAIT_STEP_MS
