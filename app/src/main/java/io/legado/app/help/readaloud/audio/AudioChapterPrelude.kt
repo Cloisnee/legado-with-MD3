@@ -328,8 +328,8 @@ class AudioChapterPrelude(
                     out += Item(
                         lane = SynthLane.BGM,
                         label = item.displayName,
-                        resolved = AudioBgmPicker.pickLocal(appContext, q) != null ||
-                            AudioLibrary.resolve(appContext, item.tag) != null,
+                        // 批214：BGM 只认四维（本地分层匹配）；不再字符串 resolve（防跨轨/乱命中）
+                        resolved = AudioBgmPicker.pickLocal(appContext, q) != null,
                         desc = item.desc,
                         bgm = q,
                     )

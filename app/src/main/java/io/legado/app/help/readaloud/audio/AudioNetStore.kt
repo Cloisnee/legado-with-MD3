@@ -449,9 +449,10 @@ object AudioNetStore {
                 if (out.isFile && out.length() > 0L &&
                     AudioLibrary.sourceOfRelPath(relPath) != AudioLibrary.SOURCE_GENERATED
                 ) {
+                    // 批214：携带词网条目的 aliases（BGM=四维词）→ 落库进条目别名，播放端四维重匹配可命中
                     AudioLibrary.notifyFileAdded(
                         context, out, AudioLibrary.SOURCE_REMOTE, asset.id,
-                        aliases = emptyList(),
+                        aliases = asset.aliases,
                         netWords = asset.netWordsForNotify(),
                     )
                     runCatching { rebuildLocalWords(context) }
@@ -491,9 +492,10 @@ object AudioNetStore {
                     tmp.copyTo(out, overwrite = true)
                     tmp.delete()
                 }
+                // 批214：携带词网条目的 aliases（BGM=四维词）→ 落库进条目别名，播放端四维重匹配可命中
                 AudioLibrary.notifyFileAdded(
                     context, out, AudioLibrary.SOURCE_REMOTE, asset.id,
-                    aliases = emptyList(),
+                    aliases = asset.aliases,
                     netWords = asset.netWordsForNotify(),
                 )
                 // 词林词即时生效（落库即入本地词表）

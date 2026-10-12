@@ -171,8 +171,14 @@ class AudioSynthQueue(
         save()
         // P1.2：补缺链第二环——词网直连（免费；不需要合成模型）
         // P1.5：同栏严格——仅取任务同轨素材（异栏命中视为未命中，继续走合成）
+        // 批214：BGM 走四维选曲（keyword=四维名 → parseQuery → pickNet），
+        // 不再字符串 lookup（防"现代"二字包含兜底乱命中）；未命中转合成。
         val remoteFile = runCatching {
-            val net = AudioNetStore.lookupForLane(task.keyword, task.lane)
+            val net = if (task.lane == SynthLane.BGM) {
+                AudioBgmPicker.parseQuery(task.keyword)?.let { AudioBgmPicker.pickNet(it) }
+            } else {
+                AudioNetStore.lookupForLane(task.keyword, task.lane)
+            }
             if (net != null) AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) else null
         }.getOrNull()
         if (remoteFile != null) {

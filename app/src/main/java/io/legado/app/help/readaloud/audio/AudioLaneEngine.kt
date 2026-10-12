@@ -100,6 +100,9 @@ class AudioLaneEngine(
     private var desiredAmbience: String? = null
     private var ambienceDwellAt: Long = 0L
     private var desiredBgm: String? = null
+
+    /** 批214：当前 BGM 的四维查询（播放端解析优先用；null=非四维来源） */
+    private var desiredBgmQuery: AudioBgmPicker.Query? = null
     private var bgmHoldRemaining: Int = 0
 
     private var lastSfxAt: Long = 0L
@@ -270,25 +273,25 @@ class AudioLaneEngine(
         // 2) BGM：起乐 / 刷新持续；无触发 → 行数倒计时，归零淡出
         val bgmItem = planBgmByPara[para]
         if (bgmItem != null) {
-            // P1.6.1：四段关键词选曲——本地库（严格→宽松）→ 远程词网 BGM 池（命中即异步下载）
-            // → tag 直连兜底（rules 计划/旧格式）→ 缺失合成
+            // 批214：四维优先——本地库（分层降级）→ 远程词网 BGM 池（命中即异步下载）
+            // → 四维名兜底（缺失链/合成；不再走 tag 字符串直连，防跨轨乱命中）
             val q = AudioBgmPicker.queryOf(bgmItem)
             val local = AudioBgmPicker.pickLocal(appContext, q)
             val net = if (local == null) AudioBgmPicker.pickNet(q) else null
             if (local == null && net != null) {
                 scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
             }
-            val keyword = local?.asset?.name
-                ?: AudioLibrary.resolve(appContext, bgmItem.tag)?.asset?.name
-                ?: net?.let { n -> AudioLibrary.resolve(appContext, n.name)?.asset?.name ?: n.name }
-                ?: AudioNetStore.lookup(bgmItem.tag)?.let { n ->
-                    AudioLibrary.resolve(appContext, n.name)?.asset?.name ?: n.name
-                }
-                ?: bgmItem.displayName
+            // 批214：本地未命中 → 缺失链（词网同栏/合成）；keyword 恒为四维显示名（可被 parseQuery 还原）
+            // desc=AI 配乐描述（平台合成提示词，与预合成链一致）
+            if (local == null && net == null) {
+                markMissing("BGM", bgmItem.displayName, bgmItem.desc)
+            }
+            val keyword = local?.asset?.name ?: bgmItem.displayName
             if (keyword != desiredBgm) {
                 val now = System.currentTimeMillis()
                 if (now - (lastBgmByKeyword[keyword] ?: 0L) >= config.bgmCooldownMs) {
                     desiredBgm = keyword
+                    desiredBgmQuery = q
                     bgmHoldRemaining = bgmItem.hold.coerceAtLeast(1)
                     lastBgmByKeyword[keyword] = now
                     bgmMissRetryAt = 0L
@@ -400,24 +403,35 @@ class AudioLaneEngine(
                 var resolved = if (kind == "环境") {
                     resolveLocalFirst(desired, SynthLane.AMB).first
                 } else {
-                    AudioLibrary.resolve(appContext, desired)
-                        ?: AudioNetStore.localAssetName(desired)?.let { AudioLibrary.resolve(appContext, it) }
+                    // 批214：BGM 同栏严格 + 四维优先——
+                    // ①有 Query（Ai 导演）→ 四维分层重匹配（只认 BGM 池，环境声永不乱入）
+                    // ②无 Query → 退化字符串解析（规则层/旧格式），仍限 BGM 池
+                    val bq = desiredBgmQuery
+                    if (bq != null) {
+                        AudioBgmPicker.pickLocal(appContext, bq)
+                    } else {
+                        AudioLibrary.resolveForLane(appContext, desired, SynthLane.BGM)
+                            ?: AudioNetStore.localAssetName(desired)?.let {
+                                AudioLibrary.resolveForLane(appContext, it, SynthLane.BGM)
+                            }
+                    }
                 }
                 if (resolved == null) {
                     // P1：词网归一——有货则异步下载（落库后由 10s 重试自动接上）
+                    // 批214：BGM 走四维词网选曲（pickNet），不再用字符串 lookup（防"现代"乱命中）
                     val net = if (kind == "环境") {
                         AudioNetStore.lookupForLane(desired, SynthLane.AMB).also {
                             if (it == null) logCrossLaneIgnore(SynthLane.AMB, desired)
                         }
                     } else {
-                        AudioNetStore.lookup(desired)
+                        desiredBgmQuery?.let { bq -> AudioBgmPicker.pickNet(bq) }
                     }
                     if (net != null) {
                         scope.launch { runCatching { AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) } }
                         resolved = if (kind == "环境") {
                             AudioLibrary.resolveForLane(appContext, net.name, SynthLane.AMB)
                         } else {
-                            AudioLibrary.resolve(appContext, net.name)
+                            AudioLibrary.resolveForLane(appContext, net.name, SynthLane.BGM)
                         }
                     }
                 }
@@ -623,6 +637,7 @@ class AudioLaneEngine(
     private fun resetAll() {
         desiredAmbience = null
         desiredBgm = null
+        desiredBgmQuery = null
         bgmHoldRemaining = 0
         ambMissRetryAt = 0L
         bgmMissRetryAt = 0L

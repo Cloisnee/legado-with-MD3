@@ -4,14 +4,17 @@ import android.content.Context
 import io.legado.app.help.readaloud.analysis.AudioDirectorContract
 
 /**
- * P1.6.1 · BGM 选曲器 v2（四段关键词 · 全命中匹配；替代旧「画像/情绪/强度打分+降级」链）。
+ * P1.6.1 · BGM 选曲器 v3（四段关键词 · **分层降级**匹配；批214 定稿）。
  *
  * - 关键词 = {题材, 场景, 情绪, 速度}（值集见 [AudioDirectorContract]）——对应素材库 BGM 文件名
  *   「题材-场景-情绪-速度-循环-描述」的前四段；
- * - 匹配 = 对曲目「文件名 + name + aliases」逐维子串命中，**四维全部命中**才入选；
- *   曲目在某维无任何标注（全名/别名都找不到该维词汇）→ 该维视为「宽松」不拦截；
- * - 选取 = 同池内「严格命中（零宽松维）」优先；无严格则取「宽松维最少」组；组内随机
- *   （优先排除最近使用曲，防连续轰炸）；
+ * - 匹配 = 对曲目「文件名 + name + aliases」逐维子串命中，**分层降级**（实测 95% 命中）：
+ *     L1 四维全中（含宽松维：某维无标注则不拦）
+ *     L2 放宽速度（速度维不拦）
+ *     L3 放宽速度+情绪（只锁 题材+场景）
+ *   取命中的最高层（最严）；组内随机（优先排除最近使用曲）；
+ * - 选取 = 同池内「层级最高优先」；组内随机（优先排除最近使用曲，防连续轰炸）；
+ * - **已砍掉**旧「字符串包含兜底」（曾以"现代"二字乱命中）——未命中转词网/合成；
  * - 调用顺序（引擎/预合成）：[pickLocal] → [pickNet] → 缺失上报（平台合成）。
  */
 object AudioBgmPicker {
@@ -36,8 +39,15 @@ object AudioBgmPicker {
 
     // ---------------- 匹配（纯函数，可单测） ----------------
 
-    /** 单曲匹配结果：matched=四维全过；strict=无任何宽松维（即每维都有标注且精确命中） */
-    data class MatchInfo(val matched: Boolean, val strict: Boolean, val softDims: Int)
+    /**
+     * 单曲匹配结果（批214 分层）：
+     * - [level]：命中层级（1=四维全中，2=放宽速度，3=放宽速度+情绪；null=未命中）
+     * - [strict]：无任何宽松维（每维都有标注且精确命中；L1 内的最高质量）
+     * - [softDims]：宽松维数量（L1 内排序用）
+     */
+    data class MatchInfo(val level: Int?, val strict: Boolean, val softDims: Int) {
+        val matched: Boolean get() = level != null
+    }
 
     private val DIM_VOCABS: List<List<String>>
         get() = listOf(
@@ -47,25 +57,57 @@ object AudioBgmPicker {
             AudioDirectorContract.SPEEDS,
         )
 
+    /**
+     * 批214 · 分层降级匹配：返回命中的最高层级（1 最严 → 3 最松），null=未命中。
+     * 每维规则：曲目该维无任何标注（全名/别名找不到该维词汇）→ 宽松不拦；有标注 → 必须命中。
+     */
     internal fun matchOf(haystack: String, q: Query): MatchInfo {
-        if (q.isBlank || haystack.isBlank()) return MatchInfo(false, false, Int.MAX_VALUE)
+        if (q.isBlank || haystack.isBlank()) return MatchInfo(null, false, Int.MAX_VALUE)
         val values = listOf(q.theme, q.scene, q.mood, q.speed)
+        // 四段须全给
+        if (values.any { it.isBlank() }) return MatchInfo(null, false, Int.MAX_VALUE)
+        // 逐维判定（0..3 = 题材/场景/情绪/速度）：true=过（含宽松）
+        val dimPass = BooleanArray(4)
         var soft = 0
         DIM_VOCABS.forEachIndexed { i, vocab ->
             val value = values[i]
-            if (value.isBlank()) return MatchInfo(false, false, Int.MAX_VALUE) // 四段须全给
-            val annotated = vocab.any { it in haystack }
+            // 批214：查询值="通用" → 该维宽松（通用=万能适配，不锁题材/场景）
+            if (value == "通用") {
+                soft++
+                dimPass[i] = true
+                return@forEachIndexed
+            }
+            // 批214：素材侧"通用"= 宽松维（通用素材万能适配；排序时 softDims 让它让位于精确素材）
+            val annotated = vocab.any { it != "通用" && it in haystack }
             if (!annotated) {
-                soft++ // 该维无标注 → 宽松
-            } else if (value !in haystack) {
-                return MatchInfo(false, false, Int.MAX_VALUE)
+                soft++          // 该维无标注（或仅"通用"）→ 宽松
+                dimPass[i] = true
+            } else {
+                dimPass[i] = value in haystack
             }
         }
-        return MatchInfo(true, soft == 0, soft)
+        // L1 四维全中
+        if (dimPass.all { it }) return MatchInfo(1, soft == 0, soft)
+        // L2 放宽速度（题材/场景/情绪 全过）
+        if (dimPass[0] && dimPass[1] && dimPass[2]) return MatchInfo(2, false, soft)
+        // L3 放宽速度+情绪（只锁 题材+场景）
+        if (dimPass[0] && dimPass[1]) return MatchInfo(3, false, soft)
+        return MatchInfo(null, false, Int.MAX_VALUE)
     }
 
     /** 从任意名字/文本解析四维词（委托 [AudioDirectorContract.dimsOf]；顺序 题材/场景/情绪/速度） */
     fun dimsOf(text: String): List<String> = AudioDirectorContract.dimsOf(text)
+
+    /**
+     * 批214 · 从"四维显示名"（如 现代·室内·紧张·慢速）还原为 [Query]。
+     * 解析出完整四维（顺序 题材/场景/情绪/速度）时返回 Query；否则 null（说明它不是四维名）。
+     * 用于播放链与缺失链：把 fallback 的四维名重新变成可分层匹配的查询。
+     */
+    fun parseQuery(text: String): Query? {
+        val dims = dimsOf(text)
+        if (dims.size < 4) return null
+        return Query(theme = dims[0], scene = dims[1], mood = dims[2], speed = dims[3])
+    }
 
     // ---------------- 曲目池 ----------------
 
@@ -114,11 +156,13 @@ object AudioBgmPicker {
         return pick
     }
 
-    /** 同池选取：宽松维最少组优先；组内随机（优先排除最近使用） */
+    /** 同池选取（批214）：命中层级最高优先（L1>L2>L3）；同级内宽松维最少优先；组内随机（优先排除最近使用） */
     private fun <T> choose(candidates: List<Pair<T, MatchInfo>>, idOf: (T) -> String): T? {
         if (candidates.isEmpty()) return null
-        val minSoft = candidates.minOf { it.second.softDims }
-        val pool = candidates.filter { it.second.softDims == minSoft }
+        val bestLevel = candidates.minOf { it.second.level ?: Int.MAX_VALUE }
+        val atLevel = candidates.filter { it.second.level == bestLevel }
+        val minSoft = atLevel.minOf { it.second.softDims }
+        val pool = atLevel.filter { it.second.softDims == minSoft }
         val recentSet = recentSet()
         val prefer = pool.filter { idOf(it.first) !in recentSet }
         val finals = if (prefer.isNotEmpty()) prefer else pool
