@@ -196,16 +196,21 @@ class ReadBookDomainSplitBoundaryTest {
      *    未移植——我方无 `TranslationChapterStatus` 体系，记因。
      * 同期新增「域状态不回流」守卫：散落在 VM 的域内状态比总行数更能说明边界是否干净，
      * 行数只作粗棘轮。本次按实测值把线校准到 2526。
+     *
+     * 2526 → 2529：tts_server 声线目录身份重构（批212d）配套——`ReadAloudDelegate`
+     * 需经 `ReadAloudDataRepository` 读取「当前启用池」，以便目录只收启用池 + 条目开启
+     * 的声线条目（身份以 voices.json 条目 id 为核心）。VM 增量为 import、构造参数与
+     * delegate 传参各一行，纯接线、逐行都摘不掉：delegate 装配只能在 VM。
      */
     @Test
-    fun `ReadBookViewModel 不超过 R2 验收的 2526 行`() {
+    fun `ReadBookViewModel 不超过 R2 验收的 2529 行`() {
         val lineCount = mainSourceFile("io/legado/app/ui/book/read/ReadBookViewModel.kt")
             .readLines().size
         assertTrue(
-            "ReadBookViewModel 涨到了 $lineCount 行，超过 R2 验收线 2526。\n" +
+            "ReadBookViewModel 涨到了 $lineCount 行，超过 R2 验收线 2529。\n" +
                 "新功能请摘成 io/legado/app/ui/book/read/ 下的 XxxDelegate，" +
                 "并在本测试的 DOMAINS 里加一条边界。",
-            lineCount <= 2526,
+            lineCount <= 2529,
         )
     }
 
