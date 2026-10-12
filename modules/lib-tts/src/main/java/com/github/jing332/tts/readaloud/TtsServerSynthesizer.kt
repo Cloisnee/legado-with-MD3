@@ -31,18 +31,25 @@ class TtsServerSynthesizer(context: Context) {
         text: String,
         output: File,
         timeoutMs: Long = TtsEngineContext.AUDITION_TIMEOUT,
+        /** 批212c：精确条目 config（声线目录 traitsJson）——非空时优先按条目合成（修多池同名二义） */
+        traitsJson: String? = null,
     ): Outcome = withContext(Dispatchers.IO) {
         if (engineId.isBlank() || speakerId.isBlank() || text.isBlank()) {
             return@withContext Outcome(false, "参数为空(engineId/speakerId/text)")
         }
         val outcome = try {
-            TtsEngineContext(
+            val ctx = TtsEngineContext(
                 tts = PluginTtsSource(),
                 userVars = emptyMap(),
                 context = appContext,
                 engineId = engineId,
                 synthTimeoutMs = timeoutMs,
-            ).synthesizeByTag(speakerId, text)
+            )
+            if (!traitsJson.isNullOrBlank() && traitsJson.trim() != "[]") {
+                ctx.synthesizeByConfig(traitsJson, text)
+            } else {
+                ctx.synthesizeByTag(speakerId, text)
+            }
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {

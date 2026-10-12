@@ -198,14 +198,27 @@ class PrepareChapterSpeechPlanUseCase(
         return runCatching {
             val catalog = voiceGateway.getEnabledVoices()
                 .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-            // 批212b：同名标签只在「当前启用池」内解析（与试听链同口径）
-            val activeTagRules = runCatching { recordsStore.loadActivePoolTagRules() }
+            // 批212b/212c：同名标签只在「当前启用池」内解析（与试听链同口径），
+            // 并把「条目自身 config」钉到 voice 上（合成按精确条目走，杜绝 (engineId,tag) 二义）
+            val activeTagEntries = runCatching { recordsStore.loadActivePoolTagEntries() }
                 .getOrDefault(emptyMap())
             fun byTag(tag: String): ReadAloudVoice? {
                 val t = tag.trim()
                 if (t.isBlank()) return null
-                val rid = activeTagRules[t] ?: return null
-                return catalog.firstOrNull { it.speakerId == t && it.engineId == rid }
+                val e = activeTagEntries[t] ?: return null
+                val rid = e.first
+                val cfg = e.second
+                val base = catalog.firstOrNull { it.speakerId == t && it.engineId == rid }
+                return base?.copy(traitsJson = cfg)
+                    ?: ReadAloudVoice(
+                        id = SpeechIdentity.voiceId(ReadAloudVoice.ENGINE_TTS_SERVER, rid, t),
+                        engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
+                        engineId = rid,
+                        speakerId = t,
+                        displayName = t,
+                        traitsJson = cfg,
+                        managedBy = ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS,
+                    )
             }
             val groups = recordsStore.loadActiveVoiceGroups()
             val narratorGroup = groups.firstOrNull {

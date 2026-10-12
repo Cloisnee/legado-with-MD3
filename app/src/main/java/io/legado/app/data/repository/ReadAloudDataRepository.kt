@@ -1269,14 +1269,15 @@ class ReadAloudDataRepository(private val app: Application) {
 
     /** 读取「已选中」声线库分组（activeVoiceBanks ↔ voices.json；tags 保持列表顺序=配置列表显示顺序，首=置顶） */
     /**
-     * 批212b · 「当前启用池」标签→规则映射（合成/章节计划解析用；与角色试听链同口径）——
+     * 批212b/212c · 「当前启用池」标签 → (规则id, 条目config)（合成/章节计划解析用；与角色试听链同口径）——
      * 同名标签只认启用池内的条目（先出现者胜），避免命中未选旧池的残留条目；
      * 插件壳被显式禁用的条目跳过（「关闭插件」= 不参与合成）。
+     * config（条目自身）会随 voice 一路带到合成器按「精确条目」合成——修多池同名二义。
      */
-    suspend fun loadActivePoolTagRules(): Map<String, String> = withContext(Dispatchers.IO) {
+    suspend fun loadActivePoolTagEntries(): Map<String, Pair<String, String>> = withContext(Dispatchers.IO) {
         val banks = loadActiveVoiceBanks().toSet()
         if (banks.isEmpty()) return@withContext emptyMap()
-        val out = LinkedHashMap<String, String>()
+        val out = LinkedHashMap<String, Pair<String, String>>()
         runCatching {
             val disabledPlugins = runCatching {
                 val arr = TtsConfigStore.loadPlugins(app)
@@ -1305,7 +1306,7 @@ class ReadAloudDataRepository(private val app: Application) {
                     if (tag.isBlank() || rid.isBlank() || out.containsKey(tag)) continue
                     val pluginId = cfg.optJSONObject("source")?.optString("pluginId").orEmpty()
                     if (pluginId.isNotBlank() && pluginId in disabledPlugins) continue
-                    out[tag] = rid
+                    out[tag] = rid to cfg.toString()
                 }
             }
         }

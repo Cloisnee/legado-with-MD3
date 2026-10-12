@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.concurrent.withLock
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -131,6 +132,50 @@ data class TtsEngineContext(
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
         // 同一插件引擎串行合成：并发会互相覆盖 engine.source / 抢占异步流（实测 duihuaA01 偶发 No data written）
+        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+    }
+
+    /**
+     * 批212c · 按「精确条目 config」合成（朗读链专用）：
+     * 同名标签在多池间共用 tagRuleId（如同为 mingwuyan）——(engineId, tag) 二次查找会命中旧池条目；
+     * 本入口直接使用条目自身的 config（source/audioParams/audioFormat），从根上杜绝二义。
+     * configJson 来自声线目录条目的 traitsJson（= `_store/voices.json` 条目的 config）。
+     */
+    internal fun synthesizeByConfig(configJson: String, text: String): SynthOutcome {
+        val found = runCatching {
+            val cfg = JSONObject(configJson)
+            val src = cfg.optJSONObject("source")
+                ?: error("条目配置缺少 source")
+            val ap = cfg.optJSONObject("audioParams")
+            val data = src.optJSONObject("data")?.let { d ->
+                buildMap {
+                    val ks = d.keys()
+                    while (ks.hasNext()) {
+                        val k = ks.next()
+                        put(k, d.optString(k))
+                    }
+                }
+            } ?: emptyMap()
+            TtsConfigStore.FoundConfig(
+                displayName = "",
+                tag = "",
+                tagName = "",
+                pluginId = src.optString("pluginId"),
+                locale = src.optString("locale"),
+                voice = src.optString("voice"),
+                speed = (ap?.opt("speed") as? Number)?.toFloat() ?: 1f,
+                volume = (ap?.opt("volume") as? Number)?.toFloat() ?: 1f,
+                pitch = (ap?.opt("pitch") as? Number)?.toFloat() ?: 1f,
+                sampleRate = cfg.optJSONObject("audioFormat")?.optInt("sampleRate", 24000) ?: 24000,
+                sourceData = data,
+            )
+        }.getOrElse { return SynthOutcome(null, "条目配置解析失败: ${it.localizedMessage}") }
+        if (found.pluginId.isBlank() || (found.voice.isBlank() && found.locale.isBlank())) {
+            return SynthOutcome(null, "条目配置缺少插件/声线参数")
+        }
+        val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
+            ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
+        val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
         return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
     }
 

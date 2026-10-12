@@ -317,6 +317,8 @@ fun AudioLibraryScreen(
             previewEnhancer = ensurePreviewEnhancer(player, asset.volume, previewEnhancer)
             player.prepare()
             player.play()
+            // 统一试听反馈（与引擎与音色页/角色管理同款）
+            context.toastOnUi("播放中")
         }
         playingId = asset.id
     }

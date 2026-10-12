@@ -453,6 +453,9 @@ fun CharacterManageScreen(
                     player.setDataSource(out.path)
                     player.prepare()
                     player.start()
+                }.onSuccess {
+                    // 统一试听反馈（与引擎与音色页同款）
+                    context.toastOnUi("播放中")
                 }.onFailure {
                     context.toastOnUi("播放失败：${it.localizedMessage}")
                 }
