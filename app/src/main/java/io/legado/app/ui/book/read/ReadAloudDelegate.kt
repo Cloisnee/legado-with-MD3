@@ -12,6 +12,7 @@ import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.VoiceCatalogEntry
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.usecase.SyncReadAloudVoicesUseCase
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
@@ -40,6 +41,7 @@ class ReadAloudDelegate(
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val httpTtsRepository: HttpTtsRepository,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
+    private val readAloudDataRepository: ReadAloudDataRepository,
 ) {
 
     interface Host {
@@ -108,6 +110,9 @@ class ReadAloudDelegate(
         systemTtsLabel: String = context.getString(R.string.system_tts),
         httpTtsList: List<HttpTTS> = httpTtsRepository.getAllSync(),
     ) {
+        // 批212d：tts_server 只收「当前启用池」+ 条目开启者；身份=条目 id；未选池时不动 tts 目录
+        val activeBanks = runCatching { readAloudDataRepository.loadActiveVoiceBanks() }
+            .getOrDefault(emptyList()).toSet()
         syncReadAloudVoicesUseCase(
             entries = buildList {
                 add(
@@ -137,23 +142,29 @@ class ReadAloudDelegate(
                     )
                 }
                 // [TTS-Server 移植] 并入移植层声线目录（<数据根>/_store/voices.json：标签→声线）
+                // 批212d：只收「当前启用池」+ 条目开启者；身份=条目 id（不再用 tagRuleId）
                 runCatching {
+                    if (activeBanks.isEmpty()) return@runCatching  // 未选池：不写 tts、也不退役 tts
                     val arr = com.github.jing332.tts.store.TtsConfigStore.loadVoices(context)
                     for (g in 0 until arr.length()) {
-                        val list = arr.optJSONObject(g)?.optJSONArray("list") ?: continue
+                        val grp = arr.optJSONObject(g) ?: continue
+                        val gname = grp.optJSONObject("group")?.optString("name").orEmpty()
+                        if (gname !in activeBanks) continue
+                        val list = grp.optJSONArray("list") ?: continue
                         for (i in 0 until list.length()) {
                             val entry = list.optJSONObject(i) ?: continue
+                            if (!entry.optBoolean("isEnabled", true)) continue
                             val cfg = entry.optJSONObject("config") ?: continue
                             val sr = cfg.optJSONObject("speechRule") ?: continue
-                            val tag = sr.optString("tag")
-                            val ruleId = sr.optString("tagRuleId")
-                            if (tag.isBlank() || ruleId.isBlank()) continue
+                            val tag = sr.optString("tag").trim()
+                            val entryId = entry.optString("id").trim()
+                            if (tag.isBlank() || entryId.isBlank()) continue
                             add(
                                 VoiceCatalogEntry(
                                     engineType = "tts_server",
-                                    engineId = ruleId,
+                                    engineId = entryId,
                                     speakerId = tag,
-                                    displayName = entry.optString("displayName").ifBlank { sr.optString("tagName", tag) },
+                                    displayName = entry.optString("displayName").ifBlank { tag },
                                     traitsJson = cfg.toString(),
                                     managedBy = ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS,
                                 )
@@ -163,7 +174,11 @@ class ReadAloudDelegate(
                 }
             },
             managedSources = setOf(ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS),
-            removeMissingEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP, "tts_server"),
+            removeMissingEngineTypes = if (activeBanks.isEmpty()) {
+                setOf(ReadAloudVoice.ENGINE_HTTP)
+            } else {
+                setOf(ReadAloudVoice.ENGINE_HTTP, "tts_server")
+            },
         )
     }
 

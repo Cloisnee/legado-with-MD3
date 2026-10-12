@@ -621,7 +621,9 @@ class ReadAloudDataRepository(private val app: Application) {
                 if (gname !in banks) continue
                 val list = grp.optJSONArray("list") ?: continue
                 for (i in 0 until list.length()) {
-                    val cfg = list.optJSONObject(i)?.optJSONObject("config") ?: continue
+                    val listEntry = list.optJSONObject(i) ?: continue
+                    if (!listEntry.optBoolean("isEnabled", true)) continue  // 条目开关：关闭=不入候选
+                    val cfg = listEntry.optJSONObject("config") ?: continue
                     val tag = cfg.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
                     if (tag.isNotEmpty()) out.add(tag)
                 }
@@ -1269,10 +1271,10 @@ class ReadAloudDataRepository(private val app: Application) {
 
     /** 读取「已选中」声线库分组（activeVoiceBanks ↔ voices.json；tags 保持列表顺序=配置列表显示顺序，首=置顶） */
     /**
-     * 批212b/212c · 「当前启用池」标签 → (规则id, 条目config)（合成/章节计划解析用；与角色试听链同口径）——
+     * 批212d · 「当前启用池」标签 → (条目id, 条目config)（合成/章节计划解析用；与角色试听链同口径）——
      * 同名标签只认启用池内的条目（先出现者胜），避免命中未选旧池的残留条目；
-     * 插件壳被显式禁用的条目跳过（「关闭插件」= 不参与合成）。
-     * config（条目自身）会随 voice 一路带到合成器按「精确条目」合成——修多池同名二义。
+     * **条目开关关闭** / 插件壳被显式禁用的条目跳过。
+     * 身份以「条目 id」为核心（连根拔除 tagRuleId）；config 随 voice 带到合成器按「精确条目」合成。
      */
     suspend fun loadActivePoolTagEntries(): Map<String, Pair<String, String>> = withContext(Dispatchers.IO) {
         val banks = loadActiveVoiceBanks().toSet()
@@ -1299,14 +1301,16 @@ class ReadAloudDataRepository(private val app: Application) {
                 if (info.optString("name") !in banks) continue
                 val list = grp.optJSONArray("list") ?: continue
                 for (i in 0 until list.length()) {
-                    val cfg = list.optJSONObject(i)?.optJSONObject("config") ?: continue
+                    val listEntry = list.optJSONObject(i) ?: continue
+                    if (!listEntry.optBoolean("isEnabled", true)) continue  // 条目开关：关闭=不参与
+                    val cfg = listEntry.optJSONObject("config") ?: continue
                     val sr = cfg.optJSONObject("speechRule") ?: continue
                     val tag = sr.optString("tag").trim()
-                    val rid = sr.optString("tagRuleId")
-                    if (tag.isBlank() || rid.isBlank() || out.containsKey(tag)) continue
+                    val entryId = listEntry.optString("id").trim()
+                    if (tag.isBlank() || entryId.isBlank() || out.containsKey(tag)) continue
                     val pluginId = cfg.optJSONObject("source")?.optString("pluginId").orEmpty()
                     if (pluginId.isNotBlank() && pluginId in disabledPlugins) continue
-                    out[tag] = rid to cfg.toString()
+                    out[tag] = entryId to cfg.toString()
                 }
             }
         }
@@ -1327,7 +1331,9 @@ class ReadAloudDataRepository(private val app: Application) {
                 val tags = ArrayList<String>()
                 val list = grp.optJSONArray("list") ?: continue
                 for (i in 0 until list.length()) {
-                    val tag = list.optJSONObject(i)?.optJSONObject("config")
+                    val listEntry = list.optJSONObject(i) ?: continue
+                    if (!listEntry.optBoolean("isEnabled", true)) continue  // 条目开关：关闭=不参与铸造
+                    val tag = listEntry.optJSONObject("config")
                         ?.optJSONObject("speechRule")?.optString("tag").orEmpty().trim()
                     if (tag.isNotEmpty()) tags.add(tag)
                 }

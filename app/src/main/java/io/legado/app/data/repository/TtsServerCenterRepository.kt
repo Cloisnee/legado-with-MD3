@@ -786,14 +786,10 @@ class TtsServerCenterRepository(private val app: Application) {
                         put(
                             "config",
                             JSONObject().apply {
-                                put("#type", "tts")
                                 put(
                                     "speechRule",
                                     JSONObject().apply {
-                                        put("target", 0)
                                         put("tag", tag)
-                                        put("tagRuleId", "local")
-                                        put("tagName", "")
                                     }
                                 )
                                 put("audioFormat", JSONObject().put("sampleRate", sampleRate))
@@ -808,7 +804,6 @@ class TtsServerCenterRepository(private val app: Application) {
                                 put(
                                     "source",
                                     JSONObject().apply {
-                                        put("#type", "plugin")
                                         put("locale", locale)
                                         put("voice", vid)
                                         put("pluginId", pluginId)

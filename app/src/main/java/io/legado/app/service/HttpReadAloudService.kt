@@ -515,14 +515,12 @@ class HttpReadAloudService : BaseReadAloudService(),
                                 }
 
                                 ReadAloudVoice.ENGINE_TTS_SERVER -> synthesizeWithRetry(cueLabel, speakText) {
-                                    // 批212c：携带 voice 的精确条目 config（traitsJson）——避免 (engineId,tag) 命中旧池
+                                    // 批212d：按「精确条目」合成（traitsJson=条目配置；不回退全局查找）
                                     val outcome = ttsServerSynthesizer.synthesize(
-                                        routedVoice.engineId,
-                                        routedVoice.speakerId,
+                                        routedVoice.traitsJson,
                                         speakText,
                                         cacheFile,
                                         ttsSynthTimeoutMs,
-                                        traitsJson = routedVoice.traitsJson,
                                     )
                                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                                 }
@@ -914,14 +912,12 @@ class HttpReadAloudService : BaseReadAloudService(),
         val failReason = runCatching {
             when (routedVoice.engineType) {
                 ReadAloudVoice.ENGINE_TTS_SERVER -> {
-                    // 批212c：携带 voice 的精确条目 config（traitsJson）——避免 (engineId,tag) 命中旧池
+                    // 批212d：按「精确条目」合成（traitsJson=条目配置；不回退全局查找）
                     val outcome = ttsServerSynthesizer.synthesize(
-                        routedVoice.engineId,
-                        routedVoice.speakerId,
+                        routedVoice.traitsJson,
                         speakText,
                         cacheFile,
                         ttsSynthTimeoutMs,
-                        traitsJson = routedVoice.traitsJson,
                     )
                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }

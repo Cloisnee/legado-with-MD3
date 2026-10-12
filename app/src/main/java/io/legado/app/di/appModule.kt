@@ -608,6 +608,7 @@ val appModule = module {
             relocateMarkingTargetUseCase = get(),
             bookContentProcessGateway = get(),
             syncReadAloudVoicesUseCase = get(),
+            readAloudDataRepository = get(),
             readAloudSessionStore = get(),
             replaceRuleRepository = get(),
             changeSourceSettingsGateway = get(),

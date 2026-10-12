@@ -41,6 +41,7 @@ import io.legado.app.domain.usecase.ChangeBookSourceUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.RelocateMarkingTargetUseCase
 import io.legado.app.domain.usecase.SaveMarkingUseCase
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.usecase.SyncReadAloudVoicesUseCase
 import io.legado.app.domain.usecase.UploadReadingProgressUseCase
 import io.legado.app.domain.usecase.VerifyBookmarkTargetUseCase
@@ -120,6 +121,7 @@ class ReadBookViewModel(
     private val relocateMarkingTargetUseCase: RelocateMarkingTargetUseCase,
     private val bookContentProcessGateway: BookContentProcessGateway,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
+    private val readAloudDataRepository: ReadAloudDataRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val replaceRuleRepository: ReplaceRuleRepository,
     private val changeSourceSettingsGateway: ChangeSourceSettingsGateway,
@@ -489,6 +491,7 @@ class ReadBookViewModel(
         readAloudSessionStore = readAloudSessionStore,
         httpTtsRepository = httpTtsRepository,
         syncReadAloudVoicesUseCase = syncReadAloudVoicesUseCase,
+        readAloudDataRepository = readAloudDataRepository,
     ) }
 
     // --- 菜单按钮配置域（无自持状态，按钮列表仍在 menuConfig）---

@@ -198,22 +198,22 @@ class PrepareChapterSpeechPlanUseCase(
         return runCatching {
             val catalog = voiceGateway.getEnabledVoices()
                 .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-            // 批212b/212c：同名标签只在「当前启用池」内解析（与试听链同口径），
-            // 并把「条目自身 config」钉到 voice 上（合成按精确条目走，杜绝 (engineId,tag) 二义）
+            // 批212d：同名标签只在「当前启用池」内解析（与试听链同口径），
+            // 身份=条目 id（拔除 tagRuleId）；config 钉到 voice 上（合成按精确条目走）
             val activeTagEntries = runCatching { recordsStore.loadActivePoolTagEntries() }
                 .getOrDefault(emptyMap())
             fun byTag(tag: String): ReadAloudVoice? {
                 val t = tag.trim()
                 if (t.isBlank()) return null
                 val e = activeTagEntries[t] ?: return null
-                val rid = e.first
+                val entryId = e.first
                 val cfg = e.second
-                val base = catalog.firstOrNull { it.speakerId == t && it.engineId == rid }
+                val base = catalog.firstOrNull { it.speakerId == t && it.engineId == entryId }
                 return base?.copy(traitsJson = cfg)
                     ?: ReadAloudVoice(
-                        id = SpeechIdentity.voiceId(ReadAloudVoice.ENGINE_TTS_SERVER, rid, t),
+                        id = SpeechIdentity.voiceId(ReadAloudVoice.ENGINE_TTS_SERVER, entryId, t),
                         engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
-                        engineId = rid,
+                        engineId = entryId,
                         speakerId = t,
                         displayName = t,
                         traitsJson = cfg,
