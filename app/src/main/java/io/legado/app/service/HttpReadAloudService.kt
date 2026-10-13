@@ -107,6 +107,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.pow
 import okhttp3.Response
 import org.koin.core.context.GlobalContext
 import org.koin.java.KoinJavaComponent.get
@@ -197,6 +198,8 @@ class HttpReadAloudService : BaseReadAloudService(),
     private var loudnessBalanceOn = false
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var lastLoudnessSummary = ""
+    /** 批215：最近一次请求的声线增益（mB；会话就绪/重建后回放用；绝不落到 session=0 全局会话） */
+    private var loudnessGainMb: Int = 0
     // [TTS-Server 移植] 内嵌引擎合成器（engineType = tts_server）
     private val ttsServerSynthesizer by lazy {
         com.github.jing332.tts.readaloud.TtsServerSynthesizer(this)
@@ -398,27 +401,66 @@ class HttpReadAloudService : BaseReadAloudService(),
         }
     }
 
-    /** 应用当前条目的声线增益（mB；0=不调整；未启用=释放） */
+    /**
+     * 应用当前条目的声线增益（mB）。
+     * 批215 加固：负增益走播放器音量衰减（纯衰减；不再对「增强器」负向设置）；
+     * 正增益走 LoudnessEnhancer 且仅在音频会话就绪（sessionId != 0）后创建——未就绪先暂存，
+     * 由 [onAudioSessionIdChanged] 重建后补应用（杜绝 session=0 的全局混合会话误挂）；
+     * 0dB 关闭增强器（避免压缩器空转）；开关关闭时释放并复位音量。
+     */
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun applyLoudnessGain(gainMb: Int) {
+        if (!loudnessBalanceOn) {
+            loudnessEnhancer?.release()
+            loudnessEnhancer = null
+            loudnessGainMb = 0
+            exoPlayer.volume = 1f
+            return
+        }
+        loudnessGainMb = gainMb.coerceIn(-6000, 6000)
+        applyLoudnessGainNow(loudnessGainMb)
+    }
+
+    /** 批215：按当前增益落器（会话未就绪时正增益暂存，等 [onAudioSessionIdChanged] 补上） */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun applyLoudnessGainNow(gainMb: Int) {
         try {
-            if (!loudnessBalanceOn) {
-                loudnessEnhancer?.release()
-                loudnessEnhancer = null
-                return
-            }
-            if (gainMb == 0) {
-                loudnessEnhancer?.setTargetGain(0)
-                return
-            }
-            if (loudnessEnhancer == null) {
-                loudnessEnhancer = LoudnessEnhancer(exoPlayer.audioSessionId).apply {
-                    setEnabled(true)
+            if (!loudnessBalanceOn) return
+            if (gainMb >= 0) {
+                exoPlayer.volume = 1f
+                if (gainMb == 0) {
+                    loudnessEnhancer?.enabled = false
+                    return
                 }
+                val enhancer = ensureLoudnessEnhancer() ?: return // 会话未就绪：loudnessGainMb 已暂存
+                enhancer.setTargetGain(gainMb)
+                enhancer.enabled = true
+            } else {
+                loudnessEnhancer?.enabled = false
+                exoPlayer.volume = 10.0.pow(gainMb / 2000.0).toFloat().coerceIn(0f, 1f)
             }
-            loudnessEnhancer?.setTargetGain(gainMb.coerceIn(-6000, 6000))
         } catch (e: Exception) {
             AppLog.putDebug("响度均衡应用失败: ${e.localizedMessage}")
+        }
+    }
+
+    /** 批215：懒建增强器；会话未就绪返回 null（绝不创建到 session=0） */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun ensureLoudnessEnhancer(): LoudnessEnhancer? {
+        loudnessEnhancer?.let { return it }
+        val sid = exoPlayer.audioSessionId
+        if (sid == 0) return null
+        return LoudnessEnhancer(sid).also { loudnessEnhancer = it }
+    }
+
+    /** 批215：音频会话就绪/变化——重建响度增强器并回放最近增益（防旧会话/全局会话残留） */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    override fun onAudioSessionIdChanged(audioSessionId: Int) {
+        runCatching {
+            loudnessEnhancer?.release()
+            loudnessEnhancer = null
+            if (audioSessionId == 0 || !loudnessBalanceOn) return@runCatching
+            applyLoudnessGainNow(loudnessGainMb)
         }
     }
 

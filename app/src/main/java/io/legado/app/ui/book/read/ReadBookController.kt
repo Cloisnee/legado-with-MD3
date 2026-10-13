@@ -1210,7 +1210,7 @@ class ReadBookController(
                 chapters, chapter, width, height, contentPadding, resolvedPaginationStyle
             )
             // 批212f：当前章已有页时补发窗口快照——换章 clearReaderPagination 后该路径
-            // 不会重排当前章，若不补发，朗读换章会因「章节分页未完成」静默放弃。
+            // 不会重排当前章，若不补发，朗读换章只能退化到段落分页代启（批215 兜底，不再停止）。
             // 仅当快照缺失时补发（updateSnapshotUi=false 防重绘循环）；快照在时热路径零开销。
             if (ReadBook.readerPagination() == null) {
                 publishPaginationSnapshotsFromPages(updateSnapshotUi = false)
@@ -1557,7 +1557,8 @@ class ReadBookController(
      *
      * 背景：换章时 `clearReaderPagination()` 会清空快照，而"当前章已有页"的路径
      * （邻章预热产物 / 早退分支）不会重排当前章——若不补发，朗读服务在换章时
-     * 拿不到目标章快照，`newReadAloud` 会在「章节分页未完成」处静默放弃（表现为换章后朗读停止）。
+     * 拿不到目标章快照，只能退化到「段落分页代启」（批215 兜底，不再停止）；
+     * 补发让朗读用上精确页表，同时驱动补重启 / 代启接轨两个回调。
      * 本函数同时是 `resumeReadAloudWaitingForChapter`（朗读补重启）的触发信号源。
      */
     private fun publishPaginationSnapshotsFromPages(updateSnapshotUi: Boolean) {
@@ -1588,7 +1589,9 @@ class ReadBookController(
         )
         if (!updateSnapshotUi) {
             // 补发路径仍需要「朗读换章补重启」语义：显式调一次（幂等；守卫在 ReadBook 内）。
+            // 批215：并请求「段落代启→真实分页」接轨（同上；守卫在 ReadBook 内）。
             ReadBook.resumeReadAloudIfWaiting()
+            ReadBook.requestProvisionalReadAloudSync()
         }
     }
 

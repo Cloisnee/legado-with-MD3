@@ -134,6 +134,15 @@ abstract class BaseReadAloudService : BaseService(),
         var currentChapterIndex: Int = -1
             private set
 
+        /**
+         * 批215：当前朗读章的页表是否为「段落分页代启」——真实分页快照未就绪时的兜底启动态。
+         * 真实快照落地后由 [io.legado.app.model.ReadBook] 请求接轨（syncReaderLayout 重建精确页表并清此标志）。
+         */
+        @JvmStatic
+        @Volatile
+        var currentChapterProvisional: Boolean = false
+            private set
+
         @JvmStatic
         @Volatile
         var currentProgress: Int = 0
@@ -366,6 +375,7 @@ abstract class BaseReadAloudService : BaseService(),
         }
         currentChapterIndex = -1
         currentProgress = 0
+        currentChapterProvisional = false
         abandonFocus()
         unregisterReceiver(broadcastReceiver)
         postEvent(EventBus.ALOUD_STATE, Status.STOP)
@@ -493,18 +503,26 @@ abstract class BaseReadAloudService : BaseService(),
                 if (generation != prepareReadAloudGeneration) return@execute
                 pagination = ReadBook.readerPagination(input.chapter.index)
             }
-            if (pagination == null) {
+            // 批215：快照超时不再放弃——以「段落分页」代启（每段首为页起点，章内字符坐标与真实分页同源）。
+            // 真实快照落地后由 ReadBook.requestProvisionalReadAloudSync → syncReaderLayout 接轨升级；
+            // 否则后台/熄屏下排版批次若迟迟不落地，换章朗读会停在旧章（“下一章没办法朗读”）。
+            val pageStarts: List<Int>
+            if (pagination != null) {
+                currentChapterProvisional = false
+                pageStarts = pagination.pageStarts
+            } else {
+                currentChapterProvisional = true
+                pageStarts = ReaderReadAloudChapter.paragraphPageStarts(input.source.semanticContent)
                 AppLog.putAnalysis(
-                    "启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}" +
-                        "（已等待 ${waited}ms；分页落地后由换章恢复机制补重启）"
+                    "启动朗读：章节分页未就绪（已等待 ${waited}ms）→ 段落分页代启" +
+                        " chapterIndex=${input.chapter.index}（真实分页落地后自动接轨）"
                 )
-                return@execute
             }
             val preparedChapter = ReaderReadAloudChapter.create(
                 chapterIndex = input.chapter.index,
                 title = input.displayTitle,
                 semanticContent = input.source.semanticContent,
-                pageStarts = pagination.pageStarts,
+                pageStarts = pageStarts,
             )
             val start = resolveReadAloudStartPosition(
                 requestedPageIndex = requestedPageIndex,
@@ -789,7 +807,9 @@ abstract class BaseReadAloudService : BaseService(),
         val follow = sessionStore.state.value.followReadAloudPosition
         repeat(targetPageIndex - pageIndex) {
             pageIndex++
-            if (follow) {
+            // 批215：段落代启页表与阅读器真实分页不同构——代启期间不驱动阅读器翻页（防多发错翻）；
+            // 接轨升级后（syncReaderLayout 清标志）恢复正常。
+            if (follow && !currentChapterProvisional) {
                 withSpeechNavigation { ReadBook.moveToNextPage() }
             }
         }
@@ -810,6 +830,10 @@ abstract class BaseReadAloudService : BaseService(),
         val latestPageIndex = latestChapter.pageIndexAt((currentProgress - 1).coerceAtLeast(0))
         readerReadAloudChapter = latestChapter
         pageIndex = latestPageIndex
+        if (currentChapterProvisional) {
+            currentChapterProvisional = false
+            AppLog.putDebug("朗读页表接轨：真实分页已就绪 chapterIndex=${input.chapter.index}")
+        }
         if (sessionStore.state.value.followReadAloudPosition) {
             ReadBook.syncReadAloudPage(
                 chapterIndex = latestChapter.chapterIndex,

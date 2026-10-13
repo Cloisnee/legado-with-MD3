@@ -612,14 +612,17 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
 
     /**
      * 朗读换章恢复：curPageChanged 在正文加载完成时机触发朗读重启，但 Compose 渲染
-     * 的章节分页快照要等渲染层排版批次落地才可用（换章时还会先 clearReaderPagination），
-     * newReadAloud 会在"章节分页未完成"处静默放弃且无重试，表现为换章后朗读停止。
+     * 的章节分页快照要等渲染层排版批次落地才可用（换章时还会先 clearReaderPagination）。
+     * 批215 起 newReadAloud 超时不再放弃：以段落分页代启（快照落地后接轨升级）；
+     * 此处补重启仍负责「快照已就绪但服务停在旧章」的常规恢复。
      * 分页快照落地是目标章节就绪的可靠信号：服务仍停在旧章节时在此补一次重启。
      * 服务章节与当前章节一致的同章重排不受影响。
      */
     private fun resumeReadAloudWaitingForChapter(snapshots: List<ReaderChapterPaginationSnapshot>) {
         if (snapshots.none { it.chapterIndex == durChapterIndex }) return
         resumeReadAloudIfWaiting()
+        // 批215：服务以「段落分页代启」的章，真实分页落地后请求一次接轨（服务端重建精确页表；幂等）
+        requestProvisionalReadAloudSync()
     }
 
     /**
@@ -633,6 +636,18 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         if (readerPagination() == null) return
         if (BaseReadAloudService.currentChapterIndex == durChapterIndex) return
         readAloud(play = !BaseReadAloudService.pause)
+    }
+
+    /**
+     * 批215：段落代启 → 真实分页接轨请求（幂等）。守卫：朗读在跑 + 当前章为代启态 +
+     * 该章快照已就绪 + 服务章=阅读章；接轨后服务侧清标志，后续调用自然短路。
+     */
+    fun requestProvisionalReadAloudSync() {
+        if (!BaseReadAloudService.isRun) return
+        if (!BaseReadAloudService.currentChapterProvisional) return
+        if (readerPagination() == null) return
+        if (BaseReadAloudService.currentChapterIndex != durChapterIndex) return
+        ReadAloud.syncLayout()
     }
 
     fun publishReaderPaginationEnvironment(

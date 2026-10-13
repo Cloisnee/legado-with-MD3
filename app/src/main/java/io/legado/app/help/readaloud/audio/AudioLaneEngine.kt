@@ -511,11 +511,12 @@ class AudioLaneEngine(
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun applyLoopBoost(lane: LoopLane, player: ExoPlayer, boostDb: Float) {
         runCatching {
-            val e = lane.enhancerFor(player)
             if (boostDb <= 0.05f) {
-                e.enabled = false
+                lane.enhancerFor(player)?.enabled = false
                 return
             }
+            // 批215：会话未就绪不建增强器（本 tick 按 0dB 档播，就绪后 tick 自动接上）
+            val e = lane.enhancerFor(player) ?: return
             e.setTargetGain((boostDb * 100f).toInt().coerceIn(0, 1200))
             e.enabled = true
         }
@@ -688,9 +689,14 @@ class AudioLaneEngine(
             standby?.let { runCatching { it.volume = standbyVol.coerceIn(0f, 1f) } }
         }
 
+        /** 批215：懒建增强器；会话未就绪（sessionId==0）返回 null——绝不创建到 session=0 全局会话 */
         @androidx.annotation.OptIn(UnstableApi::class)
-        fun enhancerFor(pl: ExoPlayer): LoudnessEnhancer =
-            enhancers[pl] ?: LoudnessEnhancer(pl.audioSessionId).also { enhancers[pl] = it }
+        fun enhancerFor(pl: ExoPlayer): LoudnessEnhancer? {
+            enhancers[pl]?.let { return it }
+            val sid = runCatching { pl.audioSessionId }.getOrDefault(0)
+            if (sid == 0) return null
+            return LoudnessEnhancer(sid).also { enhancers[pl] = it }
+        }
 
         fun playKeyword(kw: String, file: File, asset: AudioLibrary.AudioAsset?) {
             this.asset = asset
@@ -819,11 +825,19 @@ class AudioLaneEngine(
             return ((pos - (dur - CROSSFADE_MS)).toFloat() / CROSSFADE_MS).coerceIn(0f, 1f)
         }
 
-        private fun buildPlayer(): ExoPlayer = ExoPlayer.Builder(appContext).build().also {
+        private fun buildPlayer(): ExoPlayer = ExoPlayer.Builder(appContext).build().also { player ->
             // 不抢音频焦点：焦点由人声播放器统一管理
-            it.setAudioAttributes(media3AudioAttributes, false)
-            it.repeatMode = Player.REPEAT_MODE_ONE
-            it.volume = 0f
+            player.setAudioAttributes(media3AudioAttributes, false)
+            player.repeatMode = Player.REPEAT_MODE_ONE
+            player.volume = 0f
+            // 批215：会话变化即释放旧增强器（下一次 tick 的 applyLoopBoost 按当前 boost 值重建；
+            // 防旧会话/全局会话残留）
+            player.addListener(object : Player.Listener {
+                @androidx.annotation.OptIn(UnstableApi::class)
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    runCatching { enhancers.remove(player)?.release() }
+                }
+            })
         }
 
         fun stopAndClear() {

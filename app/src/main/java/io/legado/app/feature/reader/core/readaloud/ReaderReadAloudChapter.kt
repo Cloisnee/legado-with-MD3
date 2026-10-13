@@ -57,6 +57,13 @@ data class ReaderReadAloudChapter(
                 chapterLength = paragraphs.lastOrNull()?.endPosition ?: 0,
             )
         }
+
+        /**
+         * 批215：段落分页兜底——以每个段落起点为「页」边界（真实分页快照未就绪时供朗读先行启动）。
+         * 与真实分页同为「章内字符坐标」，快照落地后可由 syncReaderLayout 无损接轨升级。
+         */
+        fun paragraphPageStarts(semanticContent: String): List<Int> =
+            semanticContent.lineParagraphs().map { it.chapterPosition }.ifEmpty { listOf(0) }
     }
 }
 

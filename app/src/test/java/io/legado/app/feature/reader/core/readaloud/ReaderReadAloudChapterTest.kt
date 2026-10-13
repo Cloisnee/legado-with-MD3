@@ -26,4 +26,25 @@ class ReaderReadAloudChapterTest {
         assertEquals("乙 ", chapter.canonicalSpeechParagraphs()[1].text)
         assertEquals(3, chapter.canonicalSpeechParagraphs()[1].chapterPosition)
     }
+
+    @Test
+    fun paragraphFallbackStartsUseParagraphPositions() {
+        // 批215：段落分页兜底——段首为页边界、起点有序、首个为 0；与真实分页同坐标（章内字符位）
+        val content = "第一段\n第二段\n\n第三段"
+        assertEquals(listOf(0, 4, 9), ReaderReadAloudChapter.paragraphPageStarts(content))
+    }
+
+    @Test
+    fun paragraphFallbackOnEmptyContentYieldsSingleStart() {
+        assertEquals(listOf(0), ReaderReadAloudChapter.paragraphPageStarts(""))
+        assertEquals(listOf(0), ReaderReadAloudChapter.paragraphPageStarts("\n\n"))
+    }
+
+    @Test
+    fun fallbackChapterPageCountMatchesParagraphs() {
+        val content = "A段\nB段\nC段"
+        val starts = ReaderReadAloudChapter.paragraphPageStarts(content)
+        val chapter = ReaderReadAloudChapter.create(0, "t", content, starts)
+        assertEquals(chapter.paragraphs.size, chapter.pageCount)
+    }
 }

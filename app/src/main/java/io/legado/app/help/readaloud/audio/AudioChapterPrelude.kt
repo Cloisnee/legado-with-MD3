@@ -32,7 +32,6 @@ class AudioChapterPrelude(
 
     private class Prep(val key: String, val totals: Map<SynthLane, Int>) {
         val remoteHit = HashMap<SynthLane, Int>()
-        val netHit = HashMap<SynthLane, Int>()
         val pending = HashMap<SynthLane, MutableList<Item>>()
         val enqueued = HashMap<SynthLane, MutableList<String>>()
     }
@@ -76,6 +75,13 @@ class AudioChapterPrelude(
 
     private fun laneText(counts: Map<SynthLane, Int>): String =
         "bgm${counts[SynthLane.BGM] ?: 0}条、环境声${counts[SynthLane.AMB] ?: 0}条、音效${counts[SynthLane.SFX] ?: 0}条"
+
+    /** 批215：命中口径统一——「远程命中」= 本地命中 + 远程（词网）下载（同为一个素材库，合并展示） */
+    private fun poolHitTotal(hit: Map<SynthLane, Int>, prep: Prep): Map<SynthLane, Int> =
+        HashMap<SynthLane, Int>().apply {
+            hit.forEach { (lane, cnt) -> merge(lane, cnt, Int::plus) }
+            prep.remoteHit.forEach { (lane, cnt) -> merge(lane, cnt, Int::plus) }
+        }
 
     /** 当前章：开章触发（不阻塞播放；章尾未完成则至多补一条失败汇总） */
     fun startChapter(chapterKey: String, texts: List<String>, book: String = "", label: String = "") {
@@ -198,18 +204,17 @@ class AudioChapterPrelude(
             return
         }
 
-        // 2) 远程命中（P1：词网直连优先 → 旧链补缺；逐条尝试；散行静默；BGM 走结构化选曲）
+        // 2) 远程命中（逐条尝试；散行静默；BGM 走结构化选曲）
         // P1.5：同栏严格——计划条目 fetch 仅认同轨素材；异栏命中忽略（转补缺队列走合成）
         miss.forEach { (lane, list) ->
             list.forEach { item ->
                 var fetched: File? = null
-                var viaNet = false
                 if (item.bgm == null) {
                     val net = AudioNetStore.lookupForLane(item.label, item.lane)
                     if (net == null) logCrossLaneIgnore(item.lane, item.label)
                     fetched = if (net != null) {
                         runCatching {
-                            AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)).also { if (it != null) viaNet = true }
+                            AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net))
                         }.getOrNull()
                     } else {
                         null
@@ -217,18 +222,10 @@ class AudioChapterPrelude(
                 }
                 if (fetched != null) {
                     prep.remoteHit.merge(lane, 1, Int::plus)
-                    if (viaNet) prep.netHit.merge(lane, 1, Int::plus)
                 } else {
                     prep.pending.getOrPut(lane) { mutableListOf() }.add(item)
                 }
             }
-        }
-        if (!ahead) {
-            AppLog.putAudio(
-                "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(prep.remoteHit)}" +
-                    (if (prep.netHit.isNotEmpty()) "（词网 ${laneText(prep.netHit)}）" else "") +
-                    "，待合成${laneText(prep.pending.mapValues { it.value.size })}。"
-            )
         }
 
         // 3) 入合成队列（P1：词网有货 → 直接按 file 下载（落库名=规范名），取代合成）
@@ -253,6 +250,8 @@ class AudioChapterPrelude(
                             } else {
                                 AudioNetStore.fetchAsset(appContext, AudioNetStore.rollVariant(appContext, net)) != null
                             }
+                            // 批215：二段链命中（含 BGM 下载）同样计入「远程命中」，口径与一段链统一
+                            if (fetched) prep.remoteHit.merge(lane, 1, Int::plus)
                         }
                     }
                     if (!fetched) {
@@ -262,6 +261,16 @@ class AudioChapterPrelude(
                     }
                 }
             }
+        }
+
+        // 批215：当前章「命中与待合成」日志移至两段链之后：命中口径=素材库命中总数
+        // （本地命中 + 远程/词网下载，合并展示——两者同为一个素材库，不再区分、不再打「（词网 …）」）；
+        // 「待合成」=实际补缺入队条数（两段 fetch 均失败者）。
+        if (!ahead) {
+            AppLog.putAudio(
+                "【音效与背景音·远程命中·${chapterNo(chapterKey)}】${laneText(poolHitTotal(hit, prep))}" +
+                    "，待合成${laneText(prep.enqueued.mapValues { it.value.size })}。"
+            )
         }
 
         // 4) 等待终态（M1-A：无上限——等本章音效全部成/败终态才放行下一章）
@@ -287,8 +296,7 @@ class AudioChapterPrelude(
                 preparedTotals[chapterKey] = totals
                 AppLog.putAudio(
                     "【音效与背景音·${chapterNo(chapterKey)}】预合成完成：${laneText(totals)}，" +
-                        "远程命中${laneText(prep.remoteHit)}" +
-                        (if (prep.netHit.isNotEmpty()) "（词网 ${laneText(prep.netHit)}）" else "") +
+                        "远程命中${laneText(poolHitTotal(hit, prep))}" +
                         "，Ai补缺${laneText(aiDone)}。"
                 )
             } else {
