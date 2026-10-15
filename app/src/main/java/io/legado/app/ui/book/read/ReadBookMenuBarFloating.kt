@@ -76,7 +76,6 @@ internal fun FloatingIconRow(
         state.bookSource,
         state.isReadAloudRunning,
         state.isAutoPage,
-        state.translationMode,
         state.useReplaceRule,
         state.useMultiSpeaker,
         eyeProtectionActive,

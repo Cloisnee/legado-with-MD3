@@ -769,7 +769,6 @@ class HttpReadAloudService : BaseReadAloudService(),
             bookUrl = book.bookUrl,
             chapterIndex = chapter.index,
             paragraphs = readAloudChapter.canonicalSpeechParagraphs(splitByPage, splitPolicy),
-            splitPolicy = splitPolicy,
         )
         val queue = runCatching { ReadAloudPlaybackQueue.from(plan).withChapterTitle(displayTitle) }
             .getOrDefault(ReadAloudPlaybackQueue.Empty)
