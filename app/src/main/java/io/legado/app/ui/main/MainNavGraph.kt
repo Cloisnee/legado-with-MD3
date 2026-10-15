@@ -701,7 +701,6 @@ fun MainActivity.mainEntryProvider(
             onNavigateToCover = { pushRoute(MainRouteSettingsCover) },
             onNavigateToTheme = { pushRoute(MainRouteSettingsTheme) },
             onNavigateToBackup = { pushRoute(MainRouteSettingsBackup) },
-            onNavigateToAi = { pushRoute(MainRouteSettingsAi) },
             onNavigateToDownloadCache = { pushRoute(MainRouteSettingsDownloadCache) },
             onNavigateToTranslation = { pushRoute(MainRouteSettingsTranslation) },
             onNavigateToLab = { pushRoute(MainRouteSettingsLabConfig) },
@@ -755,7 +754,6 @@ fun MainActivity.mainEntryProvider(
     entry<MainRouteSettingsTranslation> {
         TranslationConfigRouteScreen(
             onBackClick = { onNavigateBack() },
-            onNavigateToAi = { pushRoute(MainRouteSettingsAi) }
         )
     }
 
@@ -968,9 +966,6 @@ fun MainActivity.mainEntryProvider(
                             autoFocus = autoFocus,
                         )
                     )
-                },
-                onOpenVoiceCasting = { bookUrl ->
-                    onNavigateToRoute(MainRouteBookVoiceCasting(bookUrl))
                 },
                 onOpenReadAloudSubPage = { page ->
                     onNavigateToRoute(page.toMainRoute())
@@ -1413,21 +1408,6 @@ fun MainActivity.mainEntryProvider(
             },
             onNavigateToExploreShow = { title, sourceUrl, exploreUrl ->
                 onNavigateToRoute(MainRouteExploreShow(title, sourceUrl, exploreUrl))
-            },
-            onOpenCharacterDetail = { bookUrl, characterId ->
-                onNavigateToRoute(MainRouteBookCharacterDetail(bookUrl, characterId))
-            },
-            onOpenCharacterNetwork = { bookUrl ->
-                onNavigateToRoute(MainRouteBookCharacterNetwork(bookUrl))
-            },
-            onOpenCharacterList = { bookUrl ->
-                onNavigateToRoute(MainRouteBookCharacterList(bookUrl))
-            },
-            onOpenKnowledgeList = { bookUrl ->
-                onNavigateToRoute(MainRouteBookKnowledgeList(bookUrl))
-            },
-            onOpenEventList = { bookUrl ->
-                onNavigateToRoute(MainRouteBookEventList(bookUrl))
             },
             sharedTransitionScope = sharedTransitionScope,
             animatedVisibilityScope = LocalNavAnimatedContentScope.current,

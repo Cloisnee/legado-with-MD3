@@ -159,7 +159,6 @@ fun ReadBookRouteScreen(
     /** 「本地目录规则」：菜单入口打开规则预览页；应用结果由宿主的书页结果通道回灌。 */
     onOpenTocRulePreview: (bookUrl: String, tocRegex: String?) -> Unit = { _, _ -> },
     onOpenReplaceRule: (bookUrl: String?, editor: ReplaceEditRoute?) -> Unit,
-    onOpenVoiceCasting: (bookUrl: String) -> Unit = {},
     onOpenReadAloudSubPage: (ReadAloudSubPage) -> Unit = {},
     onOpenTtsEnginesAndVoices: () -> Unit = {},
     onOpenTtsCache: () -> Unit = {},
@@ -415,9 +414,6 @@ fun ReadBookRouteScreen(
                             }
                             is ReadBookEffect.OpenSearch -> {
                                 onOpenSearch(effect.word, effect.bookUrl, effect.autoFocus)
-                            }
-                            is ReadBookEffect.OpenBookVoiceCasting -> {
-                                onOpenVoiceCasting(effect.bookUrl)
                             }
                             is ReadBookEffect.OpenReadAloudSubPage -> {
                                 onOpenReadAloudSubPage(effect.page)

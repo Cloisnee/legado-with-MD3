@@ -468,7 +468,6 @@ internal val ReadBookButtonIds = listOf(
     "refresh_current",
     "multi_role_read",
     "multi_role_cast",
-    "cast_table",
     "ai_cast",
 )
 
@@ -1014,7 +1013,6 @@ sealed interface ReadBookIntent {
     data object ClearTtsCache : ReadBookIntent
     data object OpenTtsEnginesAndVoices : ReadBookIntent
     data object OpenTtsCache : ReadBookIntent
-    data object OpenBookVoiceCasting : ReadBookIntent
 
     /** 朗读设置里跳到某个整屏子页（角色声音池 / 背景音乐池 / 朗读胶囊外观）。 */
     data class OpenReadAloudSubPage(val page: ReadAloudSubPage) : ReadBookIntent
@@ -1158,7 +1156,6 @@ sealed interface ReadBookEffect {
     data object OpenSystemTtsSettings : ReadBookEffect
     data object OpenTtsEnginesAndVoices : ReadBookEffect
     data object OpenTtsCache : ReadBookEffect
-    data class OpenBookVoiceCasting(val bookUrl: String) : ReadBookEffect
     data class OpenReadAloudSubPage(val page: ReadAloudSubPage) : ReadBookEffect
     data object OpenHighlightRuleImportPicker : ReadBookEffect
     data object OpenHighlightRuleExportPicker : ReadBookEffect

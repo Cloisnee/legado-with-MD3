@@ -24,7 +24,8 @@ class DefaultAssetPathsTest {
 
     @Test
     fun bundledDefaultsLoadWithoutHostFilesystemSeparators() {
-        assertTrue(DefaultData.httpTTS.isNotEmpty())
+        // [ttsrv] 内置在线 TTS 源已移除（B10.1·C10）：空表允许，加载不抛异常即可
+        assertTrue(DefaultData.httpTTS.isEmpty())
         assertTrue(DefaultData.readConfigs.isNotEmpty())
         assertTrue(DefaultData.txtTocRules.isNotEmpty())
         assertTrue(DefaultData.themeConfigs.isNotEmpty())

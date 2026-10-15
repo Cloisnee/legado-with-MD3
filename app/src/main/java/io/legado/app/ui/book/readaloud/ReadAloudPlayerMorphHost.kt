@@ -51,7 +51,6 @@ fun ReadAloudPlayerMorphHost(
     onSwitchToClassic: (bookUrl: String) -> Unit,
     onOpenTtsEnginesAndVoices: (bookUrl: String) -> Unit,
     onOpenTtsCache: () -> Unit,
-    onOpenBookVoiceCasting: (bookUrl: String) -> Unit,
     onOpenReadAloudSubPage: (ReadAloudSubPage) -> Unit,
 ) {
     val context = LocalContext.current
@@ -87,7 +86,6 @@ fun ReadAloudPlayerMorphHost(
     val currentSwitch by rememberUpdatedState(onSwitchToClassic)
     val currentOpenTtsEnginesAndVoices by rememberUpdatedState(onOpenTtsEnginesAndVoices)
     val currentOpenTtsCache by rememberUpdatedState(onOpenTtsCache)
-    val currentOpenBookVoiceCasting by rememberUpdatedState(onOpenBookVoiceCasting)
     val currentOpenReadAloudSubPage by rememberUpdatedState(onOpenReadAloudSubPage)
 
     suspend fun collapsePlayer(keepConfig: Boolean = false) {
@@ -124,9 +122,6 @@ fun ReadAloudPlayerMorphHost(
                 currentOpenTtsCache()
             }
 
-            ReadAloudPlayerConfigHostAction.OpenBookVoiceCasting -> navigateFromPlayer {
-                currentOpenBookVoiceCasting(playerViewModel.uiState.value.bookUrl)
-            }
 
             ReadAloudPlayerConfigHostAction.OpenVoicePool -> navigateFromPlayer {
                 currentOpenReadAloudSubPage(ReadAloudSubPage.VoicePool)

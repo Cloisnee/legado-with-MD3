@@ -1355,7 +1355,6 @@ class ReadBookViewModel(
             is ReadBookIntent.ClearTtsCache -> readAloudDelegate.clearTtsCache()
             ReadBookIntent.OpenTtsEnginesAndVoices -> readAloudDelegate.openTtsEnginesAndVoices()
             ReadBookIntent.OpenTtsCache -> readAloudDelegate.openTtsCache()
-            ReadBookIntent.OpenBookVoiceCasting -> readAloudDelegate.openBookVoiceCasting()
             is ReadBookIntent.OpenReadAloudSubPage ->
                 readAloudDelegate.openReadAloudSubPage(intent.page)
             ReadBookIntent.OpenReadAloudPlayer -> readAloudDelegate.openPlayer()

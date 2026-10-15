@@ -11,14 +11,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 29 键写映射逐字段对应`() {
+    fun `朗读设置 48 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 29 键读映射逐字段对应`() {
+    fun `朗读设置 48 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -99,6 +99,17 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         audioPreDownloadNum = 66,
         capsuleAutoCollapse = false,
         ttsPreSynthesisConcurrency = 7,
+        ttsSynthTimeoutSec = 45,
+        ttsMaxRetry = 6,
+        alEnabled = false,
+        alSfxVolume = 71,
+        alAmbVolume = 32,
+        alBgmVolume = 23,
+        alSfxMinGapS = 5,
+        alSfxCooldownS = 55,
+        alBgmCooldownS = 145,
+        alAmbDwellS = 21,
+        alChapterSynthCap = 9,
     )
     return listOf(
         base,
@@ -125,6 +136,9 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(finishCurrentChapterAfterTimer = true),
         base.copy(ttsFollowSys = false),
         base.copy(useMultiSpeaker = false),
+        base.copy(standbyStart = false),
+        base.copy(alEnabled = true),
+        base.copy(alSfxMinGapS = 0, alChapterSynthCap = 0),
     )
 }
 
@@ -165,4 +179,16 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
     PreferKey.audioPreDownloadNum to audioPreDownloadNum,
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
+    PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
+    PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.readAloudStandbyStart to standbyStart,
+    PreferKey.alEnabled to alEnabled,
+    PreferKey.alSfxVolume to alSfxVolume,
+    PreferKey.alAmbVolume to alAmbVolume,
+    PreferKey.alBgmVolume to alBgmVolume,
+    PreferKey.alSfxMinGapS to alSfxMinGapS,
+    PreferKey.alSfxCooldownS to alSfxCooldownS,
+    PreferKey.alBgmCooldownS to alBgmCooldownS,
+    PreferKey.alAmbDwellS to alAmbDwellS,
+    PreferKey.alChapterSynthCap to alChapterSynthCap,
 )

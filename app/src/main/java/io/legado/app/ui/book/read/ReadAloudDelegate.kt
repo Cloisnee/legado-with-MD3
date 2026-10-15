@@ -280,11 +280,6 @@ class ReadAloudDelegate(
         host.emitEffect(ReadBookEffect.OpenTtsCache)
     }
 
-    fun openBookVoiceCasting() {
-        ReadBook.book?.bookUrl?.let { bookUrl ->
-            host.emitEffect(ReadBookEffect.OpenBookVoiceCasting(bookUrl))
-        }
-    }
 
     /** 朗读设置里的整屏子页（角色声音池 / 背景音乐池 / 朗读胶囊外观）：只负责把意图发出去。 */
     fun openReadAloudSubPage(page: ReadAloudSubPage) {

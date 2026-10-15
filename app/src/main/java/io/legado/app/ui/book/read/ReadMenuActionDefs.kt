@@ -230,11 +230,6 @@ internal fun readMenuButtonInfos(context: Context): List<ReadMenuButtonInfo> = l
         context.getString(R.string.multi_role_cast),
     ),
     ReadMenuButtonInfo(
-        "cast_table",
-        Icons.Default.TableRows,
-        context.getString(R.string.book_voice_casting),
-    ),
-    ReadMenuButtonInfo(
         "ai_cast",
         Icons.Default.SmartToy,
         context.getString(R.string.ai_cast_roles),
@@ -418,9 +413,6 @@ internal fun buildReadMenuActionDefs(
         },
         def("multi_role_cast", isActive = state.multiRoleCast) {
             onIntent(ReadBookIntent.SetMultiRoleCast(!state.multiRoleCast))
-        },
-        def("cast_table") {
-            onIntent(ReadBookIntent.OpenBookVoiceCasting)
         },
         def("ai_cast") {
             onIntent(ReadBookIntent.OpenAiCastDialog)

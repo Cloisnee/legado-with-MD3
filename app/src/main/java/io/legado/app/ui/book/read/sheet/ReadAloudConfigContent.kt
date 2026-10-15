@@ -460,11 +460,6 @@ fun ReadAloudConfigContent(
                         },
                     )
                     TinyClickableSettingItem(
-                        title = stringResource(R.string.read_aloud_character_casting),
-                        description = stringResource(R.string.book_voice_casting_entry_summary),
-                        onClick = { onIntent(ReadBookIntent.OpenBookVoiceCasting) },
-                    )
-                    TinyClickableSettingItem(
                         title = stringResource(R.string.cast_voice_pool),
                         description = stringResource(R.string.cast_voice_pool_summary),
                         onClick = {

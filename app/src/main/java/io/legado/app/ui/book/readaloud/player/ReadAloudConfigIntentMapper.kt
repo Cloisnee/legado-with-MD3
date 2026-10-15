@@ -6,7 +6,6 @@ import io.legado.app.ui.book.read.ReadBookIntent
 internal enum class ReadAloudPlayerConfigHostAction {
     OpenTtsEnginesAndVoices,
     OpenTtsCache,
-    OpenBookVoiceCasting,
     OpenVoicePool,
     OpenBgmPool,
     OpenCapsuleStyle,
@@ -31,8 +30,6 @@ internal fun ReadBookIntent.toReadAloudPlayerConfigHostAction():
             ReadAloudPlayerConfigHostAction.OpenTtsEnginesAndVoices
 
         ReadBookIntent.OpenTtsCache -> ReadAloudPlayerConfigHostAction.OpenTtsCache
-        ReadBookIntent.OpenBookVoiceCasting ->
-            ReadAloudPlayerConfigHostAction.OpenBookVoiceCasting
 
         // 整屏子页共用一条意图，这里再拆成播放器宿主的三个动作
         is ReadBookIntent.OpenReadAloudSubPage -> when (page) {

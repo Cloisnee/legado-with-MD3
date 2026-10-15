@@ -104,16 +104,8 @@ class MainNavRouteRegistryTest {
             "MainRouteReplaceRules",
             "MainRouteReplaceEdit",
             // 从详情页压上来的书内子页：同样必须自带覆盖层场景。
-            "MainRouteBookCharacterDetail",
-            "MainRouteBookCharacterNetwork",
-            "MainRouteBookCharacterList",
-            "MainRouteBookVoiceCasting",
             "MainRouteCloudTtsEngines",
             "MainRouteTtsCache",
-            "MainRouteBookKnowledgeList",
-            "MainRouteBookKnowledgeDetail",
-            "MainRouteBookEventList",
-            "MainRouteBookEventDetail",
         )
     }
 

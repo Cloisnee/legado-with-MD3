@@ -56,7 +56,7 @@ class MainPaneNavigationTest {
     @Test
     fun fullScreenReaderIsOpenedFromActualLeftPane() {
         val parent = MainRouteBookInfo(name = null, author = null, bookUrl = "book")
-        val stack = mutableListOf<NavKey>(MainRouteHome, parent, MainRouteBookCharacterList("book"))
+        val stack = mutableListOf<NavKey>(MainRouteHome, parent, MainRouteBookInfoEdit("book"))
         val reader = MainRouteReadBook("book")
         val navigation = MainEntryNavigation(parent, stack, true, MainNavRouteTracker()) {
             assertEquals(listOf(MainRouteHome, parent), stack)
@@ -139,17 +139,17 @@ class MainPaneNavigationTest {
     }
 
     @Test
-    fun sourceAndKnowledgePagesUseTheSameRule() {
+    fun sourceAndBookChildPagesUseTheSameRule() {
         val source = MainRouteBookSourceManage()
         val stack = mutableListOf<NavKey>(MainRouteHome, source, MainRouteBookSourceEdit("a"))
         assertTrue(selectMainPaneChild(stack, source, MainRouteBookSourceEdit("b")))
         assertEquals(listOf(MainRouteHome, source, MainRouteBookSourceEdit("b")), stack)
         val details = MainRouteBookInfo(name = null, author = null, bookUrl = "book")
-        val knowledge = MainRouteBookKnowledgeList("book")
+        val child = MainRouteBookInfoEdit("book")
         stack.clear()
-        stack.addAll(listOf(MainRouteHome, details, knowledge))
-        assertTrue(selectMainPaneChild(stack, details, MainRouteBookCharacterList("book")))
-        assertEquals(listOf(MainRouteHome, details, MainRouteBookCharacterList("book")), stack)
+        stack.addAll(listOf(MainRouteHome, details, child))
+        assertTrue(selectMainPaneChild(stack, details, MainRouteBookInfoEdit("book")))
+        assertEquals(listOf(MainRouteHome, details, MainRouteBookInfoEdit("book")), stack)
     }
 
     @Test
