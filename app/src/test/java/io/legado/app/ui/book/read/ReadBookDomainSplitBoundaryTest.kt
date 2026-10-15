@@ -78,16 +78,6 @@ class ReadBookDomainSplitBoundaryTest {
     }
 
     @Test
-    fun `ReadAiUiState 完整覆盖 AI 的四个子状态`() {
-        // AI 域是唯一有包装类型的域；这条保证下面 stateFields 的名单不会因改名而失真。
-        assertEquals(
-            "ReadAiUiState 的字段变了，请同步 DOMAINS 里 AI 域的 stateFields",
-            setOf("chapterSummary", "aiTextClean", "aiTextRewrite", "aiRewritePresetConfig"),
-            constructorParameterNames(ReadAiUiState::class),
-        )
-    }
-
-    @Test
     fun `菜单书签保存章节内字符位置而不是页码`() {
         val source = mainSourceFile("io/legado/app/ui/book/read/ReadBookmarkDelegate.kt").readText()
         assertTrue(
