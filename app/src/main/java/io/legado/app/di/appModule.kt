@@ -165,6 +165,8 @@ import io.legado.app.domain.repository.BookDomainRepository
 import io.legado.app.domain.usecase.AddBookUseCase
 import io.legado.app.domain.usecase.AddToBookshelfUseCase
 import io.legado.app.domain.usecase.AiTaskManager
+import io.legado.app.domain.usecase.AiToolAwareGenerationUseCase
+import io.legado.app.domain.usecase.AiTextFactoryUseCase
 import io.legado.app.domain.usecase.AnalyzeChapterSpeechUseCase
 import io.legado.app.domain.usecase.AppStartupMaintenanceUseCase
 import io.legado.app.domain.usecase.BackupRestoreUseCase
@@ -510,7 +512,6 @@ val appModule = module {
     singleOf(::RelocateMarkingTargetUseCase)
     singleOf(::ReplaceRuleRepository)
     single<DictionaryGateway> { DictionaryRepositoryImpl() }
-    singleOf(::AiChatGenerationUseCase)
     singleOf(::TranslateChapterUseCase)
 
     single<ImageLoader> {

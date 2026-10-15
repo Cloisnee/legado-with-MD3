@@ -893,12 +893,10 @@ class ReadBookViewModel(
             is ReadBookIntent.OpenAiRewritePresetConfig -> Unit
             is ReadBookIntent.CloseAiRewritePresetConfig -> Unit
             is ReadBookIntent.AddAiRewritePreset -> Unit
-            is ReadBookIntent.EditAiRewritePreset -> Unit
             is ReadBookIntent.SetAiRewritePresetName -> Unit
             is ReadBookIntent.SetAiRewritePresetInstruction -> Unit
             is ReadBookIntent.SaveAiRewritePreset -> Unit
             is ReadBookIntent.CancelAiRewritePresetEdit -> Unit
-            is ReadBookIntent.RequestDeleteAiRewritePreset -> Unit
             is ReadBookIntent.ConfirmDeleteAiRewritePreset -> Unit
             is ReadBookIntent.DismissDeleteAiRewritePreset -> Unit
             is ReadBookIntent.ChangeSourceBook -> changeTo(intent.book)
