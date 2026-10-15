@@ -484,6 +484,24 @@ object PreferKey {
     const val eyeProtectionSchedule = "eyeProtectionSchedule"
     const val eyeProtectionStartTime = "eyeProtectionStartTime"
     const val eyeProtectionEndTime = "eyeProtectionEndTime"
+    // [ttsrv] 回贴
+    const val alAmbDwellS = "alAmbDwellS"
+    const val alAmbVolume = "alAmbVolume"
+    const val alBgmCooldownS = "alBgmCooldownS"
+    const val alBgmVolume = "alBgmVolume"
+    const val alChapterSynthCap = "alChapterSynthCap"
+    const val alEnabled = "alEnabled"
+    const val alSfxCooldownS = "alSfxCooldownS"
+    const val alSfxMinGapS = "alSfxMinGapS"
+    const val alSfxVolume = "alSfxVolume"
+    const val audioAdultEnabled = "audioAdultEnabled"
+    const val audioLibSortMode = "audioLibSortMode"
+    const val cloudWordEnabled = "cloudWordEnabled"
+    const val cloudWordRepo = "cloudWordRepo"
+    const val cloudWordToken = "cloudWordToken"
+    const val readAloudStandbyStart = "readAloudStandbyStart"
+    const val ttsMaxRetry = "ttsMaxRetry"
+    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
 }
 
 object ReadMenuBlurMode {
@@ -509,22 +527,4 @@ object CoverRatio {
     const val Circle = 1
     const val Book = 2
     const val Unrestricted = 3
-    // [ttsrv] 回贴
-    const val alAmbDwellS = "alAmbDwellS"
-    const val alAmbVolume = "alAmbVolume"
-    const val alBgmCooldownS = "alBgmCooldownS"
-    const val alBgmVolume = "alBgmVolume"
-    const val alChapterSynthCap = "alChapterSynthCap"
-    const val alEnabled = "alEnabled"
-    const val alSfxCooldownS = "alSfxCooldownS"
-    const val alSfxMinGapS = "alSfxMinGapS"
-    const val alSfxVolume = "alSfxVolume"
-    const val audioAdultEnabled = "audioAdultEnabled"
-    const val audioLibSortMode = "audioLibSortMode"
-    const val cloudWordEnabled = "cloudWordEnabled"
-    const val cloudWordRepo = "cloudWordRepo"
-    const val cloudWordToken = "cloudWordToken"
-    const val readAloudStandbyStart = "readAloudStandbyStart"
-    const val ttsMaxRetry = "ttsMaxRetry"
-    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
 }
