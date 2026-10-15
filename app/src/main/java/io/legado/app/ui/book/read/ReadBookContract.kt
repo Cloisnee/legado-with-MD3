@@ -820,12 +820,10 @@ sealed interface ReadBookIntent {
     data object OpenAiRewritePresetConfig : ReadBookIntent
     data object CloseAiRewritePresetConfig : ReadBookIntent
     data object AddAiRewritePreset : ReadBookIntent
-    data class EditAiRewritePreset(val preset: AiRewritePresetUi) : ReadBookIntent
     data class SetAiRewritePresetName(val name: String) : ReadBookIntent
     data class SetAiRewritePresetInstruction(val instruction: String) : ReadBookIntent
     data object SaveAiRewritePreset : ReadBookIntent
     data object CancelAiRewritePresetEdit : ReadBookIntent
-    data class RequestDeleteAiRewritePreset(val preset: AiRewritePresetUi) : ReadBookIntent
     data object ConfirmDeleteAiRewritePreset : ReadBookIntent
     data object DismissDeleteAiRewritePreset : ReadBookIntent
 

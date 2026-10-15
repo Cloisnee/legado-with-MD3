@@ -23,6 +23,7 @@ import kotlin.uuid.Uuid
 
 class IdentifyBookCharactersUseCase(
     private val aiProfileGateway: AiProfileGateway,
+    private val aiToolAwareGenerationUseCase: AiToolAwareGenerationUseCase,
     private val aiArtifactGateway: AiArtifactGateway,
     private val aiTaskManager: AiTaskManager,
     private val bookKnowledgeGateway: BookKnowledgeGateway,
@@ -79,7 +80,7 @@ class IdentifyBookCharactersUseCase(
         val now = System.currentTimeMillis()
         val contentHash = MD5Utils.md5Encode(bookUrl)
         val promptHash =
-            MD5Utils.md5Encode(prompt + CACHE_PROMPT_VERSION)
+            MD5Utils.md5Encode(prompt + AiToolAwareGenerationUseCase.CACHE_PROMPT_VERSION)
         val artifact = AiArtifact(
             id = "${contentHash}_${AiTaskType.IDENTIFY_CHARACTERS}_${promptHash}_${preset.model.id}",
             taskType = AiTaskType.IDENTIFY_CHARACTERS,
@@ -171,7 +172,7 @@ class IdentifyBookCharactersUseCase(
         val now = System.currentTimeMillis()
         val contentHash = MD5Utils.md5Encode(bookUrl)
         val promptHash =
-            MD5Utils.md5Encode(prompt + CACHE_PROMPT_VERSION)
+            MD5Utils.md5Encode(prompt + AiToolAwareGenerationUseCase.CACHE_PROMPT_VERSION)
         aiArtifactGateway.upsertArtifact(
             AiArtifact(
                 id = "${contentHash}_${AiTaskType.IDENTIFY_CHARACTERS}_${promptHash}_${preset.model.id}",
@@ -231,10 +232,5 @@ class IdentifyBookCharactersUseCase(
                 .ifEmpty { "unknown" }
             return "You identify stable fictional characters from downloaded local chapters. Use read-only tools to list and read cached chapters and inspect existing characters. Return JSON only: {\"characters\":[{\"name\":string,\"aliases\":[string],\"voiceGender\":\"male|female|unknown\",\"voiceAgeBand\":\"$pools\",\"role\":\"male_lead|female_lead|male_supporting|female_supporting|\",\"personality\":string,\"summary\":string,\"evidence\":string,\"confidence\":number}]}. voiceAgeBand is the character's voice pool: copy one of the listed names exactly. Do not include pronouns, generic titles, or one-off passers-by. Use unknown instead of guessing gender. Do not create duplicates of existing names or aliases."
         }
-    }
-
-    private companion object {
-        // [ttsrv] 原 AiToolAwareGenerationUseCase.CACHE_PROMPT_VERSION（该使用例已随 AI 前台剔除）
-        const val CACHE_PROMPT_VERSION = "tool-aware-generation-v1"
     }
 }

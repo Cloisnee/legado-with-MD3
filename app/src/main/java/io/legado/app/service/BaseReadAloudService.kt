@@ -827,6 +827,12 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     /** 系统 TTS 直读那条路没有文件时长可依据，命中就立刻响。 */
+    /**
+     * [ttsrv] 待命启动（M4）在合并后暂以恒 false 兜底：standby 语义待与上游壳（bookSession）重接。
+     * 说明：旧实现的待命逻辑依赖已被上游重构掉的会话字段，本刀先保编译，功能回接排后续刀。
+     */
+    protected fun tryStartFromStandby(): Boolean = false
+
     protected fun playCueSounds(index: Int) {
         takeCueSounds(index).forEach { (path, _) -> readAloudEffect.play(path) }
     }

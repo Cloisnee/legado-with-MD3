@@ -532,9 +532,6 @@ fun MainActivity.mainEntryProvider(
             onOpenSettings = {
                 onNavigateToRoute(MainRouteSettings)
             },
-            onNavigateToChat = {
-                onNavigateToRoute(MainRouteAiChat)
-            },
             onNavigateToSearch = { key ->
                 onNavigateToRoute(
                     MainRouteSearch(
@@ -556,6 +553,27 @@ fun MainActivity.mainEntryProvider(
             },
             onNavigateToBookCacheManage = {
                 onNavigateToRoute(MainRouteBookCacheManage)
+            },
+            onNavigateToTtsServerCenter = {
+                onNavigateToRoute(MainRouteTtsServerCenter)
+            },
+            onNavigateToReadAloudLogs = {
+                onNavigateToRoute(MainRouteTtsCache)
+            },
+            onNavigateToReadAloudSettings = {
+                onNavigateToRoute(MainRouteReadAloudSettings)
+            },
+            onNavigateToAiModelManage = {
+                onNavigateToRoute(MainRouteAiModelManage)
+            },
+            onNavigateToAiAnalysisSettings = {
+                onNavigateToRoute(MainRouteAiAnalysisSettings)
+            },
+            onNavigateToRoleScriptManage = {
+                onNavigateToRoute(MainRouteRoleScriptManage)
+            },
+            onNavigateToAudioLibrary = {
+                onNavigateToRoute(MainRouteAudioLibrary)
             },
             onOpenBookshelfBook = { book, sharedCoverKey ->
                 if (book.isAudio) {
@@ -1464,6 +1482,67 @@ fun MainActivity.mainEntryProvider(
         TtsCacheRouteScreen(
             onBackClick = { onNavigateBack() },
         )
+
+    entry<MainRouteTtsServerCenter> {
+        io.legado.app.ui.ttssrv.TtsServerCenterRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteReadAloudSettings> {
+        io.legado.app.ui.ttssrv.ReadAloudSettingsRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteAiModelManage> {
+        io.legado.app.ui.ttssrv.AiModelManageRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteAiAnalysisSettings> {
+        io.legado.app.ui.ttssrv.AiAnalysisSettingsRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteAudioLibrary> {
+        io.legado.app.ui.ttssrv.AudioLibraryRouteScreen(
+            onBackClick = { onNavigateBack() },
+            onNavigateToRemote = { onNavigateToRoute(MainRouteAudioRemote) },
+            onNavigateToEdit = { id -> onNavigateToRoute(MainRouteAudioEdit(id)) },
+        )
+    }
+
+    entry<MainRouteAudioEdit> { route ->
+        io.legado.app.ui.ttssrv.AudioEditRouteScreen(
+            assetId = route.assetId,
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteAudioRemote> {
+        io.legado.app.ui.ttssrv.AudioRemoteRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteRoleScriptManage> {
+        io.legado.app.ui.ttssrv.RoleScriptManageRouteScreen(
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
+    entry<MainRouteScriptReview>(metadata = ModalOverlaySceneStrategy.pageSlide(onNavigateBack)) { route ->
+        io.legado.app.ui.ttssrv.ScriptReviewRouteScreen(
+            bookName = route.bookName,
+            bookUrl = route.bookUrl,
+            chapterIndex = route.chapterIndex,
+            onBackClick = { onNavigateBack() },
+        )
+    }
+
     }
 
 

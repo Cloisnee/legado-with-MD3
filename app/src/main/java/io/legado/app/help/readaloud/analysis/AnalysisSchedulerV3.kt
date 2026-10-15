@@ -244,7 +244,7 @@ class AnalysisSchedulerV3(
             title = "",
             semanticContent = source.semanticContent,
             pageStarts = emptyList(),
-        ).canonicalSpeechParagraphs()
+        ).canonicalSpeechParagraphs(splitByPage = false)
     }
 
     fun cancelAll() {

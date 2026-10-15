@@ -139,13 +139,19 @@ fun MainScreen(
     homePlaybackCapsuleEnabled: Boolean,
     capsuleAnchorPreview: io.legado.app.domain.model.PlaybackCapsuleState?,
     onOpenSettings: () -> Unit,
-    onNavigateToChat: () -> Unit,
     onNavigateToSearch: (String?) -> Unit,
     onNavigateToScopedSearch: (String) -> Unit,
     onNavigateToRemoteImport: () -> Unit,
     onNavigateToLocalImport: () -> Unit,
     onNavigateToCache: (Long) -> Unit,
     onNavigateToBookCacheManage: () -> Unit,
+    onNavigateToTtsServerCenter: () -> Unit,
+    onNavigateToReadAloudLogs: () -> Unit,
+    onNavigateToReadAloudSettings: () -> Unit,
+    onNavigateToAiModelManage: () -> Unit,
+    onNavigateToAiAnalysisSettings: () -> Unit,
+    onNavigateToRoleScriptManage: () -> Unit,
+    onNavigateToAudioLibrary: () -> Unit,
     onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
     onNavigateToBookInfo: (name: String, author: String, bookUrl: String, origin: String?, coverPath: String?, sharedCoverKey: String?) -> Unit,
@@ -646,7 +652,6 @@ fun MainScreen(
                             )
                             MainDestination.My -> MyRouteScreen(
                                 onOpenSettings = onOpenSettings,
-                                onNavigateToChat = onNavigateToChat,
                                 onNavigate = { event ->
                                     when (event) {
                                         PrefClickEvent.OpenBookCacheManage -> onNavigateToBookCacheManage()
@@ -656,6 +661,13 @@ fun MainScreen(
                                         PrefClickEvent.OpenDictRule -> onNavigateToDictRule()
                                         PrefClickEvent.OpenTxtTocRule -> onNavigateToTxtTocRule()
                                         PrefClickEvent.OpenAllBookmark -> onNavigateToAllBookmark()
+                                        PrefClickEvent.OpenTtsServerCenter -> onNavigateToTtsServerCenter()
+                                        PrefClickEvent.OpenReadAloudLogs -> onNavigateToReadAloudLogs()
+                                        PrefClickEvent.OpenReadAloudSettings -> onNavigateToReadAloudSettings()
+                                        PrefClickEvent.OpenAiModelManage -> onNavigateToAiModelManage()
+                                        PrefClickEvent.OpenAiAnalysisSettings -> onNavigateToAiAnalysisSettings()
+                                        PrefClickEvent.OpenRoleScriptManage -> onNavigateToRoleScriptManage()
+                                        PrefClickEvent.OpenAudioLibrary -> onNavigateToAudioLibrary()
                                         else -> onIntent(MainUiIntent.HandlePreferenceClick(event))
                                     }
                                 }

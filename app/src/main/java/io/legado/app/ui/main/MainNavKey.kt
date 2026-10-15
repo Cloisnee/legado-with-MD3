@@ -218,6 +218,37 @@ data class MainRouteCloudTtsEngines(val bookUrl: String? = null) : MainRoute
 data object MainRouteTtsCache : MainRoute
 
 @Serializable
+data object MainRouteTtsServerCenter : MainRoute
+
+@Serializable
+data object MainRouteReadAloudSettings : MainRoute
+
+@Serializable
+data object MainRouteAiAnalysisSettings : MainRoute
+
+@Serializable
+data object MainRouteAiModelManage : MainRoute
+
+@Serializable
+data object MainRouteRoleScriptManage : MainRoute
+
+@Serializable
+data object MainRouteAudioLibrary : MainRoute
+
+@Serializable
+data object MainRouteAudioRemote : MainRoute
+
+@Serializable
+data class MainRouteAudioEdit(val assetId: String) : MainRoute
+
+@Serializable
+data class MainRouteScriptReview(
+    val bookName: String,
+    val bookUrl: String,
+    val chapterIndex: Int,
+) : MainRoute
+
+@Serializable
 data class MainRouteBookKnowledgeList(
     val bookUrl: String,
 ) : MainRoute

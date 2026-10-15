@@ -583,35 +583,3 @@ private fun symbolLabelRes(option: ReadAloudSplitSymbol): Int = when (option) {
     ReadAloudSplitSymbol.HalfColon -> R.string.symbol_halfwidth_colon
 }
 
-@Composable
-fun ReadAloudNumberConfigSheet(
-    show: Boolean,
-    title: String,
-    description: String,
-    value: Int,
-    defaultValue: Int,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Int) -> Unit,
-    onDismissRequest: () -> Unit,
-) {
-    AppModalBottomSheet(
-        show = show,
-        onDismissRequest = onDismissRequest,
-        title = title,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp)
-        ) {
-            SliderSettingItem(
-                title = title,
-                description = description,
-                value = value.toFloat(),
-                defaultValue = defaultValue.toFloat(),
-                valueRange = valueRange,
-                onValueChange = { onValueChange(it.toInt()) },
-            )
-        }
-    }
-}

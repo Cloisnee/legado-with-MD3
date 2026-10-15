@@ -166,6 +166,12 @@ object MainNavigator {
             MainRouteImportRemote,
             is MainRouteCache,
             MainRouteBookCacheManage,
+            MainRouteTtsServerCenter,
+            MainRouteReadAloudSettings,
+            MainRouteAiModelManage,
+            MainRouteAiAnalysisSettings,
+            MainRouteRoleScriptManage,
+            MainRouteAudioLibrary,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (
