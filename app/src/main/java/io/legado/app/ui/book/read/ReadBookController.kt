@@ -60,7 +60,6 @@ import io.legado.app.feature.reader.platform.ReaderPerfTrace
 import io.legado.app.help.TTS
 import io.legado.app.help.book.isOnLineTxt
 import io.legado.app.help.config.ReadBookConfig
-import io.legado.app.help.readaloud.cast.BgmSceneStore
 import io.legado.app.help.storage.Backup
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.model.CacheBook
@@ -593,18 +592,6 @@ class ReadBookController(
                 true
             }
             else -> false
-        }
-        is ReaderElement.RoleCast -> {
-            // 多角色分配：点击胶囊打开分配弹层（确认/取消后重排当前章）
-            viewModel.onIntent(
-                ReadBookIntent.ShowSheet(ReadBookSheet.RoleCast(element.quoteOrdinal)),
-            )
-            true
-        }
-
-        is ReaderElement.BgmScene -> {
-            viewModel.onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.BgmScene(element.paragraphIndex)))
-            true
         }
         is ReaderElement.Image -> handleComposeImageClick(element)
         is ReaderElement.Review -> { activity.toastOnUi("Button Pressed!"); true }
@@ -1479,7 +1466,6 @@ class ReadBookController(
         bookUrl = book.bookUrl,
         bookOrigin = book.origin,
         bookSourceHash = bookSourceHash,
-        castRenderHash = castRenderHash,
     )
 
     /**
@@ -1566,10 +1552,6 @@ class ReadBookController(
                         contentPaddingBottomPx = padding.bottom,
                         paginationStyle = style,
                         highlightRules = highlightRules,
-                        castOptions = io.legado.app.help.readaloud.cast.CastRenderOptions.load(
-                            candidate.book.bookUrl,
-                            chapterIndex,
-                        ),
                         onPage = { page ->
                             // 归因用：只标记本章第一页。三个 marker 把"第一页成形 → 主线程接管
                             // → 发布到窗口"切开，用于分析端到端可读页时间的构成。
@@ -2080,45 +2062,8 @@ class ReadBookController(
                 viewModel.onIntent(ReadBookIntent.TextActionDict(selectedText))
                 return true
             }
-
-            R.id.menu_insert_bgm_before -> return openBgmSceneAtSelection(before = true)
-
-            R.id.menu_insert_bgm_after -> return openBgmSceneAtSelection(before = false)
         }
         return false
-    }
-
-    /**
-     * 手动分配背景音乐场景：以选区所在的段落为锚，打开与点击 ♪ 胶囊**同一个**场景弹层
-     * （[ReadBookSheet.BgmScene]）——挑池、写库、重载本章都由那条路做，这里只负责定位。
-     *
-     * 「前」= 胶囊插在这一段上面，场景从这一段起生效；「后」= 插到下一段上面，
-     * 也就是这一场景到下一段才切换。起点含义与朗读侧一致：
-     * 见 [io.legado.app.help.readaloud.playback.ReadAloudBgmPlayer] 的 `ordinalAt` 匹配。
-     *
-     * 段序号来自 [io.legado.app.help.readaloud.cast.BgmSceneStore.positionsToOrdinals]，
-     * 与胶囊渲染、AI 分配同一套计数（空白段不编号、标题不算段）。
-     */
-    private fun openBgmSceneAtSelection(before: Boolean): Boolean {
-        val selection = composeSelection
-        // 选区含标题时 bodyStart 会被压成 0，落不到正确的段上，直接判不可用
-        val bodyStart = selection?.bodyStart?.takeIf { !selection.includesTitle }
-        val positions = ReadBook.readerChapterInputWindow.current?.source
-            ?.let { BgmSceneStore.positionsToOrdinals(it.semanticContent) }
-            .orEmpty()
-        var ordinal = -1
-        if (bodyStart != null) {
-            positions.forEach { (position, value) ->
-                if (position <= bodyStart) ordinal = value
-            }
-        }
-        val target = ordinal + if (before) 0 else 1
-        if (target !in 0..(positions.lastOrNull()?.second ?: -1)) {
-            activity.toastOnUi(R.string.bgm_scene_insert_error)
-            return false
-        }
-        viewModel.onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.BgmScene(target)))
-        return true
     }
 
     fun onMenuActionFinally() {
@@ -2145,18 +2090,6 @@ class ReadBookController(
             items.add(ActionMenuItem(R.id.menu_ai_clean, activity.getString(R.string.ai_text_clean)))
             items.add(ActionMenuItem(R.id.menu_ai_rewrite, activity.getString(R.string.ai_text_rewrite)))
             items.add(ActionMenuItem(R.id.menu_search_content, activity.getString(R.string.search_content)))
-            items.add(
-                ActionMenuItem(
-                    R.id.menu_insert_bgm_before,
-                    activity.getString(R.string.insert_bgm_before),
-                )
-            )
-            items.add(
-                ActionMenuItem(
-                    R.id.menu_insert_bgm_after,
-                    activity.getString(R.string.insert_bgm_after),
-                )
-            )
 
             val thirdPartyItems = mutableListOf<ActionMenuItem>()
             runCatching {
@@ -2572,7 +2505,6 @@ class ReadBookController(
             is ReadBookEffect.OpenSystemTtsSettings,
             ReadBookEffect.OpenTtsEnginesAndVoices,
             ReadBookEffect.OpenTtsCache,
-            is ReadBookEffect.OpenReadAloudSubPage,
             is ReadBookEffect.OpenHighlightRuleImportPicker,
             is ReadBookEffect.OpenHighlightRuleExportPicker,
             is ReadBookEffect.TtsCacheCleared,
@@ -3290,8 +3222,6 @@ data class ActionMenuItem(
                 R.id.menu_ai_clean -> "menu_ai_clean"
                 R.id.menu_ai_rewrite -> "menu_ai_rewrite"
                 R.id.menu_search_content -> "menu_search_content"
-                R.id.menu_insert_bgm_before -> "menu_insert_bgm_before"
-                R.id.menu_insert_bgm_after -> "menu_insert_bgm_after"
                 else -> id.toString()
             }
         }

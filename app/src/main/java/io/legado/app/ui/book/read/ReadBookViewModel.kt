@@ -127,8 +127,6 @@ class ReadBookViewModel(
     private val aiProfileGateway: AiProfileGateway,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
     private val readAloudSessionStore: ReadAloudSessionStore,
-    private val aiCastAssignUseCase: io.legado.app.help.readaloud.cast.AiCastAssignUseCase,
-    private val aiSceneAssignUseCase: io.legado.app.help.readaloud.cast.AiSceneAssignUseCase,
     private val replaceRuleRepository: ReplaceRuleRepository,
     private val changeSourceSettingsGateway: ChangeSourceSettingsGateway,
     private val appShellSettingsGateway: AppShellSettingsGateway,
@@ -295,18 +293,6 @@ class ReadBookViewModel(
     ) }
 
     val highlightRuleState get() = highlightRuleDelegate.uiState
-
-    // --- 多角色分配域 ---
-
-    private val readAloudCastDelegate by lazy { ReadAloudCastDelegate(
-        context = context,
-        scope = viewModelScope,
-        aiCastUseCase = aiCastAssignUseCase,
-        aiSceneUseCase = aiSceneAssignUseCase,
-        reloadChapter = { contentProcessDelegate.reloadCurrentChapter() },
-        sendIntent = { onIntent(it) },
-        emitToast = { _effects.tryEmit(ReadBookEffect.ShowToast(it)) },
-    ) }
 
     // --- 正文编辑域 ---
 
@@ -872,10 +858,6 @@ class ReadBookViewModel(
                 _uiState.update { it.copy(reSegment = false) }
             }
             is ReadBookIntent.ToggleTranslation -> toggleTranslation()
-            is ReadBookIntent.OpenChapterSummary -> Unit
-            is ReadBookIntent.OpenAiCurrentChapterRewrite -> Unit
-            is ReadBookIntent.RetryChapterSummary -> Unit
-            is ReadBookIntent.SetChapterSummaryReasoningLevel -> Unit
             is ReadBookIntent.LoadContentProcesses -> contentProcessDelegate.load()
             is ReadBookIntent.ToggleContentProcess ->
                 contentProcessDelegate.toggle(intent.id, intent.enabled)
@@ -1336,18 +1318,6 @@ class ReadBookViewModel(
             is ReadBookIntent.SetSpeechAnalysisReasoningLevel -> readAloudDelegate.setSpeechAnalysisReasoningLevel(intent.value)
             is ReadBookIntent.SetUseMultiSpeaker ->
                 readAloudDelegate.setUseMultiSpeaker(intent.value)
-            is ReadBookIntent.SetMultiRoleCast ->
-                readAloudDelegate.setMultiRoleCast(intent.value)
-            is ReadBookIntent.SetBgmAssign -> readAloudDelegate.setBgmAssign(intent.value)
-            is ReadBookIntent.SetBgmVolume -> readAloudDelegate.setBgmVolume(intent.value)
-            is ReadBookIntent.ConfirmRoleCast -> readAloudCastDelegate.confirm(intent)
-            is ReadBookIntent.CreateRoleCast -> readAloudCastDelegate.create(intent)
-            ReadBookIntent.OpenAiCastDialog,
-            ReadBookIntent.OpenAiSceneDialog, ReadBookIntent.CancelAiCast,
-            is ReadBookIntent.StartAiCast, is ReadBookIntent.DeleteChapterCastAssignments,
-            is ReadBookIntent.UnassignRoleCast, is ReadBookIntent.SetBgmScene,
-            is ReadBookIntent.ClearBgmScene, is ReadBookIntent.UpdateBgmScene,
-            is ReadBookIntent.DeleteBgmScene -> readAloudCastDelegate.onCastIntent(intent)
             is ReadBookIntent.SetReadAloudConfigTab -> readAloudDelegate.setConfigTab(intent.tab)
             is ReadBookIntent.SetDefaultReadAloudInterface ->
                 readAloudDelegate.setDefaultInterface(intent.value)
@@ -1355,8 +1325,6 @@ class ReadBookViewModel(
             is ReadBookIntent.ClearTtsCache -> readAloudDelegate.clearTtsCache()
             ReadBookIntent.OpenTtsEnginesAndVoices -> readAloudDelegate.openTtsEnginesAndVoices()
             ReadBookIntent.OpenTtsCache -> readAloudDelegate.openTtsCache()
-            is ReadBookIntent.OpenReadAloudSubPage ->
-                readAloudDelegate.openReadAloudSubPage(intent.page)
             ReadBookIntent.OpenReadAloudPlayer -> readAloudDelegate.openPlayer()
             ReadBookIntent.OpenClassicReadAloudControls -> readAloudDelegate.openClassicControls()
 

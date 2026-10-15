@@ -159,7 +159,6 @@ fun ReadBookRouteScreen(
     /** 「本地目录规则」：菜单入口打开规则预览页；应用结果由宿主的书页结果通道回灌。 */
     onOpenTocRulePreview: (bookUrl: String, tocRegex: String?) -> Unit = { _, _ -> },
     onOpenReplaceRule: (bookUrl: String?, editor: ReplaceEditRoute?) -> Unit,
-    onOpenReadAloudSubPage: (ReadAloudSubPage) -> Unit = {},
     onOpenTtsEnginesAndVoices: () -> Unit = {},
     onOpenTtsCache: () -> Unit = {},
     onNavigateBack: () -> Boolean = { true },
@@ -414,9 +413,6 @@ fun ReadBookRouteScreen(
                             }
                             is ReadBookEffect.OpenSearch -> {
                                 onOpenSearch(effect.word, effect.bookUrl, effect.autoFocus)
-                            }
-                            is ReadBookEffect.OpenReadAloudSubPage -> {
-                                onOpenReadAloudSubPage(effect.page)
                             }
                             ReadBookEffect.OpenTtsEnginesAndVoices -> onOpenTtsEnginesAndVoices()
                             ReadBookEffect.OpenTtsCache -> onOpenTtsCache()
@@ -857,8 +853,8 @@ fun ReadBookRouteScreen(
                 TranslationThinkingCapsule()
             }
             if (featureOverlaysInitialized) {
-                // 正文内新做的悬浮窗（分配角色 / 分配表 / AI 分配 / 背景音乐 / 听书下载）用底栏
-                // 同一份模糊与玻璃数据源；消费方是 CastSheetCard 里的 LocalCastSheetVisuals。
+                // 正文内悬浮窗（听书下载）用底栏同一份模糊与玻璃数据源；
+                // 消费方是 CastSheetCard 里的 LocalCastSheetVisuals。
                 CompositionLocalProvider(
                     LocalCastSheetVisuals provides CastSheetVisuals(
                         backdrop = menuBackdrop,

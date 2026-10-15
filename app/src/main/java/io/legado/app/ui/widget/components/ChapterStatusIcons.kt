@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -17,7 +16,7 @@ import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.icon.AppIcon
 
 /**
- * 目录行右侧的状态图标：本章分配过角色、本章下载过听书音频。
+ * 目录行右侧的状态图标：本章下载过听书音频。
  *
  * 放在字数徽标的左边，自己只占内容宽度，字数徽标那侧是包裹内容的，所以「12131字」变宽也不会挤。
  */
@@ -28,16 +27,8 @@ fun ChapterStatusIcons(
     spacing: Dp,
     modifier: Modifier = Modifier,
 ) {
-    if (!item.hasCastAssignment && !item.hasAudioDownload) return
+    if (!item.hasAudioDownload) return
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        if (item.hasCastAssignment) {
-            AppIcon(
-                imageVector = Icons.Default.Groups,
-                contentDescription = stringResource(R.string.cast_assignment_state),
-                modifier = Modifier.size(iconSize),
-                tint = LegadoTheme.colorScheme.primary,
-            )
-        }
         if (item.hasAudioDownload) {
             AppIcon(
                 imageVector = Icons.Default.Download,

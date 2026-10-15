@@ -302,7 +302,6 @@ object MainNavigator {
             MainRouteHighlightTagRule,
             MainRouteDictRule,
             MainRouteAllBookmark,
-            MainRouteMultiRoleRule,
             MainRouteReadRecord -> {
                 if (currentRoute == MainRouteHome) {
                     backStack.add(route)
@@ -312,15 +311,6 @@ object MainNavigator {
                     backStack.add(route)
                 }
             }
-
-            // 朗读设置的子页（设置 hub 与阅读界面朗读设置卡片两处入口）都只压栈、不清栈：
-            // 从阅读界面进来要能直接返回阅读界面。
-            MainRouteVoicePool,
-            MainRouteBgmPool,
-            MainRouteVoiceEffect,
-            MainRouteCastCapsuleStyle,
-            MainRouteRegexCastRule,
-            MainRouteMultiRoleRecognition -> backStack.add(route)
 
             MainRouteAbout -> {
                 if (currentRoute == MainRouteHome) {

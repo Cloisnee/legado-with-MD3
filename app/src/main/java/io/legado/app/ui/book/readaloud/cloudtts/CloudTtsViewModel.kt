@@ -35,7 +35,6 @@ import io.legado.app.help.http.decompressed
 import io.legado.app.help.http.newCallResponseBody
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.http.text
-import io.legado.app.help.readaloud.cast.VoicePoolStore
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.SystemTtsFileSynthesizer
 import io.legado.app.help.readaloud.playback.SystemTtsVoiceCatalog
@@ -302,9 +301,6 @@ class CloudTtsViewModel(
 
             CloudTtsIntent.RestoreExcludedVoices -> restoreExcludedVoices()
 
-            is CloudTtsIntent.RequestAddToPool -> openPoolPicker(intent.ids)
-            CloudTtsIntent.DismissPoolPicker -> _uiState.update { it.copy(poolPicker = null) }
-            is CloudTtsIntent.ConfirmAddToPool -> addVoicesToPool(intent.poolId)
             is CloudTtsIntent.EditVoice -> editVoice(intent.id)
             is CloudTtsIntent.UpdateEngineEditor -> _uiState.update { it.copy(engineEditor = intent.editor) }
             is CloudTtsIntent.UpdateVoiceEditor -> _uiState.update { it.copy(voiceEditor = intent.editor) }
@@ -1238,58 +1234,6 @@ class CloudTtsViewModel(
                 application.getString(R.string.cloud_tts_no_excluded_voices)
             } else {
                 application.getString(R.string.cloud_tts_restored_voices, restored)
-            }
-        )
-    }
-
-    /**
-     * 打开「添加到声音池」弹层。池列表要现读：本页不认识声音池那套缓存，
-     * 顺带 ensureSeeded 一次，否则新设备上弹层里一个池都没有。
-     */
-    private fun openPoolPicker(ids: List<String>) = viewModelScope.launch {
-        val picked = ids.ifEmpty { _uiState.value.selectedVoiceIds.toList() }
-        if (picked.isEmpty()) return@launch
-        val pools = withContext(Dispatchers.IO) {
-            VoicePoolStore.ensureSeeded()
-            VoicePoolStore.listPools().map {
-                VoicePoolOptionUi(it.id, it.name, it.groupName, it.total)
-            }
-        }
-        _uiState.update {
-            it.copy(
-                poolPicker = VoicePoolPickerUi(
-                    voiceIds = picked.toImmutableList(),
-                    voiceLabel = voices.firstOrNull { voice ->
-                        voice.id == picked.singleOrNull()
-                    }?.displayName.orEmpty(),
-                    pools = pools.toImmutableList(),
-                )
-            )
-        }
-    }
-
-    /** 把弹层里那批音色加进选中的池：已有的成员不动，只报真正新增的条数。 */
-    private fun addVoicesToPool(poolId: String) = viewModelScope.launch {
-        val picker = _uiState.value.poolPicker ?: return@launch
-        val added = withContext(Dispatchers.IO) {
-            VoicePoolStore.addMembers(poolId, picker.voiceIds.toSet())
-        }
-        _uiState.update {
-            it.copy(
-                poolPicker = null,
-                voiceBatchMode = false,
-                selectedVoiceIds = persistentSetOf(),
-            )
-        }
-        toast(
-            if (added == 0) {
-                application.getString(R.string.cloud_tts_add_to_pool_none)
-            } else {
-                application.getString(
-                    R.string.cloud_tts_added_to_pool,
-                    added,
-                    picker.pools.firstOrNull { it.id == poolId }?.name.orEmpty(),
-                )
             }
         )
     }

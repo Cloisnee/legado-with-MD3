@@ -87,13 +87,6 @@ import io.legado.app.ui.book.readRecord.ReadRecordOverviewRouteScreen
 import io.legado.app.ui.book.readRecord.ReadRecordRouteScreen
 import io.legado.app.ui.book.readaloud.ReadAloudPlayerOverlayBus
 import io.legado.app.ui.book.readaloud.cache.TtsCacheRouteScreen
-import io.legado.app.ui.book.readaloud.cast.BgmPoolRouteScreen
-import io.legado.app.ui.book.readaloud.cast.CastCapsuleStyleRouteScreen
-import io.legado.app.ui.book.readaloud.cast.MultiRoleRecognitionRouteScreen
-import io.legado.app.ui.book.readaloud.cast.MultiRoleRuleRouteScreen
-import io.legado.app.ui.book.readaloud.cast.RegexCastRuleRouteScreen
-import io.legado.app.ui.book.readaloud.cast.VoiceEffectRouteScreen
-import io.legado.app.ui.book.readaloud.cast.VoicePoolRouteScreen
 import io.legado.app.ui.book.readaloud.cloudtts.CloudTtsEffect
 import io.legado.app.ui.book.readaloud.cloudtts.CloudTtsIntent
 import io.legado.app.ui.book.readaloud.cloudtts.CloudTtsScreen
@@ -696,8 +689,8 @@ fun MainActivity.mainEntryProvider(
             onBackClick = { onNavigateBack() },
             onNavigateToOther = { pushRoute(MainRouteSettingsOther) },
             onNavigateToRead = { pushRoute(MainRouteSettingsRead) },
-            // 朗读规则 hub：入口从「我的」移到设置，页面标题与这里统一叫「朗读设置」
-            onNavigateToReadAloud = { pushRoute(MainRouteMultiRoleRule) },
+            // [ttsrv] 朗读设置：指向我方自建朗读设置页（上游 cast hub 已拔除）
+            onNavigateToReadAloud = { pushRoute(MainRouteReadAloudSettings) },
             onNavigateToCover = { pushRoute(MainRouteSettingsCover) },
             onNavigateToTheme = { pushRoute(MainRouteSettingsTheme) },
             onNavigateToBackup = { pushRoute(MainRouteSettingsBackup) },
@@ -966,9 +959,6 @@ fun MainActivity.mainEntryProvider(
                             autoFocus = autoFocus,
                         )
                     )
-                },
-                onOpenReadAloudSubPage = { page ->
-                    onNavigateToRoute(page.toMainRoute())
                 },
                 onOpenTtsEnginesAndVoices = {
                     onNavigateToRoute(MainRouteCloudTtsEngines(route.bookUrl))
@@ -1599,55 +1589,6 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteAllBookmark> {
         AllBookmarkRouteScreen(onBack = { onNavigateBack() })
-    }
-
-    entry<MainRouteMultiRoleRule> {
-        MultiRoleRuleRouteScreen(
-            onBackClick = { onNavigateBack() },
-            onNavigateToVoicePool = { pushRoute(MainRouteVoicePool) },
-            onNavigateToBgmPool = { pushRoute(MainRouteBgmPool) },
-            onNavigateToVoiceEffect = { pushRoute(MainRouteVoiceEffect) },
-            onNavigateToCapsuleStyle = { pushRoute(MainRouteCastCapsuleStyle) },
-            onNavigateToEngines = { pushRoute(MainRouteCloudTtsEngines()) },
-            onNavigateToRecognition = { pushRoute(MainRouteMultiRoleRecognition) },
-            onNavigateToRegexCast = { pushRoute(MainRouteRegexCastRule) },
-        )
-    }
-
-    entry<MainRouteCastCapsuleStyle> {
-        CastCapsuleStyleRouteScreen(
-            onBackClick = { onNavigateBack() },
-        )
-    }
-
-    entry<MainRouteVoicePool> {
-        VoicePoolRouteScreen(
-            onBackClick = { onNavigateBack() }
-        )
-    }
-
-    entry<MainRouteBgmPool> {
-        BgmPoolRouteScreen(
-            onBackClick = { onNavigateBack() }
-        )
-    }
-
-    entry<MainRouteVoiceEffect> {
-        VoiceEffectRouteScreen(
-            onBackClick = { onNavigateBack() },
-        )
-    }
-
-    entry<MainRouteMultiRoleRecognition> {
-        MultiRoleRecognitionRouteScreen(
-            onBackClick = { onNavigateBack() }
-        )
-    }
-
-    entry<MainRouteRegexCastRule> {
-        RegexCastRuleRouteScreen(
-            onBackClick = { onNavigateBack() },
-        )
     }
 
     entry<MainRouteAbout> {

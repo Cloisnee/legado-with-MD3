@@ -35,30 +35,12 @@ data class CloudTtsUiState(
      */
     val voiceBatchMode: Boolean = false,
     val selectedVoiceIds: ImmutableSet<String> = persistentSetOf(),
-    /** 「添加到声音池」弹层：非空 = 打开，带着要加进去的音色 id。 */
-    val poolPicker: VoicePoolPickerUi? = null,
     /**
      * 被用户排除的音色数（源自带目录里不想用的那些）。
      *
      * 大于 0 时才给「恢复」入口——没有排除项时那个按钮按下去没有任何意义。
      */
     val excludedVoiceCount: Int = 0,
-)
-
-/** 把音色加进角色声音池的弹层内容：待加的音色 + 可选的池列表。 */
-@Stable
-data class VoicePoolPickerUi(
-    val voiceIds: ImmutableList<String>,
-    val voiceLabel: String,
-    val pools: ImmutableList<VoicePoolOptionUi>,
-)
-
-@Stable
-data class VoicePoolOptionUi(
-    val id: String,
-    val name: String,
-    val groupName: String,
-    val memberCount: Int,
 )
 
 enum class CloudTtsTab { Voices, Engines }
@@ -178,10 +160,6 @@ sealed interface CloudTtsIntent {
     data object ConfirmDeleteSelectedVoices : CloudTtsIntent
     /** 把排除掉的音色全部放回来（源自带目录的那些）。 */
     data object RestoreExcludedVoices : CloudTtsIntent
-    /** 打开「添加到声音池」弹层；[ids] 为空时按批量勾选的那一批处理。 */
-    data class RequestAddToPool(val ids: List<String>) : CloudTtsIntent
-    data object DismissPoolPicker : CloudTtsIntent
-    data class ConfirmAddToPool(val poolId: String) : CloudTtsIntent
     data class EditVoice(val id: String) : CloudTtsIntent
     data class UpdateEngineEditor(val editor: CloudTtsEngineEditorUi) : CloudTtsIntent
     data class UpdateVoiceEditor(val editor: TtsVoicePresetEditorUi) : CloudTtsIntent

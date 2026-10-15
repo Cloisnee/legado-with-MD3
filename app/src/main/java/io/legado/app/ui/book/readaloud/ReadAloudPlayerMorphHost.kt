@@ -18,7 +18,6 @@ import io.legado.app.R
 import io.legado.app.core.ui.player.PlayerMorphAppearance
 import io.legado.app.core.ui.player.PlayerMorphHost
 import io.legado.app.help.IntentHelp
-import io.legado.app.ui.book.read.ReadAloudSubPage
 import io.legado.app.ui.book.read.sheet.ReadAloudConfigContent
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.book.read.sheet.asReadBookUiState
@@ -51,7 +50,6 @@ fun ReadAloudPlayerMorphHost(
     onSwitchToClassic: (bookUrl: String) -> Unit,
     onOpenTtsEnginesAndVoices: (bookUrl: String) -> Unit,
     onOpenTtsCache: () -> Unit,
-    onOpenReadAloudSubPage: (ReadAloudSubPage) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -86,7 +84,6 @@ fun ReadAloudPlayerMorphHost(
     val currentSwitch by rememberUpdatedState(onSwitchToClassic)
     val currentOpenTtsEnginesAndVoices by rememberUpdatedState(onOpenTtsEnginesAndVoices)
     val currentOpenTtsCache by rememberUpdatedState(onOpenTtsCache)
-    val currentOpenReadAloudSubPage by rememberUpdatedState(onOpenReadAloudSubPage)
 
     suspend fun collapsePlayer(keepConfig: Boolean = false) {
         configWaitsForPlayer = keepConfig
@@ -120,19 +117,6 @@ fun ReadAloudPlayerMorphHost(
 
             ReadAloudPlayerConfigHostAction.OpenTtsCache -> navigateFromPlayer {
                 currentOpenTtsCache()
-            }
-
-
-            ReadAloudPlayerConfigHostAction.OpenVoicePool -> navigateFromPlayer {
-                currentOpenReadAloudSubPage(ReadAloudSubPage.VoicePool)
-            }
-
-            ReadAloudPlayerConfigHostAction.OpenBgmPool -> navigateFromPlayer {
-                currentOpenReadAloudSubPage(ReadAloudSubPage.BgmPool)
-            }
-
-            ReadAloudPlayerConfigHostAction.OpenCapsuleStyle -> navigateFromPlayer {
-                currentOpenReadAloudSubPage(ReadAloudSubPage.CapsuleStyle)
             }
 
             ReadAloudPlayerConfigHostAction.OpenSystemTtsSettings ->
@@ -222,8 +206,6 @@ fun ReadAloudPlayerMorphHost(
             onPlayerIntent = playerViewModel::onIntent,
             selectedTab = configTab,
             onTabSelected = { configTab = it },
-            // 正文内配乐浮层由阅读器宿主承载，播放页没有这套 ViewModel
-            bgmSceneActionsEnabled = false,
         )
     }
 

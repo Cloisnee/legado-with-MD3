@@ -226,7 +226,6 @@ fun TocScreen(
     val invertSelectionText = stringResource(R.string.invert_selection)
     val selectFollowingText = stringResource(R.string.select_following)
     val addBookmarkText = stringResource(R.string.bookmark_add)
-    val deleteAssignmentText = stringResource(R.string.cast_assignment_delete)
     val deleteAudioText = stringResource(R.string.read_aloud_audio_download_delete)
     val bookmarkDefaultFileName = stringResource(R.string.bookmark)
 
@@ -345,11 +344,6 @@ fun TocScreen(
                 text = addBookmarkText,
                 icon = Icons.Default.BookmarkAdd,
                 onClick = { onIntent(TocIntent.AddBookmarksForSelected) }
-            ),
-            ActionItem(
-                text = deleteAssignmentText,
-                icon = Icons.Default.Groups,
-                onClick = { onIntent(TocIntent.DeleteAssignmentsForSelected) }
             ),
             ActionItem(
                 text = deleteAudioText,
@@ -864,7 +858,6 @@ fun ChapterItem(
     val downloadingDescription = stringResource(R.string.a11y_downloading)
     val downloadFailedDescription = stringResource(R.string.a11y_download_failed)
     val notDownloadedDescription = stringResource(R.string.a11y_not_downloaded)
-    val assignmentStateDescription = stringResource(R.string.cast_assignment_state)
     val audioDownloadStateDescription =
         stringResource(R.string.read_aloud_audio_download_state)
     val wordCountDescription = item.wordCount?.let {
@@ -884,7 +877,6 @@ fun ChapterItem(
         if (item.isVip && !item.isPay) add(lockedDescription)
         if (showWordCount) wordCountDescription?.let(::add)
         downloadStateDescription?.let(::add)
-        if (item.hasCastAssignment) add(assignmentStateDescription)
         if (item.hasAudioDownload) add(audioDownloadStateDescription)
     }.joinToString(", ")
     val canDownload = item.downloadState == DownloadState.NONE ||

@@ -831,7 +831,6 @@ private fun RowScope.TitleBarActionButtons(
         state.isAutoPage,
         state.translationMode,
         state.useMultiSpeaker,
-        state.multiRoleCast,
         eyeProtectionActive,
     ) {
         loadTitleBarActions(

@@ -7,7 +7,6 @@ import io.legado.app.domain.model.readaloud.ContentSplitPolicy
 import io.legado.app.domain.model.readaloud.ReadAloudContentSplitter
 import io.legado.app.domain.model.readaloud.ReadAloudSplitUnit
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
-import io.legado.app.feature.reader.core.cast.CastMarkers
 
 data class ReaderReadAloudParagraph(
     val text: String,
@@ -172,11 +171,11 @@ private fun ReadAloudSplitUnit.toParagraph(isParagraphEnd: Boolean): ReaderReadA
 private fun String.sanitizeForSpeech(): String = replace(Regex("[袮祢꧁\uFFFC]"), " ")
 
 /**
- * 朗读单元是否**念不出东西**：去掉角色标记后只剩空白/控制/分隔/标点/符号。
+ * 朗读单元是否**念不出东西**：只剩空白/控制/分隔/标点/符号。
  *
  * 判据与朗读服务的跳过口径同源（[AppPattern.notReadAloudRegex]），服务侧送进引擎前还会
- * 去掉不可念的标记与字符，所以这里判为不发声的段在那边必然也发不出声。章内常见的 `——`、
+ * 去掉不可念的字符，所以这里判为不发声的段在那边必然也发不出声。章内常见的 `——`、
  * `……` 分隔行与空行都落在这条判据里；「①②③」这类序号字符不属于标点/符号类，照旧朗读。
  */
 fun String.isUnspeakableReadAloudUnit(): Boolean =
-    CastMarkers.strip(this).matches(AppPattern.notReadAloudRegex)
+    matches(AppPattern.notReadAloudRegex)

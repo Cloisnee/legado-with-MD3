@@ -12,7 +12,6 @@ import io.legado.app.domain.model.AiMessageRole
 import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.AiTaskType
 import io.legado.app.domain.model.AiToolContext
-import io.legado.app.help.readaloud.cast.VoicePoolStore
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.fromJsonArray
@@ -76,7 +75,8 @@ class IdentifyBookCharactersUseCase(
         val preset = identifyPreset
             ?: aiProfileGateway.getTaskPreset(AiTaskType.CHAT)
             ?: error("No AI model configured for character identification")
-        val prompt = identifyPreset?.promptTemplate?.takeIf(String::isNotBlank) ?: defaultPrompt(VoicePoolStore.enabledPoolNames())
+        // [ttsrv] 池名列表暂空（池体系随 cast 套件拔除；任务二接我方三池后再喂）
+        val prompt = identifyPreset?.promptTemplate?.takeIf(String::isNotBlank) ?: defaultPrompt(emptyList())
         val now = System.currentTimeMillis()
         val contentHash = MD5Utils.md5Encode(bookUrl)
         val promptHash =
@@ -115,7 +115,8 @@ class IdentifyBookCharactersUseCase(
         val preset = identifyPreset
             ?: aiProfileGateway.getTaskPreset(AiTaskType.CHAT)
             ?: error("No AI model configured for character identification")
-        val prompt = identifyPreset?.promptTemplate?.takeIf(String::isNotBlank) ?: defaultPrompt(VoicePoolStore.enabledPoolNames())
+        // [ttsrv] 池名列表暂空（池体系随 cast 套件拔除；任务二接我方三池后再喂）
+        val prompt = identifyPreset?.promptTemplate?.takeIf(String::isNotBlank) ?: defaultPrompt(emptyList())
         val response = StringBuilder()
         aiToolAwareGenerationUseCase.generateStream(
             AiGenerateRequest(
@@ -160,7 +161,10 @@ class IdentifyBookCharactersUseCase(
                 name = item.get("name")?.asString?.trim().orEmpty(),
                 aliases = item.getAsJsonArray("aliases")?.map { it.asString.trim() }.orEmpty(),
                 voiceGender = item.get("voiceGender")?.asString ?: "unknown",
-                voiceAgeBand = VoicePoolStore.poolNameOrEmpty(item.get("voiceAgeBand")?.asString),
+                // [ttsrv] 池名判定本地化（原 VoicePoolStore 已随 cast 套件拔除）
+                voiceAgeBand = item.get("voiceAgeBand")?.asString?.trim()
+                    ?.takeUnless { it.isEmpty() || it in BookCharacterProfile.ALL_VOICE_AGE_BANDS }
+                    .orEmpty(),
                 role = item.get("role")?.asString.orEmpty(),
                 personality = item.get("personality")?.asString.orEmpty(),
                 summary = item.get("summary")?.asString.orEmpty(),

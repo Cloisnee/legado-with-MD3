@@ -113,7 +113,7 @@ class ReadBookDomainSplitBoundaryTest {
      *   （+2，意图入口只能在 VM，读写与默认按钮全在 `ReadButtonConfigDelegate`）；
      * - 同上：在 `ReadMenuConfig` 投影表加 `titleBarActions`
      *   （+1，一个字段一行，沿用 `titleBarButtons` / `bottomBarButtons` 的既有投影）。
-     * 回溯（上一档）：界面优化（`ba128d4c5`）`OpenReadAloudSubPage` 分支（+2）；
+     * 回溯（上一档）：界面优化（`ba128d4c5`）朗读设置子页跳转分支（+2）；
      * 字号兼容（`45d842b73`）`buildStyleConfig()` 投影表加 `titleSizeRelative`（+1）。
      *
      * VM 里合法保留、逐行摘不掉的接线类型：
@@ -304,14 +304,6 @@ class ReadBookDomainSplitBoundaryTest {
 
     private companion object {
         val DOMAINS = listOf(
-            // 多角色分配域：确认/创建/取消与收尾全在 delegate，VM 只剩三个意图分支转发。
-            // 标记读写与角色表访问全收口 CastAssignmentStore（架构护栏）。
-            DomainSplit(
-                name = "多角色分配",
-                delegateFile = "io/legado/app/ui/book/read/ReadAloudCastDelegate.kt",
-                stateFields = emptySet(),
-                stateTypes = listOf("CastAssignmentStore", "CastResult"),
-            ),
             DomainSplit(
                 name = "高亮规则",
                 delegateFile = "io/legado/app/ui/book/read/ReadHighlightRuleDelegate.kt",

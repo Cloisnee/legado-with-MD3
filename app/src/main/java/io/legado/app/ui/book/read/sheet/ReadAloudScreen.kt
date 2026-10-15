@@ -60,10 +60,6 @@ fun ReadAloudContent(
 ) {
     val ttsSpeechRate = state.readAloudTtsSpeechRate
     var speechRatePreview by remember(ttsSpeechRate) { mutableFloatStateOf(ttsSpeechRate.toFloat()) }
-    // 总音量同样只在松手时提交：拖动中每像素写 prefs 并回灌会让滑块来回跳
-    var bgmVolumePreview by remember(state.bgmVolume) {
-        mutableFloatStateOf(state.bgmVolume * 100f)
-    }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -132,24 +128,6 @@ fun ReadAloudContent(
 
         Spacer(Modifier.height(12.dp))
 
-        // 多角色朗读 / 多角色分配 / 背景音乐分配 / 人物配音 / 本章背景音乐 / AI 场景分配
-        // 都是「一次性设定」的入口，统一收进朗读设置卡片「引擎与音色」，控制面板只留
-        // 播放中随时要拧的总音量，避免这里堆一排半用不上的开关。
-        //
-        // 总音量：朗读设置里的这一根是「背景音乐相对人声整体多响」，
-        // 与配乐库每条曲子的音量、段内音量相乘
-        TinySliderSettingItem(
-            title = stringResource(R.string.cast_bgm_master_volume),
-            value = state.bgmVolume * 100f,
-            valueRange = 0f..100f,
-            steps = 19,
-            valueFormat = { "${it.toInt()}%" },
-            onValueChange = { bgmVolumePreview = it },
-            onValueChangeFinished = {
-                onIntent(ReadBookIntent.SetBgmVolume(bgmVolumePreview / 100f))
-            },
-        )
-        Spacer(Modifier.height(12.dp))
         TinySwitchSettingItem(
             title = stringResource(R.string.flow_sys),
             checked = state.readAloudTtsFollowSys,

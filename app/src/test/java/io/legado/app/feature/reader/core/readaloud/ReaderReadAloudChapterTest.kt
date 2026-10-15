@@ -53,7 +53,7 @@ class ReaderReadAloudChapterTest {
             contentSplitMode = ReadAloudContentSplitMode.Default,
         )
 
-        // 「默认」= 整段：划分粒度停在段落，段内台词边界另由 CastSpeechOverlay 处理
+        // 「默认」= 整段：划分粒度停在段落，段内台词边界另由朗读计划处理
         assertEquals(
             listOf("他来了。她走了！", "下一段。"),
             chapter.paragraphs(splitByPage = false).map { it.text },

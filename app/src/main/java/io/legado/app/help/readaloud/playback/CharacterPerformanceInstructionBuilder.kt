@@ -1,8 +1,8 @@
 package io.legado.app.help.readaloud.playback
 
+import io.legado.app.data.entities.BookCharacterProfile
 import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
 import io.legado.app.domain.model.readaloud.CloudTtsProviderType
-import io.legado.app.help.readaloud.cast.VoicePoolStore
 
 object CharacterPerformanceInstructionBuilder {
     const val VERSION = "character-performance-v1"
@@ -20,7 +20,11 @@ object CharacterPerformanceInstructionBuilder {
     ): String {
         if (provider !in supportedProviders || profile == null) return ""
         val role = profile.role.toRoleLabel()
-        val voicePool = VoicePoolStore.poolNameOrEmpty(profile.voiceAgeBand).toSafeTraitText()
+        // [ttsrv] 声音池名判定本地化（原 VoicePoolStore.poolNameOrEmpty 已随 cast 套件拔除）：
+        // 该列现在存池名；官方年龄段枚举值一律按未分配处理。
+        val voicePool = profile.voiceAgeBand.trim()
+            .takeUnless { it.isEmpty() || it in BookCharacterProfile.ALL_VOICE_AGE_BANDS }
+            .orEmpty().toSafeTraitText()
         val personality = profile.personality.toSafeTraitText()
         if (role.isBlank() && voicePool.isBlank() && personality.isBlank()) return ""
         return buildString {

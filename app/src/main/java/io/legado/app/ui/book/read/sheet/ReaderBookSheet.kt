@@ -717,7 +717,6 @@ private fun ReaderBookTocPage(
         action.selectedIds.size,
     )
     val cancelText = stringResource(R.string.cancel)
-    val deleteAssignmentText = stringResource(R.string.cast_assignment_delete)
     val deleteAudioText = stringResource(R.string.read_aloud_audio_download_delete)
     val fabItems = remember(
         selected,
@@ -726,7 +725,6 @@ private fun ReaderBookTocPage(
         invertText,
         bookmarkText,
         downloadSelectedText,
-        deleteAssignmentText,
         deleteAudioText,
         cancelText,
     ) {
@@ -742,9 +740,6 @@ private fun ReaderBookTocPage(
             },
             FabMenuItem(Icons.Default.Download, downloadSelectedText) {
                 onIntent(TocIntent.DownloadSelected)
-            },
-            FabMenuItem(Icons.Default.Groups, deleteAssignmentText) {
-                onIntent(TocIntent.DeleteAssignmentsForSelected)
             },
             FabMenuItem(Icons.Default.DownloadForOffline, deleteAudioText) {
                 onIntent(TocIntent.DeleteAudioDownloadsForSelected)

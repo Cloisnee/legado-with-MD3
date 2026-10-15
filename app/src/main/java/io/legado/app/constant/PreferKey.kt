@@ -289,10 +289,6 @@ object PreferKey {
     const val speechAnalysisMode = "speechAnalysisMode"
     const val speechAnalysisReasoningLevel = "speechAnalysisReasoningLevel"
     const val useMultiSpeaker = "useMultiSpeaker"
-    /** 多角色分配：开启后正文对话引号内渲染角色胶囊，点击可分配角色（与多角色朗读独立）。 */
-    const val multiRoleCast = "multiRoleCast"
-    /** 背景音乐分配：正文段首配乐胶囊 + 朗读时的独立配乐轨。 */
-    const val bgmAssign = "bgmAssign"
     const val themePref = "themePref"
     const val bookshelfSortOrder = "bookshelfSortOrder"
     const val showBottomView = "showBottomView"

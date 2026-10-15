@@ -4,14 +4,13 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
@@ -22,7 +21,6 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.PlayerMessage
 import androidx.media3.exoplayer.offline.DefaultDownloaderFactory
 import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.Downloader
@@ -41,7 +39,6 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.HttpTTS
-import io.legado.app.data.entities.VoiceEffectPreset
 import io.legado.app.domain.gateway.CloudTtsEngineGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
@@ -66,9 +63,6 @@ import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
 import io.legado.app.help.http.okHttpClient
-import io.legado.app.help.readaloud.cast.CastAssignmentStore
-import io.legado.app.help.readaloud.effect.VoiceEffectAudio
-import io.legado.app.help.readaloud.effect.VoiceEffectStore
 import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
 import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
 import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
@@ -168,176 +162,21 @@ class HttpReadAloudService : BaseReadAloudService(),
         ExoPlayer.Builder(this).build()
     }
 
-    /** 变声器的会话级效果（混响 / 带通）挂在朗读播放器上，随当前条切换。 */
-    private val voiceEffectAudio by lazy { VoiceEffectAudio() }
+    // [ttsrv] 接线位：变声器（VoiceEffectStore/VoiceEffectAudio）已随 cast 套件拔除；
+    // 任务二声效链（含按句音高/语速、会话效果）在此重挂。
 
-    /** 只是用来把「读时长排音效位置」推到下一帧，不是计时器（计时交给媒体时钟）。 */
-    private val soundHandler = Handler(Looper.getMainLooper())
+    // [ttsrv] 接线位：原 scheduleCueSounds（音效串按媒体时钟排点）已随 cast 套件拔除。
 
-    private fun cueEffect(index: Int): VoiceEffectPreset? =
-        playbackQueue.cues.getOrNull(index)
-            ?.let { VoiceEffectStore.ofSpeech(it.voiceEffect, it.characterId) }
 
-    /**
-     * 把这一单元身上的音效排到**媒体时钟**的命中位置上。
-     *
-     * 音效串来自 [takeCueSounds]（格式契约在 RegexCastSplitter 底部），落到
-     * [io.legado.app.help.readaloud.playback.ReadAloudEffectPlayer] 的 prime + play。
-     * 起播时刻用 `PlayerMessage.setPosition` 投递——它按真正播出的位置触发；换句回调比
-     * 出声位置提前一整段管线缓冲，不能做基准。时长要等下一循环帧再读（见 [soundHandler]），
-     * 文件则现在就 [io.legado.app.help.readaloud.playback.ReadAloudEffectPlayer.prime] 读完，
-     * 到点只剩 `start()`。
-     */
-    @androidx.annotation.OptIn(UnstableApi::class)
-    private fun scheduleCueSounds(index: Int) {
-        val sounds = takeCueSounds(index)
-        if (sounds.isEmpty()) return
-        sounds.forEach { (path, permille) ->
-            readAloudEffect.prime(path)
-            if (permille <= 0) {
-                readAloudEffect.play(path)
-                return@forEach
-            }
-            // 转场那一刻 `duration` 可能还是上一条的，下一帧再读时长算位置
-            soundHandler.post {
-                val durationMs = exoPlayer.duration
-                if (durationMs == C.TIME_UNSET || durationMs <= 0L) {
-                    readAloudEffect.play(path)
-                    return@post
-                }
-                val target = (exoPlayer.currentPosition + durationMs * permille / 1000L)
-                    .coerceAtMost(durationMs)
-                val sent = runCatching {
-                    exoPlayer.createMessage { _, _ -> readAloudEffect.play(path) }
-                        .setType(SOUND_MESSAGE_TYPE)
-                        .setLooper(Looper.getMainLooper())
-                        .setPosition(exoPlayer.currentMediaItemIndex, target)
-                        .setDeleteAfterDelivery(true)
-                        .send()
-                    true
-                }.getOrDefault(false)
-                if (!sent) readAloudEffect.play(path)
-            }
-        }
+    /** 全局语速应用到播放端（原变声器的按句音高/语速切换已随 cast 套件拔除）；
+     *  倍率沿用原实现的防噪钳制 [0.5, 2]。 */
+    private fun applyPlaybackSpeed() {
+        exoPlayer.playbackParameters = PlaybackParameters(globalPlaybackSpeed.coerceIn(0.5f, 2f), 1f)
     }
 
-    /** 某一句应该有的播放参数：这一句的音高/语速 × 全局语速。 */
-    private fun playbackParametersFor(index: Int) =
-        VoiceEffectAudio.parameters(cueEffect(index), globalPlaybackSpeed)
+    // [ttsrv] 接线位：原变声器排期体系（CuePitchTick/pendingMessage/resetPitchSchedule/
+    // scheduleNextCueEffect）已随 cast 套件拔除；任务二接我方声效链时在此重挂。
 
-    /**
-     * 换句时把这一句的音高/语速设到播放器上。
-     *
-     * 句边界串音没有干净的解：`playbackParameters` 在解码链当前位置生效，与出声位置隔着
-     * 管线缓冲；本仓库锁的 media3 1.11 没有「参数绑到单条 MediaItem」的 API，只能按
-     * [EFFECT_PITCH_SWITCH_LEAD_MS] 打一点提前量逼近。要根除只能把音高烘进合成文件本身
-     * （云端引擎请求里有 pitch 字段，本地 TTS Server 只收文本+语速，做不到）。
-     */
-    private fun applyCuePitch(index: Int) {
-        exoPlayer.playbackParameters = playbackParametersFor(index)
-    }
-
-    /** 只切会话级效果（混响 / 带通）：这一层挂在音频会话上，播出那一刻才听得到。 */
-    private fun applyCueSessionEffect(index: Int) {
-        voiceEffectAudio.attach(exoPlayer.audioSessionId)
-        voiceEffectAudio.apply(cueEffect(index))
-    }
-
-    @androidx.annotation.OptIn(UnstableApi::class)
-    private fun applyCueVoiceEffect(index: Int) {
-        val preset = cueEffect(index)
-        applyCuePitch(index)
-        // 混响/金属感挂在音频会话上，是播出那一刻生效的，切在句边界正好
-        applyCueSessionEffect(index)
-        // 只在预设真的换了时留一行，逐句都写会把日志刷满
-        if (preset?.name != effectLogName) {
-            effectLogName = preset?.name
-            AppLog.putDebug(
-                "变声器→句 $index 预设=${preset?.name ?: "无"} 会话=${exoPlayer.audioSessionId}"
-            )
-        }
-        scheduleNextCueEffect(index)
-    }
-
-    /** 上一次记日志时生效的预设名。 */
-    private var effectLogName: String? = null
-
-    /**
-     * 排期消息的载荷：句下标 + 队列代次 + 这一条只管哪一层。
-     *
-     * 两层各一条消息，因为它们生效的位置不同：音高/语速在解码链上生效，比出声位置早
-     * 一整段管线缓冲，要提前 [EFFECT_PITCH_SWITCH_LEAD_MS] 才落在句边界；混响/带通挂在
-     * 输出会话上，作用在正在出声的信号上，只提前 [EFFECT_SESSION_LEAD_MS]。
-     */
-    private class CuePitchTick(val index: Int, val generation: Int, val pitch: Boolean)
-
-    /** 排下去还没投递的两条消息；换队列时要收回，不然旧句的参数会扣在新句上。 */
-    private var pendingPitchMessage: PlayerMessage? = null
-    private var pendingSessionMessage: PlayerMessage? = null
-
-    /** 队列代次：播放器一重置就 +1，之前的排期全部作废。 */
-    private var pitchGeneration = 0
-
-    /** 播放器重置（重新开播、停止、销毁）：作废所有还没投递的排期。 */
-    private fun resetPitchSchedule() {
-        pitchGeneration++
-        pendingPitchMessage?.cancel()
-        pendingPitchMessage = null
-        pendingSessionMessage?.cancel()
-        pendingSessionMessage = null
-    }
-
-    /**
-     * 把下一句的变声器（音高/语速 + 混响/带通）排在**本句结束前一点**投递。
-     *
-     * `PlayerMessage` 由媒体时钟（真正播出的位置）投递，但两层的生效点不一样：
-     * `playbackParameters` 在解码链当前位置生效，比出声位置早一整段还没出声的管线缓冲，
-     * 所以要提前那么多才落在句边界——等换句回调再设，这一句开头就还带着上一句的音色。
-     * 音频会话上的效果作用在**正在出声**的信号上，只能贴边换。提前量落在合成音频自带的
-     * 句尾静音里；句子很短时按 duration 的三分之一收窄，不啃真正的说话内容。
-     */
-    @androidx.annotation.OptIn(UnstableApi::class)
-    private fun scheduleNextCueEffect(index: Int) {
-        val next = index + 1
-        if (next > playbackQueue.cues.lastIndex) return
-        val durationMs = exoPlayer.duration
-        if (durationMs == C.TIME_UNSET || durationMs <= 0) return
-        val sessionLead = minOf(EFFECT_SESSION_LEAD_MS, durationMs / 3)
-        val pitchLead = minOf(EFFECT_PITCH_SWITCH_LEAD_MS, durationMs / 3)
-        pendingPitchMessage?.cancel()
-        pendingSessionMessage?.cancel()
-        runCatching {
-            // 音高层提前得多（补解码链那段缓冲），会话层贴边换（它作用在正在出声的信号上）
-            pendingSessionMessage = exoPlayer
-                .createMessage { _, payload ->
-                    val tick = payload as? CuePitchTick
-                    if (tick != null && !tick.pitch && tick.generation == pitchGeneration) {
-                        applyCueSessionEffect(tick.index)
-                    }
-                }
-                .setType(PITCH_MESSAGE_TYPE)
-                .setPayload(CuePitchTick(next, pitchGeneration, pitch = false))
-                .setLooper(Looper.getMainLooper())
-                .setPosition(exoPlayer.currentMediaItemIndex, durationMs - sessionLead)
-                .setDeleteAfterDelivery(true)
-                .send()
-            pendingPitchMessage = exoPlayer
-                .createMessage { _, payload ->
-                    val tick = payload as? CuePitchTick
-                    if (tick != null && tick.pitch && tick.generation == pitchGeneration) {
-                        applyCuePitch(tick.index)
-                    }
-                }
-                .setType(PITCH_MESSAGE_TYPE)
-                .setPayload(CuePitchTick(next, pitchGeneration, pitch = true))
-                .setLooper(Looper.getMainLooper())
-                .setPosition(exoPlayer.currentMediaItemIndex, durationMs - pitchLead)
-                .setDeleteAfterDelivery(true)
-                .send()
-        }.onFailure {
-            AppLog.putDebug("变声器提前排期失败(句 $next): ${it.message}")
-        }
-    }
 
     // 缓存目录优先外部存储，externalCacheDir 不可用时退回内部 cacheDir
     private val ttsFolderPath: String by lazy {
@@ -376,14 +215,14 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun onCreate() {
         super.onCreate()
         exoPlayer.addListener(this)
-        applyCueVoiceEffect(nowSpeak)
+        applyPlaybackSpeed()
         // 上一次会话没走到 onDestroy 留下的缓存音频在这里清掉，理由见 [sweepBurnAfterReadLeftovers]。
         Coroutine.async { sweepBurnAfterReadLeftovers() }
         lifecycleScope.launch {
             readAloudSettingsGateway.settings.collectLatest {
                 readAloudSettings = it
                 // 全局语速为播放端变速, 设置变化即时生效, 无需重新合成
-                applyCueVoiceEffect(nowSpeak)
+                applyPlaybackSpeed()
             }
         }
         lifecycleScope.launch {
@@ -399,9 +238,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         downloadTask?.cancel()
         preDownloadJob?.cancel()
         audioDownloadTask?.cancel()
-        resetPitchSchedule()
-        // 会话效果挂在播放器持有的音频会话上，服务销毁前不放手就留在一条死会话里
-        voiceEffectAudio.release()
         exoPlayer.release()
         cache.release()
         Coroutine.async {
@@ -413,7 +249,6 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun play() {
         pageChanged = false
         exoPlayer.stop()
-        resetPitchSchedule()
         if (!requestFocus()) return
         if (contentList.isEmpty()) {
             AppLog.putDebug("朗读列表为空")
@@ -435,7 +270,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         paragraphIntervalJob?.cancel()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
-        resetPitchSchedule()
     }
 
     // ---- 听书音频下载 ----
@@ -915,11 +749,6 @@ class HttpReadAloudService : BaseReadAloudService(),
             includeTitle = false,
             adaptSpecialStyle = readSettings.adaptSpecialStyle,
             htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
-            castLabels = if (io.legado.app.ui.config.readConfig.ReadConfig.multiRoleCast) {
-                CastAssignmentStore.labelsForChapter(book.bookUrl, chapter.index)
-            } else {
-                null
-            },
         )
         // 预合成必须与实时朗读用同一种划分方式解析，否则预合成好的音频与实际朗读单元对不上
         val contentSplitMode = resolveContentSplitMode(
@@ -1772,7 +1601,7 @@ class HttpReadAloudService : BaseReadAloudService(),
      * 全局语速走播放端 (ExoPlayer) 变速, 对已合成音频即时生效, 无需重新下载。
      */
     override fun upSpeechRate(reset: Boolean) {
-        applyCueVoiceEffect(nowSpeak)
+        applyPlaybackSpeed()
         upMediaMetadata()
     }
 
@@ -1789,11 +1618,6 @@ class HttpReadAloudService : BaseReadAloudService(),
 
             Player.STATE_READY -> {
                 // 准备好
-                // 会话号是 Media3 在播放线程异步生成的：切条时可能还是 0，效果会静默丢掉，
-                // 开播这一刻一定有了，所以在这里补挂一次（VoiceEffectAudio 记着当前预设）
-                voiceEffectAudio.attach(exoPlayer.audioSessionId)
-                // 这一刻才拿到本条音频的时长，提前排下一句的变声（换句回调那次可能还是未知）
-                scheduleNextCueEffect(nowSpeak)
                 if (pause) return
                 exoPlayer.play()
                 upPlayPos()
@@ -1846,9 +1670,7 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
-            // 首条不走 AUTO 分支，也要在开播时套上角色的变声
-            applyCueVoiceEffect(nowSpeak)
-            scheduleCueSounds(nowSpeak)
+            applyPlaybackSpeed()
             return
         }
         val auto = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
@@ -1856,10 +1678,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             playErrorNo = 0
         }
         updateNextPos(naturalCompletion = auto)
-        applyCueVoiceEffect(nowSpeak)
-        // 音效按「刚开始播的这一格」排：nowSpeak 要等 updateNextPos 才是这一格。
-        // 排在它前面用的是刚播完那一格的索引 + 新一格的时间轴，听感就是音效晚了一整句。
-        scheduleCueSounds(nowSpeak)
+        applyPlaybackSpeed()
         upPlayPos()
         upMediaMetadata(showContent = true)
     }
@@ -1920,23 +1739,3 @@ internal fun httpReadAloudParagraphOffset(
 
 /** 源级语速默认值, 对应 1 倍速, 与全局语速共用 0..80 的刻度 */
 private const val DEFAULT_TTS_SPEED = 5
-
-/**
- * 会话级效果（混响/带通）提前换句的量：这一层挂在**输出音频会话**上，设下去就作用在
- * 正在出声的那段信号上，所以提前量只能盖过一帧设置耗时。给大了等于把上一句尾巴上的
- * 金属感/混响提前摘掉（听感：句尾突然变声）。
- */
-private const val EFFECT_SESSION_LEAD_MS = 150L
-
-/**
- * 音高/语速提前换句的量：这一层是 Sonic 在**解码链**上生效，比出声位置提前一整段
- * AudioTrack 缓冲（几百毫秒到一秒），所以必须给足，否则上一句的音高会拖进下一句开头。
- * 调参方向：大了串到上一句，小了串到下一句。
- */
-private const val EFFECT_PITCH_SWITCH_LEAD_MS = 900L
-
-/** 只是转发给自家 Target 的标记，播放器不解释它。 */
-private const val PITCH_MESSAGE_TYPE = 0x4C470001
-
-/** 音效排期消息：由媒体时钟在单元里真正播到那个位置时投递。 */
-private const val SOUND_MESSAGE_TYPE = 0x4C470002

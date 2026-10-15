@@ -53,8 +53,8 @@ data class ContentSplitPolicy(
  * 把使用者选择的划分方式与标点集合解析成实际切分策略。
  *
  * [ReadAloudContentSplitMode.Default] 就是「整段」：划分方式与多角色朗读是两个独立设置，
- * 开了多角色不该偷偷把句子切碎（用户口径：默认就是整段）。段内的台词边界由
- * `CastSpeechOverlay` 在整段之上切开，音色照样逐句换，但不制造句末停顿。
+ * 开了多角色不该偷偷把句子切碎（用户口径：默认就是整段）。段内的台词边界由朗读计划
+ * 在整段之上切开，音色照样逐句换，但不制造句末停顿。
  */
 object ContentSplitPolicies {
 

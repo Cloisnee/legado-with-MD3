@@ -109,10 +109,8 @@ data class ChapterSpeechSegment(
     val characterName: String = "",
     val emotion: String = "",
     /**
-     * 只作用于这一段的变声器预设名（正文胶囊那一栏设的），空 = 跟随角色全局。
-     *
-     * 由 `CastSpeechOverlay` 从分配表抄进播放单元：朗读侧只拿得到单元，
-     * 让它带着名字下来就不用再去猜「这句是章内第几个引号」。
+     * 只作用于这一段的变声器预设名（原正文胶囊那一栏设的），空 = 跟随角色全局。
+     * [ttsrv] 变声链已随 cast 套件拔除；字段保留待任务二接我方声效链。
      */
     val voiceEffect: String = "",
     val confidence: Float = 0f,
@@ -146,10 +144,8 @@ data class SpeechPlanItem(
     val fallbackVoices: List<ReadAloudVoice>,
     val characterPerformance: CharacterPerformanceProfile? = null,
     /**
-     * 正则角色「命中不念、改放音频」带下来的音效串，格式契约见
-     * [io.legado.app.help.readaloud.cast.RegexCastSplitter] 底部（多条换行分隔、可带 `#千分位`）。
-     * 生产方 CastSpeechOverlay，消费方 [ReadAloudPlaybackQueue.from] → BaseReadAloudService.takeCueSounds。
-     * 空 = 不放。
+     * 原正则角色「命中不念、改放音频」带下来的音效串。
+     * [ttsrv] 生产/消费链已随 cast 套件拔除；字段保留待任务二接我方声效链。空 = 不放。
      */
     val soundEffect: String = "",
 )

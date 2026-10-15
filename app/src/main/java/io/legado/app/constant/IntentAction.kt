@@ -19,8 +19,6 @@ object IntentAction {
     const val nextParagraph = "nextParagraph"
     const val upTtsSpeechRate = "upTtsSpeechRate"
     const val syncReadAloudLayout = "syncReadAloudLayout"
-    /** 多角色分配变了：按当前朗读位置重新准备本章队列，正在听的那句不重写、之后的句子换新音色。 */
-    const val refreshReadAloudCast = "refreshReadAloudCast"
     const val upTtsProgress = "upTtsProgress"
     const val adjustProgress = "adjustProgress"
     const val adjustSpeed = "adjustSpeed"

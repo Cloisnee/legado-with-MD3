@@ -1,14 +1,10 @@
 package io.legado.app.ui.book.readaloud.player
 
-import io.legado.app.ui.book.read.ReadAloudSubPage
 import io.legado.app.ui.book.read.ReadBookIntent
 
 internal enum class ReadAloudPlayerConfigHostAction {
     OpenTtsEnginesAndVoices,
     OpenTtsCache,
-    OpenVoicePool,
-    OpenBgmPool,
-    OpenCapsuleStyle,
     OpenSystemTtsSettings,
     OpenPreDownloadNumPicker,
     OpenPreSynthesisConcurrencyPicker,
@@ -30,13 +26,6 @@ internal fun ReadBookIntent.toReadAloudPlayerConfigHostAction():
             ReadAloudPlayerConfigHostAction.OpenTtsEnginesAndVoices
 
         ReadBookIntent.OpenTtsCache -> ReadAloudPlayerConfigHostAction.OpenTtsCache
-
-        // 整屏子页共用一条意图，这里再拆成播放器宿主的三个动作
-        is ReadBookIntent.OpenReadAloudSubPage -> when (page) {
-            ReadAloudSubPage.VoicePool -> ReadAloudPlayerConfigHostAction.OpenVoicePool
-            ReadAloudSubPage.BgmPool -> ReadAloudPlayerConfigHostAction.OpenBgmPool
-            ReadAloudSubPage.CapsuleStyle -> ReadAloudPlayerConfigHostAction.OpenCapsuleStyle
-        }
 
         ReadBookIntent.OpenSystemTtsSettings ->
             ReadAloudPlayerConfigHostAction.OpenSystemTtsSettings
@@ -113,12 +102,6 @@ internal fun ReadAloudPlayerViewModel.applyReadBookConfigIntent(
 
         is ReadBookIntent.SetUseMultiSpeaker ->
             onConfigIntent(ReadAloudConfigOption.UseMultiSpeaker, selected = intent.value)
-
-        is ReadBookIntent.SetMultiRoleCast ->
-            onConfigIntent(ReadAloudConfigOption.MultiRoleCast, selected = intent.value)
-
-        is ReadBookIntent.SetBgmAssign ->
-            onConfigIntent(ReadAloudConfigOption.BgmAssign, selected = intent.value)
 
         is ReadBookIntent.SetReadAloudContentSplitMode ->
             onConfigIntent(ReadAloudConfigOption.ContentSplit, value = intent.value)

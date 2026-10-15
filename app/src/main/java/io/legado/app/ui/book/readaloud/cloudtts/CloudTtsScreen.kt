@@ -247,13 +247,6 @@ fun CloudTtsScreen(
                             action = { onIntent(CloudTtsIntent.ToggleSelectAllVoices) },
                         ),
                         FabMenuItem(
-                            icon = Icons.Default.PlaylistAdd,
-                            label = stringResource(
-                                R.string.cloud_tts_add_selected_to_pool, selectedCount,
-                            ),
-                            action = { onIntent(CloudTtsIntent.RequestAddToPool(emptyList())) },
-                        ),
-                        FabMenuItem(
                             icon = Icons.Default.Delete,
                             label = stringResource(
                                 R.string.cloud_tts_delete_selected_count, selectedCount,
@@ -325,14 +318,6 @@ fun CloudTtsScreen(
                                             stringResource(R.string.cloud_tts_preview_a11y),
                                     )
                                     if (voice.deletable) {
-                                        MediumTonalButton(
-                                            onClick = {
-                                                onIntent(CloudTtsIntent.RequestAddToPool(listOf(voice.id)))
-                                            },
-                                            icon = Icons.Default.PlaylistAdd,
-                                            contentDescription =
-                                                stringResource(R.string.cloud_tts_add_to_pool),
-                                        )
                                         MediumTonalButton(
                                             onClick = {
                                                 onIntent(CloudTtsIntent.RequestDeleteVoice(voice.id))
@@ -547,58 +532,6 @@ fun CloudTtsScreen(
         dismissText = stringResource(R.string.cancel),
         onDismiss = { onIntent(CloudTtsIntent.DismissError) },
     )
-    // 弹层一律「常驻组合 + data」：miuix 的窗口靠 show驱动退场动画，条件组合会直接丢动画
-    AppModalBottomSheet(
-        data = state.poolPicker,
-        onDismissRequest = { onIntent(CloudTtsIntent.DismissPoolPicker) },
-        title = stringResource(
-            R.string.cloud_tts_add_selected_to_pool,
-            state.poolPicker?.voiceIds?.size ?: 0,
-        ),
-    ) { picker ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (picker.voiceLabel.isNotBlank()) {
-                    AppText(
-                        text = picker.voiceLabel,
-                        style = LegadoTheme.typography.bodyMedium,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (picker.pools.isEmpty()) {
-                    AppText(
-                        text = stringResource(R.string.cloud_tts_no_pools),
-                        style = LegadoTheme.typography.bodyMedium,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 24.dp),
-                    )
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 480.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        items(picker.pools, key = { "pool:${it.id}" }) { pool ->
-                            TinyClickableSettingItem(
-                                title = pool.name,
-                                description = listOf(
-                                    pool.groupName,
-                                    stringResource(
-                                        R.string.cloud_tts_pool_member_count,
-                                        pool.memberCount,
-                                    ),
-                                ).filter(String::isNotBlank).joinToString(" · "),
-                                onClick = { onIntent(CloudTtsIntent.ConfirmAddToPool(pool.id)) },
-                            )
-                        }
-                    }
-                }
-            }
-    }
     val defaultScope = state.activeDialog as? CloudTtsDialog.DefaultEngineScope
     AppAlertDialog(
         show = defaultScope != null,

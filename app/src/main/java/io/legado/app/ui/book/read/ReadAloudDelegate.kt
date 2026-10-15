@@ -119,12 +119,6 @@ class ReadAloudDelegate(
                         speechAnalysisMode = prefs.speechAnalysisMode,
                         speechAnalysisReasoningLevel = prefs.speechAnalysisReasoningLevel,
                         useMultiSpeaker = prefs.useMultiSpeaker,
-                        multiRoleCast = prefs.multiRoleCast,
-                        // 漏填这一项会出现「开关显示关、正文胶囊却还是开」：
-                        // 胶囊读的是 ReadConfig.bgmAssign（持久值），开关读的是这里的状态
-                        bgmAssign = prefs.bgmAssign,
-                        // 总音量存在配乐自己的 prefs 里（与配乐库/段内音量同一处），不在朗读设置模型中
-                        bgmVolume = io.legado.app.help.readaloud.cast.BgmPoolStore.volume(),
                         defaultReadAloudInterface = prefs.defaultInterface,
                         preDownloadNum = host.preDownloadNum,
                         audioCacheCleanTime = prefs.audioCacheCleanTime,
@@ -280,11 +274,6 @@ class ReadAloudDelegate(
         host.emitEffect(ReadBookEffect.OpenTtsCache)
     }
 
-
-    /** 朗读设置里的整屏子页（角色声音池 / 背景音乐池 / 朗读胶囊外观）：只负责把意图发出去。 */
-    fun openReadAloudSubPage(page: ReadAloudSubPage) {
-        host.emitEffect(ReadBookEffect.OpenReadAloudSubPage(page))
-    }
 
     fun openSystemTtsSettings() {
         host.emitEffect(ReadBookEffect.OpenSystemTtsSettings)
@@ -561,68 +550,6 @@ class ReadAloudDelegate(
         val level = AiReasoningLevel.fromStorage(value, AiReasoningLevel.OFF)
         updateSettings { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
         host.updateState { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
-    }
-
-    /**
-     * 多角色朗读开关（底栏「多角色朗读」）。
-     *
-     * 它同时决定三件事：有没有音色计划（旁白/角色音全在那份计划里）、正文按哪种粒度切分、
-     * 正文里的角色标记要不要注入，所以正在朗读时必须换掉朗读服务——不重启就是开关只改了
-     * 胶囊：开着不换音色，关着又停在配音页选的旁白音上回不去默认引擎。
-     * 重排当前章让胶囊即时出现/消失，重启前记住页内位置，等旧服务真的 Idle 再重放，避免叠音。
-     */
-    fun setMultiRoleCast(value: Boolean) {
-        scope.launch {
-            val shouldRestart = ReadBook.isCurrentBookReadAloud
-            val resumePlaying = shouldRestart && !BaseReadAloudService.pause
-            val chapterPosition = readAloudSessionStore.state.value.playback.chapterPosition
-            readAloudSettingsRepository.update { it.copy(multiRoleCast = value) }
-            host.updateState { it.copy(multiRoleCast = value) }
-            // 设置落库后重排当前章：注入/摘掉角色标记，胶囊才会跟着变
-            ReadBook.clearTextChapter()
-            ReadBook.loadContent(
-                resetPageOffset = false,
-                preserveReadAloudPosition = readsDurChapterAloud(),
-            )
-            if (shouldRestart) {
-                restartReadAloudWithNewPipeline(resumePlaying, chapterPosition)
-            }
-        }
-    }
-
-    /**
-     * 背景音乐分配开关：只影响正文段首的配乐胶囊渲染与朗读时的配乐轨，
-     * 同样不需要重启朗读服务；切换后重排当前章让胶囊即时出现/消失。
-     */
-    fun setBgmAssign(value: Boolean) {
-        host.updateState { it.copy(bgmAssign = value) }
-        scope.launch {
-            readAloudSettingsRepository.update { it.copy(bgmAssign = value) }
-            ReadBook.clearTextChapter()
-            ReadBook.loadContent(
-                resetPageOffset = false,
-                preserveReadAloudPosition = readsDurChapterAloud(),
-            )
-        }
-    }
-
-    /**
-     * 朗读服务正在读的就是这一章 —— 重排时把朗读位置交给 `ReadAloud.syncLayout()` 同步，
-     * 而不是让它按当前页重新起播（不保位的重载会把读过半章的朗读拽回章首）。
-     */
-    private fun readsDurChapterAloud(): Boolean =
-        ReadBook.isCurrentBookReadAloud &&
-            BaseReadAloudService.currentChapterIndex == ReadBook.durChapterIndex
-
-    /**
-     * 背景音乐总音量：只写 prefs + 刷状态，不重排当前章（音量不在胶囊文字里）。
-     *
-     * 朗读中的配乐轨靠 BgmPoolStore.volumeVersion 发现改动，拖滑杆时即时跟着变。
-     */
-    fun setBgmVolume(value: Float) {
-        val volume = value.coerceIn(0f, 1f)
-        host.updateState { it.copy(bgmVolume = volume) }
-        io.legado.app.help.readaloud.cast.BgmPoolStore.setVolume(volume)
     }
 
     /**

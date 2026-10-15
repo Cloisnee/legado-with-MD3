@@ -79,7 +79,7 @@ class ReadAloudContentSplitterTest {
     fun `role splits are only enabled for symbol mode`() {
         assertFalse(ContentSplitPolicies.forMode(ReadAloudContentSplitMode.Paragraph).allowRoleSplits)
         assertFalse(ContentSplitPolicies.forMode(ReadAloudContentSplitMode.Page).allowRoleSplits)
-        // 「默认」定成整段：段内的台词边界由 CastSpeechOverlay 切，不在这里制造句末停顿
+        // 「默认」定成整段：段内的台词边界由朗读计划处理，不在这里制造句末停顿
         assertFalse(ContentSplitPolicies.forMode(ReadAloudContentSplitMode.Default).allowRoleSplits)
         assertTrue(
             ContentSplitPolicies

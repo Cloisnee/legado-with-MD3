@@ -210,29 +210,9 @@ internal fun readMenuButtonInfos(context: Context): List<ReadMenuButtonInfo> = l
         context.getString(R.string.menu_refresh_dur),
     ),
     ReadMenuButtonInfo(
-        "ai_summary",
-        Icons.Default.AutoAwesome,
-        context.getString(R.string.ai_chapter_summary),
-    ),
-    ReadMenuButtonInfo(
-        "ai_rewrite",
-        Icons.Default.Edit,
-        context.getString(R.string.ai_text_rewrite),
-    ),
-    ReadMenuButtonInfo(
         "multi_role_read",
         Icons.Default.Groups,
         context.getString(R.string.use_multi_speaker),
-    ),
-    ReadMenuButtonInfo(
-        "multi_role_cast",
-        Icons.Default.Face,
-        context.getString(R.string.multi_role_cast),
-    ),
-    ReadMenuButtonInfo(
-        "ai_cast",
-        Icons.Default.SmartToy,
-        context.getString(R.string.ai_cast_roles),
     ),
     ReadMenuButtonInfo(
         "more_actions",
@@ -402,20 +382,8 @@ internal fun buildReadMenuActionDefs(
         def("refresh_current") {
             onIntent(ReadBookIntent.RefreshCurrentChapter)
         },
-        def("ai_summary") {
-            onIntent(ReadBookIntent.OpenChapterSummary)
-        },
-        def("ai_rewrite") {
-            onIntent(ReadBookIntent.OpenAiCurrentChapterRewrite)
-        },
         def("multi_role_read", isActive = state.useMultiSpeaker) {
             onIntent(ReadBookIntent.SetUseMultiSpeaker(!state.useMultiSpeaker))
-        },
-        def("multi_role_cast", isActive = state.multiRoleCast) {
-            onIntent(ReadBookIntent.SetMultiRoleCast(!state.multiRoleCast))
-        },
-        def("ai_cast") {
-            onIntent(ReadBookIntent.OpenAiCastDialog)
         },
         def("more_actions") {
             onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.MoreActions))

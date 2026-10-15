@@ -26,9 +26,6 @@ import io.legado.app.feature.reader.platform.ReaderPerfTrace
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
-import io.legado.app.help.readaloud.cast.CastAssignmentStore
-import io.legado.app.help.readaloud.cast.BgmSceneStore
-import io.legado.app.help.readaloud.cast.CastRenderOptions
 import io.legado.app.ui.config.readConfig.ReadConfig
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
@@ -526,8 +523,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 includeTitle = ReadBookConfig.titleMode != 2 || chapter.isVolume || processed.textList.isEmpty(),
                 adaptSpecialStyle = readSettingsGateway.currentSettings.adaptSpecialStyle,
                 htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
-                castLabels = if (ReadConfig.multiRoleCast) CastAssignmentStore.labelsForChapter(book.bookUrl, chapter.index) else emptyMap(),
-                bgmScenes = if (ReadConfig.bgmAssign) BgmSceneStore.labelsForChapter(book.bookUrl, chapter.index) else emptyMap(),
             )
             val environment = readerPaginationEnvironment ?: return
             when (val result = LegacyReaderChapterPaginator.paginate(
@@ -546,7 +541,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 contentPaddingBottomPx = environment.contentPaddingBottomPx,
                 paginationStyle = environment.style,
                 highlightRules = highlightRules,
-                castOptions = CastRenderOptions.load(book.bookUrl, chapter.index),
             )) {
                 is LegacyReaderChapterPaginationResult.Success -> {
                 wholeBookPageCoordinator.correctChapter(
@@ -1728,14 +1722,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             },
             layoutGeneration = pageEstimateGeneration,
         )
-        val castLabels =
-            if (ReadConfig.multiRoleCast) CastAssignmentStore.labelsForChapter(book.bookUrl, chapter.index) else emptyMap()
-        val bgmScenes = if (ReadConfig.bgmAssign) {
-            BgmSceneStore.labelsForChapter(book.bookUrl, chapter.index)
-        } else {
-            emptyMap()
-        }
-        val castRenderHash = CastRenderOptions.signatureFor(book.bookUrl, chapter.index)
         val readerSource = ReaderPerfTrace.section("content.source-parse") {
             ReaderChapterSourceParser.parse(
                 chapterIndex = chapter.index,
@@ -1744,8 +1730,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 includeTitle = ReadBookConfig.titleMode != 2 || chapter.isVolume || contents.textList.isEmpty(),
                 adaptSpecialStyle = readSettingsGateway.currentSettings.adaptSpecialStyle,
                 htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
-                castLabels = castLabels,
-                bgmScenes = bgmScenes,
             )
         }
         val readerChapterInput = ReaderChapterInput(
@@ -1760,7 +1744,6 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             sourceHash = readerSource.hashCode(),
             bookSourceHash = bookSource.hashCode(),
             pageEstimateGeneration = pageEstimateGeneration,
-            castRenderHash = castRenderHash,
         )
         ensureActive()
         if (!isCurrentLocalChapter(chapter) || !publishReaderChapterInput(readerChapterInput)) return

@@ -224,7 +224,6 @@ internal fun MenuBottomBar(
             state.isAutoPage,
             state.useReplaceRule,
             state.useMultiSpeaker,
-            state.multiRoleCast,
             eyeProtectionEnabled,
         ) {
             loadToolButtons(

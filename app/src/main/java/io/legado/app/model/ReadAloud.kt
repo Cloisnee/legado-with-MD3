@@ -11,7 +11,6 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
-import io.legado.app.help.readaloud.effect.VoiceEffectStore
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.HttpReadAloudService
@@ -118,11 +117,6 @@ object ReadAloud {
             val (httpVoices, systemRoutes) = runBlocking {
                 val voiceIds = appDb.readAloudVoiceDao.getBindings(bookUrl)
                     .mapTo(hashSetOf()) { it.voiceId }
-                // 分配表里的角色音是直接记在角色身上的（没进过配音页就没有绑定行），
-                // 只看 book_voice_bindings 会漏掉它们：整章退回系统直读、角色音被过滤成旁白。
-                appDb.castCharacterDao.getByBook(bookUrl).forEach {
-                    if (it.voiceId.isNotBlank()) voiceIds += it.voiceId
-                }
                 val voices = appDb.readAloudVoiceDao.getVoices().filter {
                     it.id in voiceIds && it.enabled && it.available
                 }
@@ -132,45 +126,22 @@ object ReadAloud {
                 } to voices.filter { it.engineType == ReadAloudVoice.ENGINE_SYSTEM }
                     .mapTo(hashSetOf()) { it.engineId to it.speakerId }
             }
-            // 全系统音色也要升级的两个理由：
-            // 1) 变声器的混响/金属感挂在**我们持有播放器的**那条音频会话上，直读时音频是引擎
-            //    自己的 AudioTrack，会话号不给外部应用（试听之所以有效果，就是因为它是文件合成
-            //    + 我们的 ExoPlayer）。
-            // 2) 一句旁白一句角色音地换音色——直读换音色要 setVoice，而这类引擎的 onDone 比耳朵
-            //    提前好几秒（长句是「音频写完」就报完成，缓冲里还剩两三秒没放出去），这一次
-            //    调用正好把上一句的尾巴冲掉：角色长句读到一半跳下一句就是这么来的。文件合成 +
-            //    自己的播放器按真实播放结束翻页，句界不再听引擎的回调。
-            val needsSessionEffect = hasSessionLayerEffect(bookUrl)
-            if (httpVoices.isEmpty() && systemRoutes.size < 2 && !needsSessionEffect) {
+            // 全系统音色也要升级的理由：一句旁白一句角色音地换音色——直读换音色要 setVoice，
+            // 而这类引擎的 onDone 比耳朵提前好几秒（长句是「音频写完」就报完成，缓冲里还剩
+            // 两三秒没放出去），这一次调用正好把上一句的尾巴冲掉：角色长句读到一半跳下一句
+            // 就是这么来的。文件合成 + 自己的播放器按真实播放结束翻页，句界不再听引擎的回调。
+            if (httpVoices.isEmpty() && systemRoutes.size < 2) {
                 return@runCatching null
             }
             AppLog.put(
                 "多角色朗读: 升级文件合成 系统音色 ${systemRoutes.size} 路 " +
-                    "HTTP/云端音色 ${httpVoices.size} 个 会话级变声=$needsSessionEffect",
+                    "HTTP/云端音色 ${httpVoices.size} 个",
             )
             httpVoices.firstOrNull { it.engineType == ReadAloudVoice.ENGINE_HTTP }
                 ?.engineId?.toLongOrNull()?.let(appDb.httpTTSDao::get)
                 ?: appDb.httpTTSDao.all.firstOrNull()
                 ?: HttpTTS(id = Long.MIN_VALUE, name = "TTS coordinator")
         }.getOrNull()
-    }
-
-    /** 这本书里有没有哪条音色预设需要会话级效果（角色全局、正文胶囊那一段、或正则角色那条规则自己设的）。 */
-    private fun hasSessionLayerEffect(bookUrl: String): Boolean = runBlocking {
-        val wanted = appDb.voiceEffectDao.getAll()
-            .filter { it.enabled }
-            .filter { VoiceEffectStore.needsSessionEffect(it) }
-            .mapTo(hashSetOf()) { it.name }
-        if (wanted.isEmpty()) return@runBlocking false
-        if (appDb.castCharacterDao.getByBook(bookUrl).any { it.voiceEffect in wanted }) {
-            return@runBlocking true
-        }
-        if (appDb.chapterRoleAssignmentDao.getForBook(bookUrl).any { it.voiceEffect in wanted }) {
-            return@runBlocking true
-        }
-        // 正则角色那一列（regex_cast_rules.voiceEffect）的产出方是 RegexCastRuleScreen 的变声器那行，
-        // 消费方是 CastSpeechOverlay → 朗读单元；混响/金属感同样只有文件合成那条路挂得上。
-        appDb.regexCastRuleDao.all().any { it.enabled && it.voiceEffect in wanted }
     }
 
     fun upReadAloudClass() {
@@ -229,7 +200,7 @@ object ReadAloud {
             val settings = aloudSettingsGateway.currentSettings
             AppLog.put(
                 "多角色朗读: 走${aloudClass.simpleName} 多角色朗读=${settings.useMultiSpeaker} " +
-                    "多角色分配=${settings.multiRoleCast} 合成服务=${httpTTS?.name ?: "无"}",
+                    "合成服务=${httpTTS?.name ?: \"无\"}",
             )
         }
         val intent = Intent(context, aloudClass)
@@ -324,20 +295,6 @@ object ReadAloud {
             intent.action = IntentAction.syncReadAloudLayout
             context.startForegroundServiceCompat(intent)
         }
-    }
-
-    /**
-     * 分配/变声器改动后让朗读听见：只重排队列，不重开服务。
-     *
-     * 只发一种 action：这里绝不能顺手 `refreshReadAloudClass()`——那会把 aloudClass 换成
-     * 当前设置对应的服务类，而停止旧服务时用的正是 aloudClass。一旦这两者不同，
-     * stop 意图发给一个根本没在跑的类，朗读就永远停不下来（配乐清掉的正是这条链路）。
-     */
-    fun refreshCastQueue(context: Context = appCtx) {
-        if (!ReadBook.isCurrentBookReadAloud) return
-        val intent = Intent(context, aloudClass)
-        intent.action = IntentAction.refreshReadAloudCast
-        context.startForegroundServiceCompat(intent)
     }
 
     fun selectChapter(context: Context, index: Int) {

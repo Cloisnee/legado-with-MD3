@@ -17,9 +17,6 @@ import io.legado.app.domain.model.readaloud.SpeechEngineRoute
 import io.legado.app.domain.model.readaloud.SpeechVoiceRouter
 import io.legado.app.domain.model.readaloud.SystemTtsVoiceConfig
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.feature.reader.core.cast.CastMarkers
-import io.legado.app.help.readaloud.effect.VoiceEffectAudio
-import io.legado.app.help.readaloud.effect.VoiceEffectStore
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.lib.dialogs.SelectItem
@@ -47,10 +44,9 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
     /**
      * 引擎侧偏移还原：utteranceId → 送进引擎的那一句。
      *
-     * 标记是整段删掉的，引擎回来的下标比正文靠前若干字符；不换算回去，朗读进度、翻页判定
-     * 和「从半句接着念」的偏移就全都错位。
+     * 送进引擎的就是这份文本，引擎报回来的下标（加句起点）直接对正文。
      */
-    private val pendingUtterances = ConcurrentHashMap<String, CastMarkers.Spoken>()
+    private val pendingUtterances = ConcurrentHashMap<String, String>()
 
     protected override val currentSpeechRate: Float
         get() = if (ReadConfig.ttsFollowSys) 1f else (speechRateSetting + 5) / 10f
@@ -246,18 +242,15 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
                 } else {
                     contentList[nowSpeak]
                 }
-                // 偏移用完才去掉标记：这一句要么干净正文，要么带着 <<角色（池）>> 交给认标签的引擎
                 val utteranceId = ttsUtteranceId(AppConst.APP_TAG, session, nowSpeak)
-                val spoken = speakable(storedTail, utteranceId, storedStart)
-                if (spoken.text.isEmpty() || spoken.text.matches(AppPattern.notReadAloudRegex)) {
+                val spoken = speakable(storedTail, utteranceId)
+                if (spoken.isEmpty() || spoken.matches(AppPattern.notReadAloudRegex)) {
                     AppLog.putDebug("TTS段落全标点跳过: nowSpeak=$nowSpeak")
                     pendingUtterances.remove(utteranceId)
                     ttsUtteranceListener.onDone(utteranceId)
                     return@execute
                 }
-                // 第三条音轨：这一单元身上挂了音效（正则角色「命中不念改放音频」）就一起响
-                playCueSounds(nowSpeak)
-                AppLog.putDebug("TTS开始Speak: ${spoken.text}")
+                AppLog.putDebug("TTS开始Speak: $spoken")
                 val queueMode = if (hasSpeechPlaybackQueue
                     && continuesCurrentSpeech && paragraphStartPos == 0 && !isDelay
                 ) {
@@ -272,7 +265,7 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
                 }
                 LogUtils.d(TAG, "queueMode=${if (queueMode == TextToSpeech.QUEUE_ADD) "ADD" else "FLUSH"} nowSpeak=$nowSpeak voiceChanged=$voiceChanged")
                 val result = tts.runCatching {
-                    speak(spoken.text, queueMode, null, utteranceId)
+                    speak(spoken, queueMode, null, utteranceId)
                 }.getOrElse {
                     AppLog.put("tts出错\n${it.localizedMessage}", it, true)
                     TextToSpeech.ERROR
@@ -301,7 +294,7 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
                         contentList[i]
                     }
                     val utteranceId = ttsUtteranceId(AppConst.APP_TAG, session, i)
-                    val text = speakable(storedTail, utteranceId, storedStart).text
+                    val text = speakable(storedTail, utteranceId)
                     if (text.isEmpty() || text.matches(AppPattern.notReadAloudRegex)) {
                         pendingUtterances.remove(utteranceId)
                         continue
@@ -348,19 +341,16 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
     }
 
     /**
-     * 记下这一句要送给引擎的文本（标记按开关处理）与其下标还原表。
-     *
-     * [base] 是这一句在段落里的起点：引擎报回来的下标加上它才是正文偏移，长句被引擎提前
-     * 收尾时靠它才能从半句处接着念（见 [TTSUtteranceListener.onDone]）。
+     * 记下这一句要送给引擎的文本；引擎报回来的下标加句起点即正文偏移，
+     * 长句被引擎提前收尾时从半句处接着念（见 [TTSUtteranceListener.onDone]）。
      */
     private fun speakable(
         storedTail: String,
         utteranceId: String,
-        base: Int,
-    ): CastMarkers.Spoken {
+    ): String {
         // 一次入队整章时表会跟着涨，引擎不再回调的条目没人清理，换会话就整体作废
         if (pendingUtterances.size > MAX_PENDING_UTTERANCES) pendingUtterances.clear()
-        val spoken = spokenFor(storedTail, base)
+        val spoken = speechText(storedTail)
         pendingUtterances[utteranceId] = spoken
         lastRangeEnd = 0
         sawRangeProgress = false
@@ -470,19 +460,9 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
         } else {
             (ReadConfig.ttsSpeechRate + 5) / 10f
         }
-        // 角色的变声器：直读路径没有自己的播放器，只能用引擎的音高/语速这一层
-        val cue = playbackQueue.cues.getOrNull(nowSpeak)
-        val effect = VoiceEffectStore.ofSpeech(cue?.voiceEffect, cue?.characterId)
-        if (VoiceEffectStore.needsSessionEffect(effect)) {
-            // 混响/金属感是挂在音频会话上的平台音效，TextToSpeech 不给会话号 → 这一层挂不上。
-            // 需要它时朗读该走文件合成那条服务（见 ReadAloud.findCoordinatorHttpSeed 的升级），
-            // 真落到这里只剩音高/语速，写进日志让用户知道少了哪一层。
-            AppLog.put(
-                "变声器「${effect?.name}」的混响/金属感在系统 TTS 直读下挂不上，只有音高/语速生效",
-            )
-        }
-        val rate = VoiceEffectAudio.speedOf(effect, config.speechRate ?: globalRate)
-        val pitch = VoiceEffectAudio.pitchOf(effect, config.pitch ?: 1f)
+        // [ttsrv] 变声器已随 cast 套件拔除；音高/语速直接用配置值 + 防噪钳制。
+        val rate = (config.speechRate ?: globalRate).coerceIn(0.5f, 2f)
+        val pitch = (config.pitch ?: 1f).coerceIn(0.4f, 2.5f)
         val tts = textToSpeech ?: return
         // 同一角色的连续两句算出的是同一个值，就别再发两次 binder 调用堆在切换边界上
         if (rate != appliedSpeechRate) {
@@ -614,18 +594,16 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
             super.onRangeStart(utteranceId, start, end, frame)
             if (!isCurrentUtterance(utteranceId)) return
             val spoken = utteranceId?.let(pendingUtterances::get)
-            // 引擎报的是「送进去的那一份文本」的下标：删过标记就得先换算回正文，否则
-            // 每一句角色台词的进度、翻页判定和续念偏移都差着标记那段长度
-            val storedStart = spoken?.storedOf(start) ?: (utteranceStartPos + start)
+            // 引擎报的是「送进去的那一份文本」的下标；已无标记换算，加句起点即正文位置
+            val storedStart = utteranceStartPos + start
             if (spoken != null) {
                 sawRangeProgress = true
-                lastRangeEnd = maxOf(lastRangeEnd, end.coerceIn(0, spoken.text.length))
+                lastRangeEnd = maxOf(lastRangeEnd, end.coerceIn(0, spoken.length))
             }
             paragraphStartPos = storedStart
             if (isChapterTitleAt(nowSpeak)) return
             // 正在朗读的精确章内位置（段起点 + 段内偏移），保持 readAloudNumber 的"段起点"语义不被污染
-            // storedStart 已经把引擎下标换算回正文（含 utteranceStartPos 与被删掉的标记），
-            // 上游的 utteranceStartOffset 参数是我们这里的子集，不用再传一遍。
+            // storedStart = utteranceStartPos + start，已是正文绝对位置。
             val position = currentRangePosition(utteranceStartReadAloudNumber, storedStart)
             updateReadAloudProgressSnapshot(position)
             val msg =
@@ -650,15 +628,15 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
          *
          * 判据只能是引擎自己报的范围：它报过进度、离句尾还差一截，才是被切断而不是念完。
          */
-        private fun resumeIfCutShort(spoken: CastMarkers.Spoken?, reason: String): Boolean {
+        private fun resumeIfCutShort(spoken: String?, reason: String): Boolean {
             if (spoken == null) return false
             if (!sawRangeProgress || respeakTries >= MAX_RESPEAK_TRIES) return false
-            if (spoken.text.length - lastRangeEnd < MIN_RESPEAK_TAIL) return false
-            val resumeFrom = spoken.storedOf(lastRangeEnd)
+            if (spoken.length - lastRangeEnd < MIN_RESPEAK_TAIL) return false
+            val resumeFrom = utteranceStartPos + lastRangeEnd
             if (resumeFrom <= utteranceStartPos) return false
             respeakTries++
             AppLog.put(
-                "朗读$reason：这一句差 ${spoken.text.length - lastRangeEnd} 字没收尾，" +
+                "朗读$reason：这一句差 ${spoken.length - lastRangeEnd} 字没收尾，" +
                     "从第 $resumeFrom 字接着念（第 $respeakTries 次）",
             )
             paragraphStartPos = resumeFrom

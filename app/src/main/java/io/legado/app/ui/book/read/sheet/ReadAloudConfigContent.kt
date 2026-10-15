@@ -26,9 +26,7 @@ import io.legado.app.domain.model.readaloud.ReadAloudContentSplitSetting
 import io.legado.app.domain.model.readaloud.ReadAloudSplitSymbol
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.feature.readaloud.overlay.ReadAloudOverlayPermissionRoute
-import io.legado.app.ui.book.read.ReadAloudSubPage
 import io.legado.app.ui.book.read.ReadBookIntent
-import io.legado.app.ui.book.read.ReadBookSheet
 import io.legado.app.ui.book.read.ReadBookUiState
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerIntent
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerUiState
@@ -65,13 +63,6 @@ fun ReadAloudConfigContent(
      */
     selectedTab: Int = 0,
     onTabSelected: (Int) -> Unit = {},
-    /**
-     * 是否展示「本章背景音乐 / AI 识别背景音乐」这两个正文内浮层入口。
-     *
-     * 它们发出的意图由阅读器 ViewModel 的分配域处理，听书播放页是 Activity 级浮层、
-     * 没有这套宿主，传 false 以免留下点了没反应的死入口。
-     */
-    bgmSceneActionsEnabled: Boolean = true,
 ) {
     val pagerState = rememberPagerState(initialPage = selectedTab, pageCount = { 3 })
     val scope = rememberCoroutineScope()
@@ -159,16 +150,6 @@ fun ReadAloudConfigContent(
                             checked = state.capsuleAutoCollapse,
                             onCheckedChange = {
                                 onIntent(ReadBookIntent.SetCapsuleAutoCollapse(it))
-                            },
-                        )
-                        // 胶囊的圆角/背景/头像形状：只在胶囊开着时才有意义，跟着上面的开关一起出现
-                        TinyClickableSettingItem(
-                            title = stringResource(R.string.capsule_style_title),
-                            description = stringResource(R.string.capsule_style_hub_summary),
-                            onClick = {
-                                onIntent(
-                                    ReadBookIntent.OpenReadAloudSubPage(ReadAloudSubPage.CapsuleStyle)
-                                )
                             },
                         )
                     }
@@ -440,8 +421,8 @@ fun ReadAloudConfigContent(
                     }
 
                 } else {
-                    // 角色与配乐：谁在读、配什么乐。分片/推理这些决定「谁在说话」的分析项
-                    // 留在引擎与音色侧（属合成管线），这里只放多角色与背景音乐本身。
+                    // [ttsrv] 角色朗读：谁在读。分片/推理这些决定「谁在说话」的分析项
+                    // 留在引擎与音色侧（属合成管线），这里只放多角色开关本身。
                     SectionTitle(stringResource(R.string.read_aloud_section_casting))
                     TinySwitchSettingItem(
                         title = stringResource(R.string.use_multi_speaker),
@@ -451,59 +432,6 @@ fun ReadAloudConfigContent(
                             onIntent(ReadBookIntent.SetUseMultiSpeaker(it))
                         },
                     )
-                    TinySwitchSettingItem(
-                        title = stringResource(R.string.multi_role_cast),
-                        description = stringResource(R.string.multi_role_cast_summary),
-                        checked = state.multiRoleCast,
-                        onCheckedChange = {
-                            onIntent(ReadBookIntent.SetMultiRoleCast(it))
-                        },
-                    )
-                    TinyClickableSettingItem(
-                        title = stringResource(R.string.cast_voice_pool),
-                        description = stringResource(R.string.cast_voice_pool_summary),
-                        onClick = {
-                            onIntent(
-                                ReadBookIntent.OpenReadAloudSubPage(ReadAloudSubPage.VoicePool)
-                            )
-                        },
-                    )
-
-                    SectionTitle(stringResource(R.string.read_aloud_section_bgm))
-                    TinySwitchSettingItem(
-                        title = stringResource(R.string.bgm_assign),
-                        description = stringResource(R.string.bgm_assign_summary),
-                        checked = state.bgmAssign,
-                        onCheckedChange = {
-                            onIntent(ReadBookIntent.SetBgmAssign(it))
-                        },
-                    )
-                    TinyClickableSettingItem(
-                        title = stringResource(R.string.cast_bgm_pool),
-                        description = stringResource(R.string.cast_bgm_pool_summary),
-                        onClick = {
-                            onIntent(
-                                ReadBookIntent.OpenReadAloudSubPage(ReadAloudSubPage.BgmPool)
-                            )
-                        },
-                    )
-                    if (bgmSceneActionsEnabled) {
-                        // 本章配乐总览 / AI 识别配乐场景都是正文内浮层，需要阅读器 ViewModel
-                        // 处理意图；听书播放页没有这套宿主，入口由宿主决定是否展示。
-                        TinyClickableSettingItem(
-                            title = stringResource(R.string.cast_bgm_scene_table),
-                            description = stringResource(R.string.cast_bgm_scene_table_summary),
-                            onClick = {
-                                onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.BgmSceneTable))
-                            },
-                        )
-                        // 场景识别只依赖「背景音乐分配」这个副开关，与开不开多角色朗读无关
-                        TinyClickableSettingItem(
-                            title = stringResource(R.string.ai_scene_assign_entry),
-                            description = stringResource(R.string.ai_cast_scene_only_hint),
-                            onClick = { onIntent(ReadBookIntent.OpenAiSceneDialog) },
-                        )
-                    }
                 }
             }
         }

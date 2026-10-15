@@ -79,7 +79,6 @@ internal fun FloatingIconRow(
         state.translationMode,
         state.useReplaceRule,
         state.useMultiSpeaker,
-        state.multiRoleCast,
         eyeProtectionActive,
     ) {
         loadFloatingIcons(

@@ -22,9 +22,6 @@ import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.globalExecutor
-import io.legado.app.help.readaloud.cast.BgmSceneStore
-import io.legado.app.help.readaloud.cast.CastAssignmentStore
-import io.legado.app.help.readaloud.cast.CastRenderOptions
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.ReaderPaginationEnvironment
@@ -143,12 +140,6 @@ class ReadAloudBookSession : KoinComponent {
             chapterIndex = chapter.index, title = displayTitle, paragraphs = processed.textList,
             includeTitle = false, adaptSpecialStyle = readSettings.currentSettings.adaptSpecialStyle,
             htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver,
-            castLabels = if (readAloudSettings.currentSettings.multiRoleCast) {
-                CastAssignmentStore.labelsForChapter(book.bookUrl, chapter.index)
-            } else emptyMap(),
-            bgmScenes = if (readAloudSettings.currentSettings.bgmAssign) {
-                BgmSceneStore.labelsForChapter(book.bookUrl, chapter.index)
-            } else emptyMap(),
         )
         val input = ReaderChapterInput(
             book, request.bookSource, chapter, displayTitle, processed, source,
@@ -166,7 +157,6 @@ class ReadAloudBookSession : KoinComponent {
             contentPaddingBottomPx = environment.contentPaddingBottomPx,
             paginationStyle = environment.style,
             highlightRules = HighlightRuleRepository().loadEnabled(request.styleName),
-            castOptions = CastRenderOptions.load(book.bookUrl, chapter.index),
             titleMode = request.titleMode, paragraphIndent = request.paragraphIndent,
             textFullJustify = request.textFullJustify,
             headerExtentPx = request.headerExtentPx, footerExtentPx = request.footerExtentPx,

@@ -54,15 +54,11 @@ import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
-import io.legado.app.feature.reader.core.cast.CastMarkers
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.config.AppConfigStore
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.glide.ImageLoader
-import io.legado.app.help.readaloud.cast.CastSpeechOverlay
-import io.legado.app.help.readaloud.cast.RegexCastRuleStore
-import io.legado.app.help.readaloud.cast.RegexCastSplitter
 import io.legado.app.lib.permission.Permissions
 import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.model.ReadAloud
@@ -358,9 +354,6 @@ abstract class BaseReadAloudService : BaseService(),
         )
         capsuleOverlayWindow?.close()
         capsuleOverlayWindow = null
-        // 配乐是第二条音轨：服务销毁前必须自己收掉，否则留下停不下来的音乐
-        readAloudBgm.release()
-        readAloudEffect.release()
         bookSession.upReadTime()
         bookSession.updateProgress(currentProgress, forceSave = true, expectedChapterIndex = currentChapterIndex)
         super.onDestroy()
@@ -414,7 +407,6 @@ abstract class BaseReadAloudService : BaseService(),
             IntentAction.resume -> resumeReadAloud()
             IntentAction.upTtsSpeechRate -> upSpeechRate(true)
             IntentAction.syncReadAloudLayout -> syncReaderLayout()
-            IntentAction.refreshReadAloudCast -> refreshCastInPlace()
             IntentAction.prevParagraph -> prevP()
             IntentAction.nextParagraph -> nextP()
             IntentAction.prev -> prevChapter()
@@ -430,9 +422,6 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun stopReadAloudService() {
         requestStop()
-        // 配乐是第二条 MediaPlayer，不受朗读停止意图影响：这里先按停，
-        // 不然 onDestroy 之前那一小段还在放，用户看到的就是「朗读停了 BGM 还在播」
-        readAloudBgm.pause()
         stopSelf()
     }
 
@@ -564,15 +553,7 @@ abstract class BaseReadAloudService : BaseService(),
             if (generation != prepareReadAloudGeneration) return@execute
             this@BaseReadAloudService.pageIndex = pageIndex
             readerReadAloudChapter = preparedChapter
-            // 变声器快照：每章准备时刷一次，写库后版本号变了才真的重取
-            io.legado.app.help.readaloud.effect.VoiceEffectStore.refresh()
-            readAloudBgm.onChapter(
-                bookUrl = prepared.book?.bookUrl.orEmpty(),
-                chapterIndex = preparedChapter.chapterIndex,
-                positions = io.legado.app.help.readaloud.cast.BgmSceneStore.positionsToOrdinals(
-                    input.source.semanticContent,
-                ),
-            )
+            // [ttsrv] 接线位：声效链挂点（换章时刷新声效/配乐）——待任务二接 AudioLaneEngine。
             contentList = preparedContentList
             contentChapterPositions = preparedContentChapterPositions
             speechPlan = preparedSpeechPlan
@@ -606,13 +587,8 @@ abstract class BaseReadAloudService : BaseService(),
         if (bookUrl.isEmpty()) return emptyList()
         val multiSpeakerOn = ReadConfig.useMultiSpeaker
         // 「多角色朗读」是唯一的发声开关：关掉就没有任何计划，整章回到用户在朗读设置里
-        // 选的默认引擎。「多角色分配」只管正文胶囊，不参与决定用谁的声音念。
-        //
-        // 正则角色不跟这个开关：它只被自己那条规则的启用状态管。正则必须落在播放计划上
-        // 才能只换命中那几个字的声音，所以这本书只要有生效的正则角色就照样生成计划
-        // （所有段用默认音色）。生效判定在 RegexCastRuleStore.hasRulesFor。
-        val regexOn = runCatching { RegexCastRuleStore.hasRulesFor(bookUrl) }.getOrDefault(false)
-        if (!multiSpeakerOn && !regexOn) return emptyList()
+        // 选的默认引擎。
+        if (!multiSpeakerOn) return emptyList()
         val prepareSpeechPlan: PrepareChapterSpeechPlanUseCase =
             get(PrepareChapterSpeechPlanUseCase::class.java)
         val plan = runCatching {
@@ -620,11 +596,7 @@ abstract class BaseReadAloudService : BaseService(),
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,
-                analysisMode = if (multiSpeakerOn) {
-                    SpeechAnalysisMode.fromStorage(ReadConfig.speechAnalysisMode)
-                } else {
-                    SpeechAnalysisMode.Rule
-                },
+                analysisMode = SpeechAnalysisMode.fromStorage(ReadConfig.speechAnalysisMode),
                 analysisReasoningLevel = AiReasoningLevel.fromStorage(
                     ReadConfig.speechAnalysisReasoningLevel,
                     AiReasoningLevel.OFF,
@@ -635,33 +607,16 @@ abstract class BaseReadAloudService : BaseService(),
         }.onFailure {
             AppLog.put("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
         }.getOrDefault(emptyList())
-        return CastSpeechOverlay.apply(bookUrl, chapterIndex, paragraphs, plan)
+        // [ttsrv] 接线位：多角色分配叠加（原 CastSpeechOverlay.apply）待任务二接我方分析产物。
+        return plan
     }
 
     /**
-     * 马上要送去发声的那一份文本里，多角色标记 `<<角色（声音池）>>` 怎么处理。
-     *
-     * 必须在偏移（`paragraphStartPos` 等）用完之后才调用，且只作用于这一句：
-     * [contentList] 与播放队列里存的那一份要保留标记，删字符会让进度定位全线错位。
-     *
-     * 默认整段删掉标记：文件合成那条是我们自己按播放单元挑音色，标记留在文本里
-     * 云端/HTTP 引擎会把「小于号 角色名 括号……」念出来，换成空格又会先静音一拍。
+     * 马上要送去发声的那一份文本。原上游版在这里剥离多角色标记 `<<角色（声音池）>>`；
+     * [ttsrv] 标记注入链已随 cast 套件拔除，当前为直通。待任务二的核贴回若引入标记再由
+     * 分析/播放管线接管（保留此函数作为接缝，子类调用方无需改动）。
      */
-    protected open fun speechText(text: String): String = spokenFor(text).text
-
-    /**
-     * [speechText] 的那一份文本 + **引擎回传下标 → [text] 之前下标**的还原表。
-     *
-     * 删掉标记就等于把整句往前挪若干字符，引擎回来的 `onRangeStart` 下标因此对不上正文；
-     * 直读路径要靠它算朗读进度和「从半句接着念」的偏移，所以送出去时必须把这张表留着。
-     * [base] 传这一句在段落里的起点，[CastMarkers.Spoken.storedOf] 就直接给出段内绝对偏移。
-     */
-    protected open fun spokenFor(storedTail: String, base: Int = 0): CastMarkers.Spoken =
-        if (ReadConfig.useMultiSpeaker) {
-            CastMarkers.stripKeepingOffsets(storedTail, base)
-        } else {
-            CastMarkers.Spoken.passThrough(storedTail, base)
-        }
+    protected open fun speechText(text: String): String = text
 
     /**
      * 把用户选择的划分方式解析成实际生效的划分方式。
@@ -695,7 +650,6 @@ abstract class BaseReadAloudService : BaseService(),
 
     @SuppressLint("WakelockTimeout")
     open fun play() {
-        readAloudBgm.resume()
         if (stopRequested) return
         if (useWakeLock) {
             wakeLock.acquire()
@@ -717,7 +671,6 @@ abstract class BaseReadAloudService : BaseService(),
 
     @CallSuper
     open fun pauseReadAloud(abandonFocus: Boolean = true) {
-        readAloudBgm.pause()
         bookSession.upReadTime()
         bookSession.updateProgress(currentProgress, forceSave = true, expectedChapterIndex = currentChapterIndex)
         if (useWakeLock) {
@@ -780,70 +733,17 @@ abstract class BaseReadAloudService : BaseService(),
         postEvent(EventBus.TTS_PROGRESS, progress)
     }
 
-    /**
-     * 背景配乐轨：与 TTS 并行的第二条 MediaPlayer，只读正文场景标记，不参与朗读内容。
-     * 开关关闭时只 pause 不 release——用户随时可能再打开。
-     */
-    protected val readAloudBgm: io.legado.app.help.readaloud.playback.ReadAloudBgmPlayer by lazy {
-        io.legado.app.help.readaloud.playback.ReadAloudBgmPlayer(applicationContext)
-    }
+    // [ttsrv] 接线位：音效链（原 takeCueSounds/RegexCastSplitter + BgmPlayer/EffectPlayer 双音轨）
+    // 已随 cast 套件拔除；任务二接我方 AudioLaneEngine 时在此重挂音效调度入口。
 
-    /**
-     * 第三条音轨：正则角色里「命中不念、改放音频」那一种放的那一下。
-     * 与朗读、背景音乐并行，不抢音频焦点。
-     */
-    protected val readAloudEffect: io.legado.app.help.readaloud.playback.ReadAloudEffectPlayer by lazy {
-        io.legado.app.help.readaloud.playback.ReadAloudEffectPlayer(applicationContext)
-    }
-
-    /** 同一个音效单元只响一次的判据（[takeCueSounds] 消费这里）。 */
-    private var soundedCue: io.legado.app.domain.model.readaloud.ReadAloudPlaybackCue? = null
-
-    /**
-     * 解析这一朗读单元身上挂的音效串，取出 `(路径, 延迟千分位)`；同一个单元只给一次。
-     *
-     * 串的格式契约在 [io.legado.app.help.readaloud.cast.RegexCastSplitter] 底部
-     * （SOUND_SEPARATOR / OFFSET_SEPARATOR）：生产方 RegexCastSplitter.split →
-     * SpeechPlanItem.soundEffect → ReadAloudPlaybackCue.soundEffect，本函数是唯一解析端，
-     * 分隔符必须与那边一致。
-     *
-     * 音效**不另起朗读单元**：一个单元就是一次串行的 TTS 合成请求，多一个单元多一次串行等待。
-     * 因此千分位只能按命中字符在单元内的占比估算，不是精确时长。
-     * 消费方：Http 路由子类 scheduleCueSounds（媒体时钟定位）；系统 TTS 直读走 [playCueSounds]。
-     */
-    protected fun takeCueSounds(index: Int): List<Pair<String, Int>> {
-        val cue = playbackQueue.cues.getOrNull(index) ?: return emptyList()
-        if (cue.soundEffect.isBlank() || cue === soundedCue) return emptyList()
-        soundedCue = cue
-        return cue.soundEffect
-            .split(RegexCastSplitter.SOUND_SEPARATOR)
-            .filter { it.isNotBlank() }
-            .map { entry ->
-                val at = entry.indexOf(RegexCastSplitter.OFFSET_SEPARATOR)
-                val path = if (at > 0) entry.substring(0, at) else entry
-                val permille = if (at > 0) entry.substring(at + 1).toIntOrNull() ?: 0 else 0
-                path to permille
-            }
-    }
-
-    /** 系统 TTS 直读那条路没有文件时长可依据，命中就立刻响。 */
     /**
      * [ttsrv] 待命启动（M4）在合并后暂以恒 false 兜底：standby 语义待与上游壳（bookSession）重接。
      * 说明：旧实现的待命逻辑依赖已被上游重构掉的会话字段，本刀先保编译，功能回接排后续刀。
      */
     protected fun tryStartFromStandby(): Boolean = false
 
-    protected fun playCueSounds(index: Int) {
-        takeCueSounds(index).forEach { (path, _) -> readAloudEffect.play(path) }
-    }
-
-    private fun syncBgmToProgress(chapterPosition: Int) {
-        if (!io.legado.app.ui.config.readConfig.ReadConfig.bgmAssign) {
-            readAloudBgm.pause()
-            return
-        }
-        readAloudBgm.syncTo(chapterPosition, onTitle = isChapterTitleAt(nowSpeak))
-    }
+    // [ttsrv] 接线位：原 playCueSounds（系统 TTS 直读音效）与 syncBgmToProgress（配乐轨跟随进度）
+    // 已随 cast 套件拔除；任务二接我方 AudioLaneEngine 时在此重挂。
 
 
     protected fun updateReadAloudProgressSnapshot(progress: Int) {
@@ -854,9 +754,6 @@ abstract class BaseReadAloudService : BaseService(),
             lastMediaSessionPositionMs = -1L
 
         }
-        // 背景配乐轨跟着朗读位置走：标题段静音，正文段按场景换曲（第二条音轨，不抢焦点）。
-        // 只能在进度前进时生效，所以不能塞进上面的回退分支里。
-        syncBgmToProgress(newProgress)
         currentProgress = newProgress
         bookSession.updateProgress(newProgress, expectedChapterIndex = currentChapterIndex)
     }
@@ -923,59 +820,8 @@ abstract class BaseReadAloudService : BaseService(),
         return true
     }
 
-    /**
-     * 分配改了但朗读不该打断：按当前朗读位置把这一章重新准备一遍。
-     *
-     * 队列、音色路由、段级变声器都在 `newReadAloud` 里从库里现读，所以换角色/加变声器从
-     * 下一句开始生效；起始位置用 currentProgress，读过的半句会被跳过而不是回章首。
-     * 不能直接改 exoPlayer 已有的媒体项：分配一变，朗读单元的切分和它们的下标就错位了。
-     */
-    private fun refreshCastInPlace() {
-        val chapter = readerReadAloudChapter ?: return
-        bookSession.syncReaderInput()
-        if (chapter.chapterIndex != bookSession.chapterIndex) return
-        val input = bookSession.input
-        val start = castAnchorPosition(input?.source?.semanticContent)
-        newReadAloud(!pause, pageIndex, 0, start)
-    }
-
-    /**
-     * 把「读到哪儿了」换算到**改过标记的新正文**上，找回同一句话。
-     *
-     * [currentProgress] 是含角色标记的那份正文里的下标，而标记的长短跟着分配变：某句新增
-     * 角色后标记多出若干字，同一个旧下标在新正文里就落到后面几句上，不能直接把它交给新会话。
-     *
-     * 锚点取**当前这句去掉标记的原文**：标记怎么增删都不影响它，在新正文（同样去过标记）
-     * 里找到离旧下标最近的那一处，再用还原表换回含标记的下标。找不到（比如同时改了替换规则）
-     * 才退回旧下标，宁可重读一句也不要跳句。
-     */
-    private fun castAnchorPosition(newSemantic: String?): Int? {
-        val cue = playbackQueue.cues.getOrNull(nowSpeak) ?: return null
-        if (newSemantic.isNullOrEmpty()) return null
-        val anchor = CastMarkers.strip(cue.text).trim()
-        if (anchor.isEmpty()) return null
-        val spoken = CastMarkers.stripKeepingOffsets(newSemantic)
-        var bestStart = -1
-        var bestDistance = Int.MAX_VALUE
-        var found = spoken.text.indexOf(anchor)
-        while (found >= 0) {
-            // 用句首的正文下标比距离，重复句里挑离当前进度最近的那一句
-            val distance = kotlin.math.abs(spoken.storedOf(found) - currentProgress)
-            if (distance < bestDistance) {
-                bestDistance = distance
-                bestStart = found
-            }
-            found = spoken.text.indexOf(anchor, found + anchor.length)
-        }
-        if (bestStart < 0) return null
-        val offset = (playbackCursor?.offset ?: 0).coerceIn(0, cue.text.length)
-        // 进度正好落在标记中间就当这句还没开口，整句重来
-        if (CastMarkers.markerRanges(cue.text).any { it.first < offset && offset < it.second }) {
-            return spoken.storedOf(bestStart)
-        }
-        val spokenSoFar = CastMarkers.strip(cue.text.substring(0, offset)).length
-        return spoken.storedOf(bestStart + spokenSoFar)
-    }
+    // [ttsrv] 接线位：原 refreshCastInPlace/castAnchorPosition（分配变更后就地重排）已随 cast
+    // 套件拔除；任务二接我方分析链时如需「分配/计划变更后就地重排」在此重挂。
 
     private fun syncReaderLayout() {
         if (!bookSession.owns(ReadBook.book?.bookUrl)) return
@@ -1115,8 +961,7 @@ abstract class BaseReadAloudService : BaseService(),
             chapterIndex = readerReadAloudChapter?.chapterIndex ?: -1,
             chapterPosition = cue.chapterStart + cursor.offset,
             chapterLength = playbackQueue.cues.lastOrNull()?.chapterEnd ?: cue.chapterEnd,
-            // 这一份是给人看的，标记整段去掉（通知栏/悬浮窗里都不该出现 <<…>> 或一串空格）
-            text = CastMarkers.strip(cue.text),
+            text = cue.text,
             engineName = cue.voice?.displayName.orEmpty(),
             characterName = speechPlan.getOrNull(
                 cursor.cueIndex - playbackQueue.leadingTitleCueCount
@@ -1400,8 +1245,7 @@ abstract class BaseReadAloudService : BaseService(),
      */
     internal fun upMediaMetadata(showContent: Boolean = false) {
         val currentContent = if (showContent && nowSpeak in contentList.indices) {
-            // 通知栏/媒体会话显示的是给人看的文字，标记要抹掉（送进引擎的那份保留）
-            CastMarkers.strip(contentList[nowSpeak])
+            contentList[nowSpeak]
         } else {
             null
         }

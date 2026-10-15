@@ -16,9 +16,6 @@ fun ReaderPage.textBackgroundRuns(): List<ReaderTextBackgroundRun> {
     // 逐字渲染背景，也不会把跨栏/跨行或隔着未匹配文字的同图段错误拼接。
     var previousElement: ReaderElement? = null
     elements.forEach { element ->
-        // 胶囊（角色分配 / 背景音乐）只是压在气泡上的按钮，原文里没有它，它对背景完全透明：
-        // 既不更新 previousElement 也不打断 run，前后的字照样并成一段，胶囊被同一个气泡包住。
-        if (element is ReaderElement.RoleCast || element is ReaderElement.BgmScene) return@forEach
         val text = element as? ReaderElement.Text
         if (text == null) {
             previousElement = element
