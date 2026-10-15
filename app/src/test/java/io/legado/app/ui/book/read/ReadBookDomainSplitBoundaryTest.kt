@@ -150,7 +150,7 @@ class ReadBookDomainSplitBoundaryTest {
      * `setTimerMode` / `setTimerChapters`）；`backToSpeakingPosition()` 本体、书签切换
      * 判定与页范围计算在 `ReadAloudDelegate` / `ReadBookmarkDelegate`；角标文件拷贝在
      * `BookmarkBadgeDelegate`；跳转校验在 `ReadBookmarkNavigateDelegate`；翻译状态观察
-     * 在 `ReadAiDelegate`；划线笔记来源 sheet 在 `MarkingDelegate`。语义不同的设置
+     * 已随 AI 前台剔除（[ttsrv] 恒为 Idle）；划线笔记来源 sheet 在 `MarkingDelegate`。语义不同的设置
      * 不为压行数合并成一个载荷——那会让「只改章数」也必须带上模式。
      *
      * 官方链路（3.26.16-beta.41 / beta.43 等）在 VM 加的接线——朗读浮层兼容分支
@@ -321,24 +321,6 @@ class ReadBookDomainSplitBoundaryTest {
                 delegateFile = "io/legado/app/ui/book/read/ReadAloudCastDelegate.kt",
                 stateFields = emptySet(),
                 stateTypes = listOf("CastAssignmentStore", "CastResult"),
-            ),
-            DomainSplit(
-                name = "AI",
-                delegateFile = "io/legado/app/ui/book/read/ReadAiDelegate.kt",
-                stateFields = setOf(
-                    "chapterSummary",
-                    "aiTextClean",
-                    "aiTextRewrite",
-                    "aiRewritePresetConfig",
-                ),
-                stateTypes = listOf(
-                    "ChapterSummaryUiState",
-                    "AiTextCleanUiState",
-                    "AiTextRewriteUiState",
-                    "AiRewritePresetConfigUiState",
-                    "AiRewritePresetUi",
-                    "AiRewriteHistoryUi",
-                ),
             ),
             DomainSplit(
                 name = "高亮规则",
