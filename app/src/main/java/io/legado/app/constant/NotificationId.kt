@@ -18,4 +18,6 @@ object NotificationId {
     const val Download = 10000
     const val ExportBook = 201
 
+    // [ttsrv] 回贴（避开上游 108=ReadAloudAudioDownload）
+    const val CloudWordnet = 109
 }

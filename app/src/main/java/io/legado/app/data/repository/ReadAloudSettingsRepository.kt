@@ -126,6 +126,19 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     contentSelectSpeakMode = compatDsValue(ReadAloudKeys.ContentSelectSpeakMode, 0),
     audioPreDownloadNum = compatDsValue(ReadAloudKeys.AudioPreDownloadNum, 10),
     ttsPreSynthesisConcurrency = compatDsValue(ReadAloudKeys.PreSynthesisConcurrency, 3),
+    // [ttsrv] 回贴
+    ttsSynthTimeoutSec = compatDsValue(ReadAloudKeys.TtsSynthTimeoutSec, 75),
+    ttsMaxRetry = compatDsValue(ReadAloudKeys.TtsMaxRetry, 5),
+    standbyStart = compatDsValue(ReadAloudKeys.StandbyStart, true),
+    alEnabled = compatDsValue(ReadAloudKeys.AlEnabled, true),
+    alSfxVolume = compatDsValue(ReadAloudKeys.AlSfxVolume, 80),
+    alAmbVolume = compatDsValue(ReadAloudKeys.AlAmbVolume, 35),
+    alBgmVolume = compatDsValue(ReadAloudKeys.AlBgmVolume, 25),
+    alSfxMinGapS = compatDsValue(ReadAloudKeys.AlSfxMinGapS, 6),
+    alSfxCooldownS = compatDsValue(ReadAloudKeys.AlSfxCooldownS, 60),
+    alBgmCooldownS = compatDsValue(ReadAloudKeys.AlBgmCooldownS, 150),
+    alAmbDwellS = compatDsValue(ReadAloudKeys.AlAmbDwellS, 25),
+    alChapterSynthCap = compatDsValue(ReadAloudKeys.AlChapterSynthCap, 10),
 )
 
 /**
@@ -187,6 +200,19 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
     PreferKey.audioPreDownloadNum to audioPreDownloadNum,
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
+    // [ttsrv] 回贴
+    PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
+    PreferKey.ttsMaxRetry to ttsMaxRetry,
+    PreferKey.readAloudStandbyStart to standbyStart,
+    PreferKey.alEnabled to alEnabled,
+    PreferKey.alSfxVolume to alSfxVolume,
+    PreferKey.alAmbVolume to alAmbVolume,
+    PreferKey.alBgmVolume to alBgmVolume,
+    PreferKey.alSfxMinGapS to alSfxMinGapS,
+    PreferKey.alSfxCooldownS to alSfxCooldownS,
+    PreferKey.alBgmCooldownS to alBgmCooldownS,
+    PreferKey.alAmbDwellS to alAmbDwellS,
+    PreferKey.alChapterSynthCap to alChapterSynthCap,
 )
 
 private object ReadAloudKeys {
@@ -234,4 +260,17 @@ private object ReadAloudKeys {
     val ContentSelectSpeakMode = intPreferencesKey(PreferKey.contentSelectSpeakMod)
     val AudioPreDownloadNum = intPreferencesKey(PreferKey.audioPreDownloadNum)
     val PreSynthesisConcurrency = intPreferencesKey(PreferKey.ttsPreSynthesisConcurrency)
+    // [ttsrv] 回贴
+    val TtsSynthTimeoutSec = intPreferencesKey(PreferKey.ttsSynthTimeoutSec)
+    val TtsMaxRetry = intPreferencesKey(PreferKey.ttsMaxRetry)
+    val StandbyStart = booleanPreferencesKey(PreferKey.readAloudStandbyStart)
+    val AlEnabled = booleanPreferencesKey(PreferKey.alEnabled)
+    val AlSfxVolume = intPreferencesKey(PreferKey.alSfxVolume)
+    val AlAmbVolume = intPreferencesKey(PreferKey.alAmbVolume)
+    val AlBgmVolume = intPreferencesKey(PreferKey.alBgmVolume)
+    val AlSfxMinGapS = intPreferencesKey(PreferKey.alSfxMinGapS)
+    val AlSfxCooldownS = intPreferencesKey(PreferKey.alSfxCooldownS)
+    val AlBgmCooldownS = intPreferencesKey(PreferKey.alBgmCooldownS)
+    val AlAmbDwellS = intPreferencesKey(PreferKey.alAmbDwellS)
+    val AlChapterSynthCap = intPreferencesKey(PreferKey.alChapterSynthCap)
 }

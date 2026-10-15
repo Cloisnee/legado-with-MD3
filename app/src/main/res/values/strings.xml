@@ -3849,4 +3849,27 @@
     <string name="explore_main_content">Browse discovery content here</string>
     <string name="explore_source_list">Show discovery sources</string>
     <string name="explore_select_source">Select discovery source</string>
+
+    <!-- [ttsrv] 回贴 -->
+    <string name="manga_reader_preload_pages">Preload pages</string>
+    <string name="tts_audio_books_empty">No read-aloud audio cached</string>
+    <string name="tts_audio_books_section">Book audio</string>
+    <string name="tts_audio_chapter">Chapter %1$d</string>
+    <string name="tts_audio_delete_book_message">Delete all cached audio of “%1$s”?</string>
+    <string name="tts_audio_delete_chapter_message">Delete all cached audio of chapter %1$d?</string>
+    <string name="tts_log_clear">Clear logs</string>
+    <string name="tts_log_copied_count">Copied %1$d log entries</string>
+    <string name="tts_log_copy">Copy</string>
+    <string name="tts_log_empty_analysis">No analysis logs yet</string>
+    <string name="tts_log_empty_analysis_summary">Quote / speaker / history / emotion analysis progress appears here while reading</string>
+    <string name="tts_log_empty_audio">No audio cache logs yet</string>
+    <string name="tts_log_empty_audio_summary">Per-entry synthesis results, failure and skip reasons appear here while reading</string>
+    <string name="tts_log_scroll_to_latest">Jump to latest</string>
+    <string name="tts_log_search_hint">Search logs</string>
+    <string name="tts_log_tab_analysis">Analysis</string>
+    <string name="tts_log_tab_audio">Audio cache</string>
+    <string name="tts_max_retry">Max Retries</string>
+    <string name="tts_max_retry_summary">Retries after a failed request; current %1$d (0 = no retry)</string>
+    <string name="tts_synth_timeout">TTS Synthesis Timeout (sec)</string>
+    <string name="tts_synth_timeout_summary">Requests exceeding this duration are treated as failed; current %1$d s</string>
 </resources>

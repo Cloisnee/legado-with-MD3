@@ -105,4 +105,17 @@ data class ReadAloudSettings(
     val contentSelectSpeakMode: Int = 0,
     val audioPreDownloadNum: Int = 10,
     val ttsPreSynthesisConcurrency: Int = 3,
+    // [ttsrv] 回贴（我方字段）
+    val ttsSynthTimeoutSec: Int = 75,
+    val ttsMaxRetry: Int = 5,
+    val standbyStart: Boolean = true,
+    val alEnabled: Boolean = true,
+    val alSfxVolume: Int = 80,
+    val alAmbVolume: Int = 35,
+    val alBgmVolume: Int = 25,
+    val alSfxMinGapS: Int = 6,
+    val alSfxCooldownS: Int = 60,
+    val alBgmCooldownS: Int = 150,
+    val alAmbDwellS: Int = 25,
+    val alChapterSynthCap: Int = 10,
 )
