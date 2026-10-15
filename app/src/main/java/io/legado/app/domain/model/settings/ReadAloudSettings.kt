@@ -1,5 +1,32 @@
 package io.legado.app.domain.model.settings
 
+import io.legado.app.domain.model.AiReasoningLevel
+
+/**
+ * 听书内容划分方式：决定一段正文被切成多少个朗读单元。
+ *
+ * [Default] 跟随多角色朗读开关：开启时按句末标点切分（多角色需要句级片段才能分角色），
+ * 未开启时按整段切分。其余取值是显式的固定粒度，不受多角色开关影响。
+ */
+enum class ReadAloudContentSplitMode(val storageValue: String) {
+    Default("default"),
+    Paragraph("paragraph"),
+    Page("page"),
+    Symbols("symbols");
+
+    /** 按符号划分时是否允许单元内再按引号/冒号切成多个角色片段。 */
+    val allowsRoleSplits: Boolean
+        get() = when (this) {
+            Default -> true
+            Symbols -> true
+            Paragraph, Page -> false
+        }
+
+    companion object {
+        fun fromStorage(value: String): ReadAloudContentSplitMode =
+            entries.firstOrNull { it.storageValue == value } ?: Default
+    }
+}
 
 /**
  * 朗读定时模式。两者互斥：同时只有一个倒计时在跑。
@@ -19,23 +46,29 @@ enum class ReadAloudTimerMode(val storageValue: String) {
 
 data class ReadAloudSettings(
     val ttsEngine: String? = null,
+    /** 试听用的文本；null = 用内置默认。音色行长按试听按钮可改。 */
+    val voicePreviewText: String? = null,
     val ttsParagraphInterval: Int = 0,
-    val audioCacheCleanTime: Int = 0,
+    val audioCacheCleanTime: Int = 10,
     val ignoreAudioFocus: Boolean = false,
-    val mediaButtonOnExit: Boolean = false,
+    val mediaButtonOnExit: Boolean = true,
     val readAloudByMediaButton: Boolean = false,
     val pauseReadAloudWhilePhoneCalls: Boolean = false,
     val readAloudWakeLock: Boolean = false,
-    /** 退出阅读时继续朗读（默认开）：关闭阅读界面后不停朗读，继续在后台播放 */
-    val keepReadAloudOnExit: Boolean = true,
+    /** 退出阅读界面时不停朗读，继续在后台/胶囊里播放。 */
+    val keepReadAloudOnExit: Boolean = false,
     val showReadAloudCapsule: Boolean = true,
     val capsuleAutoCollapse: Boolean = true,
     /** 相对屏幕底部中央默认中心的 dp 偏移；应用内外共用，尺寸/系统栏不参与。 */
     val capsuleOffsetX: Float = 0f,
     val capsuleOffsetY: Float = 0f,
     val mediaButtonPerNext: Boolean = false,
+    val readAloudByPage: Boolean = false,
+    val contentSplitMode: String = ReadAloudContentSplitMode.Default.storageValue,
+    /** 「按符号」划分方式选中的标点；空集合表示使用默认句末标点。 */
+    val contentSplitSymbols: Set<String> = emptySet(),
     val androidMediaControlEnabled: Boolean = false,
-    val systemMediaControlCompatibilityChange: Boolean = false,
+    val systemMediaControlCompatibilityChange: Boolean = true,
     val streamReadAloudAudio: Boolean = false,
     val ttsTimer: Int = 0,
     /**
@@ -50,35 +83,26 @@ data class ReadAloudSettings(
     val timerChapters: Int = 0,
     val ttsFollowSys: Boolean = true,
     val ttsSpeechRate: Int = 5,
+    val speechAnalysisMode: String = "rule",
+    /**
+     * Reasoning level for AI speech analysis (dialogue attribution / AI understanding).
+     * OFF by default: models that think by default (Zhipu GLM, …) return the JSON only in
+     * `reasoning_content` and the analysis fails, so thinking must be opted into explicitly.
+     */
+    val speechAnalysisReasoningLevel: String = AiReasoningLevel.OFF.storageValue,
     val useMultiSpeaker: Boolean = true,
+    /**
+     * 多角色分配：与 [useMultiSpeaker] 独立。开启后阅读器在对话开引号后渲染角色胶囊，
+     * 点击可手动分配角色；分配结果以 `<<角色名（声音池）>>` 标记写回章节正文。
+     */
+    val multiRoleCast: Boolean = false,
+    /**
+     * 背景音乐分配：阅读器在正文段首渲染配乐胶囊，朗读时按场景换 BGM。
+     * 胶囊只是视觉 span——不向 semanticContent 注入任何字符，所以 TTS 念不到它。
+     */
+    val bgmAssign: Boolean = false,
     val defaultInterface: String = "classic",
     val contentSelectSpeakMode: Int = 0,
-    val audioPreDownloadNum: Int = 2,
-    val ttsPreSynthesisConcurrency: Int = 1,
-    /** 单次 TTS 合成请求超时（秒；B8.6 可调，默认 75） */
-    val ttsSynthTimeoutSec: Int = 75,
-    /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
-    val ttsMaxRetry: Int = 5,
-    /** M4：待命启动（防误触，默认开）——点「开始朗读」先进入待命（不合成/不分析/不播放），再点一次才开始 */
-    val standbyStart: Boolean = true,
-    // ---- B33 音效/BGM/环境·四轨（2026-09-30 立项；音频小闭环）----
-    /** 四轨总开关（在朗读人声之上叠加 音效/BGM/环境 三条音频轨） */
-    val alEnabled: Boolean = true,
-    /** 音效轨音量（0..100） */
-    val alSfxVolume: Int = 80,
-    /** 环境轨音量（0..100） */
-    val alAmbVolume: Int = 35,
-    /** BGM 轨音量（0..100） */
-    val alBgmVolume: Int = 25,
-    // ---- B33.3c：补缺闸门「滑条」（替代旧「音效密度」低/中/高；旧值一次性迁移）----
-    /** 音效最小间隔（秒，0–30） */
-    val alSfxMinGapS: Int = 6,
-    /** 音效同素材冷却（秒，0–300） */
-    val alSfxCooldownS: Int = 60,
-    /** BGM 同素材冷却（秒，0–600） */
-    val alBgmCooldownS: Int = 150,
-    /** 环境声最短驻留（秒，0–120） */
-    val alAmbDwellS: Int = 25,
-    /** 每章自动补缺上限（条，0–50；0=关闭自动补缺） */
-    val alChapterSynthCap: Int = 10,
+    val audioPreDownloadNum: Int = 10,
+    val ttsPreSynthesisConcurrency: Int = 3,
 )

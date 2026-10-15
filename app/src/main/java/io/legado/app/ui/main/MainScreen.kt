@@ -15,21 +15,20 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -40,9 +39,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.WideNavigationRail
 import androidx.compose.material3.WideNavigationRailItem
 import androidx.compose.material3.WideNavigationRailValue
@@ -52,6 +48,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,7 +60,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -102,6 +101,7 @@ import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.FloatingBottomBar
 import io.legado.app.ui.widget.components.FloatingBottomBarItem
 import io.legado.app.ui.widget.components.GlassDefaults
+import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.icon.AppIcon
 import io.legado.app.ui.widget.components.icon.AppIcons
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu
@@ -139,19 +139,13 @@ fun MainScreen(
     homePlaybackCapsuleEnabled: Boolean,
     capsuleAnchorPreview: io.legado.app.domain.model.PlaybackCapsuleState?,
     onOpenSettings: () -> Unit,
+    onNavigateToChat: () -> Unit,
     onNavigateToSearch: (String?) -> Unit,
     onNavigateToScopedSearch: (String) -> Unit,
     onNavigateToRemoteImport: () -> Unit,
     onNavigateToLocalImport: () -> Unit,
     onNavigateToCache: (Long) -> Unit,
     onNavigateToBookCacheManage: () -> Unit,
-    onNavigateToTtsServerCenter: () -> Unit,
-    onNavigateToReadAloudLogs: () -> Unit,
-    onNavigateToReadAloudSettings: () -> Unit,
-    onNavigateToAiModelManage: () -> Unit,
-    onNavigateToAiAnalysisSettings: () -> Unit,
-    onNavigateToRoleScriptManage: () -> Unit,
-    onNavigateToAudioLibrary: () -> Unit,
     onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
     onNavigateToBookInfo: (name: String, author: String, bookUrl: String, origin: String?, coverPath: String?, sharedCoverKey: String?) -> Unit,
@@ -175,11 +169,17 @@ fun MainScreen(
     onNavigateToReadRecord: () -> Unit,
     onNavigateToReadRecordOverview: () -> Unit,
     onNavigateToHighlightTagRule: () -> Unit,
+    onNavigateToDictRule: () -> Unit,
+    onNavigateToTxtTocRule: () -> Unit,
+    onNavigateToAllBookmark: () -> Unit,
     onNavigateToAbout: () -> Unit,
+    onMainDestinationChanged: () -> Unit = {},
+    onNavigationRailWidthChanged: (androidx.compose.ui.unit.Dp) -> Unit = {},
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(effects, context) {
@@ -231,6 +231,14 @@ fun MainScreen(
         if (index != -1) index else 0
     }
     val pagerState = rememberPagerState(initialPage = initialPage) { destinations.size }
+    var lastSettledMainPage by remember(pagerState) { mutableIntStateOf(pagerState.settledPage) }
+    val currentOnMainDestinationChanged by rememberUpdatedState(onMainDestinationChanged)
+    LaunchedEffect(pagerState.settledPage) {
+        if (lastSettledMainPage != pagerState.settledPage) {
+            lastSettledMainPage = pagerState.settledPage
+            currentOnMainDestinationChanged()
+        }
+    }
     val pagerNestedScrollConnection = rememberPagerFlingPassThroughConnection(
         state = pagerState,
         orientation = Orientation.Horizontal,
@@ -278,7 +286,11 @@ fun MainScreen(
             WideNavigationRailValue.Collapsed
     )
 
-    Row(modifier = Modifier.fillMaxSize()) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(mainAdaptiveInsets.only(WindowInsetsSides.Horizontal))
+    ) {
         if (useRail && mainUiState.showBottomView) {
             if (ThemeResolver.isMiuixEngine(LegadoTheme.composeEngine)) {
                 val miuixNavState = rememberNavigationRailState(
@@ -292,6 +304,9 @@ fun MainScreen(
                     onIntent(MainUiIntent.SetNavigationRailExpanded(miuixNavState.isExpanded))
                 }
                 MiuixNavigationRail(
+                    modifier = Modifier.onSizeChanged {
+                        onNavigationRailWidthChanged(with(density) { it.width.toDp() })
+                    },
                     state = miuixNavState,
                     header = {
                         FloatingActionButton(
@@ -357,12 +372,15 @@ fun MainScreen(
                     }
                 }
             } else WideNavigationRail(
+                modifier = Modifier.onSizeChanged {
+                    onNavigationRailWidthChanged(with(density) { it.width.toDp() })
+                },
                 state = navState,
                 header = {
                     val expanded = navState.targetValue == WideNavigationRailValue.Expanded
 
                     Column {
-                        IconButton(
+                        MediumTonalButton(
                             modifier = Modifier.padding(start = 24.dp),
                             onClick = {
                                 coroutineScope.launch {
@@ -371,18 +389,16 @@ fun MainScreen(
                                     else navState.collapse()
                                     onIntent(MainUiIntent.SetNavigationRailExpanded(targetExpanded))
                                 }
-                            }
-                        ) {
-                            Icon(
-                                if (expanded)
-                                    Icons.AutoMirrored.Filled.MenuOpen
-                                else
-                                    Icons.Default.Menu,
-                                contentDescription = stringResource(
-                                    if (expanded) R.string.collapse else R.string.expand
-                                )
-                            )
-                        }
+                            },
+                            icon = if (expanded) {
+                                Icons.AutoMirrored.Filled.MenuOpen
+                            } else {
+                                Icons.Default.Menu
+                            },
+                            contentDescription = stringResource(
+                                if (expanded) R.string.collapse else R.string.expand
+                            ),
+                        )
 
                         Spacer(modifier = Modifier.height(8.dp))
 
@@ -499,10 +515,14 @@ fun MainScreen(
                     }
                 }
             },
-            contentWindowInsets = WindowInsets(0)
-        ) { _ ->
+            // The row owns side cutouts, child pages own top bars, and this scaffold owns the bottom.
+            contentWindowInsets = mainAdaptiveInsets.only(WindowInsetsSides.Bottom)
+        ) { padding ->
             Box(
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .consumeWindowInsets(padding)
             ) {
                 Box(
                     modifier = Modifier.then(
@@ -580,6 +600,7 @@ fun MainScreen(
                                 onNavigateToRemoteImport = onNavigateToRemoteImport,
                                 onNavigateToLocalImport = onNavigateToLocalImport,
                                 onNavigateToCache = onNavigateToCache,
+                                onNavigateToSettings = onOpenSettings,
                                 sharedTransitionScope = sharedTransitionScope,
                                 animatedVisibilityScope = animatedVisibilityScope,
                             )
@@ -625,19 +646,16 @@ fun MainScreen(
                             )
                             MainDestination.My -> MyRouteScreen(
                                 onOpenSettings = onOpenSettings,
+                                onNavigateToChat = onNavigateToChat,
                                 onNavigate = { event ->
                                     when (event) {
                                         PrefClickEvent.OpenBookCacheManage -> onNavigateToBookCacheManage()
-                                        PrefClickEvent.OpenTtsServerCenter -> onNavigateToTtsServerCenter()
-                                        PrefClickEvent.OpenReadAloudLogs -> onNavigateToReadAloudLogs()
-                                        PrefClickEvent.OpenReadAloudSettings -> onNavigateToReadAloudSettings()
-                                        PrefClickEvent.OpenAiModelManage -> onNavigateToAiModelManage()
-                                        PrefClickEvent.OpenAiAnalysisSettings -> onNavigateToAiAnalysisSettings()
-                                        PrefClickEvent.OpenRoleScriptManage -> onNavigateToRoleScriptManage()
-                                        PrefClickEvent.OpenAudioLibrary -> onNavigateToAudioLibrary()
                                         PrefClickEvent.OpenBookSourceManage -> onNavigateToBookSourceManage()
                                         PrefClickEvent.OpenReplaceRules -> onNavigateToReplaceRules()
                                         PrefClickEvent.OpenReadRecord -> onNavigateToReadRecord()
+                                        PrefClickEvent.OpenDictRule -> onNavigateToDictRule()
+                                        PrefClickEvent.OpenTxtTocRule -> onNavigateToTxtTocRule()
+                                        PrefClickEvent.OpenAllBookmark -> onNavigateToAllBookmark()
                                         else -> onIntent(MainUiIntent.HandlePreferenceClick(event))
                                     }
                                 }
@@ -659,16 +677,7 @@ fun MainScreen(
                         ),
                         label = "homePlaybackControls",
                     )
-                    BoxWithConstraints(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .padding(
-                                bottom = 12.dp + WindowInsets.navigationBars.asPaddingValues()
-                                    .calculateBottomPadding()
-                            )
-                    ) {
+                    FloatingNavigationContainer(modifier = Modifier.align(Alignment.BottomCenter)) {
                         val gap = ReadAloudBarCapsuleEndPadding
                         val capsuleReserve by animateDpAsState(
                             targetValue = if (readAloudCapsuleShown) ReadAloudBarCapsuleSize + gap else 0.dp,
@@ -751,7 +760,7 @@ fun MainScreen(
                                     ) {
                                         AppText(
                                             text = stringResource(destination.labelId),
-                                            style = MaterialTheme.typography.labelSmall,
+                                            style = LegadoTheme.typography.labelSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -874,9 +883,9 @@ private fun BookshelfRailGroupMenu(
                 },
                 trailingIcon = {
                     if (state.selectedGroupIndex == groupIndex) {
-                        Icon(
+                        AppIcon(
                             Icons.Default.Check,
-                            null,
+                            contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
                     }

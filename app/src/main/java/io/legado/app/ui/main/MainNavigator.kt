@@ -81,14 +81,12 @@ object MainNavigator {
             }
         }
 
+        // 朗读通知的「回到正在读的书」不带 bookUrl（空即最后读过的那本），路由键和栈顶那份必然不相等。
+        // 栈顶已经是阅读页时再压一份，返回就要连点同样多次才出得了阅读页，所以在这里收住不压栈。
         if (route is MainRouteReadBook &&
             currentRoute is MainRouteReadBook &&
             (route.bookUrl == null || route.bookUrl == currentRoute.bookUrl)
-        ) {
-            // 朗读通知的「回到正在读的书」不带 bookUrl（空即最后读过的那本），路由键和栈顶那份
-            // 必然不相等。栈顶已经是阅读页时再压一份，返回就要连点同样多次才出得了阅读页。
-            return
-        }
+        ) return
 
         if (route is MainRouteReadBook) ReaderPerfTrace.marker("open.request")
         // 导航动画和阅读页组合要花几百毫秒, 这段时间足够把正文读出来并排版好
@@ -131,59 +129,47 @@ object MainNavigator {
                 }
             }
 
+            MainRouteAiChat -> {
+                if (currentRoute == MainRouteSettingsAi || currentRoute == MainRouteHome) {
+                    backStack.add(route)
+                } else {
+                    backStack.clear()
+                    backStack.add(MainRouteHome)
+                    backStack.add(MainRouteSettings)
+                    backStack.add(MainRouteSettingsAi)
+                    backStack.add(route)
+                }
+            }
+
             MainRouteSettingsOther,
             MainRouteSettingsRead,
             MainRouteSettingsCover,
             MainRouteSettingsTheme,
             MainRouteSettingsBackup,
+            MainRouteSettingsAi,
+            is MainRouteSettingsAiProviderEdit,
+            is MainRouteSettingsAiModelEdit,
+            MainRouteSettingsAiSummary,
+            MainRouteSettingsAiPrompt,
             MainRouteSettingsCustomTheme,
             MainRouteSettingsThemeManage,
-            MainRouteSettingsDownloadCache -> {
+            MainRouteSettingsDownloadCache,
+            MainRouteSettingsTranslation,
+            MainRouteSettingsPrivate -> {
                 backStack.clear()
                 backStack.add(MainRouteHome)
                 backStack.add(MainRouteSettings)
                 backStack.add(route)
             }
 
-            MainRouteAudioRemote -> {
-                // 音频库的二级页面：从库内进入时叠栈，返回直接回库内页
-                if (currentRoute == MainRouteAudioLibrary) {
-                    backStack.add(route)
-                } else {
-                    backStack.clear()
-                    backStack.add(MainRouteHome)
-                    backStack.add(MainRouteAudioLibrary)
-                    backStack.add(route)
-                }
-            }
-
-            is MainRouteAudioEdit -> {
-                // 音频库的二级页面（编辑）：从库内进入时叠栈，返回直接回库内页
-                if (currentRoute == MainRouteAudioLibrary) {
-                    backStack.add(route)
-                } else {
-                    backStack.clear()
-                    backStack.add(MainRouteHome)
-                    backStack.add(MainRouteAudioLibrary)
-                    backStack.add(route)
-                }
-            }
-
             MainRouteImportLocal,
             MainRouteImportRemote,
             is MainRouteCache,
             MainRouteBookCacheManage,
-            MainRouteTtsServerCenter,
-            MainRouteReadAloudSettings,
-            MainRouteAiModelManage,
-            MainRouteAiAnalysisSettings,
-            MainRouteRoleScriptManage,
-            MainRouteAudioLibrary,
             is MainRouteReadBook,
             is MainRouteReadManga -> {
                 if (
                     currentRoute == MainRouteHome ||
-                    currentRoute == MainRouteBookCacheManage ||
                     currentRoute is MainRouteBookInfo
                 ) {
                     backStack.add(route)
@@ -252,14 +238,28 @@ object MainNavigator {
                 }
             }
 
+            is MainRouteBookCharacterDetail,
+            is MainRouteBookCharacterNetwork,
+            is MainRouteBookCharacterList,
+            is MainRouteBookVoiceCasting,
             is MainRouteCloudTtsEngines,
             MainRouteTtsCache,
-            is MainRouteScriptReview -> {
+            is MainRouteBookKnowledgeList,
+            is MainRouteBookKnowledgeDetail,
+            is MainRouteBookEventList,
+            is MainRouteBookEventDetail -> {
                 if (
                     currentRoute is MainRouteBookInfo ||
+                    currentRoute is MainRouteBookCharacterDetail ||
+                    currentRoute is MainRouteBookCharacterNetwork ||
+                    currentRoute is MainRouteBookCharacterList ||
+                    currentRoute is MainRouteBookVoiceCasting ||
                     currentRoute is MainRouteCloudTtsEngines ||
                     currentRoute == MainRouteTtsCache ||
-                    currentRoute == MainRouteBookCacheManage ||
+                    currentRoute is MainRouteBookKnowledgeList ||
+                    currentRoute is MainRouteBookKnowledgeDetail ||
+                    currentRoute is MainRouteBookEventList ||
+                    currentRoute is MainRouteBookEventDetail ||
                     currentRoute is MainRouteReadBook ||
                     currentRoute is MainRouteReadManga
                 ) {
@@ -326,6 +326,9 @@ object MainNavigator {
             }
 
             MainRouteHighlightTagRule,
+            MainRouteDictRule,
+            MainRouteAllBookmark,
+            MainRouteMultiRoleRule,
             MainRouteReadRecord -> {
                 if (currentRoute == MainRouteHome) {
                     backStack.add(route)
@@ -336,8 +339,37 @@ object MainNavigator {
                 }
             }
 
+            // 朗读设置的子页（设置 hub 与阅读界面朗读设置卡片两处入口）都只压栈、不清栈：
+            // 从阅读界面进来要能直接返回阅读界面。
+            MainRouteVoicePool,
+            MainRouteBgmPool,
+            MainRouteVoiceEffect,
+            MainRouteCastCapsuleStyle,
+            MainRouteRegexCastRule,
+            MainRouteMultiRoleRecognition -> backStack.add(route)
+
             MainRouteAbout -> {
                 if (currentRoute == MainRouteHome) {
+                    backStack.add(route)
+                } else {
+                    backStack.clear()
+                    backStack.add(MainRouteHome)
+                    backStack.add(route)
+                }
+            }
+
+            // TXT 目录规则列表与它的预览页既可以从首页进（管理模式），也可以是压在目录页 /
+            // 阅读页之上的子页（选择 / 应用模式）。后者必须压栈，否则返回时下层页面被清掉，
+            // 选中的规则也就没有父页面可以回传。
+            is MainRouteTxtTocRule,
+            is MainRouteTxtTocRulePreview -> {
+                if (
+                    currentRoute == MainRouteHome ||
+                    currentRoute is MainRouteToc ||
+                    currentRoute is MainRouteTxtTocRulePreview ||
+                    currentRoute is MainRouteReadBook ||
+                    currentRoute is MainRouteReadManga
+                ) {
                     backStack.add(route)
                 } else {
                     backStack.clear()
@@ -360,10 +392,6 @@ object MainNavigator {
         tracker?.onBackStackChanged(backStack)
     }
 
-    /**
-     * [tracker] 非空时同步栈顶快照，供 Activity 级叠层立即重算显隐。
-     * [fromRoute] 非空时要求它仍在栈顶（子页覆盖层返回守卫）；返回是否真正退栈。
-     */
     fun navigateBack(
         activity: Activity,
         backStack: MutableList<NavKey>,
@@ -391,7 +419,7 @@ object MainNavigator {
     fun onBackStackChanged() {
         backNavigationResetJob?.cancel()
         backNavigationResetJob = navigationScope.launch {
-            delay(500)
+            delay(100)
             backNavigationInProgress = false
         }
     }
@@ -496,9 +524,13 @@ object MainNavigator {
             MainRouteConst.ROUTE_SETTINGS_COVER -> MainRouteSettingsCover
             MainRouteConst.ROUTE_SETTINGS_THEME -> MainRouteSettingsTheme
             MainRouteConst.ROUTE_SETTINGS_BACKUP -> MainRouteSettingsBackup
+            MainRouteConst.ROUTE_SETTINGS_AI -> MainRouteSettingsAi
+            MainRouteConst.ROUTE_AI_CHAT -> MainRouteAiChat
             MainRouteConst.ROUTE_SETTINGS_CUSTOM_THEME -> MainRouteSettingsCustomTheme
+            MainRouteConst.ROUTE_SETTINGS_PRIVATE -> MainRouteSettingsPrivate
             MainRouteConst.ROUTE_SETTINGS_LAB_CONFIG -> MainRouteSettingsLabConfig
             MainRouteConst.ROUTE_SETTINGS_DOWNLOAD_CACHE -> MainRouteSettingsDownloadCache
+            MainRouteConst.ROUTE_SETTINGS_TRANSLATION -> MainRouteSettingsTranslation
             MainRouteConst.ROUTE_IMPORT_LOCAL -> MainRouteImportLocal
             MainRouteConst.ROUTE_IMPORT_REMOTE -> MainRouteImportRemote
             MainRouteConst.ROUTE_CACHE -> MainRouteCache(
@@ -545,6 +577,57 @@ object MainNavigator {
                         bookUrl = bookUrl,
                         origin = intent.getStringExtra(MainIntent.EXTRA_BOOK_ORIGIN),
                         coverPath = intent.getStringExtra(MainIntent.EXTRA_BOOK_COVER)
+                    )
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_CHARACTER_DETAIL -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookCharacterDetail(
+                        bookUrl = bookUrl,
+                        characterId = intent.getStringExtra(MainIntent.EXTRA_CHARACTER_ID),
+                    )
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_CHARACTER_NETWORK -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookCharacterNetwork(bookUrl = bookUrl)
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_CHARACTER_LIST -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookCharacterList(bookUrl = bookUrl)
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_KNOWLEDGE_LIST -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookKnowledgeList(bookUrl = bookUrl)
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_KNOWLEDGE_DETAIL -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookKnowledgeDetail(
+                        bookUrl = bookUrl,
+                        entryId = intent.getStringExtra(MainIntent.EXTRA_ENTRY_ID),
+                    )
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_EVENT_LIST -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookEventList(bookUrl = bookUrl)
+                } ?: MainRouteHome
+
+            MainRouteConst.ROUTE_BOOK_EVENT_DETAIL -> intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { bookUrl ->
+                    MainRouteBookEventDetail(
+                        bookUrl = bookUrl,
+                        eventId = intent.getStringExtra(MainIntent.EXTRA_EVENT_ID),
                     )
                 } ?: MainRouteHome
 

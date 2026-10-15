@@ -19,7 +19,13 @@ import io.legado.app.data.repository.UploadRepository
 import io.legado.app.domain.gateway.AppShellSettingsGateway
 import io.legado.app.domain.gateway.BookshelfSettingsGateway
 import io.legado.app.domain.gateway.DownloadCacheSettingsGateway
+import io.legado.app.domain.gateway.PrivateAccessGateway
+import io.legado.app.domain.gateway.PrivateContentGateway
 import io.legado.app.domain.gateway.ThemeSettingsGateway
+import io.legado.app.domain.model.PrivateAccessState
+import io.legado.app.domain.model.PrivateUnlockTarget
+import io.legado.app.domain.model.isPrivateBook
+import io.legado.app.domain.model.settings.PrivateAccessSettings
 import io.legado.app.domain.usecase.AddBookUseCase
 import io.legado.app.domain.usecase.BatchCacheDownloadUseCase
 import io.legado.app.domain.usecase.DeleteBooksUseCase
@@ -95,6 +101,8 @@ class BookshelfViewModel(
     private val appShellSettingsGateway: AppShellSettingsGateway,
     private val themeSettingsGateway: ThemeSettingsGateway,
     private val downloadCacheSettingsGateway: DownloadCacheSettingsGateway,
+    private val privateAccessGateway: PrivateAccessGateway,
+    private val privateContentGateway: PrivateContentGateway,
 ) : BaseViewModel(application) {
     private var addBookJob: Coroutine<*>? = null
 
@@ -113,6 +121,9 @@ class BookshelfViewModel(
     private val pendingSavedBooksFlow = MutableStateFlow<List<BookUiItem>?>(null)
     private val isInitialLoadingFlow = MutableStateFlow(true)
     private val pendingUploadUrlFlow = MutableStateFlow<String?>(null)
+
+    /** 点击脱敏的私密书籍后挂起、等解锁成功再打开的目标书 */
+    private val pendingOpenBookUrlFlow = MutableStateFlow<String?>(null)
 
     private data class BookshelfSortConfig(
         val sort: Int,
@@ -165,8 +176,60 @@ class BookshelfViewModel(
         }
         .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5000), replay = 1)
 
+    // 与 uiState 同理：常驻订阅，返回书架时首帧就是最新分组，避免补一次跳动
     val allGroupsFlow: StateFlow<List<BookGroup>> = bookGroupRepository.flowAll()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * 解锁态：进程内有效，重启应用即回到锁定。Eagerly 是为了点击时能同步读到当前值，
+     * 决定"直接放行 / 弹生物框 / 弹密码框 / 引导设密码"。
+     */
+    private val privateAccessStateFlow: StateFlow<PrivateAccessState> =
+        privateAccessGateway.state
+            .stateIn(viewModelScope, SharingStarted.Eagerly, PrivateAccessState())
+
+    private val privateAccessSettingsFlow: StateFlow<PrivateAccessSettings> =
+        privateAccessGateway.settings
+            .stateIn(viewModelScope, SharingStarted.Eagerly, PrivateAccessSettings())
+
+    /** 解锁态与验证时机一起参与渲染，避免"关了验证却仍然显示锁定态"的分叉 */
+    private val privateUiStateFlow: StateFlow<Pair<PrivateAccessState, PrivateAccessSettings>> =
+        combine(privateAccessStateFlow, privateAccessSettingsFlow) { access, settings ->
+            access to settings
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            PrivateAccessState() to PrivateAccessSettings()
+        )
+
+    /**
+     * 私密判定所需的两个来源：私密分组掩码 + 被单独标记的书籍 url。
+     * 判定在内存侧求并集，避免改动 BookDao 里十几处 BookShelfItem 投影。
+     */
+    private data class PrivateMarkers(
+        val groupMask: Long,
+        val bookUrls: Set<String>
+    )
+
+    private fun PrivateMarkers.isPrivate(item: BookShelfItem): Boolean =
+        isPrivateBook(
+            bookUrl = item.bookUrl,
+            group = item.group,
+            privateBookUrls = bookUrls,
+            privateGroupMask = groupMask
+        )
+
+    private val privateMarkersFlow: StateFlow<PrivateMarkers> = combine(
+        allGroupsFlow,
+        privateContentGateway.flowPrivateBookUrls()
+    ) { groups, privateBookUrls ->
+        PrivateMarkers(
+            groupMask = groups.fold(0L) { acc, group ->
+                if (group.groupId > 0 && group.isPrivate) acc or group.groupId else acc
+            },
+            bookUrls = privateBookUrls
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PrivateMarkers(0L, emptySet()))
 
     private val hideEmptyGroupsFlow: StateFlow<Boolean> = bookshelfSettings
         .map { it.hideEmptyGroups }
@@ -237,7 +300,8 @@ class BookshelfViewModel(
         val groups: List<BookGroup>,
         val bookGroupStyle: Int,
         val systemCountsMap: Map<Long, Int>,
-        val allBookCount: Int
+        val allBookCount: Int,
+        val markers: PrivateMarkers
     )
 
     val groupSelectorState: StateFlow<BookshelfGroupSelectorState> = combine(
@@ -276,8 +340,9 @@ class BookshelfViewModel(
             combine(
                 bookRepository.flowBookShelfByGroup(groupId),
                 groupsFlow,
-                sortConfigFlow
-            ) { list, groups, sortConfig ->
+                sortConfigFlow,
+                privateMarkersFlow
+            ) { list, groups, sortConfig, markers ->
                 SelectedGroupBooksState(
                     groupId = groupId,
                     books = bookshelfRepository.sortBooks(
@@ -285,7 +350,7 @@ class BookshelfViewModel(
                         groups.find { it.groupId == groupId },
                         sortConfig.sort,
                         sortConfig.sortOrder
-                    ).map { it.toUiItem() },
+                    ).map { it.toUiItem(markers.isPrivate(it)) },
                     sortConfig = sortConfig
                 )
             }
@@ -299,9 +364,9 @@ class BookshelfViewModel(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val allGroupBooksImmutableFlow: Flow<ImmutableMap<Long, ImmutableList<BookUiItem>>> =
-        combine(groupsFlow, sortConfigFlow) { groups, sortConfig ->
-            groups to sortConfig
-        }.flatMapLatest { (groups, sortConfig) ->
+        combine(groupsFlow, sortConfigFlow, privateMarkersFlow) { groups, sortConfig, markers ->
+            Triple(groups, sortConfig, markers)
+        }.flatMapLatest { (groups, sortConfig, markers) ->
             if (groups.isEmpty()) {
                 flowOf(persistentMapOf())
             } else {
@@ -312,7 +377,7 @@ class BookshelfViewModel(
                             group,
                             sortConfig.sort,
                             sortConfig.sortOrder
-                        ).map { it.toUiItem() }.toImmutableList()
+                        ).map { it.toUiItem(markers.isPrivate(it)) }.toImmutableList()
                     }
                 }
                 combine(flows) { results ->
@@ -327,12 +392,22 @@ class BookshelfViewModel(
     private val selectedBooksStateFlow: Flow<SelectedBooksState> = combine(
         selectedGroupBooksFlow,
         searchKeyFlow,
-        searchModeFlow
-    ) { selectedGroup, searchKey, isSearchMode ->
+        searchModeFlow,
+        privateUiStateFlow
+    ) { selectedGroup, searchKey, isSearchMode, privateUi ->
+        // 未解锁时私密书籍不参与搜索匹配：否则"搜得到/搜不到"本身就泄漏了书名
+        val (privateAccess, privateSettings) = privateUi
         SelectedBooksState(
             groupId = selectedGroup.groupId,
             books = selectedGroup.books,
-            visibleBooks = filterBooks(selectedGroup.books, searchKey, isSearchMode),
+            visibleBooks = filterBooks(
+                books = selectedGroup.books,
+                searchKey = searchKey,
+                isSearchMode = isSearchMode,
+                hidePrivate = { item ->
+                    item.isLocked(privateAccess, privateSettings.verifyOnOpenBook)
+                }
+            ),
             searchKey = searchKey,
             isSearchMode = isSearchMode,
             sortConfig = selectedGroup.sortConfig
@@ -368,19 +443,22 @@ class BookshelfViewModel(
         groupsFlow,
         bookGroupStyleFlow,
         bookRepository.flowSystemGroupCounts(),
-        bookRepository.flowAllBookShelfCount()
-    ) { groups, bookGroupStyle, systemCounts, totalCount ->
+        bookRepository.flowAllBookShelfCount(),
+        privateMarkersFlow
+    ) { groups, bookGroupStyle, systemCounts, totalCount, markers ->
         DataForPreviews(
             groups,
             bookGroupStyle,
             systemCounts.associate { it.groupId to it.count },
-            totalCount
+            totalCount,
+            markers
         )
     }.flatMapLatest { data ->
         val groups = data.groups
         val bookGroupStyle = data.bookGroupStyle
         val systemCountsMap = data.systemCountsMap
         val allBookCount = data.allBookCount
+        val markers = data.markers
 
         if (bookGroupStyle !in 2..3) {
             flowOf(GroupPreviewState(persistentMapOf(), persistentMapOf(), allBookCount))
@@ -395,7 +473,11 @@ class BookshelfViewModel(
                 }
                 val previewFlow = bookRepository.flowGroupPreview(group.groupId)
                 combine(countFlow, previewFlow) { count, preview ->
-                    Triple(group.groupId, count, preview.map { it.toUiItem() })
+                    Triple(
+                        group.groupId,
+                        count,
+                        preview.map { it.toUiItem(markers.isPrivate(it)) }
+                    )
                 }
             }
             combine(groupFlows) { results ->
@@ -414,13 +496,15 @@ class BookshelfViewModel(
         groupIdFlow,
         loadingTextFlow,
         updatingBooksFlow,
-        upBooksCountFlow
-    ) { groupId, loadingText, updatingBooks, upBooksCount ->
+        upBooksCountFlow,
+        pendingOpenBookUrlFlow
+    ) { groupId, loadingText, updatingBooks, upBooksCount, pendingOpenBookUrl ->
         InternalState(
             groupId = groupId,
             loadingText = loadingText,
             updatingBooks = updatingBooks,
-            upBooksCount = upBooksCount
+            upBooksCount = upBooksCount,
+            pendingOpenBookUrl = pendingOpenBookUrl
         )
     }
 
@@ -428,7 +512,8 @@ class BookshelfViewModel(
         val groupId: Long,
         val loadingText: String?,
         val updatingBooks: Set<String>,
-        val upBooksCount: Int
+        val upBooksCount: Int,
+        val pendingOpenBookUrl: String?
     )
 
     data class BookshelfInteractionState(
@@ -515,8 +600,13 @@ class BookshelfViewModel(
         dataStateFlow,
         interactionStateFlow,
         isInitialLoadingFlow,
-        hiddenGroupIdsFlow
-    ) { data, interaction, isInitialLoading, hiddenIds ->
+        hiddenGroupIdsFlow,
+        privateUiStateFlow
+    ) { data, interaction, isInitialLoading, hiddenIds, privateUi ->
+        val (privateAccess, privateSettings) = privateUi
+        val hidePrivateFromSearch: (BookUiItem) -> Boolean = { item ->
+            item.isLocked(privateAccess, privateSettings.verifyOnOpenBook)
+        }
         val selectedBooks = data.selectedBooks
         val groups = data.groups.filter { it.groupId !in hiddenIds }
         val allGroups = data.allGroups
@@ -527,7 +617,12 @@ class BookshelfViewModel(
                 data.allGroupBooks
             } else {
                 data.allGroupBooks.mapValues { (_, books) ->
-                    filterBooks(books, selectedBooks.searchKey, true).toImmutableList()
+                    filterBooks(
+                        books = books,
+                        searchKey = selectedBooks.searchKey,
+                        isSearchMode = true,
+                        hidePrivate = hidePrivateFromSearch
+                    ).toImmutableList()
                 }.toImmutableMap()
             }
         val books = data.allGroupBooks[internal.groupId]
@@ -538,8 +633,9 @@ class BookshelfViewModel(
             ?: emptyList()
         val selectedGroupIndex = groups.indexOfFirst { it.groupId == internal.groupId }
             .coerceAtLeast(0)
-        val currentGroupName = allGroups.firstOrNull { it.groupId == internal.groupId }?.groupName
-            ?: groups.getOrNull(selectedGroupIndex)?.groupName
+        val currentGroup = allGroups.firstOrNull { it.groupId == internal.groupId }
+            ?: groups.getOrNull(selectedGroupIndex)
+        val currentGroupName = currentGroup?.groupName
         val selectedIds = interaction.selectedBookUrls.mapTo(linkedSetOf<Any>()) { it }
         val title = buildTitle(
             bookGroupStyle = interaction.bookGroupStyle,
@@ -603,7 +699,10 @@ class BookshelfViewModel(
             currentGroupName = currentGroupName,
             draggingBooks = interaction.draggingBooks?.toImmutableList(),
             pendingSavedBooks = interaction.pendingSavedBooks?.toImmutableList(),
-            visibleGroupBooks = visibleGroupBooks
+            visibleGroupBooks = visibleGroupBooks,
+            privateAccess = privateAccess,
+            privateSettings = privateSettings,
+            pendingOpenBookUrl = internal.pendingOpenBookUrl,
         )
     }
 
@@ -622,9 +721,14 @@ class BookshelfViewModel(
             themeColor = themeSettings.themeColor,
             pendingUploadUrl = pendingUploadUrl,
         )
+        // 常驻订阅：进入阅读页后 UI 停止收集，若让上游在超时后停掉，返回书架的前几帧
+        // 读到的仍是「阅读前」那一版排序，等 Room 重新查询到达再跳一次，重排就发生在
+        // 书架已经可见之后。管道挂在 viewModelScope（ViewModel 随返回栈条目存活），
+        // 因此返回首帧即是最新排序。与 komikku 的 LibraryScreenModel 同思路：
+        // 状态管道由 ScreenModel/ViewModel 自己持有，不随 UI 订阅启停。
     }.stateIn(
         viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
+        SharingStarted.Eagerly,
         BookshelfUiState(
             settings = initialSettings,
             selectedGroupId = initialSettings.saveTabPosition,
@@ -728,18 +832,89 @@ class BookshelfViewModel(
                 }
             }
             BookshelfIntent.UploadResultConsumed -> pendingUploadUrlFlow.value = null
+            BookshelfIntent.ConsumePendingOpenBook -> pendingOpenBookUrlFlow.value = null
+            is BookshelfIntent.RequestPrivateUnlock -> requestPrivateUnlock(intent.target)
+            is BookshelfIntent.SubmitPrivatePassword ->
+                submitPrivatePassword(intent.target, intent.password)
+
+            is BookshelfIntent.UnlockPrivateWithBiometricPassword ->
+                submitPrivatePassword(intent.target, intent.password)
+
+            is BookshelfIntent.SetBooksPrivate ->
+                setBooksPrivate(intent.bookUrls, intent.isPrivate)
+        }
+    }
+
+    /**
+     * 私密内容的统一入口：已解锁直接放行，否则按"生物快捷 → 应用内密码 → 引导设密码"降级。
+     */
+    private fun requestPrivateUnlock(target: PrivateUnlockTarget) {
+        val access = privateAccessStateFlow.value
+        if (target is PrivateUnlockTarget.Book) {
+            // 打开书籍落成状态：解锁后列表才会重新包含这本书，此时再打开才不会丢事件
+            pendingOpenBookUrlFlow.value = target.bookUrl
+        }
+        if (access.isUnlocked) return
+        if (!access.hasPassword) {
+            // 没有密码就没有解锁路径：把刚挂上的目标一起撤掉，
+            // 否则以后任意一次授权（进分组、启动验证）都会让这本旧书被自动打开
+            pendingOpenBookUrlFlow.value = null
+            _effects.tryEmit(BookshelfEffect.NavigateToLocalPasswordSettings)
+            return
+        }
+        if (access.canUseBiometricShortcut) {
+            _effects.tryEmit(BookshelfEffect.RequestBiometricUnlock(target))
+        } else {
+            activeOverlayFlow.value = BookshelfOverlay.PrivatePassword(target)
+        }
+    }
+
+    private fun submitPrivatePassword(target: PrivateUnlockTarget, password: String) {
+        if (password.isEmpty()) return
+        viewModelScope.launch {
+            if (privateAccessGateway.verifyPassword(password, target)) {
+                activeOverlayFlow.value = null
+            } else {
+                // 校验失败就把挂起动作一起清掉，避免之后某次成功解锁误打开旧目标
+                pendingOpenBookUrlFlow.value = null
+                _effects.tryEmit(
+                    BookshelfEffect.ShowSnackbar(
+                        context.getString(R.string.private_unlock_password_error)
+                    )
+                )
+            }
+        }
+    }
+
+    private fun setBooksPrivate(bookUrls: Set<String>, isPrivate: Boolean) {
+        if (bookUrls.isEmpty()) return
+        execute {
+            privateContentGateway.setBooksPrivate(bookUrls, isPrivate)
+        }.onSuccess {
+            showMessage(context.getString(R.string.private_marked_books, bookUrls.size))
+        }.onError {
+            showMessage(
+                context.getString(R.string.private_mark_failed, it.localizedMessage.orEmpty())
+            )
         }
     }
 
     private fun filterBooks(
         books: List<BookUiItem>,
         searchKey: String,
-        isSearchMode: Boolean
+        isSearchMode: Boolean,
+        hidePrivate: (BookUiItem) -> Boolean = { false }
     ): List<BookUiItem> {
-        return if (!isSearchMode || searchKey.isBlank()) {
-            books
+        // 仍处于锁定态的私密书籍先剔掉，再谈匹配：否则"能不能搜到"本身就是泄漏
+        val candidates = if (isSearchMode && searchKey.isNotBlank()) {
+            books.filterNot(hidePrivate)
         } else {
-            books.filter { it.matches(searchKey) }
+            books
+        }
+        return if (!isSearchMode || searchKey.isBlank()) {
+            candidates
+        } else {
+            candidates.filter { it.matches(searchKey) }
         }
     }
 
@@ -773,13 +948,20 @@ class BookshelfViewModel(
 
     fun changeGroup(groupId: Long) {
         if (groupIdFlow.value != groupId) {
+            // "每次验证"频率下离开分组即撤销授权，下次进来要重新验证
+            privateAccessGateway.revoke(PrivateUnlockTarget.Group(groupIdFlow.value))
             groupIdFlow.value = groupId
             viewModelScope.launch {
                 bookshelfSettingsGateway.update { it.copy(saveTabPosition = groupId) }
             }
             clearSelection()
             clearDragState()
+            // 切分组即放弃"解锁后打开"的挂起目标：这本书已经不在当前分组里了，
+            // 留着它会在以后某次回到该分组时莫名把书弹开
+            pendingOpenBookUrlFlow.value = null
         }
+        // 进入私密分组不在这里申请权限：先呈现锁定页，由用户点"验证并查看"时再申请。
+        // 否则左右滑动浏览分组会被连续弹窗打断，而用户此刻可能只是想路过这个分组。
     }
 
     fun setSearchKey(key: String) {
@@ -799,6 +981,9 @@ class BookshelfViewModel(
     }
 
     fun dismissOverlay() {
+        if (activeOverlayFlow.value is BookshelfOverlay.PrivatePassword) {
+            pendingOpenBookUrlFlow.value = null
+        }
         activeOverlayFlow.value = null
     }
 

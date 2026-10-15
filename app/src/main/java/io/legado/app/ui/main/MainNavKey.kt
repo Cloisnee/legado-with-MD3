@@ -1,6 +1,7 @@
 package io.legado.app.ui.main
 
 import androidx.navigation3.runtime.NavKey
+import io.legado.app.ui.book.read.ReadAloudSubPage
 import io.legado.app.ui.login.SourceLoginType
 import io.legado.app.ui.replace.ReplaceEditRoute
 import kotlinx.serialization.Serializable
@@ -88,16 +89,45 @@ data object MainRouteSettingsTheme : MainRoute
 data object MainRouteSettingsBackup : MainRoute
 
 @Serializable
+data object MainRouteSettingsAi : MainRoute
+
+@Serializable
+data object MainRouteAiChat : MainRoute
+
+@Serializable
+data class MainRouteSettingsAiProviderEdit(
+    val providerId: String? = null
+) : MainRoute
+
+@Serializable
+data class MainRouteSettingsAiModelEdit(
+    val providerId: String? = null,
+    val modelProfileId: String? = null
+) : MainRoute
+
+@Serializable
+data object MainRouteSettingsAiSummary : MainRoute
+
+@Serializable
+data object MainRouteSettingsAiPrompt : MainRoute
+
+@Serializable
 data object MainRouteSettingsCustomTheme : MainRoute
 
 @Serializable
 data object MainRouteSettingsThemeManage : MainRoute
 
 @Serializable
+data object MainRouteSettingsPrivate : MainRoute
+
+@Serializable
 data object MainRouteSettingsLabConfig : MainRoute
 
 @Serializable
 data object MainRouteSettingsDownloadCache : MainRoute
+
+@Serializable
+data object MainRouteSettingsTranslation : MainRoute
 
 @Serializable
 data object MainRouteImportLocal : MainRoute
@@ -157,8 +187,28 @@ data class MainRouteBookInfo(
     val origin: String? = null,
     val coverPath: String? = null,
     val sharedCoverKey: String? = null,
-    val useCoverMorph: Boolean = true,
     val openRequestId: Long = 0L,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookCharacterDetail(
+    val bookUrl: String,
+    val characterId: String? = null,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookCharacterNetwork(
+    val bookUrl: String,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookCharacterList(
+    val bookUrl: String,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookVoiceCasting(
+    val bookUrl: String,
 ) : MainRoute
 
 @Serializable
@@ -168,34 +218,25 @@ data class MainRouteCloudTtsEngines(val bookUrl: String? = null) : MainRoute
 data object MainRouteTtsCache : MainRoute
 
 @Serializable
-data object MainRouteTtsServerCenter : MainRoute
-
-@Serializable
-data object MainRouteReadAloudSettings : MainRoute
-
-@Serializable
-data object MainRouteAiAnalysisSettings : MainRoute
-
-@Serializable
-data object MainRouteAiModelManage : MainRoute
-
-@Serializable
-data object MainRouteRoleScriptManage : MainRoute
-
-@Serializable
-data object MainRouteAudioLibrary : MainRoute
-
-@Serializable
-data object MainRouteAudioRemote : MainRoute
-
-@Serializable
-data class MainRouteAudioEdit(val assetId: String) : MainRoute
-
-@Serializable
-data class MainRouteScriptReview(
-    val bookName: String,
+data class MainRouteBookKnowledgeList(
     val bookUrl: String,
-    val chapterIndex: Int,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookKnowledgeDetail(
+    val bookUrl: String,
+    val entryId: String? = null,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookEventList(
+    val bookUrl: String,
+) : MainRoute
+
+@Serializable
+data class MainRouteBookEventDetail(
+    val bookUrl: String,
+    val eventId: String? = null,
 ) : MainRoute
 
 @Serializable
@@ -223,7 +264,67 @@ data class MainRouteSearchContent(
 data object MainRouteHighlightTagRule : MainRoute
 
 @Serializable
+data object MainRouteDictRule : MainRoute
+
+/**
+ * TXT 目录规则列表。
+ *
+ * [pickForBookUrl] 非空表示**选择模式**：这是为 [MainRouteToc] 挑一条规则而打开的，
+ * 选中后把结果回传给那个目录页（见 `BookPageResult.TxtTocRuleChosen`），而不是切换选中态。
+ */
+@Serializable
+data class MainRouteTxtTocRule(
+    val initialRule: String? = null,
+    val pickForBookUrl: String? = null,
+) : MainRoute
+
+/** TXT 目录规则预览：把一条规则套到 [bookUrl] 这本书上，可应用，也可跳到规则列表。 */
+@Serializable
+data class MainRouteTxtTocRulePreview(
+    val bookUrl: String,
+    val currentTocRegex: String? = null,
+) : MainRoute
+
+@Serializable
+data object MainRouteAllBookmark : MainRoute
+
+/** 朗读设置 hub（设置 → 朗读设置）：变声器 / 引擎 / 识别 / 正则角色。 */
+@Serializable
+data object MainRouteMultiRoleRule : MainRoute
+
+/** 角色声音池：池与池内音色管理。 */
+@Serializable
+data object MainRouteVoicePool : MainRoute
+
+/** 背景音乐池：导入的配乐文件管理，朗读时可作背景音。 */
+@Serializable
+data object MainRouteBgmPool : MainRoute
+
+/** 多角色识别：标记包裹符号与声音池分隔符号配置。 */
+@Serializable
+data object MainRouteMultiRoleRecognition : MainRoute
+
+/** 变声器：音高/混响预设管理，角色配音时可选。 */
+@Serializable
+data object MainRouteVoiceEffect : MainRoute
+
+/** 朗读胶囊设置：三类胶囊的圆角、背景与头像形状位置。 */
+@Serializable
+data object MainRouteCastCapsuleStyle : MainRoute
+
+/** 正则角色管理：命中正文文字换音色 / 不念改放音效。 */
+@Serializable
+data object MainRouteRegexCastRule : MainRoute
+
+@Serializable
 data object MainRouteAbout : MainRoute
+
+/** 朗读设置卡片里的子页跳转：把 [ReadAloudSubPage] 映射到对应整屏路由。 */
+fun ReadAloudSubPage.toMainRoute(): MainRoute = when (this) {
+    ReadAloudSubPage.VoicePool -> MainRouteVoicePool
+    ReadAloudSubPage.BgmPool -> MainRouteBgmPool
+    ReadAloudSubPage.CapsuleStyle -> MainRouteCastCapsuleStyle
+}
 
 object MainRouteConst {
     const val ROUTE_MAIN = "main"
@@ -242,9 +343,15 @@ object MainRouteConst {
     const val ROUTE_SETTINGS_COVER_ALBUMS = "settings/cover/albums"
     const val ROUTE_SETTINGS_THEME = "settings/theme"
     const val ROUTE_SETTINGS_BACKUP = "settings/backup"
+    const val ROUTE_SETTINGS_AI = "settings/ai"
+    const val ROUTE_SETTINGS_AI_SUMMARY = "settings/ai/summary"
+    const val ROUTE_SETTINGS_AI_PROMPT = "settings/ai/prompt"
+    const val ROUTE_AI_CHAT = "ai/chat"
     const val ROUTE_SETTINGS_CUSTOM_THEME = "settings/custom_theme"
+    const val ROUTE_SETTINGS_PRIVATE = "settings/private"
     const val ROUTE_SETTINGS_LAB_CONFIG = "settings/lab_config"
     const val ROUTE_SETTINGS_DOWNLOAD_CACHE = "settings/download_cache"
+    const val ROUTE_SETTINGS_TRANSLATION = "settings/translation"
     const val ROUTE_IMPORT_LOCAL = "import/local"
     const val ROUTE_IMPORT_REMOTE = "import/remote"
     const val ROUTE_CACHE = "cache"
@@ -255,6 +362,13 @@ object MainRouteConst {
     const val ROUTE_SEARCH = "search"
     const val ROUTE_SEARCH_CONTENT = "book/searchContent"
     const val ROUTE_BOOK_INFO = "book/info"
+    const val ROUTE_BOOK_CHARACTER_DETAIL = "book/character/detail"
+    const val ROUTE_BOOK_CHARACTER_NETWORK = "book/character/network"
+    const val ROUTE_BOOK_CHARACTER_LIST = "book/character/list"
+    const val ROUTE_BOOK_KNOWLEDGE_LIST = "book/knowledge/list"
+    const val ROUTE_BOOK_KNOWLEDGE_DETAIL = "book/knowledge/detail"
+    const val ROUTE_BOOK_EVENT_LIST = "book/event/list"
+    const val ROUTE_BOOK_EVENT_DETAIL = "book/event/detail"
     const val ROUTE_EXPLORE_SHOW = "explore/show"
     const val ROUTE_RSS_SORT = "rss/sort"
     const val ROUTE_RSS_READ = "rss/read"

@@ -17,9 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
@@ -31,22 +28,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
-import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.TheaterComedy
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
@@ -80,13 +70,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import io.legado.app.R
 import io.legado.app.constant.ReadAloudBgMode
+import io.legado.app.core.ui.player.PlayerMorphAppearance
+import io.legado.app.core.ui.player.PlayerMorphCover
+import io.legado.app.core.ui.player.TrackPlayerMorphCoverPage
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.ui.book.readaloud.ReadAloudTimerConfig
 import io.legado.app.ui.book.readaloud.ReadAloudTimerSheet
@@ -97,14 +90,7 @@ import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.MediumTonalButton
 import io.legado.app.ui.widget.components.button.series.SmallAnimatedButton
-import io.legado.app.ui.widget.components.card.GlassCard
 import io.legado.app.ui.widget.components.card.TextCard
-import io.legado.app.ui.widget.components.image.cover.BookCoverImage
-import io.legado.app.ui.widget.components.alert.AppAlertDialog
-import io.legado.app.ui.widget.components.AppTextField
-import io.legado.app.core.ui.player.PlayerMorphCover
-import io.legado.app.core.ui.player.PlayerMorphAppearance
-import io.legado.app.core.ui.player.TrackPlayerMorphCoverPage
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.player.AnimatedPlayPauseButton
 import io.legado.app.ui.widget.components.player.PlayerAdjustmentSlider
@@ -126,13 +112,12 @@ import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.ui.graphics.BlendMode as ComposeBlendMode
 
-@OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
 fun ReadAloudPlayerScreenContent(
     state: ReadAloudPlayerUiState,
     onIntent: (ReadAloudPlayerIntent) -> Unit,
     onBack: () -> Unit,
-    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
+    onOpenConfig: () -> Unit,
 ) {
     val horizontalPagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
     TrackPlayerMorphCoverPage(horizontalPagerState)
@@ -176,12 +161,17 @@ fun ReadAloudPlayerScreenContent(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             val hazeModifier = if (hazeEnabled) {
-                Modifier.hazeEffect(state = pagerHazeState, style = overlayHazeStyle) {
-                    progressive = HazeProgressive.verticalGradient(
-                        startIntensity = 1f,
-                        endIntensity = 0f,
-                    )
-                }
+                Modifier.hazeBlur(
+                    input = HazeInput.Sources(pagerHazeState),
+                    style = overlayHazeStyle.then {
+                        progressive(
+                            HazeProgressive.verticalGradient(
+                                startIntensity = 1f,
+                                endIntensity = 0f,
+                            ),
+                        )
+                    },
+                )
             } else {
                 Modifier
             }
@@ -219,9 +209,9 @@ fun ReadAloudPlayerScreenContent(
                         )
                     }
                     MediumTonalButton(
-                        onClick = { onIntent(ReadAloudPlayerIntent.OpenReadAloudLogs) },
-                        icon = Icons.Default.BugReport,
-                        contentDescription = "朗读日志",
+                        onClick = onOpenConfig,
+                        icon = Icons.Default.Settings,
+                        contentDescription = stringResource(R.string.setting),
                     )
                 }
             }
@@ -239,12 +229,17 @@ fun ReadAloudPlayerScreenContent(
                 ),
             ) {
                 val hazeModifier = if (hazeEnabled) {
-                    Modifier.hazeEffect(state = pagerHazeState, style = overlayHazeStyle) {
-                        progressive = HazeProgressive.verticalGradient(
-                            startIntensity = 0f,
-                            endIntensity = 1f,
-                        )
-                    }
+                    Modifier.hazeBlur(
+                        input = HazeInput.Sources(pagerHazeState),
+                        style = overlayHazeStyle.then {
+                            progressive(
+                                HazeProgressive.verticalGradient(
+                                    startIntensity = 0f,
+                                    endIntensity = 1f,
+                                ),
+                            )
+                        },
+                    )
                 } else {
                     Modifier
                 }
@@ -361,16 +356,6 @@ fun ReadAloudPlayerScreenContent(
                             contentDescription = stringResource(R.string.set_timer),
                             onCheckedChange = {
                                 onIntent(ReadAloudPlayerIntent.OpenSheet(ReadAloudPlayerSheet.Timer))
-                            },
-                        )
-                        SmallAnimatedButton(
-                            containerColor = Color.Transparent,
-                            checked = false,
-                            icon = Icons.Default.TheaterComedy,
-                            text = "剧本审查",
-                            contentDescription = "剧本审查",
-                            onCheckedChange = {
-                                onOpenScriptReview(state.bookName, state.bookUrl, state.chapterIndex)
                             },
                         )
                     }
@@ -725,3 +710,7 @@ private fun flowingTextBlend(): List<BlendColorEntry> {
         }
     }
 }
+
+
+
+

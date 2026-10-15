@@ -4,16 +4,23 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.HighlightRule
+import io.legado.app.feature.reader.core.cast.CastCapsuleGeometry
+import io.legado.app.feature.reader.core.cast.CastMarkers
+import io.legado.app.feature.reader.core.source.ReaderChapterInlineSource
+import io.legado.app.feature.reader.core.layout.ReaderCastOptions
 import io.legado.app.feature.reader.core.layout.ReaderChapterBlockMeasurer
+import io.legado.app.feature.reader.core.layout.ReaderChapterMeasureMetrics
 import io.legado.app.feature.reader.core.layout.ReaderChapterMeasureResult
 import io.legado.app.feature.reader.core.layout.ReaderChapterMeasureStyle
 import io.legado.app.feature.reader.core.layout.ReaderImageDimensions
 import io.legado.app.feature.reader.core.layout.ReaderImageLayoutMode
 import io.legado.app.feature.reader.core.layout.ReaderPaginationConfig
+import io.legado.app.feature.reader.core.layout.ReaderPaginationMetrics
 import io.legado.app.feature.reader.core.layout.ReaderPaginationSession
 import io.legado.app.feature.reader.core.layout.ReaderTextAlignment
 import io.legado.app.feature.reader.core.layout.ReaderTextShaperFactory
 import io.legado.app.feature.reader.core.model.ReaderPage
+import io.legado.app.feature.reader.core.source.ReaderChapterSourceBlock
 import io.legado.app.feature.reader.core.source.ReaderChapterSource
 import io.legado.app.feature.reader.platform.AndroidReaderHtmlSourceResolver
 import io.legado.app.feature.reader.platform.AndroidReaderTextShaper
@@ -51,6 +58,8 @@ data class LegacyReaderChapterLayoutIdentity(
     val bookUrl: String,
     val bookOrigin: String,
     val bookSourceHash: Int,
+    /** 多角色分配开关 + 变声器徽记：正文不变也要重排的唯一来源，缺了它胶囊不实时更新。 */
+    val castRenderHash: Int = 0,
 )
 
 /**
@@ -116,32 +125,98 @@ object LegacyReaderChapterPaginator {
         contentPaddingBottomPx: Int = 0,
         paginationStyle: ReaderAndroidPaginationStyle,
         highlightRules: List<HighlightRule>,
+        /** 多角色分配渲染选项（默认关闭）。 */
+        castOptions: ReaderCastOptions = ReaderCastOptions.Disabled,
         /** 每页成型即回调（对照旧 View `TextChapterLayout` 的 `channel.trySend`）；为空表示只要整章批次。 */
         onPage: ((ReaderPage) -> Unit)? = null,
+        titleMode: Int = ReadBookConfig.titleMode,
+        paragraphIndent: String = ReadBookConfig.paragraphIndent,
+        textFullJustify: Boolean = ReadBookConfig.textFullJustify,
+        headerExtentPx: Float = LegacyReaderPageDecorationFactory.headerExtentPx(),
+        footerExtentPx: Float = LegacyReaderPageDecorationFactory.footerExtentPx(),
     ): LegacyReaderChapterPaginationResult {
         if (viewportWidthPx <= 0 || viewportHeightPx <= 0) {
             return LegacyReaderChapterPaginationResult.Unsupported("viewport")
         }
-        val imageLayoutMode = when (book.getImageStyle()?.uppercase()) {
+        val tracing = ReaderPerfTrace.isEnabled()
+        val preparationStartNs = if (tracing) System.nanoTime() else 0L
+        val measureMetrics = if (tracing) ReaderChapterMeasureMetrics(System::nanoTime) else null
+        val bookImageStyle = book.getImageStyle()?.uppercase()
+        val imageLayoutMode = when (bookImageStyle) {
             Book.imgStyleText -> ReaderImageLayoutMode.INLINE
             Book.imgStyleFull -> ReaderImageLayoutMode.FULL_WIDTH
             Book.imgStyleSingle -> ReaderImageLayoutMode.SINGLE_PAGE
             else -> ReaderImageLayoutMode.AUTO
         }
+        // 旧 `setTypeImage` 的整图对齐也认书级 `LEFT`/`RIGHT`（单图 style 缺失时的回落）。
+        val imageAlignment = when (bookImageStyle) {
+            "LEFT" -> ReaderTextAlignment.START
+            "RIGHT" -> ReaderTextAlignment.END
+            else -> null
+        }
         val singleImage = imageLayoutMode == ReaderImageLayoutMode.SINGLE_PAGE
         val layoutSource = source.withTitleVisibility(
-            ReadBookConfig.titleMode != 2 || chapter.isVolume || content.textList.isEmpty(),
+            titleMode != 2 || chapter.isVolume || content.textList.isEmpty(),
             paginationStyle.titleSegmentation,
         )
         val styleRanges = LegacyReaderStyleRangeMapper.map(
             source = layoutSource,
             rules = highlightRules,
             processes = content.effectiveContentProcesses,
+            // 角色自己设的气泡：同一句上它赢过高亮规则的气泡那两栏，其余字段仍归规则
+            castBubbles = castOptions.bubbles,
         )
         val bodyPaint = paginationStyle.bodyPaint
         val titlePaint = paginationStyle.titlePaint
         val bodyStyle = paginationStyle.bodyStyle
         val titleStyle = paginationStyle.titleStyle
+        // 多角色分配：胶囊几何随字号缩放；锚点跟踪器章级共享（与注入侧同规则）
+        val castTracker = if (castOptions.enabled) CastMarkers.CastQuoteTracker() else null
+        // 头像位移会改胶囊宽度，量出来必须和画出来用的是同一份样式
+        val roleCapsuleStyle = io.legado.app.help.readaloud.cast.CastCapsuleStyleStore
+            .current(io.legado.app.help.readaloud.cast.CastCapsuleStyleStore.ROLE)
+        val placeholderCapsuleStyle = io.legado.app.help.readaloud.cast.CastCapsuleStyleStore
+            .current(io.legado.app.help.readaloud.cast.CastCapsuleStyleStore.PLACEHOLDER)
+        val castLabelPaint = if (castOptions.enabled) android.graphics.Paint(bodyPaint).apply {
+            textSize = bodyPaint.textSize * CastCapsuleGeometry.textScale
+        } else null
+        val castPoolPaint = if (castOptions.enabled) android.graphics.Paint(bodyPaint).apply {
+            textSize = bodyPaint.textSize * CastCapsuleGeometry.textScale * CastCapsuleGeometry.poolScale
+        } else null
+        fun castWidthOf(
+            name: String,
+            poolLabel: String,
+            withAvatar: Boolean,
+            withEffect: Boolean,
+        ): Float {
+            val labelPaint = castLabelPaint ?: return 0f
+            val poolPaint = castPoolPaint ?: return 0f
+            return CastCapsuleGeometry.widthOf(
+                bodyPaint.textSize,
+                labelPaint.measureText(name),
+                if (poolLabel.isEmpty()) 0f else poolPaint.measureText(poolLabel),
+                withAvatar,
+                withEffect,
+                roleCapsuleStyle,
+            )
+        }
+
+        // 背景音乐胶囊：♪ + 声音池名，与角色胶囊同款几何（池名即场景，必须看得见）。
+        val bgmEnabled = source.blocks.any { block ->
+            block is ReaderChapterSourceBlock.Paragraph &&
+                block.items.any { it is ReaderChapterInlineSource.BgmScene }
+        }
+        val bgmLabelPaint = if (bgmEnabled) android.graphics.Paint(bodyPaint).apply {
+            textSize = bodyPaint.textSize * CastCapsuleGeometry.textScale
+        } else null
+
+        fun bgmWidthOf(pool: String, track: String): Float {
+            val paint = bgmLabelPaint ?: return 0f
+            return CastCapsuleGeometry.bgmWidthPx(
+                bodyPaint.textSize,
+                paint.measureText(CastCapsuleGeometry.bgmLabel(pool)),
+            )
+        }
         val measurer = ReaderChapterBlockMeasurer(
             bodyShaper = AndroidReaderTextShaper(bodyPaint),
             titleShaper = AndroidReaderTextShaper(titlePaint),
@@ -164,6 +239,18 @@ object LegacyReaderChapterPaginator {
                 density = appCtx.resources.displayMetrics.density,
             ),
             imageOptionsResolver = LegacyReaderImageOptionsResolver,
+            metrics = measureMetrics,
+            castTracker = castTracker,
+            castCapsuleWidthPx = ::castWidthOf,
+            castCapsuleHeightPx =
+                if (castOptions.enabled) CastCapsuleGeometry.heightPx(bodyPaint.textSize) else 0f,
+            castPlaceholderWidthPx = {
+                CastCapsuleGeometry.placeholderWidthPx(bodyPaint.textSize, placeholderCapsuleStyle)
+            },
+            castHasVoiceEffect = { name, ordinal -> castOptions.hasVoiceEffect(name, ordinal) },
+            bgmCapsuleWidthPx = ::bgmWidthOf,
+            bgmCapsuleHeightPx =
+                if (bgmEnabled) CastCapsuleGeometry.heightPx(bodyPaint.textSize) else 0f,
         )
         // 分页会话先于测量建立：块一到就推进排版游标，页成型即经 [onPage] 流出
         // （旧 View `TextChapterLayout` 也是边排版边 `channel.trySend`）。
@@ -175,10 +262,10 @@ object LegacyReaderChapterPaginator {
             viewportHeightPx = viewportHeightPx,
             paddingLeftPx = (paginationStyle.paddingLeftPx + contentPaddingLeftPx).toFloat(),
             paddingTopPx = (paginationStyle.paddingTopPx + contentPaddingTopPx).toFloat() +
-                    LegacyReaderPageDecorationFactory.headerExtentPx(),
+                    headerExtentPx,
             paddingRightPx = (paginationStyle.paddingRightPx + contentPaddingRightPx).toFloat(),
             paddingBottomPx = (paginationStyle.paddingBottomPx + contentPaddingBottomPx).toFloat() +
-                    LegacyReaderPageDecorationFactory.footerExtentPx(),
+                    footerExtentPx,
             lineHeightPx = paginationStyle.bodyTextHeightPx,
             baselineOffsetPx = paginationStyle.bodyBaselineOffsetPx,
             lineSpacingMultiplier = paginationStyle.lineSpacingExtra,
@@ -191,6 +278,7 @@ object LegacyReaderChapterPaginator {
             htmlLineSpacingAddPx = paginationStyle.paragraphSpacing.toFloat(),
             pageUnderline = paginationStyle.pageUnderline,
             emphasisUnderlineStyle = paginationStyle.emphasisUnderlineStyle,
+            castOptions = castOptions,
             paragraphSpacingPx = paginationStyle.bodyTextHeightPx * paginationStyle.paragraphSpacing / 10f,
             titleTopSpacingPx = paginationStyle.titleTopSpacingPx,
             titleBottomSpacingPx = paginationStyle.titleBottomSpacingPx,
@@ -203,26 +291,39 @@ object LegacyReaderChapterPaginator {
             letterSpacingPx = bodyPaint.letterSpacing * bodyPaint.textSize,
             revision = revision,
         )
-        val paginationSession = ReaderPaginationSession(paginationConfig)
+        val paginationMetrics = if (tracing) ReaderPaginationMetrics() else null
+        val paginationSession = ReaderPaginationSession(paginationConfig, paginationMetrics)
         paginationSession.onPage = onPage
+        if (tracing) {
+            ReaderPerfTrace.counter(
+                "pagination.prepare.us",
+                (System.nanoTime() - preparationStartNs) / 1_000
+            )
+            ReaderPerfTrace.counter("pagination.style-ranges", styleRanges.size.toLong())
+        }
+        var acceptNs = 0L
+        var acceptedBlocks = 0L
+        val measureStartNs = if (tracing) System.nanoTime() else 0L
         val measured = ReaderPerfTrace.section("pagination.measure") {
             measurer.measure(
             layoutSource,
             ReaderChapterMeasureStyle(
                 bodyStyle = bodyStyle,
                 titleStyle = titleStyle,
-                bodyIndentCharacters = ReadBookConfig.paragraphIndent.length,
-                bodyIndentText = ReadBookConfig.paragraphIndent,
-                bodyAlignment = if (ReadBookConfig.textFullJustify) ReaderTextAlignment.JUSTIFY else ReaderTextAlignment.START,
+                bodyIndentCharacters = paragraphIndent.length,
+                bodyIndentText = paragraphIndent,
+                bodyAlignment = if (textFullJustify) ReaderTextAlignment.JUSTIFY else ReaderTextAlignment.START,
                 // 旧 TextChapterLayout 让 `imgStyleSingle` 的章标题同样居中（水平，见
                 // `addCharsToLineNatural` 的 startX；垂直见 setTypeText 的 durY 分支）。
-                titleAlignment = if (ReadBookConfig.isMiddleTitle || chapter.isVolume ||
+                titleAlignment = if (titleMode == 1 || chapter.isVolume ||
                     content.textList.isEmpty() || singleImage
                 ) ReaderTextAlignment.CENTER else ReaderTextAlignment.START,
                 imagePageBreakBefore = singleImage,
                 imagePageBreakAfter = singleImage,
                 titlePageBreakAfter = singleImage && content.textList.isNotEmpty(),
                 imageLayoutMode = imageLayoutMode,
+                imageAlignment = imageAlignment,
+                excludeActionImages = paginationStyle.excludeActionImages,
                 imageAvailableWidthPx = (
                     viewportWidthPx / paginationStyle.columnCount(viewportWidthPx, viewportHeightPx) -
                         paginationStyle.paddingLeftPx - paginationStyle.paddingRightPx -
@@ -237,7 +338,55 @@ object LegacyReaderChapterPaginator {
                 letterSpacingEm = bodyPaint.letterSpacing,
                 styleRanges = styleRanges,
             ),
-                onBlock = { block -> paginationSession.accept(block) },
+                onBlock = { block ->
+                    if (tracing) {
+                        val startNs = System.nanoTime()
+                        try {
+                            paginationSession.accept(block)
+                        } finally {
+                            acceptNs += System.nanoTime() - startNs
+                            acceptedBlocks++
+                        }
+                    } else {
+                        paginationSession.accept(block)
+                    }
+                },
+            )
+        }
+        if (tracing) {
+            val measureNs = System.nanoTime() - measureStartNs
+            ReaderPerfTrace.counter("pagination.chapter-index", chapter.index.toLong())
+            ReaderPerfTrace.counter("pagination.accept.us", acceptNs / 1_000)
+            ReaderPerfTrace.counter(
+                "pagination.measure-other.us",
+                (measureNs - acceptNs).coerceAtLeast(0) / 1_000
+            )
+            ReaderPerfTrace.counter("pagination.blocks", acceptedBlocks)
+            ReaderPerfTrace.counter(
+                "pagination.shape.us",
+                measureMetrics?.shapingNs?.div(1_000) ?: 0
+            )
+            ReaderPerfTrace.counter(
+                "pagination.style-lookup.us",
+                measureMetrics?.styleLookupNs?.div(1_000) ?: 0
+            )
+            ReaderPerfTrace.counter("pagination.shape-calls", measureMetrics?.shapingCalls ?: 0)
+            ReaderPerfTrace.counter("pagination.style-lookups", measureMetrics?.styleLookups ?: 0)
+            ReaderPerfTrace.counter(
+                "pagination.line-break.us",
+                paginationMetrics?.lineBreakNs?.div(1_000) ?: 0
+            )
+            ReaderPerfTrace.counter(
+                "pagination.line-refine.us",
+                paginationMetrics?.lineRefineNs?.div(1_000) ?: 0
+            )
+            ReaderPerfTrace.counter(
+                "pagination.line-placement.us",
+                paginationMetrics?.linePlacementNs?.div(1_000) ?: 0
+            )
+            ReaderPerfTrace.counter(
+                "pagination.inline-paragraphs",
+                paginationMetrics?.inlineParagraphs ?: 0
             )
         }
         if (measured is ReaderChapterMeasureResult.Unsupported) {

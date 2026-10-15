@@ -76,6 +76,7 @@ class ReadConfigUpdateDelegate(
             is ConfigUpdate.TitleLineSpacingExtra,
             is ConfigUpdate.TitleLineSpacingSub,
             is ConfigUpdate.TitleSize,
+            is ConfigUpdate.TitleSizeRelative,
             is ConfigUpdate.TitleTopSpacing,
             is ConfigUpdate.TitleBottomSpacing,
             is ConfigUpdate.TitleColor,
@@ -128,6 +129,7 @@ class ReadConfigUpdateDelegate(
                 }
             }
             is ConfigUpdate.PageAnim -> Unit
+            is ConfigUpdate.PageAnimSpeed -> Unit
 
             // --- Menu appearance ---
             is ConfigUpdate.MenuBgColor -> {
@@ -785,6 +787,8 @@ class ReadConfigUpdateDelegate(
         is ConfigUpdate.TitleLineSpacingSub ->
             intMutation(ReadStyleIntKey.TitleLineSpacingSub, value)
         is ConfigUpdate.TitleSize -> intMutation(ReadStyleIntKey.TitleSize, value)
+        is ConfigUpdate.TitleSizeRelative ->
+            booleanMutation(ReadStyleBooleanKey.TitleSizeRelative, value)
         is ConfigUpdate.TitleTopSpacing -> intMutation(ReadStyleIntKey.TitleTopSpacing, value)
         is ConfigUpdate.TitleBottomSpacing ->
             intMutation(ReadStyleIntKey.TitleBottomSpacing, value)
@@ -828,6 +832,7 @@ class ReadConfigUpdateDelegate(
             colorMutation(ReadStyleColorKey.TipFooterNight, color)
         is ConfigUpdate.TipDividerColor -> colorMutation(ReadStyleColorKey.TipDivider, color)
         is ConfigUpdate.PageAnim -> intMutation(ReadStyleIntKey.PageAnim, value)
+        is ConfigUpdate.PageAnimSpeed -> intMutation(ReadStyleIntKey.PageAnimSpeed, value)
         is ConfigUpdate.TextShadow -> booleanMutation(ReadStyleBooleanKey.TextShadow, value)
         is ConfigUpdate.ShadowRadius -> floatMutation(ReadStyleFloatKey.ShadowRadius, value)
         is ConfigUpdate.ShadowDx -> floatMutation(ReadStyleFloatKey.ShadowDx, value)

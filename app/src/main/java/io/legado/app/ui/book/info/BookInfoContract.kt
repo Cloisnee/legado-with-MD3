@@ -9,6 +9,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.readRecord.ReadRecordTimelineDay
 import io.legado.app.domain.model.BookshelfConflict
 import io.legado.app.domain.model.ConflictBookSummary
+import io.legado.app.domain.model.PrivateAccessState
 import io.legado.app.domain.usecase.ChangeSourceMigrationOptions
 import io.legado.app.ui.widget.components.variable.VariableEditorUiState
 import kotlinx.collections.immutable.ImmutableList
@@ -36,6 +37,9 @@ data class BookInfoUiState(
     val bookSource: BookSource? = null,
     val bookSourceUi: BookInfoSourceUi? = null,
     val relatedBooks: ImmutableList<RelatedBooksUi> = persistentListOf(),
+    val characters: ImmutableList<BookInfoCharacterUi> = persistentListOf(),
+    val knowledgeEntries: ImmutableList<BookInfoKnowledgeUi> = persistentListOf(),
+    val recentEvents: ImmutableList<BookInfoEventUi> = persistentListOf(),
     val isTocLoading: Boolean = false,
     val isBusy: Boolean = false,
     val deleteAlertEnabled: Boolean = true,
@@ -65,6 +69,15 @@ data class BookInfoUiState(
      * 弹冲突 Sheet」；具体是哪几本仍由点击后的 Sheet 给出。
      */
     val shelfDuplicates: ImmutableList<ConflictBookSummary> = persistentListOf(),
+    /** 本书是否私密（单本标记 ∪ 所属私密分组）；菜单里"标记/取消私密"读它 */
+    val bookPrivate: Boolean = false,
+    /** 进入本页时这本书是否需要验证（页面内刚标记私密不会立刻脱敏） */
+    val privateLockedByEntry: Boolean = false,
+    /** 本书为私密书籍且尚未解锁：详情页只显示锁定态 */
+    val privateLocked: Boolean = false,
+    val privateAccess: PrivateAccessState = PrivateAccessState(),
+    /** 应用内密码解锁弹窗（生物不可用或用户选择密码时） */
+    val showPrivatePasswordDialog: Boolean = false,
 )
 
 @Stable
@@ -80,6 +93,7 @@ data class BookInfoBookUi(
     val isLocal: Boolean,
     val type: Int,
     val canUpdate: Boolean,
+    val disableReadRecord: Boolean,
     val splitLongChapter: Boolean,
     val durChapterTitle: String?,
     val latestChapterTitle: String?,
@@ -107,6 +121,33 @@ data class BookInfoSourceUi(
     val sourceUrl: String,
     val hasLogin: Boolean,
     val hasCustomButton: Boolean,
+)
+
+@Stable
+data class BookInfoCharacterUi(
+    val id: String,
+    val name: String,
+    val avatarUri: String?,
+    val role: String,
+    val tags: String,
+    val summary: String,
+)
+
+@Stable
+data class BookInfoKnowledgeUi(
+    val id: String,
+    val type: String,
+    val title: String,
+    val summary: String,
+)
+
+@Stable
+data class BookInfoEventUi(
+    val id: String,
+    val chapterTitle: String,
+    val eventTimeText: String,
+    val content: String,
+    val characterName: String,
 )
 
 sealed interface BookInfoSheet {
@@ -226,6 +267,12 @@ sealed interface BookInfoIntent {
 
     data class RelatedBookClick(val book: SearchBook) : BookInfoIntent
     data class RelatedBooksMore(val title: String, val url: String) : BookInfoIntent
+    data class CharacterClick(val characterId: String) : BookInfoIntent
+    data object AddCharacterClick : BookInfoIntent
+    data object CharacterNetworkClick : BookInfoIntent
+    data object CharacterListClick : BookInfoIntent
+    data object KnowledgeListClick : BookInfoIntent
+    data object EventListClick : BookInfoIntent
     data class SetDefaultBookTreeUri(val value: String) : BookInfoIntent
 
     /** 简介 HTML 中 `<button>名称@onclick:脚本</button>` 的点击。 */
@@ -236,10 +283,22 @@ sealed interface BookInfoIntent {
 
     /** 简介 HTML 图片长按。 */
     data class IntroImageLongClick(val source: String) : BookInfoIntent
+
+    /** 私密书籍未解锁时的验证入口 */
+    data object RequestPrivateUnlock : BookInfoIntent
+    data object ShowPrivatePassword : BookInfoIntent
+    data class SubmitPrivatePassword(val password: String) : BookInfoIntent
+    data object DismissPrivatePassword : BookInfoIntent
 }
 
 sealed interface BookInfoEffect {
     data class ShowMessage(val message: String) : BookInfoEffect
+
+    /** 交给宿主弹出系统生物验证框（需要 FragmentActivity） */
+    data object RequestBiometricUnlock : BookInfoEffect
+
+    /** 私密功能需要本地密码：引导去设置页 */
+    data object NavigateToLocalPasswordSettings : BookInfoEffect
 
     data class Finish(
         val resultCode: Int? = null,
@@ -276,6 +335,27 @@ sealed interface BookInfoEffect {
         val exploreUrl: String?,
     ) : BookInfoEffect
 
+    data class OpenCharacterDetail(
+        val bookUrl: String,
+        val characterId: String?,
+    ) : BookInfoEffect
+
+    data class OpenCharacterNetwork(
+        val bookUrl: String,
+    ) : BookInfoEffect
+
+    data class OpenCharacterList(
+        val bookUrl: String,
+    ) : BookInfoEffect
+
+    data class OpenKnowledgeList(
+        val bookUrl: String,
+    ) : BookInfoEffect
+
+    data class OpenEventList(
+        val bookUrl: String,
+    ) : BookInfoEffect
+
     /** 简介按钮/图片触发的书源 JS 执行，由宿主（持有 Activity）用 SourceLoginJsExtensions 运行。 */
     data class RunIntroJs(
         val name: String,
@@ -301,6 +381,7 @@ enum class BookInfoMenuAction {
     SyncRemote,
     Refresh,
     ReadRecord,
+    ToggleReadRecordDisabled,
     Login,
     Top,
     SetSourceVariable,
@@ -312,4 +393,5 @@ enum class BookInfoMenuAction {
     ToggleDeleteAlert,
     ClearCache,
     ShowLog,
+    TogglePrivate,
 }

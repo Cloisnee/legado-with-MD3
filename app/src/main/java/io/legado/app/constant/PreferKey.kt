@@ -39,7 +39,9 @@ object PreferKey {
     const val clickActionBR = "clickActionBottomRight"
     const val hideNavigationBar = "hideNavigationBar"
     const val precisionSearch = "precisionSearch"
+    const val readAloudByPage = "readAloudByPage"
     const val ttsEngine = "appTtsEngine"
+    const val voicePreviewText = "voicePreviewText"
     const val ttsFollowSys = "ttsFollowSys"
     const val ttsSpeechRate = "ttsSpeechRate"
     const val prevKeys = "prevKeyCodes"
@@ -127,6 +129,7 @@ object PreferKey {
     const val bitmapCacheSize = "bitmapCacheSize"
     const val imageRetainNum = "imageRetainNum"
     const val preDownloadNum = "preDownloadNum"
+    const val preDownloadNumPrev = "preDownloadNumPrev"
     const val mangaPreDownloadNum = "mangaPreDownloadNum"
     const val mangaChapterPrefetchCount = "mangaChapterPrefetchCount"
     const val mangaAutoOfflineCache = "mangaAutoOfflineCache"
@@ -173,7 +176,6 @@ object PreferKey {
     const val webServiceWakeLock = "webServiceWakeLock"
     const val audioPlayWakeLock = "audioPlayWakeLock"
     const val readAloudWakeLock = "readAloudWakeLock"
-    // 退出阅读时继续朗读（默认开；可在 我的→朗读设置 关闭）
     const val keepReadAloudOnExit = "keepReadAloudOnExit"
     const val showReadAloudCapsule = "showReadAloudCapsule"
     const val capsuleAutoCollapse = "capsuleAutoCollapse"
@@ -284,7 +286,13 @@ object PreferKey {
     const val showReadTitleAddition = "showReadTitleAddition"
     const val readBarStyleFollowPage = "readBarStyleFollowPage"
     const val contentSelectSpeakMod = "contentReadAloudMod"
+    const val speechAnalysisMode = "speechAnalysisMode"
+    const val speechAnalysisReasoningLevel = "speechAnalysisReasoningLevel"
     const val useMultiSpeaker = "useMultiSpeaker"
+    /** 多角色分配：开启后正文对话引号内渲染角色胶囊，点击可分配角色（与多角色朗读独立）。 */
+    const val multiRoleCast = "multiRoleCast"
+    /** 背景音乐分配：正文段首配乐胶囊 + 朗读时的独立配乐轨。 */
+    const val bgmAssign = "bgmAssign"
     const val themePref = "themePref"
     const val bookshelfSortOrder = "bookshelfSortOrder"
     const val showBottomView = "showBottomView"
@@ -350,6 +358,7 @@ object PreferKey {
 
 
     const val tabletInterface = "tabletInterface"
+    const val multiPaneMode = "multiPaneMode"
     const val pureBlack = "pure_black"
     const val labelVisibilityMode = "labelVisibilityMode"
     const val menuAlpha = "menuAlpha"
@@ -433,29 +442,8 @@ object PreferKey {
     const val audioPreDownloadNum = "audioPreDownloadNum"
     const val ttsPreSynthesisConcurrency = "ttsPreSynthesisConcurrency"
     const val ttsParagraphInterval = "ttsParagraphInterval"
-    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
-    const val ttsMaxRetry = "ttsMaxRetry"
-    // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
-    const val readAloudStandbyStart = "readAloudStandbyStart"
-    // P1.4：云端词网（本地条目推送到 CNB 仓库，由流水线合并进词网）
-    const val cloudWordEnabled = "cloudWordEnabled"
-    const val cloudWordRepo = "cloudWordRepo"
-    const val cloudWordToken = "cloudWordToken"
-    // B33 四轨（音效/BGM/环境·小闭环）
-    const val alEnabled = "alEnabled"
-    const val alSfxVolume = "alSfxVolume"
-    const val alAmbVolume = "alAmbVolume"
-    const val alBgmVolume = "alBgmVolume"
-    // 音效/环境闸门（最小间隔、同素材冷却、BGM 冷却、环境驻留）
-    const val alSfxMinGapS = "alSfxMinGapS"
-    const val alSfxCooldownS = "alSfxCooldownS"
-    const val alBgmCooldownS = "alBgmCooldownS"
-    const val alAmbDwellS = "alAmbDwellS"
-    const val alChapterSynthCap = "alChapterSynthCap"
-    // B33.2c：18+ 内容开关（默认关闭；远程库与规则层同步生效）
-    const val audioAdultEnabled = "audioAdultEnabled"
-    // B33.2 · 音频库（排序模式持久化）
-    const val audioLibSortMode = "audioLibSortMode"
+    const val readAloudContentSplitMode = "readAloudContentSplitMode"
+    const val readAloudContentSplitSymbols = "readAloudContentSplitSymbols"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"
@@ -468,6 +456,19 @@ object PreferKey {
     const val navIconRssSelected = "navIconRssSelected"
     const val navIconMySelected = "navIconMySelected"
 
+    // Translation
+    const val llmTranslateEnabled = "llmTranslateEnabled"
+    const val llmProvider = "llmProvider"
+    const val llmBaseUrl = "llmBaseUrl"
+    const val llmApiKey = "llmApiKey"
+    const val llmModel = "llmModel"
+    const val llmTargetLanguage = "llmTargetLanguage"
+    const val llmMaxCharsPerChunk = "llmMaxCharsPerChunk"
+    const val llmConcurrentChunks = "llmConcurrentChunks"
+    const val llmRetryCount = "llmRetryCount"
+    const val llmTemperature = "llmTemperature"
+    const val llmPrompt = "llmPrompt"
+    const val aiRewritePresets = "aiRewritePresets"
 
     const val navIconHome = "navIconHome"
 

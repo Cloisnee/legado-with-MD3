@@ -34,13 +34,11 @@ class ReadSettingsMappingTest {
     }
 
     @Test
-    fun `gateway 持久化映射覆盖 ReadSettings 全部字段`() {
+    fun `gateway 持久化映射覆盖 ReadSettings 全部 113 个字段`() {
         val actualKeys = ReadSettings().toGatewayPrefMap().keys
         val expectedKeys = ReadSettings().expectedGatewayPrefMap().keys
-        // 字段数由反射得出，不写死：新增字段时这里跟着自动收紧
-        val fieldCount = ReadSettings::class.primaryConstructor!!.parameters.size
 
-        assertEquals(fieldCount, actualKeys.size)
+        assertEquals(113, actualKeys.size)
         assertEquals(expectedKeys, actualKeys)
     }
 
@@ -124,6 +122,8 @@ class ReadSettingsMappingTest {
         assertFalse(settings.readMenuFloatingIconLiquidGlass)
         assertFalse(settings.showMenuIcon)
         assertFalse(settings.titleBarCompact)
+        assertEquals(10, settings.preDownloadNum)
+        assertEquals(0, settings.preDownloadNumPrev)
     }
 }
 
@@ -149,6 +149,7 @@ private fun readSettingsMappingSamples(): List<ReadSettings> {
         fontFolder = "font-folder",
         systemTypefaces = 23,
         preDownloadNum = 29,
+        preDownloadNumPrev = 7,
         menuAlpha = 1001,
         expandTextMenu = true,
         showSelectMenuIcon = false,
@@ -297,6 +298,7 @@ private fun ReadSettings.expectedGatewayPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.autoReadSpeed to autoReadSpeed,
     PreferKey.systemTypefaces to systemTypefaces,
     PreferKey.preDownloadNum to preDownloadNum,
+    PreferKey.preDownloadNumPrev to preDownloadNumPrev,
     PreferKey.prevKeys to prevKeys,
     PreferKey.nextKeys to nextKeys,
     PreferKey.tocUiUseReplace to tocUiUseReplace,

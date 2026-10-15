@@ -48,7 +48,7 @@ object ReaderPageNavigator {
         pendingBase: ReaderPageWindow?,
         pending: ReaderPageWindow?,
     ): ReaderPageWindow =
-        if (pending != null && (host === pendingBase || host === pending)) pending else host
+        if (pending != null && (host === pendingBase || host === pending || (pendingBase?.current != null && host.current?.id == pendingBase.current.id))) pending else host
 
     fun bodyParagraphAt(pages: List<ReaderPage>, chapterIndex: Int, chapterPosition: Int): Int? = pages
         .asSequence()
@@ -165,6 +165,19 @@ object ReaderPageNavigator {
         val endInclusive = ranges.maxOf { it.last }
         return chapterPosition in start..endInclusive
     }
+
+    /**
+     * Pagination may finish for a chapter that is no longer current. Follow the reading
+     * anchor, or keep the previously visible page while the current chapter is still loading.
+     * Page identity is required for the fallback: inserting preceding pages changes indexes.
+     */
+    fun locateAfterPagination(
+        pages: List<ReaderPage>,
+        chapterIndex: Int,
+        chapterPosition: Int,
+        previousPageId: ReaderPageId?,
+    ): Int? = locateOrNull(pages, chapterIndex, chapterPosition)
+        ?: previousPageId?.let { id -> pages.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
 
     fun chapterPosition(pages: List<ReaderPage>, pageIndex: Int): ReaderChapterPagePosition? {
         val page = pages.getOrNull(pageIndex) ?: return null

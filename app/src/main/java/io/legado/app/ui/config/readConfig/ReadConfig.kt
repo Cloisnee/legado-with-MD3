@@ -95,13 +95,19 @@ object ReadConfig {
     val pauseReadAloudWhilePhoneCalls get() = aloud.pauseReadAloudWhilePhoneCalls
     val readAloudWakeLock get() = aloud.readAloudWakeLock
     val mediaButtonPerNext get() = aloud.mediaButtonPerNext
+    val contentSplitMode get() = aloud.contentSplitMode
+    val contentSplitSymbols get() = aloud.contentSplitSymbols
     val androidMediaControlEnabled get() = aloud.androidMediaControlEnabled
     val systemMediaControlCompatibilityChange get() = aloud.systemMediaControlCompatibilityChange
     val streamReadAloudAudio get() = aloud.streamReadAloudAudio
     val contentSelectSpeakMod get() = aloud.contentSelectSpeakMode
     val audioPreDownloadNum get() = aloud.audioPreDownloadNum
     val audioCacheCleanTime get() = aloud.audioCacheCleanTime * 60 * 1000L
+    val speechAnalysisMode get() = aloud.speechAnalysisMode
+    val speechAnalysisReasoningLevel get() = aloud.speechAnalysisReasoningLevel
     val useMultiSpeaker get() = aloud.useMultiSpeaker
+    val multiRoleCast get() = aloud.multiRoleCast
+    val bgmAssign get() = aloud.bgmAssign
     val defaultInterface get() = aloud.defaultInterface
 
     val syncBookProgress get() = backup.syncBookProgress

@@ -1,15 +1,15 @@
 package io.legado.app.ui.book.read
 
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.core.net.toUri
@@ -17,8 +17,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
 import io.legado.app.data.repository.ReadPreferences
 import io.legado.app.domain.usecase.BookmarkTargetVerdict
+import io.legado.app.ui.book.read.sheet.AiRewritePresetConfigSheet
+import io.legado.app.ui.book.read.sheet.AiTextCleanSheet
+import io.legado.app.ui.book.read.sheet.AiTextRewriteSheet
 import io.legado.app.ui.book.read.sheet.BgTextConfigSheet
 import io.legado.app.ui.book.read.sheet.ChangeChapterSourceSheet
+import io.legado.app.ui.book.read.sheet.ChapterSummarySheet
 import io.legado.app.ui.book.read.sheet.CharsetConfigSheet
 import io.legado.app.ui.book.read.sheet.ClickActionConfigSheet
 import io.legado.app.ui.book.read.sheet.ContentEditSheet
@@ -31,21 +35,26 @@ import io.legado.app.ui.book.read.sheet.MoreConfigSheet
 import io.legado.app.ui.book.read.sheet.PageAnimConfigSheet
 import io.legado.app.ui.book.read.sheet.PageKeyConfigSheet
 import io.legado.app.ui.book.read.sheet.PhotoSheet
+import io.legado.app.ui.book.read.sheet.ReadAloudConfigContent
+import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.book.read.sheet.ReaderMoreActionsSheet
 import io.legado.app.ui.book.read.sheet.ShadowSetSheet
 import io.legado.app.ui.book.read.sheet.SimulatedReadingSheet
 import io.legado.app.ui.book.read.sheet.TextProcessingSheet
+import io.legado.app.ui.book.read.sheet.TitleBarActionConfigSheet
 import io.legado.app.ui.book.read.sheet.ToolButtonConfigSheet
 import io.legado.app.ui.book.read.sheet.UnderlineConfigSheet
+import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerViewModel
 import io.legado.app.ui.dict.DictSheet
 import io.legado.app.ui.widget.components.FontFolderState
 import io.legado.app.ui.widget.components.FontSelectSheet
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.bookmark.BookmarkEditSheet
+import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.changeSource.ChangeSourceSheet
+import io.legado.app.ui.widget.components.checkBox.CheckboxItem
 import io.legado.app.ui.widget.components.log.AppLogSheet
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
-import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.flow.collectLatest
 
@@ -61,8 +70,13 @@ fun ReadBookOverlayRoute(
     onOpenTextSelectMenuConfig: () -> Unit,
     onPickBookmarkBadgeImage: () -> Unit,
     onResetBookmarkBadge: () -> Unit,
-    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
+    val aiActive = rememberFeatureActivated(
+        state.activeSheet is ReadBookSheet.ChapterSummary ||
+            state.activeSheet is ReadBookSheet.AiTextClean ||
+            state.activeSheet is ReadBookSheet.AiTextRewrite ||
+            state.activeSheet is ReadBookSheet.AiRewritePresetConfig
+    )
     val highlightActive = rememberFeatureActivated(
         state.activeSheet is ReadBookSheet.HighlightRuleConfig
     )
@@ -71,6 +85,9 @@ fun ReadBookOverlayRoute(
     val contentProcessActive = rememberFeatureActivated(
         state.activeSheet is ReadBookSheet.TextProcessing
     )
+    val aiState = if (aiActive) {
+        viewModel.aiState.collectAsStateWithLifecycle().value
+    } else ReadAiUiState()
     val highlightRuleState = if (highlightActive) {
         viewModel.highlightRuleState.collectAsStateWithLifecycle().value
     } else HighlightRuleConfigUiState()
@@ -85,6 +102,7 @@ fun ReadBookOverlayRoute(
     } else ContentProcessConfigUiState()
     ReadBookScreen(
         state = state,
+        aiState = aiState,
         highlightRuleState = highlightRuleState,
         markingState = markingState,
         contentEditState = contentEditState,
@@ -94,7 +112,6 @@ fun ReadBookOverlayRoute(
         onOpenTextSelectMenuConfig = onOpenTextSelectMenuConfig,
         onPickBookmarkBadgeImage = onPickBookmarkBadgeImage,
         onResetBookmarkBadge = onResetBookmarkBadge,
-        onOpenScriptReview = onOpenScriptReview,
     )
 }
 
@@ -110,6 +127,7 @@ private fun rememberFeatureActivated(active: Boolean): Boolean {
 @Composable
 fun ReadBookScreen(
     state: ReadBookUiState,
+    aiState: ReadAiUiState,
     highlightRuleState: HighlightRuleConfigUiState,
     markingState: MarkingUiState,
     contentEditState: ContentEditUiState,
@@ -119,7 +137,6 @@ fun ReadBookScreen(
     onOpenTextSelectMenuConfig: () -> Unit,
     onPickBookmarkBadgeImage: () -> Unit,
     onResetBookmarkBadge: () -> Unit,
-    onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
 ) {
     // Dialogs driven by activeDialog state
     val restoreDialog = state.activeDialog as? ReadBookDialog.ConfirmRestoreProgress
@@ -143,20 +160,21 @@ fun ReadBookScreen(
         dismissText = stringResource(R.string.read_record_alias_keep_separate),
         onDismiss = { onIntent(ReadBookIntent.ResolveReadRecordAlias(false, rememberAliasChoice)) },
         content = {
-            Row(
-                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            Column(
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Checkbox(
+                CheckboxItem(
+                    title = stringResource(R.string.read_record_alias_remember),
                     checked = rememberAliasChoice,
                     onCheckedChange = { rememberAliasChoice = it },
                 )
-                AppText(stringResource(R.string.read_record_alias_remember))
-                TextButton(onClick = {
-                    onIntent(ReadBookIntent.ClearReadRecordAliasDecisions)
-                }) {
-                    AppText(stringResource(R.string.read_record_alias_revoke))
-                }
+                MediumPlainButton(
+                    onClick = {
+                        onIntent(ReadBookIntent.ClearReadRecordAliasDecisions)
+                    },
+                    modifier = Modifier.align(Alignment.End),
+                    text = stringResource(R.string.read_record_alias_revoke),
+                )
             }
         },
     )
@@ -262,6 +280,45 @@ fun ReadBookScreen(
     // for proper enter/exit animations
     val dismissSheet = { onIntent(ReadBookIntent.DismissSheet) }
 
+    // 多角色分配弹层（点击正文角色胶囊打开）
+    io.legado.app.ui.book.read.sheet.ReadAloudCastSheet(
+        show = state.activeSheet is ReadBookSheet.RoleCast,
+        ordinal = (state.activeSheet as? ReadBookSheet.RoleCast)?.ordinal ?: -1,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+        menuConfig = state.menuConfig,
+    )
+
+    // 段首配乐弹层（点击正文 ♪ 胶囊打开）
+    io.legado.app.ui.book.read.sheet.BgmSceneSheet(
+        show = state.activeSheet is ReadBookSheet.BgmScene,
+        paragraphIndex = (state.activeSheet as? ReadBookSheet.BgmScene)?.paragraphIndex ?: -1,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+        menuConfig = state.menuConfig,
+    )
+
+    // 本章背景音乐总览（配乐弹层/朗读面板打开，一屏改完本章所有区间）
+    io.legado.app.ui.book.read.sheet.BgmSceneTableSheet(
+        show = state.activeSheet is ReadBookSheet.BgmSceneTable,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+    )
+
+    // AI 分配角色弹层
+    io.legado.app.ui.book.read.sheet.AiCastDialogSheet(
+        show = state.activeSheet is ReadBookSheet.AiCastDialog,
+        sceneOnly = (state.activeSheet as? ReadBookSheet.AiCastDialog)?.sceneOnly == true,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+    )
+    // 听书下载悬浮窗：和其余卡片一样常挂，show 由 sheet 类型驱动，退场动画才有地方播
+    io.legado.app.ui.book.read.sheet.ReaderAudioDownloadSheet(
+        show = state.activeSheet is ReadBookSheet.AudioDownload,
+        onDismissRequest = dismissSheet,
+        menuConfig = state.menuConfig,
+    )
+
     ShadowSetSheet(
         show = state.activeSheet is ReadBookSheet.ShadowSet,
         config = state.sheetConfig,
@@ -346,10 +403,18 @@ fun ReadBookScreen(
         onDismissRequest = dismissSheet,
         onIntent = onIntent,
     )
+    TitleBarActionConfigSheet(
+        show = state.activeSheet is ReadBookSheet.TitleBarActionConfig,
+        items = state.menuConfig.titleBarActions,
+        customIcons = state.menuConfig.titleBarCustomIcons,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+    )
     HighlightRuleConfigSheet(
         show = state.activeSheet is ReadBookSheet.HighlightRuleConfig,
         state = highlightRuleState,
         allConfigNames = state.sheetConfig.configNames,
+        config = state.sheetConfig,
         onDismissRequest = dismissSheet,
         onIntent = onIntent,
     )
@@ -368,6 +433,30 @@ fun ReadBookScreen(
         onIntent = onIntent,
         onDismissRequest = dismissSheet,
     )
+    ChapterSummarySheet(
+        show = state.activeSheet is ReadBookSheet.ChapterSummary,
+        state = aiState.chapterSummary,
+        onIntent = onIntent,
+        onDismissRequest = dismissSheet,
+    )
+    AiTextCleanSheet(
+        show = state.activeSheet is ReadBookSheet.AiTextClean,
+        state = aiState.aiTextClean,
+        onIntent = onIntent,
+        onDismissRequest = dismissSheet,
+    )
+    AiTextRewriteSheet(
+        show = state.activeSheet is ReadBookSheet.AiTextRewrite,
+        state = aiState.aiTextRewrite,
+        onIntent = onIntent,
+        onDismissRequest = dismissSheet,
+    )
+    AiRewritePresetConfigSheet(
+        show = state.activeSheet is ReadBookSheet.AiRewritePresetConfig,
+        state = aiState.aiRewritePresetConfig,
+        onIntent = onIntent,
+        onDismissRequest = { onIntent(ReadBookIntent.CloseAiRewritePresetConfig) },
+    )
     MoreConfigSheet(
         show = state.activeSheet is ReadBookSheet.MoreConfig,
         onDismissRequest = dismissSheet,
@@ -383,6 +472,62 @@ fun ReadBookScreen(
         onOpenTextSelectMenuConfig = onOpenTextSelectMenuConfig,
         onPickBookmarkBadgeImage = onPickBookmarkBadgeImage,
         onResetBookmarkBadge = onResetBookmarkBadge,
+    )
+    ReadAloudNumberConfigSheet(
+        show = state.activeSheet is ReadBookSheet.PreDownloadConfig,
+        title = stringResource(R.string.read_aloud_preload),
+        description = stringResource(R.string.read_aloud_preload_summary, state.preDownloadNum),
+        value = state.preDownloadNum,
+        defaultValue = 10,
+        valueRange = 0f..100f,
+        onValueChange = { onIntent(ReadBookIntent.ApplyPreDownloadNum(it)) },
+        onDismissRequest = {
+            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+        },
+    )
+    ReadAloudNumberConfigSheet(
+        show = state.activeSheet is ReadBookSheet.PreSynthesisConcurrencyConfig,
+        title = stringResource(R.string.tts_pre_synthesis_concurrency),
+        description = stringResource(
+            R.string.tts_pre_synthesis_concurrency_summary, state.preSynthesisConcurrency,
+        ),
+        value = state.preSynthesisConcurrency,
+        defaultValue = 3,
+        valueRange = 1f..8f,
+        onValueChange = { onIntent(ReadBookIntent.ApplyPreSynthesisConcurrency(it)) },
+        onDismissRequest = {
+            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+        },
+    )
+    ReadAloudNumberConfigSheet(
+        show = state.activeSheet is ReadBookSheet.AudioCacheCleanConfig,
+        title = stringResource(R.string.audio_cache_clean_time),
+        description = stringResource(
+            R.string.audio_cache_clean_time_summary,
+            state.audioCacheCleanTime
+        ),
+        value = state.audioCacheCleanTime,
+        defaultValue = 10,
+        valueRange = 0f..10080f,
+        onValueChange = { onIntent(ReadBookIntent.ApplyAudioCacheCleanTime(it)) },
+        onDismissRequest = {
+            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+        },
+    )
+    ReadAloudNumberConfigSheet(
+        show = state.activeSheet is ReadBookSheet.ParagraphIntervalConfig,
+        title = stringResource(R.string.tts_paragraph_interval),
+        description = stringResource(
+            R.string.tts_paragraph_interval_summary,
+            state.readAloudParagraphInterval
+        ),
+        value = state.readAloudParagraphInterval,
+        defaultValue = 0,
+        valueRange = 0f..5000f,
+        onValueChange = { onIntent(ReadBookIntent.ApplyParagraphInterval(it)) },
+        onDismissRequest = {
+            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+        },
     )
     AppLogSheet(
         show = state.activeSheet is ReadBookSheet.AppLog,
@@ -400,6 +545,35 @@ fun ReadBookScreen(
         onExportConfig = { onIntent(ReadBookIntent.OpenReadStyleExport) },
         styleConfig = state.styleConfig,
     )
+
+    val aloudPlayerViewModel: ReadAloudPlayerViewModel =
+        org.koin.compose.koinInject()
+    val aloudPlayerShellState by aloudPlayerViewModel.uiState.collectAsStateWithLifecycle()
+    /*
+     * 朗读设置是窗口级浮层（AppModalBottomSheet 在 miuix 引擎下走独立窗口），压上整屏页时它
+     * 不会跟着下沉，于是从「引擎与音色」「角色与配乐」里那几个跳转项进新页面时，朗读设置
+     * 还悬在新页面上面。导航栈顶不是阅读页就把它收起来；返回后栈顶回到阅读页，弹层自己摊回来，
+     * 停在哪个 tab 由 readAloudConfigTab 记着（见 ReadBookContract 里的注释）。
+     */
+    val navRouteTracker: io.legado.app.ui.main.MainNavRouteTracker = org.koin.compose.koinInject()
+    val readerIsTop = navRouteTracker.backStack.collectAsStateWithLifecycle()
+        .value.lastOrNull() is io.legado.app.ui.main.MainRouteReadBook
+    // 听书播放页是 Activity 级 morph 浮层（见 ReadAloudPlayerMorphHost），阅读器内
+    // 只保留经典控制面板自己的朗读配置卡片；两者共用同一份配置内容。
+    AppModalBottomSheet(
+        show = state.activeSheet is ReadBookSheet.ReadAloudConfig && readerIsTop,
+        onDismissRequest = dismissSheet,
+        title = stringResource(R.string.aloud_config),
+    ) {
+        ReadAloudConfigContent(
+            state = state,
+            playerState = aloudPlayerShellState,
+            onIntent = onIntent,
+            onPlayerIntent = aloudPlayerViewModel::onIntent,
+            selectedTab = state.readAloudConfigTab,
+            onTabSelected = { onIntent(ReadBookIntent.SetReadAloudConfigTab(it)) },
+        )
+    }
 
     val dictSheet = state.activeSheet as? ReadBookSheet.Dict
     DictSheet(
@@ -460,6 +634,8 @@ fun ReadBookScreen(
                 },
             )
         }
+
+        is ReadBookSheet.AudioDownload -> Unit
 
         is ReadBookSheet.Charset -> {
             CharsetConfigSheet(

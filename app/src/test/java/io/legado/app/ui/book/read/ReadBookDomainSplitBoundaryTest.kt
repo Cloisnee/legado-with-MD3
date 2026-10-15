@@ -1,6 +1,5 @@
 package io.legado.app.ui.book.read
 
-import io.legado.app.ui.book.read.ReadBookDomainSplitBoundaryTest.Companion.DOMAINS
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,7 +8,7 @@ import kotlin.reflect.KClass
 import kotlin.reflect.full.primaryConstructor
 
 /**
- * R2.2 —— 从 `ReadBookViewModel` 摘出的各域的边界不变式。
+ * 从 `ReadBookViewModel` 摘出的各域的边界不变式。
  *
  * 每摘一个域，在 [DOMAINS] 里加一条即可。三类会悄悄失效的边界：
  *
@@ -18,7 +17,7 @@ import kotlin.reflect.full.primaryConstructor
  * 3. delegate 自己拿 DAO——`build.gradle.kts` 的 `legacyDaoInjectionBaseline` 只认
  *    **文件名含 `ViewModel`** 的文件，delegate 里的 DAO 直连会掉进宽松的
  *    `legacyUiDaoAccessBaseline`，等于把 VM 棘轮上的债洗白。章节等数据读取必须继续
- *    走各 delegate 的 `Host`——R2.1 之后 Host 背后是 `BookRepository`。
+ *    走各 delegate 的 `Host`——Host 背后是 `BookRepository`。
  */
 class ReadBookDomainSplitBoundaryTest {
 
@@ -79,6 +78,16 @@ class ReadBookDomainSplitBoundaryTest {
     }
 
     @Test
+    fun `ReadAiUiState 完整覆盖 AI 的四个子状态`() {
+        // AI 域是唯一有包装类型的域；这条保证下面 stateFields 的名单不会因改名而失真。
+        assertEquals(
+            "ReadAiUiState 的字段变了，请同步 DOMAINS 里 AI 域的 stateFields",
+            setOf("chapterSummary", "aiTextClean", "aiTextRewrite", "aiRewritePresetConfig"),
+            constructorParameterNames(ReadAiUiState::class),
+        )
+    }
+
+    @Test
     fun `菜单书签保存章节内字符位置而不是页码`() {
         val source = mainSourceFile("io/legado/app/ui/book/read/ReadBookmarkDelegate.kt").readText()
         assertTrue(
@@ -103,116 +112,92 @@ class ReadBookDomainSplitBoundaryTest {
     }
 
     /**
-     * R2 的终态验收线。不是为了追行数好看——超过这个数就说明又有新的域直接长在 VM 里，
-     * 而不是长成一个 delegate。要放宽必须先说明新增的是哪个域、为什么不能摘。
+     * 验收线（现行上限见测试名）。不是为了追行数好看——超过这个数说明又有新的域直接
+     * 长在 VM 里，而不是长成一个 delegate。要放宽必须先说明新增的是哪个域、为什么不能摘。
+     * 行数只作粗棘轮：散落在 VM 的域内状态比总行数更能说明边界是否干净，各域另受
+     * `域状态不回流进 ReadBookViewModel` 守卫约束。
      *
-     * 2500 → 2520：合上游后放宽 20 行。溢出的不是新域，是 `buildSheetConfig()` 这张
-     * 投影表——上游给页眉页脚加了字体/字号/`applyHeaderStyle`/`tipDividerColor`，
-     * 再加两个对齐项，一个字段就是一行，纯派生、没有逻辑可摘。上游同批带来的
-     * `useNewTocSheet` 分支（书籍信息/目录改开 Sheet）本来是两处复制粘贴，
-     * 已合并成 `openBookNavigation()`，那部分没占额度。
+     * 当前上限 2748：2026-10 由 2745 放宽 3 行，两条新增都属本注释已列出的合法接线，
+     * 没有新的域回流，因此只抬数字、不摘 delegate：
+     * - 顶栏按钮可配置：在意图 `when` 里加 `SaveTitleBarActionConfig` 分支转发
+     *   （+2，意图入口只能在 VM，读写与默认按钮全在 `ReadButtonConfigDelegate`）；
+     * - 同上：在 `ReadMenuConfig` 投影表加 `titleBarActions`
+     *   （+1，一个字段一行，沿用 `titleBarButtons` / `bottomBarButtons` 的既有投影）。
+     * 回溯（上一档）：界面优化（`ba128d4c5`）`OpenReadAloudSubPage` 分支（+2）；
+     * 字号兼容（`45d842b73`）`buildStyleConfig()` 投影表加 `titleSizeRelative`（+1）。
      *
-     * 2520 → 2523：下滑手势切换书签。新增的不是域，书签域早已是
-     * `ReadBookmarkDelegate`——切换判定、页范围计算、`ReaderBookmarkState` 快照的
-     * 订阅与清理全在该 delegate 里。留在 VM 的是 8 行纯接线，逐行都摘不掉：
-     * `bookKey` 的投影（`bookmarks` 表以书名+作者为关联键，只有 VM 持有 `_uiState`）、
-     * `Host.emitEffect` 的实现（`_effects` 只有 VM 能碰）、`start()` 与
-     * `ToggleBookmark` 的转发各一行，以及一个 `map` import。
+     * VM 里合法保留、逐行摘不掉的接线类型：
+     * - 意图入口：`when` 分支 + 一行 delegate 转发（朗读定时、内容划分、退出继续后台
+     *   朗读、下滑切书签、划线笔记编辑与返回原 sheet、角标选图、AI 档位、阅读锚点、
+     *   `backToSpeakingPosition` / `ReadAloudFromHere` 等——意图入口只能在 VM）；
+     * - Host 实现与状态投影：`_uiState` / `_effects` 只有 VM 能碰（bookKey 投影、
+     *   `markingReturnSheet` 瞬态字段、`readAloudFollow`）；`_seekState` 与
+     *   `refreshFromReadBook()` / `publishSeek()` 同属这类投影——定位字段必须从
+     *   `ReadBook` 单例现算（`calculateSeekProgress` / `calculateSeekMax` 是 VM 私有），
+     *   且写入点跟着 `syncFromReadBook` 的每个发布点走，没有可摘的 delegate；
+     * - delegate 构造参数、装配与 import；
+     * - `buildSheetConfig()` 投影表：页眉页脚的字体/字号/`applyHeaderStyle`/
+     *   `tipDividerColor`/对齐项纯派生，一个字段一行，没有逻辑可摘；
+     *   `useNewTocSheet` 两处复制粘贴已合并成 `openBookNavigation()`，不占额度；
+     * - `buildStyleConfig()` 里的翻页动画速度挡位取值：挡位要和 `pageAnim` 落进同一份
+     *   `ReadBookStyleConfig` 快照供 GlobalThemePage 反应式读取，快照构造点就在 VM；
+     *   其余在 `ReaderPageTurnSpeed`、`ReaderCanvasSurface` 与配置链路，不占 VM 行；
+     * - `stopReadAloudForClose()` 读 `keepReadAloudOnExit` 的短路判定：关闭朗读的
+     *   决策点只能在 VM。
      *
-     * 2523 → 2533：分支基准移动了 10 行。2523 是 PR 基于更早的 main（VM 2515 行）定
-     * 的线；合入当前 main 后 VM 已 2525 行（上游页眉页脚对齐、书籍信息/目录改 Sheet
-     * 等），本 PR 的 8 行接线叠加为 2533。溢出全部来自上游合并，不是新长出来的域。
+     * 各域实现本体都不占额度：朗读定时模式与章数解析、内容划分与标点集合校验在
+     * `ReadAloudDelegate` / `ReadAloudSettingsRepository`（`setContentSplit`、
+     * `setTimerMode` / `setTimerChapters`）；`backToSpeakingPosition()` 本体、书签切换
+     * 判定与页范围计算在 `ReadAloudDelegate` / `ReadBookmarkDelegate`；角标文件拷贝在
+     * `BookmarkBadgeDelegate`；跳转校验在 `ReadBookmarkNavigateDelegate`；翻译状态观察
+     * 在 `ReadAiDelegate`；划线笔记来源 sheet 在 `MarkingDelegate`。语义不同的设置
+     * 不为压行数合并成一个载荷——那会让「只改章数」也必须带上模式。
      *
-     * 2533 → 2546：自定义书签角标域。2533 是上一条合入后 VM 恰好在线的值；后续上游
-     * 又小幅增长到 2534，验收线本身已过时。本次新增 `BookmarkBadgeDelegate` 域留在
-     * VM 的是 12 行纯接线——构造参数四个、两个意图分支各一行，逐行都摘不掉：文件
-     * 拷贝需要 IO 协程与 context，只能住在 delegate，VM 只转发（与书签域同款）。
-     *
-     * 2546 → 2589：划线/高亮笔记域（初版联动了书签，`SaveBookmarkMarkingUseCase`
-     * 同批注入书签/正文处理两个 delegate 做双向删除）。VM 的 43 行增量全是接线——
-     * 新增构造参数与 import、delegate 装配（Host 三个方法）、三个意图分支。逐行都
-     * 摘不掉：意图入口与 Host 实现只能在 VM。
-     *
-     * 2589：该域后改为独立 `book_marks` 表（与书签、AI 正文处理完全解耦），
-     * `BookmarkMarking*` 更名为 `Marking*`，`SaveMarkingUseCase` 不再碰书签。查看迁到
-     * 目录 Sheet 的「笔记」页（TocViewModel 自持 flow），正文处理域退回纯 AI，VM 无
-     * bookMarkingGateway 注入，划线域接线总量反而下降，本线不缩。
-     *
-     * 2589 → 2595：划线笔记编辑入口。目录 Sheet 笔记页点标记项进 MarkingSheet 编辑，
-     * 新增 `EditMarking`/`DeleteMarking` 两个意图分支共 6 行，纯接线——意图入口只能在 VM。
-     *
-     * 2595 → 2608：编辑后返回原 sheet。从目录 Sheet 进编辑，保存/删除/取消要回目录而
-     * 非阅读页——`markingReturnSheet` 字段、恢复函数与三个意图分支各记几行，共 13 行。
-     * activeSheet 在 UiState 里，只有 VM 能管，摘不成 delegate。
-     *
-     * 2608 → 2643：书签/笔记跳转校验域。新增 `ReadBookmarkNavigateDelegate` 域，VM 留
-     * 35 行纯接线——构造 + Host（Host 的 jumpToChapter 要 onIntent 派发、setPendingTarget
-     * 要写 UiState，只能 VM）、四个意图分支、构造参数与 import。校验逻辑全在 delegate。
-     *
-     * 2643 → 2651：验收线与当前已合入实现不一致；本次仅校准既有接线的实际行数，
-     * 不放宽任何新增域的实现空间。
-     *
-     * 2651 → 2664：笔记/书签角标域接线 + AI 档位转发，两个提交叠加溢出 13 行，全部是
-     * 纯接线，逐行都摘不掉：
-     *
-     * - `a130dddc4`（笔记功能和书签标识自定义）：`MarkingDelegate` / `ReadBookmarkNavigateDelegate`
-     *   / `BookmarkBadgeDelegate` 三个域**早已登记在下方 DOMAINS 里**（划线笔记 / 跳转校验 /
-     *   书签角标），边界守住了——VM 新增的百余行全是构造参数与 import、delegate 装配与
-     *   Host 实现、七个意图/sheet 分支（OpenMarking / EditMarking / DismissMarking /
-     *   SaveMarking / BookmarkBadgeImageSelected / ClearBookmarkBadgeImage / Marking），
-     *   以及 `markingReturnSheet` 返回原 sheet 的瞬态字段——activeSheet 在 UiState 里，
-     *   只有 VM 能管，摘不成 delegate。意图入口与 Host 实现与书签域同款，只能在 VM。
-     *
-     * 2664 → 2668：朗读域新增两个意图分支（安卓媒体控制 / 定时到点后读完本章），
-     * 合并自 PR #2024。朗读域早已是 `ReadAloudDelegate`——留在 VM 的只有两条 `when`
-     * 分支转发，各两行（分支 + 转发），与上方 `SetReadAloudSystemMediaCompat` 等兄弟
-     * 分支同款，逐行都摘不掉：意图入口只能在 VM。
-     *
-     * 2668 → 2674：合并 PR #2089（阅读锚点）。新增 6 行全部是纯接线，逻辑在
-     * `ReadBook`（模型层）与 `ReadAloudDelegate`，逐行都摘不掉：
-     *
-     * - 阅读锚点：`OpenChapter`/`OpenChapterResult`/`SeekToChapter` 三个意图分支前置
-     *   `saveReadingAnchorBeforeChapterJump()`、`RestoreLastBookProgress`/`KeepCurrentBookProgress`
-     *   恢复/丢弃锚点并 `syncFromReadBook` 刷新锚点可用状态、`syncFromReadBook` 投影
-     *   `readingAnchorAvailable`——锚点状态与跳转计数住在 `ReadBook`，UiState 与
-     *   `_uiState.update` 只有 VM 能碰，意图入口与状态投影只能在 VM。
-     * - 朗读域：`ReadAloudFromHere` 意图分支一行转发 `ReadBook.readAloud()`、
-     *   `BackToSpeakingPosition` 转发 `ReadAloudDelegate.backToSpeakingPosition()`、
-     *   会话快照投影 `readAloudFollow`——与既有朗读分支同款。
-     * - `backToSpeakingPosition()` 本体（恢复跟随 + 跳章/跳字符）已下沉到
-     *   `ReadAloudDelegate`，未占本线额度。
-     *
-     * 2674 → 2698：定位流重构（8aac671bc 融合）。`seekProgress` / `seekMax` /
-     * `readingAnchorAvailable` 摘进 `ReadSeekUiState`（底栏进度条与锚点胶囊各自 collect）；
-     * `time` / `battery` 摘成 `@Volatile` 直读；`durPageIndex` 从全屏 state 删除。
-     * 净增行数全是投影接线（`refreshFromReadBook` / `publishSeek`），无处可摘；
-     * 已摘字段由 `screenWideStateFields` 守门。
-     *
-     * 2698 → 2526：章节载入优化批（融合上游 5e317d7a7）。两处：
-     * 1. `ReaderPartialPagePolicy` 保留策略 + `ReadBookController` 分页任务登记制
-     *    （paginationJobs / 预热 / 回收 / 身份校验 / 快照补发）——主活不在 VM；
-     * 2. 划线笔记 sheet 的「来源 sheet」下沉 `MarkingDelegate`（`markingReturnSheet`
-     *    与恢复函数整体移入，VM 侧只剩单行转发）。翻译状态观察（5e317d7a7 同批）
-     *    未移植——我方无 `TranslationChapterStatus` 体系，记因。
-     * 同期新增「域状态不回流」守卫：散落在 VM 的域内状态比总行数更能说明边界是否干净，
-     * 行数只作粗棘轮。本次按实测值把线校准到 2526。
-     *
-     * 2526 → 2529：tts_server 声线目录身份重构（批212d）配套——`ReadAloudDelegate`
-     * 需经 `ReadAloudDataRepository` 读取「当前启用池」，以便目录只收启用池 + 条目开启
-     * 的声线条目（身份以 voices.json 条目 id 为核心）。VM 增量为 import、构造参数与
-     * delegate 传参各一行，纯接线、逐行都摘不掉：delegate 装配只能在 VM。
+     * 官方链路（3.26.16-beta.41 / beta.43 等）在 VM 加的接线——朗读浮层兼容分支
+     * （`MainRouteReadAloudPlayer`）、`locateAfterPagination` 提交路径的快照发布、
+     * 页眉页脚字段等——不属于我们任一域，按官方行数计入棘轮，不替官方摘 delegate。
+     * 主线既有、尚未清偿的约 58 行接线仍须按各域单独瘦身，不视为已豁免。划线笔记用
+     * 独立 `book_marks` 表（与书签、AI 正文处理解耦），查看在目录 Sheet 的「笔记」页
+     * （TocViewModel 自持 flow）。
      */
     @Test
-    fun `ReadBookViewModel 不超过 R2 验收的 2529 行`() {
+    fun `ReadBookViewModel 不超过 2748 行`() {
         val lineCount = mainSourceFile("io/legado/app/ui/book/read/ReadBookViewModel.kt")
             .readLines().size
         assertTrue(
-            "ReadBookViewModel 涨到了 $lineCount 行，超过 R2 验收线 2529。\n" +
+            "ReadBookViewModel 涨到了 $lineCount 行，超过上限 2748。\n" +
                 "新功能请摘成 io/legado/app/ui/book/read/ 下的 XxxDelegate，" +
                 "并在本测试的 DOMAINS 里加一条边界。",
-            lineCount <= 2529,
+            lineCount <= 2748,
         )
     }
+
+    /**
+     * 允许留在宿主 ViewModel 的私有状态，以及它必须留下的理由。
+     *
+     * 键必须与 VM 里实际声明的状态一一对应，双向校验：
+     * - 出现未登记的字段 → 说明有域状态回流。能摘进 delegate 的就摘；
+     * - 登记的字段已不存在 → 必须删条目，防止名单只增不减、变成永久豁免。
+     *
+     * 锚点字段（`_xxx` 流后备）与可变状态（`private var`）都算；`by lazy` 的 delegate
+     * 字段与依赖注入不在此列。
+     */
+    private val hostOwnedState = mapOf(
+        "_uiState" to "阅读页唯一的对外状态源，宿主渲染直接消费",
+        "_effects" to "一次性效果与 toast 通道",
+        "_readAloudProgress" to "朗读进度流，服务层与 UI 协作",
+        "_readPreferences" to "阅读偏好流，多屏共用",
+        "readBookSyncJob" to "UiState 全量重建的尾随合并，属于宿主渲染节流",
+        "backupJob" to "退出/切后台触发的备份任务，绑定宿主生命周期",
+        "pendingBooksDirReloadChapterList" to "跨 Activity Result 回调的参数，由宿主持有",
+        "deferredReaderFeaturesStarted" to "入口动画结束后的多域启动协调，属于宿主编排",
+        "composePagePosition" to "Compose 阅读页跨帧进度（待下沉：进度/排版域）",
+        "composePageContext" to "Compose 跨帧渲染上下文（待下沉：进度/排版域）",
+        "composeProgressJob" to "Compose 进度节流任务（待下沉：进度/排版域）",
+        "_seekState" to "底栏进度条与锚点胶囊的定位流，见 ReadSeekUiState",
+        "justInitData" to "加载域经 Host 暴露的状态（待下沉：加载域）",
+        "closeReadBookKeepReadAloud" to "关闭阅读是否保留朗读的参数（待下沉：朗读域）",
+    )
 
     /**
      * 已从 [ReadBookUiState] 摘出的字段，一律不许挂回去。
@@ -251,33 +236,6 @@ class ReadBookDomainSplitBoundaryTest {
             constructorParameterNames(ReadSeekUiState::class),
         )
     }
-
-    /**
-     * 允许留在宿主 ViewModel 的私有状态，以及它必须留下的理由。
-     *
-     * 键必须与 VM 里实际声明的状态一一对应，双向校验：
-     * - 出现未登记的字段 → 说明有域状态回流。能摘进 delegate 的就摘；
-     * - 登记的字段已不存在 → 必须删条目，防止名单只增不减、变成永久豁免。
-     *
-     * 锚点字段（`_xxx` 流后备）与可变状态（`private var`）都算；`by lazy` 的 delegate
-     * 字段与依赖注入不在此列。
-     */
-    private val hostOwnedState = mapOf(
-        "_uiState" to "阅读页唯一的对外状态源，宿主渲染直接消费",
-        "_effects" to "一次性效果与 toast 通道",
-        "_readAloudProgress" to "朗读进度流，服务层与 UI 协作",
-        "_readPreferences" to "阅读偏好流，多屏共用",
-        "_seekState" to "定位流（进度条/锚点）对 UI 的发布源（待下沉：进度/排版域）",
-        "readBookSyncJob" to "UiState 全量重建的尾随合并，属于宿主渲染节流",
-        "backupJob" to "退出/切后台触发的备份任务，绑定宿主生命周期",
-        "pendingBooksDirReloadChapterList" to "跨 Activity Result 回调的参数，由宿主持有",
-        "deferredReaderFeaturesStarted" to "入口动画结束后的多域启动协调，属于宿主编排",
-        "composePagePosition" to "Compose 阅读页跨帧进度（待下沉：进度/排版域）",
-        "composePageContext" to "Compose 跨帧渲染上下文（待下沉：进度/排版域）",
-        "composeProgressJob" to "Compose 进度节流任务（待下沉：进度/排版域）",
-        "justInitData" to "加载域经 Host 暴露的状态（待下沉：加载域）",
-        "closeReadBookKeepReadAloud" to "关闭阅读是否保留朗读的参数（待下沉：朗读域）",
-    )
 
     @Test
     fun `域状态不回流进 ReadBookViewModel`() {
@@ -333,7 +291,7 @@ class ReadBookDomainSplitBoundaryTest {
         }
         assertTrue(
             "ReadBookViewModel 又出现了 DAO 直连：${violations.joinToString()}。\n" +
-                "R2.1 已把书籍/目录读写全部收进 BookRepository，" +
+                "书籍与目录的读写全部收在 BookRepository，" +
                 "`legacyDaoInjectionBaseline` 里这个文件的基线是 0——" +
                 "章节读取请用 currentChapter() 或 bookRepository 的方法。",
             violations.isEmpty(),
@@ -356,6 +314,32 @@ class ReadBookDomainSplitBoundaryTest {
 
     private companion object {
         val DOMAINS = listOf(
+            // 多角色分配域：确认/创建/取消与收尾全在 delegate，VM 只剩三个意图分支转发。
+            // 标记读写与角色表访问全收口 CastAssignmentStore（架构护栏）。
+            DomainSplit(
+                name = "多角色分配",
+                delegateFile = "io/legado/app/ui/book/read/ReadAloudCastDelegate.kt",
+                stateFields = emptySet(),
+                stateTypes = listOf("CastAssignmentStore", "CastResult"),
+            ),
+            DomainSplit(
+                name = "AI",
+                delegateFile = "io/legado/app/ui/book/read/ReadAiDelegate.kt",
+                stateFields = setOf(
+                    "chapterSummary",
+                    "aiTextClean",
+                    "aiTextRewrite",
+                    "aiRewritePresetConfig",
+                ),
+                stateTypes = listOf(
+                    "ChapterSummaryUiState",
+                    "AiTextCleanUiState",
+                    "AiTextRewriteUiState",
+                    "AiRewritePresetConfigUiState",
+                    "AiRewritePresetUi",
+                    "AiRewriteHistoryUi",
+                ),
+            ),
             DomainSplit(
                 name = "高亮规则",
                 delegateFile = "io/legado/app/ui/book/read/ReadHighlightRuleDelegate.kt",

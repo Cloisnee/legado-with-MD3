@@ -1,6 +1,8 @@
 package io.legado.app.data.repository
 
 import io.legado.app.constant.PreferKey
+import io.legado.app.domain.model.AiReasoningLevel
+import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import org.junit.Assert.assertEquals
@@ -9,14 +11,14 @@ import org.junit.Test
 class ReadAloudSettingsMappingTest {
 
     @Test
-    fun `朗读设置 40 键写映射逐字段对应`() {
+    fun `朗读设置 29 键写映射逐字段对应`() {
         readAloudMappingSamples().forEach { settings ->
             assertEquals(settings.expectedPrefMap(), settings.toPrefMap())
         }
     }
 
     @Test
-    fun `朗读设置 40 键读映射逐字段对应`() {
+    fun `朗读设置 29 键读映射逐字段对应`() {
         readAloudMappingSamples().forEach { expected ->
             assertEquals(expected, expected.expectedPrefMap().toTestPreferences().toReadAloudSettings())
         }
@@ -63,12 +65,18 @@ class ReadAloudSettingsMappingTest {
     }
 
     @Test
-    fun `定时到点后读完本章默认关闭`() {
+    fun `到点后读完本章默认关闭`() {
         val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
 
         assertEquals(false, settings.finishCurrentChapterAfterTimer)
     }
 
+    @Test
+    fun `朗读分析推理级别默认关闭`() {
+        val settings = emptyMap<String, Any?>().toTestPreferences().toReadAloudSettings()
+
+        assertEquals(AiReasoningLevel.OFF.storageValue, settings.speechAnalysisReasoningLevel)
+    }
 }
 
 private const val CAPSULE_OFFSET_X = "read_aloud_capsule_offset_x"
@@ -84,22 +92,13 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         capsuleOffsetY = -4.5f,
         ttsTimer = 33,
         ttsSpeechRate = 44,
+        speechAnalysisMode = "ai",
+        speechAnalysisReasoningLevel = "medium",
         defaultInterface = "player",
         contentSelectSpeakMode = 55,
         audioPreDownloadNum = 66,
         capsuleAutoCollapse = false,
         ttsPreSynthesisConcurrency = 7,
-        ttsSynthTimeoutSec = 45,
-        ttsMaxRetry = 6,
-        alEnabled = false,
-        alSfxVolume = 71,
-        alAmbVolume = 32,
-        alBgmVolume = 23,
-        alSfxMinGapS = 5,
-        alSfxCooldownS = 55,
-        alBgmCooldownS = 145,
-        alAmbDwellS = 21,
-        alChapterSynthCap = 9,
     )
     return listOf(
         base,
@@ -108,27 +107,30 @@ private fun readAloudMappingSamples(): List<ReadAloudSettings> {
         base.copy(readAloudByMediaButton = true),
         base.copy(pauseReadAloudWhilePhoneCalls = true),
         base.copy(readAloudWakeLock = true),
+        base.copy(keepReadAloudOnExit = true),
         base.copy(showReadAloudCapsule = false),
         base.copy(mediaButtonPerNext = true),
-        base.copy(keepReadAloudOnExit = false),
+        base.copy(readAloudByPage = true),
         base.copy(
-            timerMode = ReadAloudTimerMode.Chapter.storageValue,
-            timerChapters = 3,
+            contentSplitMode = ReadAloudContentSplitMode.Symbols.storageValue,
+            contentSplitSymbols = setOf("，", "。"),
         ),
         base.copy(androidMediaControlEnabled = true),
         base.copy(systemMediaControlCompatibilityChange = false),
         base.copy(streamReadAloudAudio = true),
+        base.copy(
+            timerMode = ReadAloudTimerMode.Chapter.storageValue,
+            timerChapters = 3,
+        ),
         base.copy(finishCurrentChapterAfterTimer = true),
         base.copy(ttsFollowSys = false),
         base.copy(useMultiSpeaker = false),
-        base.copy(alEnabled = true),
-        base.copy(alSfxMinGapS = 0, alChapterSynthCap = 0),
-        base.copy(standbyStart = false),
     )
 }
 
 private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsEngine to ttsEngine,
+    PreferKey.voicePreviewText to voicePreviewText,
     PreferKey.ttsParagraphInterval to ttsParagraphInterval,
     PreferKey.audioCacheCleanTime to audioCacheCleanTime,
     PreferKey.ignoreAudioFocus to ignoreAudioFocus,
@@ -136,36 +138,31 @@ private fun ReadAloudSettings.expectedPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.readAloudByMediaButton to readAloudByMediaButton,
     PreferKey.pauseReadAloudWhilePhoneCalls to pauseReadAloudWhilePhoneCalls,
     PreferKey.readAloudWakeLock to readAloudWakeLock,
+    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
     PreferKey.showReadAloudCapsule to showReadAloudCapsule,
     PreferKey.capsuleAutoCollapse to capsuleAutoCollapse,
     CAPSULE_OFFSET_X to capsuleOffsetX,
     CAPSULE_OFFSET_Y to capsuleOffsetY,
     MEDIA_BUTTON_PER_NEXT to mediaButtonPerNext,
-    PreferKey.keepReadAloudOnExit to keepReadAloudOnExit,
-    PreferKey.readAloudTimerMode to timerMode,
-    PreferKey.readAloudTimerChapters to timerChapters,
+    PreferKey.readAloudByPage to readAloudByPage,
+    PreferKey.readAloudContentSplitMode to contentSplitMode,
+    PreferKey.readAloudContentSplitSymbols to contentSplitSymbols,
     PreferKey.readAloudAndroidMediaControl to androidMediaControlEnabled,
     PreferKey.systemMediaControlCompatibilityChange to systemMediaControlCompatibilityChange,
     PreferKey.streamReadAloudAudio to streamReadAloudAudio,
     PreferKey.ttsTimer to ttsTimer,
     PreferKey.finishCurrentChapterAfterTimer to finishCurrentChapterAfterTimer,
+    PreferKey.readAloudTimerMode to timerMode,
+    PreferKey.readAloudTimerChapters to timerChapters,
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
+    PreferKey.speechAnalysisMode to speechAnalysisMode,
+    PreferKey.speechAnalysisReasoningLevel to speechAnalysisReasoningLevel,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
+    PreferKey.multiRoleCast to multiRoleCast,
+    PreferKey.bgmAssign to bgmAssign,
     PreferKey.defaultReadAloudInterface to defaultInterface,
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
     PreferKey.audioPreDownloadNum to audioPreDownloadNum,
     PreferKey.ttsPreSynthesisConcurrency to ttsPreSynthesisConcurrency,
-    PreferKey.ttsSynthTimeoutSec to ttsSynthTimeoutSec,
-    PreferKey.ttsMaxRetry to ttsMaxRetry,
-    PreferKey.readAloudStandbyStart to standbyStart,
-    PreferKey.alEnabled to alEnabled,
-    PreferKey.alSfxVolume to alSfxVolume,
-    PreferKey.alAmbVolume to alAmbVolume,
-    PreferKey.alBgmVolume to alBgmVolume,
-    PreferKey.alSfxMinGapS to alSfxMinGapS,
-    PreferKey.alSfxCooldownS to alSfxCooldownS,
-    PreferKey.alBgmCooldownS to alBgmCooldownS,
-    PreferKey.alAmbDwellS to alAmbDwellS,
-    PreferKey.alChapterSynthCap to alChapterSynthCap,
 )
