@@ -326,7 +326,6 @@ fun TocScreen(
         invertSelectionText,
         selectFollowingText,
         addBookmarkText,
-        deleteAssignmentText,
         deleteAudioText
     ) {
         listOf(

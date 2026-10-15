@@ -200,7 +200,7 @@ object ReadAloud {
             val settings = aloudSettingsGateway.currentSettings
             AppLog.put(
                 "多角色朗读: 走${aloudClass.simpleName} 多角色朗读=${settings.useMultiSpeaker} " +
-                    "合成服务=${httpTTS?.name ?: \"无\"}",
+                    "合成服务=${httpTTS?.name ?: "无"}",
             )
         }
         val intent = Intent(context, aloudClass)
