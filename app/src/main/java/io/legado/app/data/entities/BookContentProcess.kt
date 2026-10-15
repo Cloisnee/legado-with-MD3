@@ -9,6 +9,7 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["bookUrl", "chapterIndex", "enabled", "sortOrder"]),
         Index(value = ["bookUrl", "kind"]),
+        Index(value = ["aiArtifactId"]),
     ]
 )
 data class BookContentProcess(
@@ -23,6 +24,8 @@ data class BookContentProcess(
     val actionJson: String,
     val styleJson: String? = null,
     val source: String = SOURCE_USER,
+    val aiArtifactId: String? = null,
+    val sourceContentHash: String? = null,
     val enabled: Boolean = true,
     val sortOrder: Int = 0,
     val status: Int = STATUS_ACTIVE,
@@ -31,6 +34,9 @@ data class BookContentProcess(
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     companion object {
+        const val KIND_AI_CLEAN = "ai_clean"
+        const val KIND_AI_REWRITE = "ai_rewrite"
+
         // 用户划线/高亮标记：book_marks 无 kind 列（样式即类型），渲染桥从 styleJson
         // 推导出这两个合成 kind 之一，供引擎/渲染层识别「这是标记、别改文本」。
         const val KIND_USER_UNDERLINE = "user_underline"
@@ -44,6 +50,7 @@ data class BookContentProcess(
         const val TARGET_CHAPTER = "chapter"
 
         const val SOURCE_USER = "user"
+        const val SOURCE_AI = "ai"
 
         const val STATUS_DRAFT = 0
         const val STATUS_ACTIVE = 1
