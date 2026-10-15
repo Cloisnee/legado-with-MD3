@@ -21,7 +21,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.constant.ReadAloudBgMode
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.readaloud.ReadAloudContentSplitSetting
 import io.legado.app.domain.model.readaloud.ReadAloudSplitSymbol
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
@@ -331,28 +330,6 @@ fun ReadAloudConfigContent(
                             else -> stringResource(R.string.speech_analysis_rule_summary)
                         },
                         onValueChange = { onIntent(ReadBookIntent.SetSpeechAnalysisMode(it)) },
-                    )
-                    TinyDropdownSettingItem(
-                        title = stringResource(R.string.speech_analysis_reasoning_level),
-                        selectedValue = state.speechAnalysisReasoningLevel,
-                        displayEntries = arrayOf(
-                            stringResource(R.string.ai_thinking_off),
-                            stringResource(R.string.ai_thinking_auto),
-                            stringResource(R.string.ai_reasoning_level_low),
-                            stringResource(R.string.ai_reasoning_level_medium),
-                            stringResource(R.string.ai_reasoning_level_high),
-                            stringResource(R.string.ai_reasoning_level_xhigh),
-                            stringResource(R.string.ai_reasoning_level_max),
-                        ),
-                        entryValues = AiReasoningLevel.entries
-                            .map { it.storageValue }
-                            .toTypedArray(),
-                        description = stringResource(
-                            R.string.speech_analysis_reasoning_level_summary
-                        ),
-                        onValueChange = {
-                            onIntent(ReadBookIntent.SetSpeechAnalysisReasoningLevel(it))
-                        },
                     )
                     TinyDropdownSettingItem(
                         title = stringResource(R.string.read_aloud_content_split_mode),

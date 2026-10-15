@@ -8,9 +8,7 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadSettingsRepository
-import io.legado.app.domain.gateway.AiProfileGateway
-import io.legado.app.domain.model.AiReasoningLevel
-import io.legado.app.domain.model.AiTaskType
+import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudContentSplitSetting
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
@@ -55,7 +53,7 @@ class ReadAloudDelegate(
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val httpTtsRepository: HttpTtsRepository,
-    private val aiProfileGateway: AiProfileGateway,
+    private val aiModels: AiModelRepository,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
 ) {
 
@@ -117,7 +115,6 @@ class ReadAloudDelegate(
                         readAloudTimerMode = prefs.timerMode,
                         readAloudTimerChapters = prefs.timerChapters,
                         speechAnalysisMode = prefs.speechAnalysisMode,
-                        speechAnalysisReasoningLevel = prefs.speechAnalysisReasoningLevel,
                         useMultiSpeaker = prefs.useMultiSpeaker,
                         defaultReadAloudInterface = prefs.defaultInterface,
                         preDownloadNum = host.preDownloadNum,
@@ -526,9 +523,10 @@ class ReadAloudDelegate(
     fun setSpeechAnalysisMode(value: String) {
         scope.launch {
             if (value != "rule") {
-                val configured = aiProfileGateway.getTaskPreset(AiTaskType.ANALYZE_SPEECH)
-                    ?: aiProfileGateway.getTaskPreset(AiTaskType.CHAT)
-                if (configured == null) {
+                // [ttsrv] 校验改接我方模型体系：非规则模式要求已在「AI 模型管理」配置模型
+                val configured = runCatching { aiModels.load().models.isNotEmpty() }
+                    .getOrDefault(false)
+                if (!configured) {
                     host.emitEffectAwait(
                         ReadBookEffect.ShowToast(
                             context.getString(R.string.speech_analysis_ai_model_required)
@@ -540,16 +538,6 @@ class ReadAloudDelegate(
             readAloudSettingsRepository.update { it.copy(speechAnalysisMode = value) }
             host.updateState { it.copy(speechAnalysisMode = value) }
         }
-    }
-
-    /**
-     * 朗读分析的推理级别。关闭思考模式是 AI 朗读分析的默认值：默认思考的模型（智谱 GLM 等）
-     * 只把内容放在 reasoning_content 里，分析会直接失败。
-     */
-    fun setSpeechAnalysisReasoningLevel(value: String) {
-        val level = AiReasoningLevel.fromStorage(value, AiReasoningLevel.OFF)
-        updateSettings { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
-        host.updateState { it.copy(speechAnalysisReasoningLevel = level.storageValue) }
     }
 
     /**

@@ -24,7 +24,6 @@ fun ReadAloudSettingsUiState.asReadBookUiState(): ReadBookUiState = ReadBookUiSt
     readAloudSystemMediaCompat = readAloudSystemMediaCompat,
     readAloudStreamAudio = readAloudStreamAudio,
     speechAnalysisMode = speechAnalysisMode,
-    speechAnalysisReasoningLevel = speechAnalysisReasoningLevel,
     useMultiSpeaker = useMultiSpeaker,
     readAloudContentSplitMode = readAloudContentSplitMode,
     readAloudContentSplitSymbols = readAloudContentSplitSymbols.toImmutableSet(),

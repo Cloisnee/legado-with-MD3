@@ -159,11 +159,6 @@ class ReadAloudPlayerViewModel(
                 ReadAloudConfigOption.SpeechAnalysisMode ->
                     readAloudSettingsGateway.update { it.copy(speechAnalysisMode = value) }
 
-                ReadAloudConfigOption.SpeechAnalysisReasoningLevel ->
-                    readAloudSettingsGateway.update {
-                        it.copy(speechAnalysisReasoningLevel = value)
-                    }
-
                 ReadAloudConfigOption.UseMultiSpeaker ->
                     readAloudSettingsGateway.update { it.copy(useMultiSpeaker = selected) }
 
@@ -312,7 +307,6 @@ private fun toReadAloudSettingsUiState(
     readAloudSystemMediaCompat = aloud.systemMediaControlCompatibilityChange,
     readAloudStreamAudio = aloud.streamReadAloudAudio,
     speechAnalysisMode = aloud.speechAnalysisMode,
-    speechAnalysisReasoningLevel = aloud.speechAnalysisReasoningLevel,
     useMultiSpeaker = aloud.useMultiSpeaker,
     readAloudContentSplitMode = aloud.contentSplitMode,
     readAloudContentSplitSymbols = aloud.contentSplitSymbols,

@@ -22,6 +22,7 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
             migration_102_103, migration_123_124, migration_124_125, migration_127_128,
+            migration_132_133,
         )
     }
 
@@ -896,6 +897,30 @@ object DatabaseMigrations {
             )
             db.execSQL("DROP TABLE highlightRules")
             db.execSQL("ALTER TABLE highlightRules_r56 RENAME TO highlightRules")
+        }
+    }
+
+    /**
+     * 132 → 133：[ttsrv] 上游 AI/知识库套件退出声明。
+     *
+     * 13 张 AI/知识表全部退出本工程（无任何代码引用）；物理清表（幂等，IF EXISTS），
+     * 顺带刷新 schema 身份（同版本改声明会撞 Room 完整性校验，必须升版本）。
+     */
+    private val migration_132_133 = object : Migration(132, 133) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP TABLE IF EXISTS `book_character_events`")
+            db.execSQL("DROP TABLE IF EXISTS `book_character_relations`")
+            db.execSQL("DROP TABLE IF EXISTS `book_knowledge_entries`")
+            db.execSQL("DROP TABLE IF EXISTS `book_outline_nodes`")
+            db.execSQL("DROP TABLE IF EXISTS `book_character_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_chat_messages`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_chat_conversations`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_task_presets`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_model_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_provider_profiles`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_artifacts`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_memory`")
+            db.execSQL("DROP TABLE IF EXISTS `ai_prompt_presets`")
         }
     }
 }

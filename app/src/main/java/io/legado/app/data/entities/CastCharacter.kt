@@ -12,7 +12,7 @@ import io.legado.app.utils.fromJsonObject
  *
  * 身份 = (bookUrl, name, poolLabel)——同名不同声音池可以并存
  * （如「李星菲（女少女）」与「李星菲（女中年）」），voiceId 是该角色绑定的音色。
- * 与多角色朗读/AI 链路共用的 [BookCharacterProfile] 区分：后者按 (bookUrl, name) 唯一，
+ * 与已拔除的上游知识库角色档案区分：后者按 (bookUrl, name) 唯一，
  * 无法承载同名多版本；分配弹层的候选、回填与状态更新一律读本表。
  * chapter_role_assignments.characterId 指向本表 id。
  */

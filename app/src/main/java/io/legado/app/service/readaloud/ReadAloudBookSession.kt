@@ -27,7 +27,6 @@ import io.legado.app.model.SourceCallBack
 import io.legado.app.model.ReaderPaginationEnvironment
 import io.legado.app.model.cache.CacheDownloadRepository
 import io.legado.app.model.reader.ReaderChapterInput
-import io.legado.app.model.translation.TranslationManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -119,12 +118,7 @@ class ReadAloudBookSession : KoinComponent {
         val chapter = requireNotNull(appDb.bookChapterDao.getChapter(book.bookUrl, request.chapterIndex)) {
             "朗读章节不存在"
         }
-        val translated = if (book.getTranslationMode()) {
-            TranslationManager.getCachedTranslation(book, chapter).also {
-                if (it == null) TranslationManager.startTranslation(book, chapter)
-            }
-        } else null
-        val content = translated ?: BookHelp.getContent(book, chapter)
+        val content = BookHelp.getContent(book, chapter)
             ?: CacheDownloadRepository().downloadContentAwait(
                 requireNotNull(request.bookSource) { "没有书源" }, book, chapter,
             )

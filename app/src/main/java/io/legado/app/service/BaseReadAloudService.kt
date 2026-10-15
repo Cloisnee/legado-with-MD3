@@ -38,7 +38,6 @@ import io.legado.app.constant.NotificationId
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.domain.gateway.PlaybackCapsuleGateway
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.PlaybackCapsuleSource
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
@@ -48,7 +47,6 @@ import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackInfo
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackQueue
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
-import io.legado.app.domain.model.readaloud.SpeechAnalysisMode
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
@@ -481,7 +479,6 @@ abstract class BaseReadAloudService : BaseService(),
                     splitByPage = preparedReadAloudByPage,
                     policy = splitPolicy,
                 ),
-                splitPolicy = splitPolicy,
             )
             if (generation != prepareReadAloudGeneration) return@execute
             var preparedPlaybackQueue = runCatching {
@@ -578,11 +575,11 @@ abstract class BaseReadAloudService : BaseService(),
         }
     }
 
+    /** [ttsrv] 已接回我方分析链：V3 剧本消费 + 本地快速链（见 PrepareChapterSpeechPlanUseCase）。 */
     protected suspend fun buildSpeechPlan(
         bookUrl: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
-        splitPolicy: ContentSplitPolicy,
     ): List<SpeechPlanItem> {
         if (bookUrl.isEmpty()) return emptyList()
         val multiSpeakerOn = ReadConfig.useMultiSpeaker
@@ -591,24 +588,17 @@ abstract class BaseReadAloudService : BaseService(),
         if (!multiSpeakerOn) return emptyList()
         val prepareSpeechPlan: PrepareChapterSpeechPlanUseCase =
             get(PrepareChapterSpeechPlanUseCase::class.java)
-        val plan = runCatching {
+        return runCatching {
             prepareSpeechPlan(
                 bookUrl = bookUrl,
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,
-                analysisMode = SpeechAnalysisMode.fromStorage(ReadConfig.speechAnalysisMode),
-                analysisReasoningLevel = AiReasoningLevel.fromStorage(
-                    ReadConfig.speechAnalysisReasoningLevel,
-                    AiReasoningLevel.OFF,
-                ),
                 useMultiSpeaker = multiSpeakerOn,
-                policy = splitPolicy,
+                bookName = ReadBook.book?.name.orEmpty(),
             )
         }.onFailure {
             AppLog.put("生成多角色朗读计划失败，使用原朗读方式\n${it.localizedMessage}", it)
         }.getOrDefault(emptyList())
-        // [ttsrv] 接线位：多角色分配叠加（原 CastSpeechOverlay.apply）待任务二接我方分析产物。
-        return plan
     }
 
     /**

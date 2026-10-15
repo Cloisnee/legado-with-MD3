@@ -67,12 +67,6 @@ fun ReadBookOverlayRoute(
     onPickBookmarkBadgeImage: () -> Unit,
     onResetBookmarkBadge: () -> Unit,
 ) {
-    val aiActive = rememberFeatureActivated(
-        state.activeSheet is ReadBookSheet.ChapterSummary ||
-            state.activeSheet is ReadBookSheet.AiTextClean ||
-            state.activeSheet is ReadBookSheet.AiTextRewrite ||
-            state.activeSheet is ReadBookSheet.AiRewritePresetConfig
-    )
     val highlightActive = rememberFeatureActivated(
         state.activeSheet is ReadBookSheet.HighlightRuleConfig
     )

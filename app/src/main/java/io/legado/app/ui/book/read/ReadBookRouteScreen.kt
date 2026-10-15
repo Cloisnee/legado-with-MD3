@@ -20,9 +20,6 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -81,7 +78,6 @@ import io.legado.app.feature.reader.platform.ReaderPerfTrace
 import io.legado.app.help.IntentHelp
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
-import io.legado.app.model.translation.TranslationChapterStatus
 import io.legado.app.ui.book.read.page.entities.PageDirection
 import io.legado.app.ui.book.read.sheet.CastSheetVisuals
 import io.legado.app.ui.book.read.sheet.LocalCastSheetVisuals
@@ -845,13 +841,6 @@ fun ReadBookRouteScreen(
                 onIntent = viewModel::onIntent,
                 seekState = viewModel.seekState,
             )
-            AnimatedVisibility(
-                visible = state.translationStatus == TranslationChapterStatus.Thinking,
-                enter = fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.88f),
-                exit = fadeOut(tween(140)) + scaleOut(tween(180), targetScale = 0.88f),
-            ) {
-                TranslationThinkingCapsule()
-            }
             if (featureOverlaysInitialized) {
                 // 正文内悬浮窗（听书下载）用底栏同一份模糊与玻璃数据源；
                 // 消费方是 CastSheetCard 里的 LocalCastSheetVisuals。

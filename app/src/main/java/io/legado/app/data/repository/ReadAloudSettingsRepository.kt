@@ -8,7 +8,6 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import io.legado.app.constant.PreferKey
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.domain.model.AiReasoningLevel
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.settings.ReadAloudContentSplitMode
 import io.legado.app.domain.model.settings.ReadAloudSettings
@@ -112,10 +111,6 @@ internal fun Preferences.toReadAloudSettings(): ReadAloudSettings = ReadAloudSet
     ttsFollowSys = compatDsValue(ReadAloudKeys.TtsFollowSys, true),
     ttsSpeechRate = compatDsValue(ReadAloudKeys.TtsSpeechRate, 5),
     speechAnalysisMode = compatDsValue(ReadAloudKeys.SpeechAnalysisMode, "rule"),
-    speechAnalysisReasoningLevel = compatDsValue(
-        ReadAloudKeys.SpeechAnalysisReasoningLevel,
-        AiReasoningLevel.OFF.storageValue,
-    ),
     useMultiSpeaker = compatDsValue(ReadAloudKeys.UseMultiSpeaker, true),
     defaultInterface = compatDsValue(
         ReadAloudKeys.DefaultInterface,
@@ -190,7 +185,6 @@ internal fun ReadAloudSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.ttsFollowSys to ttsFollowSys,
     PreferKey.ttsSpeechRate to ttsSpeechRate,
     PreferKey.speechAnalysisMode to speechAnalysisMode,
-    PreferKey.speechAnalysisReasoningLevel to speechAnalysisReasoningLevel,
     PreferKey.useMultiSpeaker to useMultiSpeaker,
     PreferKey.defaultReadAloudInterface to defaultInterface,
     PreferKey.contentSelectSpeakMod to contentSelectSpeakMode,
@@ -247,8 +241,6 @@ private object ReadAloudKeys {
     val TtsFollowSys = booleanPreferencesKey(PreferKey.ttsFollowSys)
     val TtsSpeechRate = intPreferencesKey(PreferKey.ttsSpeechRate)
     val SpeechAnalysisMode = stringPreferencesKey(PreferKey.speechAnalysisMode)
-    val SpeechAnalysisReasoningLevel =
-        stringPreferencesKey(PreferKey.speechAnalysisReasoningLevel)
     val UseMultiSpeaker = booleanPreferencesKey(PreferKey.useMultiSpeaker)
     val DefaultInterface = stringPreferencesKey(PreferKey.defaultReadAloudInterface)
     val ContentSelectSpeakMode = intPreferencesKey(PreferKey.contentSelectSpeakMod)

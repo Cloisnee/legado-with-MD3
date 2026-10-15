@@ -1,7 +1,5 @@
 package io.legado.app.domain.model.settings
 
-import io.legado.app.domain.model.AiReasoningLevel
-
 /**
  * 听书内容划分方式：决定一段正文被切成多少个朗读单元。
  *
@@ -84,12 +82,6 @@ data class ReadAloudSettings(
     val ttsFollowSys: Boolean = true,
     val ttsSpeechRate: Int = 5,
     val speechAnalysisMode: String = "rule",
-    /**
-     * Reasoning level for AI speech analysis (dialogue attribution / AI understanding).
-     * OFF by default: models that think by default (Zhipu GLM, …) return the JSON only in
-     * `reasoning_content` and the analysis fails, so thinking must be opted into explicitly.
-     */
-    val speechAnalysisReasoningLevel: String = AiReasoningLevel.OFF.storageValue,
     val useMultiSpeaker: Boolean = true,
     val defaultInterface: String = "classic",
     val contentSelectSpeakMode: Int = 0,
