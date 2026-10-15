@@ -113,3 +113,65 @@ class AiToolAwareGenerationUseCase(
         )
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// [ttsrv] 以下两件为上游 AiChatGenerationUseCase 内定义的辅助（ToolTraceBuilder /
+// truncateToolOutput）的精简复刻：只保留「工具调用循环」所需部分，去掉聊天 UI
+// 投影（toParts/bookResults 等）。上游聊天链已随 AI 前台剔除，故在此本地化。
+// ---------------------------------------------------------------------------
+
+/** 工具调用轨迹收集器：合并流式 ToolCallDelta，产出待执行的调用列表。 */
+internal class ToolTraceBuilder {
+    private val calls = linkedMapOf<String, ToolCallTrace>()
+    private val indexKeys = mutableMapOf<Int, String>()
+
+    fun beginResponse() {
+        indexKeys.clear()
+    }
+
+    fun append(event: io.legado.app.domain.gateway.AiStreamEvent.ToolCallDelta) {
+        val eventId = event.id?.takeIf { it.isNotBlank() }
+        if (eventId != null && event.index != null) {
+            indexKeys[event.index] = eventId
+        }
+        val baseId = eventId
+            ?: event.index?.let { indexKeys[it] ?: "tool_index_$it" }
+            ?: "tool_${calls.size + 1}"
+        val id = if (eventId == null && calls[baseId]?.result != null) {
+            "${baseId}_${calls.size + 1}"
+        } else {
+            baseId
+        }
+        val call = calls.getOrPut(id) { ToolCallTrace(id = id, rawType = event.rawType) }
+        event.name?.takeIf { it.isNotBlank() }?.let { call.name = it }
+        event.argumentsDelta?.takeIf { it.isNotEmpty() }?.let { call.arguments.append(it) }
+        if (call.rawType.isBlank()) call.rawType = event.rawType
+    }
+
+    fun pendingToolCalls(): List<io.legado.app.domain.model.AiToolCall> {
+        return calls.values.filter { it.result == null }.mapNotNull { call ->
+            val name = call.name.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            io.legado.app.domain.model.AiToolCall(
+                id = call.id,
+                name = name,
+                arguments = call.arguments.toString().ifBlank { "{}" },
+            )
+        }
+    }
+}
+
+internal data class ToolCallTrace(
+    val id: String,
+    var name: String = "",
+    val arguments: StringBuilder = StringBuilder(),
+    var result: String? = null,
+    var rawType: String = "",
+)
+
+/** 工具输出截断：避免上下文溢出（上限与上游一致，8000 字符）。 */
+internal fun String.truncateToolOutput(): String {
+    val max = 8_000
+    if (length <= max) return this
+    return take(max) + "\n...[truncated]"
+}
