@@ -37,6 +37,7 @@ import io.legado.app.constant.IntentAction
 import io.legado.app.constant.NotificationId
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
+import io.legado.app.data.repository.HighlightRuleRepository
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
@@ -50,9 +51,14 @@ import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.feature.reader.core.navigation.ReaderPageNavigator
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
+import io.legado.app.feature.reader.legacy.LegacyReaderChapterPaginationResult
+import io.legado.app.feature.reader.legacy.LegacyReaderChapterPaginator
+import io.legado.app.feature.reader.legacy.LegacyReaderPageDecorationFactory
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.lib.permission.Permissions
@@ -60,6 +66,7 @@ import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
 import io.legado.app.model.ReadBook
+import io.legado.app.model.reader.ReaderChapterInput
 import io.legado.app.receiver.MediaButtonReceiver
 import io.legado.app.service.BaseReadAloudService.Companion.speechDrivingNavigation
 import io.legado.app.domain.gateway.PlaybackCapsuleGateway
@@ -257,9 +264,49 @@ abstract class BaseReadAloudService : BaseService(),
     private var prepareReadAloudJob: Coroutine<*>? = null
     private var prepareReadAloudGeneration = 0L
 
-    /** 批212f：分页快照等待窗口（换章瞬间排版批次在飞时，短暂等待而非静默放弃） */
-    private val PAGINATION_WAIT_TIMEOUT_MS = 3000L
-    private val PAGINATION_WAIT_STEP_MS = 150L
+    // 追更216b：分页快照等待窗口已下线（「自排版」取代——快照缺失时直接跑分页器得真页表）。
+
+    /**
+     * 追更216b「自排版」：快照缺失时用捕获的排版环境（[ReadBook.paginationEnvironment]）
+     * 跑 [LegacyReaderChapterPaginator] 得真页表（与阅读器同源；换章起播不再依赖排版批次落地）。
+     */
+    private suspend fun paginatePageStartsLocally(input: ReaderChapterInput): List<Int>? {
+        val environment = ReadBook.paginationEnvironment ?: return null
+        return try {
+            val result = LegacyReaderChapterPaginator.paginate(
+                book = input.book,
+                bookSource = input.bookSource,
+                chapter = input.chapter,
+                displayTitle = input.displayTitle,
+                content = input.content,
+                source = input.source,
+                revision = 0L,
+                viewportWidthPx = environment.widthPx,
+                viewportHeightPx = environment.heightPx,
+                contentPaddingLeftPx = environment.contentPaddingLeftPx,
+                contentPaddingTopPx = environment.contentPaddingTopPx,
+                contentPaddingRightPx = environment.contentPaddingRightPx,
+                contentPaddingBottomPx = environment.contentPaddingBottomPx,
+                paginationStyle = environment.style,
+                highlightRules = HighlightRuleRepository().loadEnabled(ReadBookConfig.durConfig.name),
+                titleMode = ReadBookConfig.titleMode,
+                paragraphIndent = ReadBookConfig.paragraphIndent,
+                textFullJustify = ReadBookConfig.textFullJustify,
+                headerExtentPx = LegacyReaderPageDecorationFactory.headerExtentPx(),
+                footerExtentPx = LegacyReaderPageDecorationFactory.footerExtentPx(),
+            )
+            when (result) {
+                is LegacyReaderChapterPaginationResult.Success ->
+                    result.pages.map(ReaderPageNavigator::pageStart).takeIf { it.isNotEmpty() }
+                is LegacyReaderChapterPaginationResult.Unsupported -> null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.putAnalysis("自排版失败: ${e.localizedMessage}", e)
+            null
+        }
+    }
     private var cover: Bitmap =
         BitmapFactory.decodeResource(appCtx.resources, R.drawable.ic_launcher)
     var pageChanged = false
@@ -492,31 +539,30 @@ abstract class BaseReadAloudService : BaseService(),
         prepareReadAloudJob?.cancel()
         prepareReadAloudJob = execute(executeContext = IO) {
             val input = ReadBook.readerChapterInputWindow.current ?: return@execute
-            // 批212f：分页快照就绪等待——换章瞬间快照可能尚未发布（排版批次在飞），
-            // 旧实现静默放弃且无重试（换章后朗读停止）。这里短时轮询等待快照落地；
-            // 期间任何新会话（generation 变化）立即放弃本次等待。
-            var pagination = ReadBook.readerPagination(input.chapter.index)
-            var waited = 0L
-            while (pagination == null && waited < PAGINATION_WAIT_TIMEOUT_MS) {
-                delay(PAGINATION_WAIT_STEP_MS)
-                waited += PAGINATION_WAIT_STEP_MS
-                if (generation != prepareReadAloudGeneration) return@execute
-                pagination = ReadBook.readerPagination(input.chapter.index)
-            }
-            // 批215：快照超时不再放弃——以「段落分页」代启（每段首为页起点，章内字符坐标与真实分页同源）。
-            // 真实快照落地后由 ReadBook.requestProvisionalReadAloudSync → syncReaderLayout 接轨升级；
-            // 否则后台/熄屏下排版批次若迟迟不落地，换章朗读会停在旧章（“下一章没办法朗读”）。
+            // 追更216b（按上游「自排版」）：有快照就用；没有就自己取内容 + 用捕获的排版环境
+            // 跑分页器得「真页表」（与阅读器同源），不再等待快照、不再以段落分页代启。
+            val pagination = ReadBook.readerPagination(input.chapter.index)
             val pageStarts: List<Int>
             if (pagination != null) {
                 currentChapterProvisional = false
                 pageStarts = pagination.pageStarts
             } else {
-                currentChapterProvisional = true
-                pageStarts = ReaderReadAloudChapter.paragraphPageStarts(input.source.semanticContent)
-                AppLog.putAnalysis(
-                    "启动朗读：章节分页未就绪（已等待 ${waited}ms）→ 段落分页代启" +
-                        " chapterIndex=${input.chapter.index}（真实分页落地后自动接轨）"
-                )
+                val laidOut = paginatePageStartsLocally(input)
+                if (laidOut != null) {
+                    currentChapterProvisional = false
+                    pageStarts = laidOut
+                    AppLog.putAnalysis(
+                        "启动朗读：快照未就绪→自排版（${pageStarts.size} 页）" +
+                            " chapterIndex=${input.chapter.index}"
+                    )
+                } else {
+                    // 防御兜底：排版环境缺失（起播必经阅读器，正常不会走到这里）→ 段落分页代启
+                    currentChapterProvisional = true
+                    pageStarts = ReaderReadAloudChapter.paragraphPageStarts(input.source.semanticContent)
+                    AppLog.putAnalysis(
+                        "启动朗读：自排版不可用→段落分页代启 chapterIndex=${input.chapter.index}"
+                    )
+                }
             }
             val preparedChapter = ReaderReadAloudChapter.create(
                 chapterIndex = input.chapter.index,

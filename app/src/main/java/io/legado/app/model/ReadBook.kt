@@ -150,6 +150,9 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     private var readerPaginationSnapshots = emptyMap<Int, ReaderChapterPaginationSnapshot>()
     @Volatile
     private var readerPaginationEnvironment: ReaderPaginationEnvironment? = null
+
+    /** 供朗读服务「自排版」复用：快照缺失时用捕获的排版环境跑分页器。 */
+    val paginationEnvironment: ReaderPaginationEnvironment? get() = readerPaginationEnvironment
     var bookSource: BookSource? = null
     var msg: String? = null
     private val readRecordRepository: ReadRecordRepository by inject()
