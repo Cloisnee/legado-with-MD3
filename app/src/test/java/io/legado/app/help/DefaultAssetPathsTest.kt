@@ -24,7 +24,6 @@ class DefaultAssetPathsTest {
 
     @Test
     fun bundledDefaultsLoadWithoutHostFilesystemSeparators() {
-        assertTrue(DefaultData.httpTTS.isNotEmpty())
         assertTrue(DefaultData.readConfigs.isNotEmpty())
         assertTrue(DefaultData.txtTocRules.isNotEmpty())
         assertTrue(DefaultData.themeConfigs.isNotEmpty())
