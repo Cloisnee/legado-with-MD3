@@ -523,7 +523,6 @@ val appModule = module {
             otherSettingsGateway = get(),
             downloadCacheSettingsGateway = get(),
             directLinkSettingsGateway = get(),
-            localPasswordGateway = get(),
             systemGateway = get(),
         )
     }
