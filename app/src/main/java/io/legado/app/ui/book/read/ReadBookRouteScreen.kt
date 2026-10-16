@@ -675,7 +675,8 @@ fun ReadBookRouteScreen(
             if (!readerCanvasVisible) {
                 // 归因用：成对 marker 夹住子树，其间隔即该子树的组合耗时（都在
                 // `Compose:recompose` 之内）。子系统不用 tracing 时 marker 是空操作。
-                ReaderPerfTrace.marker("compose.background.begin")                ReaderBackgroundSurface(
+                ReaderPerfTrace.marker("compose.background.begin")
+                ReaderBackgroundSurface(
                     backgroundImage = readerBackground.drawable,
                     backgroundImageAlpha = readerBackgroundAlpha(state.styleConfig.bgAlpha),
                     modifier = Modifier.fillMaxSize(),

@@ -829,7 +829,6 @@ private fun RowScope.TitleBarActionButtons(
         state.bookSource,
         state.isReadAloudRunning,
         state.isAutoPage,
-        state.translationMode,
         state.useMultiSpeaker,
         eyeProtectionActive,
     ) {

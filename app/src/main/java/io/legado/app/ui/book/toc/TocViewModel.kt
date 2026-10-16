@@ -563,7 +563,6 @@ class TocViewModel(
                 chapter,
                 titleState.titles[chapter.index] ?: baseTitle,
                 downloadState,
-                statusFlags.assigned.contains(chapter.index),
                 statusFlags.downloaded.contains(chapter.index),
             )
         }

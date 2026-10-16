@@ -89,9 +89,6 @@ import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.button.series.SmallAnimatedButton
 import io.legado.app.ui.widget.components.icon.AppIcons
-import io.legado.app.core.ui.player.PlayerMorphCover
-import io.legado.app.core.ui.player.PlayerMorphAppearance
-import io.legado.app.core.ui.player.TrackPlayerMorphCoverPage
 import io.legado.app.ui.widget.components.log.AppLogSheet
 import io.legado.app.ui.widget.components.menuItem.MenuItemIcon
 import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenu

@@ -6,7 +6,7 @@ package io.legado.app.service.readaloud
  * 本移植版没有标记删改：两份下标天然一致，[storedOf] 即 base 平移。朗读进度、
  * 翻页判定与「从半句接着念」的续念偏移共用这一份换算。
  */
-internal class Spoken(val text: String, private val storedEnd: Int, private val map: (Int) -> Int) {
+class Spoken(val text: String, private val storedEnd: Int, private val map: (Int) -> Int) {
 
     companion object {
         fun passThrough(text: String, base: Int = 0) =

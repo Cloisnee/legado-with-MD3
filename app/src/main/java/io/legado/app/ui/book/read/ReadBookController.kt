@@ -787,7 +787,8 @@ class ReadBookController(
         directReaderPageIndex = null
         directReaderChapterPageCounts = emptyMap()
         directReaderPageContexts.clear()
-        paginatedChapterIdentities.clear()        ReadBook.clearReaderPagination()
+        paginatedChapterIdentities.clear()
+        ReadBook.clearReaderPagination()
         updateReaderPaginationError(null)
         publishReaderPageWindow()
     }
@@ -1430,7 +1431,8 @@ class ReadBookController(
                 directReaderPages, ReadBook.durChapterIndex, displayedChapter,
             )
         )
-        paginatedChapterIdentities.keys.retainAll(visible.toSet())        directReaderChapterPageCounts =
+        paginatedChapterIdentities.keys.retainAll(visible.toSet())
+        directReaderChapterPageCounts =
             directReaderPages.groupingBy { it.id.chapterIndex }.eachCount()
         directReaderPageContexts.clear()
     }
@@ -2379,6 +2381,7 @@ class ReadBookController(
             // ── Simple Activity-API effects ──
             is ReadBookEffect.ShowToast -> activity.toastOnUi(effect.message)
             is ReadBookEffect.LongToast -> activity.longToastOnUi(effect.message)
+            is ReadBookEffect.TtsCacheCleared -> activity.toastOnUi(effect.message)
             is ReadBookEffect.SetBrightness -> {
                 val lp = activity.window.attributes
                 lp.screenBrightness = effect.value / 100f

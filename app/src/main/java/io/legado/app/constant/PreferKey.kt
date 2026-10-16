@@ -464,24 +464,6 @@ object PreferKey {
     const val eyeProtectionSchedule = "eyeProtectionSchedule"
     const val eyeProtectionStartTime = "eyeProtectionStartTime"
     const val eyeProtectionEndTime = "eyeProtectionEndTime"
-}
-
-object ReadMenuBlurMode {
-    const val None = 0
-    const val LiquidGlass = 1
-    const val Haze = 2
-}
-
-object ReadMenuBlurStyle {
-    const val Solid = 0
-    const val Progressive = 1
-}
-
-object ReadAloudBgMode {
-    const val Solid = 0
-    const val Blur = 1
-    const val FlowingLight = 2
-    const val Transparent = 3
 
     // ==== [ttsrv] 自建键（合并保留区 · 上游同步时以本区"我方为准"）====
     const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
@@ -507,6 +489,25 @@ object ReadAloudBgMode {
     const val audioAdultEnabled = "audioAdultEnabled"
     // B33.2 · 音频库（排序模式持久化）
     const val audioLibSortMode = "audioLibSortMode"
+}
+
+object ReadMenuBlurMode {
+    const val None = 0
+    const val LiquidGlass = 1
+    const val Haze = 2
+}
+
+object ReadMenuBlurStyle {
+    const val Solid = 0
+    const val Progressive = 1
+}
+
+object ReadAloudBgMode {
+    const val Solid = 0
+    const val Blur = 1
+    const val FlowingLight = 2
+    const val Transparent = 3
+
 }
 
 object CoverRatio {

@@ -118,7 +118,7 @@ object ReadAloud {
             val (httpVoices, systemRoutes) = runBlocking {
                 val voiceIds = appDb.readAloudVoiceDao.getBindings(bookUrl)
                     .mapTo(hashSetOf()) { it.voiceId }
-                appDb.readAloudVoiceDao.getVoices().filter {
+                val voices = appDb.readAloudVoiceDao.getVoices().filter {
                     it.id in voiceIds && it.engineType in setOf(
                         ReadAloudVoice.ENGINE_HTTP,
                         ReadAloudVoice.ENGINE_TTS_SERVER,

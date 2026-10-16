@@ -97,7 +97,6 @@ import io.legado.app.ui.widget.components.reader.readerMenuSurfaceBrush
 import io.legado.app.ui.widget.components.settingItem.LocalSliderDragState
 import io.legado.app.ui.widget.components.settingItem.SliderDragState
 import io.legado.app.ui.widget.components.text.AppText
-import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.roundToInt
 
 /**
