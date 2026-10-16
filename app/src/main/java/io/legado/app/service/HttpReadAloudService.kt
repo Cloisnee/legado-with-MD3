@@ -1630,5 +1630,18 @@ class HttpReadAloudService : BaseReadAloudService(),
 
 }
 
+/** 音频仅合成定位点后的文字，其时间轴须映射到裁剪后的段落范围。 */
+internal fun httpReadAloudParagraphOffset(
+    paragraphLength: Int,
+    startOffset: Int,
+    positionMs: Long,
+    durationMs: Long,
+): Int {
+    val offset = startOffset.coerceIn(0, paragraphLength.coerceAtLeast(0))
+    if (durationMs <= 0) return offset
+    val remaining = (paragraphLength - offset).coerceAtLeast(0)
+    return offset + (remaining * (positionMs.coerceIn(0, durationMs).toDouble() / durationMs)).toInt()
+}
+
 /** 源级语速默认值, 对应 1 倍速, 与全局语速共用 0..80 的刻度 */
 private const val DEFAULT_TTS_SPEED = 5

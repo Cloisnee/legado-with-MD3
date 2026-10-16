@@ -313,7 +313,7 @@ class BookHelpImageFileTest {
         try {
             image.delete()
             assertFalse(BookHelp.saveImage(null, book, src))
-            assertTrue(AppLog.logs.first().second.contains("图片数据无效"))
+            assertTrue(AppLog.logs.first().message.contains("图片数据无效"))
             assertFalse(image.exists())
             assertFalse(BookHelp.saveImage(null, book, src))
             assertFalse(image.exists())

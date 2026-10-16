@@ -321,110 +321,110 @@ private fun BookInfoScreenContent(
             Box(modifier = Modifier.fillMaxSize())
         } else {
             val resolvedBackdropStyle = requireNotNull(backdropStyle)
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        BookInfoBackdrop(
-                            book = book,
-                            style = resolvedBackdropStyle,
-                            usesDefaultCover = usesDefaultCover,
-                            onNetworkCoverLoadError = onNetworkCoverLoadError,
-                        )
-                        AppPullToRefresh(
-                            modifier = Modifier.fillMaxSize(),
-                            isRefreshing = state.isTocLoading,
-                            onRefresh = { onIntent(BookInfoIntent.MenuAction(BookInfoMenuAction.Refresh)) },
-                            topPadding = paddingValues.calculateTopPadding(),
-                            scrollBehavior = scrollBehavior
-                        ) {
-                            LazyColumn(
-                                state = listState,
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(
-                                    top = paddingValues.calculateTopPadding() + 8.dp,
-                                    bottom = paddingValues.calculateBottomPadding() + 88.dp,
-                                ),
+            Box(modifier = Modifier.fillMaxSize()) {
+                BookInfoBackdrop(
+                    book = book,
+                    style = resolvedBackdropStyle,
+                    usesDefaultCover = usesDefaultCover,
+                    onNetworkCoverLoadError = onNetworkCoverLoadError,
+                )
+                AppPullToRefresh(
+                    modifier = Modifier.fillMaxSize(),
+                    isRefreshing = state.isTocLoading,
+                    onRefresh = { onIntent(BookInfoIntent.MenuAction(BookInfoMenuAction.Refresh)) },
+                    topPadding = paddingValues.calculateTopPadding(),
+                    scrollBehavior = scrollBehavior
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            top = paddingValues.calculateTopPadding() + 8.dp,
+                            bottom = paddingValues.calculateBottomPadding() + 88.dp,
+                        ),
+                    ) {
+                        item {
+                            BookInfoHeader(
+                                book = book,
+                                highlightedTags = state.highlightedTags,
+                                kindLabels = state.kindLabels,
+                                groupNames = state.groupNames,
+                                onCoverClick = { onIntent(BookInfoIntent.CoverClick) },
+                                onCoverLongClick = { onIntent(BookInfoIntent.CoverLongClick) },
+                                onAuthorClick = { onIntent(BookInfoIntent.AuthorClick(it)) },
+                                onBookNameClick = { onIntent(BookInfoIntent.BookNameClick(it)) },
+                                onOriginClick = { onIntent(BookInfoIntent.OriginClick) },
+                                onNetworkCoverLoadError = {
+                                    onNetworkCoverLoadError(book.coverPath)
+                                },
+                                usesDefaultCover = usesDefaultCover,
+                                applySeedOverlay = resolvedBackdropStyle.applySeedOverlay,
+                                sharedTransitionScope = sharedTransitionScope,
+                                animatedVisibilityScope = animatedVisibilityScope,
+                                sharedCoverKey = sharedCoverKey,
+                            )
+                        }
+                        item {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        color = LegadoTheme.colorScheme.surface
+                                    )
+                                    .padding(bottom = 24.dp)
                             ) {
-                                item {
-                                    BookInfoHeader(
-                                        book = book,
-                                        highlightedTags = state.highlightedTags,
-                                        kindLabels = state.kindLabels,
-                                        groupNames = state.groupNames,
-                                        onCoverClick = { onIntent(BookInfoIntent.CoverClick) },
-                                        onCoverLongClick = { onIntent(BookInfoIntent.CoverLongClick) },
-                                        onAuthorClick = { onIntent(BookInfoIntent.AuthorClick(it)) },
-                                        onBookNameClick = { onIntent(BookInfoIntent.BookNameClick(it)) },
-                                        onOriginClick = { onIntent(BookInfoIntent.OriginClick) },
-                                        onNetworkCoverLoadError = {
-                                            onNetworkCoverLoadError(book.coverPath)
+                                BookInfoActions(
+                                    inBookshelf = state.inBookshelf,
+                                    hasShelfDuplicates = state.shelfDuplicates.isNotEmpty(),
+                                    onShelfClick = { onIntent(BookInfoIntent.ShelfClick) },
+                                    onTocClick = { onIntent(BookInfoIntent.TocClick) },
+                                    onGroupClick = { onIntent(BookInfoIntent.GroupClick) },
+                                    onSourceClick = { onIntent(BookInfoIntent.ChangeSourceClick) },
+                                    onReadRecordClick = { onIntent(BookInfoIntent.ReadRecordClick) },
+                                )
+                                state.relatedBooks.forEach { module ->
+                                    RelatedBooksBanner(
+                                        title = module.title,
+                                        books = module.books,
+                                        onBookClick = { book, _ ->
+                                            onIntent(BookInfoIntent.RelatedBookClick(book))
                                         },
-                                        usesDefaultCover = usesDefaultCover,
-                                        applySeedOverlay = resolvedBackdropStyle.applySeedOverlay,
-                                        sharedTransitionScope = sharedTransitionScope,
-                                        animatedVisibilityScope = animatedVisibilityScope,
-                                        sharedCoverKey = sharedCoverKey,
+                                        onMoreClick = {
+                                            onIntent(
+                                                BookInfoIntent.RelatedBooksMore(
+                                                    module.title,
+                                                    module.resolvedUrl
+                                                )
+                                            )
+                                        },
                                     )
                                 }
-                                item {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(
-                                                color = LegadoTheme.colorScheme.surface
+                                BookInfoSummary(
+                                    book = book,
+                                    tocLoadFailed = state.tocLoadFailed,
+                                    onRemarkClick = { onIntent(BookInfoIntent.RemarkClick) },
+                                    bookSource = state.bookSource,
+                                    onJumpToAnotherApp = jumpToAnotherApp,
+                                    onIntroButtonClick = { name, click ->
+                                        onIntent(
+                                            BookInfoIntent.IntroButtonClick(
+                                                name,
+                                                click
                                             )
-                                            .padding(bottom = 24.dp)
-                                    ) {
-                                        BookInfoActions(
-                                            inBookshelf = state.inBookshelf,
-                                            hasShelfDuplicates = state.shelfDuplicates.isNotEmpty(),
-                                            onShelfClick = { onIntent(BookInfoIntent.ShelfClick) },
-                                            onTocClick = { onIntent(BookInfoIntent.TocClick) },
-                                            onGroupClick = { onIntent(BookInfoIntent.GroupClick) },
-                                            onSourceClick = { onIntent(BookInfoIntent.ChangeSourceClick) },
-                                            onReadRecordClick = { onIntent(BookInfoIntent.ReadRecordClick) },
                                         )
-                                        state.relatedBooks.forEach { module ->
-                                            RelatedBooksBanner(
-                                                title = module.title,
-                                                books = module.books,
-                                                onBookClick = { book, _ ->
-                                                    onIntent(BookInfoIntent.RelatedBookClick(book))
-                                                },
-                                                onMoreClick = {
-                                                    onIntent(
-                                                        BookInfoIntent.RelatedBooksMore(
-                                                            module.title,
-                                                            module.resolvedUrl
-                                                        )
-                                                    )
-                                                },
-                                            )
-                                        }
-                                        BookInfoSummary(
-                                            book = book,
-                                            tocLoadFailed = state.tocLoadFailed,
-                                            onRemarkClick = { onIntent(BookInfoIntent.RemarkClick) },
-                                            bookSource = state.bookSource,
-                                            onJumpToAnotherApp = jumpToAnotherApp,
-                                            onIntroButtonClick = { name, click ->
-                                                onIntent(
-                                                    BookInfoIntent.IntroButtonClick(
-                                                        name,
-                                                        click
-                                                    )
-                                                )
-                                            },
-                                            onIntroImageClick = { click ->
-                                                onIntent(BookInfoIntent.IntroImageClick(click))
-                                            },
-                                            onIntroImageLongClick = { source ->
-                                                onIntent(BookInfoIntent.IntroImageLongClick(source))
-                                            },
-                                        )
-                                    }
-                                }
+                                    },
+                                    onIntroImageClick = { click ->
+                                        onIntent(BookInfoIntent.IntroImageClick(click))
+                                    },
+                                    onIntroImageLongClick = { source ->
+                                        onIntent(BookInfoIntent.IntroImageLongClick(source))
+                                    },
+                                )
                             }
                         }
                     }
+                }
+            }
         }
     }
 
