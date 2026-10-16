@@ -4,6 +4,7 @@ plugins {
 
 android {
     compileSdk = 37
+    compileSdkMinor = 1
     namespace = "me.ag2s"
     kotlin {
         jvmToolchain {
