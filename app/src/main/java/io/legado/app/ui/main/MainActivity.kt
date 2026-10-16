@@ -507,11 +507,13 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         val capsuleAnchorPreview = if (playerVisible && pageShellShowCapsule) {
             PlaybackCapsuleState(source = playerSource)
         } else null
-        // 胶囊形态：全场景同一悬浮胶囊（甲方口径：不并入主页悬浮底栏）。
+        // 两种胶囊互斥：主页悬浮底栏用圆形胶囊，其余页面用全局可拖拽胶囊。
         val currentRoute = backStack.lastOrNull()
-        // 甲方口径（2026-10-08）：胶囊不并入主页悬浮底栏——全场景保持同一悬浮形态。
-        // 判定函数保留给 MainScreen 的外观口径复用；这里恒不启用底栏胶囊。
-        val useHomeCapsule = false
+        val onMainRoute = currentRoute is MainRouteHome
+        val useFloatingBottomBar = LocalAppUiConfiguration.current.appShell.useFloatingBottomBar
+        val useHomeCapsule = shouldUseHomePlaybackCapsule(
+            onMainRoute, configuration.appShell.showBottomView, useFloatingBottomBar, useRail,
+        )
         SideEffect {
             readAloudMorph.expectCapsuleAnchors(
                 if (!pageShellShowCapsule) null
