@@ -581,7 +581,9 @@ abstract class BaseReadAloudService : BaseService(),
             val startPos = start.offsetInPage
             var preparedReadAloudNumber = preparedChapter.pageStart(pageIndex) + startPos
             val startsAtChapterBeginning = preparedReadAloudNumber == 0
-            val preparedParagraphs = preparedChapter.paragraphs
+            // 追更216d：不发声的段（空白/纯符号）不进朗读单元集合——游标落在这种段上时高亮
+            // 停住不动，而引擎入队又跳过它，回调下标与 nowSpeak 就整条错开（见 readAloudParagraphs）。
+            val preparedParagraphs = preparedChapter.readAloudParagraphs()
             var preparedContentList = preparedParagraphs
                 .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
             var preparedContentChapterPositions: List<Int?> =

@@ -735,7 +735,7 @@ class HttpReadAloudService : BaseReadAloudService(),
             queue.cues.map { it.text }
         } else {
             listOf(displayTitle.trim()).filter { it.isNotEmpty() } +
-                    readAloudChapter.paragraphs
+                    readAloudChapter.readAloudParagraphs()
                         .map { it.text.replace(Regex("[袮祢꧁\uFFFC]"), " ") }
         }
         return PreDownloadChapter(book.name, chapter.index, displayTitle, queue, contentList)
