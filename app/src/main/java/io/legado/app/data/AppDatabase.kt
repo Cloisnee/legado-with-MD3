@@ -7,6 +7,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
+import io.legado.app.data.dao.ReadAloudAudioDownloadDao
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookContentProcessDao
 import io.legado.app.data.dao.BookDao
@@ -16,7 +17,6 @@ import io.legado.app.data.dao.BookSourceDao
 import io.legado.app.data.dao.BookmarkDao
 import io.legado.app.data.dao.CacheDao
 import io.legado.app.data.dao.ChapterSpeechDao
-import io.legado.app.data.dao.CloudTtsEngineDao
 import io.legado.app.data.dao.CookieDao
 import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.ExactChapterPageCountDao
@@ -52,7 +52,6 @@ import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.Cache
 import io.legado.app.data.entities.ChapterSpeechAnalysisEntity
 import io.legado.app.data.entities.ChapterSpeechSegmentEntity
-import io.legado.app.data.entities.CloudTtsEngineEntity
 import io.legado.app.data.entities.Cookie
 import io.legado.app.data.entities.DictRule
 import io.legado.app.data.entities.ExactChapterPageCountEntity
@@ -62,6 +61,7 @@ import io.legado.app.data.entities.HomepageCustomSet
 import io.legado.app.data.entities.HomepageModule
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.KeyboardAssist
+import io.legado.app.data.entities.ReadAloudAudioDownload
 import io.legado.app.data.entities.ReadAloudVoiceEntity
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.entities.RssArticle
@@ -93,7 +93,7 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 108,
+    version = 109,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -105,7 +105,9 @@ val appDb by lazy {
         HighlightRule::class, HighlightTagRule::class, TagGroupRule::class,
         BookContentProcess::class, ReadAloudVoiceEntity::class, BookVoiceBindingEntity::class,
         ChapterSpeechAnalysisEntity::class, ChapterSpeechSegmentEntity::class,
-        CloudTtsEngineEntity::class, ExactChapterPageCountEntity::class,
+        ExactChapterPageCountEntity::class,
+        // [合并0716] 听书音频下载（上游件保留）
+        ReadAloudAudioDownload::class,
         BookMarking::class],
     views = [BookSourcePart::class],
     autoMigrations = [
@@ -175,6 +177,8 @@ val appDb by lazy {
         // （见 DatabaseMigrations.migration_105_106 / migration_106_107）
         // v5-U5：107→108（readRecordSession 新增 bookUrl 归属列）同为手写迁移
         // （见 DatabaseMigrations.migration_107_108）
+        // v6-收敛0716：108→109（books.disableReadRecord / 高亮 6 列 / httpTTS 并发列 /
+        // read_aloud_voices.excluded / 听书下载表）同为手写迁移（见 migration_108_109）
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -186,7 +190,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val bookContentProcessDao: BookContentProcessDao
     abstract val readAloudVoiceDao: ReadAloudVoiceDao
     abstract val chapterSpeechDao: ChapterSpeechDao
-    abstract val cloudTtsEngineDao: CloudTtsEngineDao
+    abstract val readAloudAudioDownloadDao: ReadAloudAudioDownloadDao
     abstract val replaceRuleDao: ReplaceRuleDao
     abstract val searchBookDao: SearchBookDao
     abstract val searchKeywordDao: SearchKeywordDao

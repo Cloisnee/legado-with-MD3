@@ -1,7 +1,7 @@
 package io.legado.app.ui.main.bookshelf
 
-import androidx.compose.runtime.Stable
 import android.net.Uri
+import androidx.compose.runtime.Stable
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.domain.model.settings.BookshelfSettings
 import io.legado.app.ui.config.themeConfig.TagColorPair
@@ -23,6 +23,7 @@ data class BookshelfGroupSelectorState(
 
 sealed interface BookshelfOverlay {
     data object AddUrlDialog : BookshelfOverlay
+
     data object ImportSheet : BookshelfOverlay
     data object ExportSheet : BookshelfOverlay
     data object ConfigSheet : BookshelfOverlay

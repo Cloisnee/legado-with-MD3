@@ -313,7 +313,7 @@ class TtsServerCenterRepository(private val app: Application) {
     private fun gateway(): ReadAloudSettingsGateway =
         org.koin.core.context.GlobalContext.get().get()
 
-    /** 应用引擎选择（镜像云 TTS 的 applyDefaultEngine 语义：本书写 Book / 全局写设置） */
+    /** 应用引擎选择（applyDefaultEngine 语义：本书写 Book / 全局写设置） */
     suspend fun applyEngine(value: String?, forBook: Boolean): String {
         val book = ReadBook.book
         if (forBook && book != null) {

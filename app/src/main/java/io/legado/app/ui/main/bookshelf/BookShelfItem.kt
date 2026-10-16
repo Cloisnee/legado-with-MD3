@@ -48,24 +48,33 @@ data class BookShelfItem(
 
     fun getUnreadChapterNum() = max(totalChapterNum - durChapterIndex - 1, 0)
 
-    /**
-     * 将 DTO 转换为专为 Compose 设计的 UI 状态
-     */
-    fun toUiItem(): BookUiItem {
+    /** 仅筛选展示内容；搜索仍使用包含全部来源的 [BookUiItem.displayTags]。 */
+    fun getDisplayTags(
+        showCustomTags: Boolean = true,
+        showSourceTags: Boolean = true,
+        showWordCount: Boolean = true,
+    ): ImmutableList<String> {
         val tagList = mutableListOf<String>()
-        customTag?.splitNotBlank(",", "\n")?.filter { it.isNotBlank() }?.let {
-            tagList.addAll(it)
+        if (showCustomTags) {
+            customTag?.splitNotBlank(",", "\n")?.filter { it.isNotBlank() }?.let {
+                tagList.addAll(it)
+            }
         }
-        kind?.splitNotBlank(",", "\n")?.filter { it.isNotBlank() }?.let {
-            tagList.addAll(it.filterNot(tagList::contains))
+        if (showSourceTags) {
+            kind?.splitNotBlank(",", "\n")?.filter { it.isNotBlank() }?.let {
+                tagList.addAll(it.filterNot(tagList::contains))
+            }
         }
-        if (!wordCount.isNullOrBlank() && !tagList.contains(wordCount)) {
+        if (showWordCount && !wordCount.isNullOrBlank() && !tagList.contains(wordCount)) {
             tagList.add(wordCount)
         }
+        return tagList.toImmutableList()
+    }
 
+    fun toUiItem(): BookUiItem {
         return BookUiItem(
             book = this,
-            displayTags = tagList.toImmutableList()
+            displayTags = getDisplayTags()
         )
     }
 }

@@ -5,17 +5,82 @@ import io.legado.app.feature.reader.core.source.ReaderChapterInlineSource
 import io.legado.app.feature.reader.core.source.ReaderChapterSource
 import io.legado.app.feature.reader.core.source.ReaderChapterSourceBlock
 import io.legado.app.feature.reader.core.source.ReaderChapterSourceParser
+import io.legado.app.feature.reader.core.source.ReaderHtmlImageSpanExtent
 import io.legado.app.feature.reader.core.source.ReaderInlineSourceStyle
 import io.legado.app.feature.reader.core.source.ReaderTitleSegmentation
 import io.legado.app.feature.reader.core.style.ReaderCharacterStyle
 import io.legado.app.feature.reader.core.style.ReaderStyleRange
 import io.legado.app.feature.reader.core.style.ReaderStyleTarget
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 
 class ReaderChapterBlockMeasurerTest {
+    @Test
+    fun profilingKeepsMeasuredBlocksIdenticalWhenMostCharactersHaveNoStyle() = runBlocking {
+        val source = ReaderChapterSourceParser.parse(0, "", listOf("甲乙丙丁"), false, false)
+        val measuredStyle = style.copy(
+            styleRanges = listOf(
+                ReaderStyleRange(1, 2, ReaderStyleTarget.BODY, ReaderCharacterStyle(colorArgb = 9)),
+            )
+        )
+        val regular = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper, titleShaper = shaper, imageDimensionsResolver = { null },
+        ).measure(source, measuredStyle) as ReaderChapterMeasureResult.Success
+        val metrics = ReaderChapterMeasureMetrics(System::nanoTime)
+        val profiled = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper, titleShaper = shaper, imageDimensionsResolver = { null },
+            metrics = metrics,
+        ).measure(source, measuredStyle) as ReaderChapterMeasureResult.Success
+
+        assertEquals(regular.blocks, profiled.blocks)
+        assertTrue(metrics.shapingCalls > 0)
+        assertTrue(metrics.styleLookups > 0)
+    }
+
+    /**
+     * 旧 `TextChapterLayout` 每段排版前 `currentCoroutineContext().ensureActive()`。取消分页任务后
+     * 必须在段落边界立刻停下：否则任务会把整章算完并一直持有整章对象图（议题 #2396 的 OOM）。
+     */
+    @Test
+    fun cancellingDuringMeasurementStopsAtTheNextParagraphBoundary() = runBlocking {
+        val source = ReaderChapterSource(
+            1, "",
+            listOf(
+                ReaderChapterSourceBlock.Text("甲", 0),
+                ReaderChapterSourceBlock.Text("乙", 2),
+                ReaderChapterSourceBlock.Text("丙", 4),
+            ),
+            6,
+        )
+        val cancelled = Job()
+        val shapedTexts = mutableListOf<String>()
+        val cancellingShaper = ReaderTextShaper { text ->
+            shapedTexts += text
+            // 第一段一量完就取消：后续段落不得再被排版。
+            cancelled.cancel()
+            GlyphClusters(text.map(Char::toString), List(text.length) { 10f })
+        }
+
+        val failure = runCatching {
+            withContext(cancelled) {
+                ReaderChapterBlockMeasurer(
+                    bodyShaper = cancellingShaper,
+                    titleShaper = cancellingShaper,
+                    imageDimensionsResolver = { null },
+                ).measure(source, style)
+            }
+        }.exceptionOrNull()
+
+        assertTrue("测量应在取消后抛 CancellationException", failure is CancellationException)
+        assertTrue("第一段应已完成排版", shapedTexts.contains("甲"))
+        assertTrue("取消后不应再排版后续段落", "丙" !in shapedTexts)
+    }
+
     @Test
     fun cachesShaperPerStyleAndRetainsInheritedFontProperties() = runBlocking {
         var creations = 0
@@ -81,6 +146,23 @@ class ReaderChapterBlockMeasurerTest {
         bodyAlignment = ReaderTextAlignment.JUSTIFY,
         titleAlignment = ReaderTextAlignment.CENTER,
     )
+
+    /** 旧 `setTypeHtml` 路径的最小脚手架：一个 HTML 块 + 假 htmlSourceResolver。 */
+    private suspend fun measureHtml(
+        items: List<ReaderChapterInlineSource>,
+        style: ReaderChapterMeasureStyle,
+        options: ReaderImageOptions?,
+        dimensions: ReaderImageDimensions,
+    ): ReaderChapterMeasureResult.Success = ReaderChapterBlockMeasurer(
+        bodyShaper = shaper,
+        titleShaper = shaper,
+        imageDimensionsResolver = { dimensions },
+        imageOptionsResolver = { _, _ -> options },
+        htmlSourceResolver = ReaderHtmlSourceResolver { _, _ -> listOf(ReaderHtmlParagraph(items)) },
+    ).measure(
+        ReaderChapterSource(1, "", listOf(ReaderChapterSourceBlock.Html("<img>", 5)), 6),
+        style,
+    ) as ReaderChapterMeasureResult.Success
 
     @Test
     fun measuresTextAndImagesWithoutLegacyLayoutModels() = runBlocking {
@@ -214,6 +296,98 @@ class ReaderChapterBlockMeasurerTest {
         val image = result.blocks.last() as ReaderMeasuredBlock.Image
         assertEquals(28f, image.intrinsicWidthPx, 0f)
         assertEquals(28f, image.intrinsicHeightPx, 0f)
+    }
+
+    /**
+     * 旧 `TextChapterLayout` 的书级文字嵌入分支不解析单图 JSON：独立图块与行内图一样按占位字
+     * 排版，单图 `"style":"FULL"` 也不能把它升级成整图。
+     */
+    @Test
+    fun `book level text mode lays standalone image blocks out inline`() = runBlocking {
+        val source = ReaderChapterSource(
+            1, "", listOf(
+                ReaderChapterSourceBlock.Image("banner", 0),
+            ), 1
+        )
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = { ReaderImageDimensions(100f, 50f) },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(ReaderImageLayoutMode.FULL_WIDTH) },
+        ).measure(
+            source,
+            style.copy(imageLayoutMode = ReaderImageLayoutMode.INLINE),
+        ) as ReaderChapterMeasureResult.Success
+
+        val paragraph = result.blocks.single() as ReaderMeasuredBlock.InlineParagraph
+        val image = paragraph.items.single() as ReaderMeasuredInlineItem.Image
+        // 占位宽 = 袮（本测试 shaper 统一给 10f），高按原图比例 100×50 → 5f。
+        assertEquals(10f, image.widthPx, 0f)
+        assertEquals(5f, image.heightPx, 0f)
+    }
+
+    /**
+     * 旧 `setTypeHtml` 不受书级 `imgStyleText` 短路：书级样式只是"单图 style 缺失"时的 fallback，
+     * 单图 `"style":"FULL"` 仍能把 HTML 段落里的图抬成整图。
+     */
+    @Test
+    fun `html block image overrides the book level text mode`() = runBlocking {
+        val result = measureHtml(
+            items = listOf(ReaderChapterInlineSource.Image("banner,{\"style\":\"full\"}", 5)),
+            style = style.copy(imageLayoutMode = ReaderImageLayoutMode.INLINE),
+            options = ReaderImageOptions(ReaderImageLayoutMode.FULL_WIDTH),
+            dimensions = ReaderImageDimensions(100f, 50f),
+        )
+
+        val image = result.blocks.single() as ReaderMeasuredBlock.Image
+        assertEquals(ReaderImageScaleMode.FIT_WIDTH, image.scaleMode)
+        assertEquals(100f, image.intrinsicWidthPx, 0f)
+    }
+
+    /**
+     * 旧 `setTypeHtml` 的行内图占位宽/行盒高取自 ImageSpan 本身（`getPrimaryHorizontal` 差值与
+     * span 的 ascent），不是占位字 advance；带 `"，{...}"` 且 style 为 text 时按它排版。
+     */
+    @Test
+    fun `html block inline image uses the image span extent`() = runBlocking {
+        val result = measureHtml(
+            items = listOf(
+                ReaderChapterInlineSource.Image(
+                    source = "icon,{\"style\":\"text\"}",
+                    chapterPosition = 5,
+                    htmlSpanExtent = ReaderHtmlImageSpanExtent(widthPx = 40f, heightPx = 24f),
+                ),
+            ),
+            style = style,
+            options = ReaderImageOptions(ReaderImageLayoutMode.INLINE),
+            dimensions = ReaderImageDimensions(100f, 50f),
+        )
+
+        val image = (result.blocks.single() as ReaderMeasuredBlock.InlineParagraph)
+            .items.single() as ReaderMeasuredInlineItem.Image
+        // 宽 = span advance（40f，不是占位字 10f）；高 = span 撑开的行盒高（24f）。
+        assertEquals(40f, image.widthPx, 0f)
+        assertEquals(24f, image.heightPx, 0f)
+        // 旧 `setTypeHtml` 行末图宽 = `measureText("\uFFFC")`（本测试 shaper 统一给 10f）。
+        assertEquals(10f, image.lineFinalWidthPx!!, 0f)
+    }
+
+    /**
+     * 旧 `setTypeHtml` 对**没有 `,{...}`** 的图直接 `setTypeImage(imageStyle)`：不做 <80px 自动
+     * 行内，小图也按整图排版（书级 TEXT 也落到 `setTypeImage` 的 else 分支）。
+     */
+    @Test
+    fun `html block image without options never auto inlines as one character`() = runBlocking {
+        val result = measureHtml(
+            items = listOf(ReaderChapterInlineSource.Image("plain.png", 5)),
+            style = style.copy(imageLayoutMode = ReaderImageLayoutMode.INLINE),
+            options = null,
+            dimensions = ReaderImageDimensions(12f, 12f),
+        )
+
+        val image = result.blocks.single() as ReaderMeasuredBlock.Image
+        assertEquals(12f, image.intrinsicWidthPx, 0f)
+        assertEquals(ReaderImageScaleMode.CONTAIN_NO_UPSCALE, image.scaleMode)
     }
 
     @Test
@@ -376,5 +550,140 @@ class ReaderChapterBlockMeasurerTest {
         assertEquals(2f, items[1].baselineShiftPx, 0f)
         assertEquals(10f, items[0].style.fontSizePx, 0f)
         assertEquals(10f, items[1].style.fontSizePx, 0f)
+    }
+
+    @Test
+    fun excludeActionImagesDropsInlineActionImagesAndKeepsPlainImages() = runBlocking {
+        var dimensionResolves = 0
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Paragraph(listOf(
+                ReaderChapterInlineSource.Text("甲", 0),
+                ReaderChapterInlineSource.Image("badge.png,{\"click\":\"showCmt(1)\"}", 1),
+                ReaderChapterInlineSource.Text("乙", 2),
+                ReaderChapterInlineSource.Image("plain.png", 3),
+            ), 0),
+        ), 5)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = {
+                dimensionResolves++; ReaderImageDimensions(12f, 12f)
+            },
+            imageOptionsResolver = { src, _ ->
+                if ("\"click\"" in src) ReaderImageOptions(action = "showCmt(1)") else null
+            },
+        ).measure(source, style.copy(excludeActionImages = true)) as ReaderChapterMeasureResult.Success
+
+        val items = (result.blocks.single() as ReaderMeasuredBlock.InlineParagraph).items
+        val texts = items.filterIsInstance<ReaderMeasuredInlineItem.Text>()
+        assertEquals(listOf("甲", "乙"), texts.map { it.value })
+        assertEquals(listOf(0, 2), texts.map { it.chapterPosition })
+        assertEquals(listOf(3), items.filterIsInstance<ReaderMeasuredInlineItem.Image>()
+            .map { it.chapterPosition })
+        assertEquals(1, dimensionResolves)
+    }
+
+    @Test
+    fun excludeActionImagesFlagOffKeepsActionImages() = runBlocking {
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Paragraph(listOf(
+                ReaderChapterInlineSource.Image("badge.png,{\"click\":\"js\"}", 0),
+            ), 0),
+        ), 2)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = { ReaderImageDimensions(12f, 12f) },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(action = "js") },
+        ).measure(source, style) as ReaderChapterMeasureResult.Success
+        assertEquals(
+            1,
+            (result.blocks.single() as ReaderMeasuredBlock.InlineParagraph)
+                .items.filterIsInstance<ReaderMeasuredInlineItem.Image>().size,
+        )
+    }
+
+    @Test
+    fun excludeActionImagesDropsStandaloneActionImageBlockAndKeepsPositions() = runBlocking {
+        var dimensionResolves = 0
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Image("banner.png,{\"click\":\"js\"}", 0),
+            ReaderChapterSourceBlock.Text("正文", 1),
+        ), 4)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = {
+                dimensionResolves++; ReaderImageDimensions(300f, 300f)
+            },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(action = "js") },
+        ).measure(source, style.copy(excludeActionImages = true)) as ReaderChapterMeasureResult.Success
+
+        assertTrue(result.blocks.none { it is ReaderMeasuredBlock.Image })
+        val body = result.blocks.filterIsInstance<ReaderMeasuredBlock.InlineParagraph>().single()
+        assertEquals(listOf(1, 2), body.items.map { it.chapterPosition })
+        assertEquals(0, dimensionResolves)
+    }
+
+    @Test
+    fun excludeActionImagesDropsBubbleOnlyParagraphEntirely() = runBlocking {
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Paragraph(listOf(
+                ReaderChapterInlineSource.Image("badge.png,{\"click\":\"js\"}", 0),
+            ), 0),
+        ), 1)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = { ReaderImageDimensions(12f, 12f) },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(action = "js") },
+        ).measure(source, style.copy(excludeActionImages = true)) as ReaderChapterMeasureResult.Success
+
+        assertTrue(result.blocks.isEmpty())
+    }
+
+    @Test
+    fun excludeActionImagesSuppressesBlankPaddingLeftByDroppedImage() = runBlocking {
+        // 整行图片段自带缩进/空白填充（如「　　<img>」独立成段）：图被剔除后
+        // 残留的纯空白不得再排成一行空行——与「图不存在」的排版等价
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Paragraph(listOf(
+                ReaderChapterInlineSource.Text("　　", 0),
+                ReaderChapterInlineSource.Image("banner.png,{\"click\":\"js\"}", 2),
+            ), 0),
+        ), 3)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = { ReaderImageDimensions(12f, 12f) },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(action = "js") },
+        ).measure(source, style.copy(excludeActionImages = true)) as ReaderChapterMeasureResult.Success
+
+        assertTrue(result.blocks.isEmpty())
+    }
+
+    @Test
+    fun excludeActionImagesKeepsRealTextInParagraphWithDroppedImage() = runBlocking {
+        // 抑制只针对「全空白 + 被剔除图」的段；同段有正文时正文照常保留
+        val source = ReaderChapterSource(1, "", listOf(
+            ReaderChapterSourceBlock.Paragraph(listOf(
+                ReaderChapterInlineSource.Text("　　", 0),
+                ReaderChapterInlineSource.Image("badge.png,{\"click\":\"js\"}", 2),
+                ReaderChapterInlineSource.Text("正文", 3),
+            ), 0),
+        ), 5)
+        val result = ReaderChapterBlockMeasurer(
+            bodyShaper = shaper,
+            titleShaper = shaper,
+            imageDimensionsResolver = { ReaderImageDimensions(12f, 12f) },
+            imageOptionsResolver = { _, _ -> ReaderImageOptions(action = "js") },
+        ).measure(source, style.copy(excludeActionImages = true)) as ReaderChapterMeasureResult.Success
+
+        val paragraphs = result.blocks.filterIsInstance<ReaderMeasuredBlock.InlineParagraph>()
+        assertEquals(1, paragraphs.size)
+        val items = paragraphs.single().items
+        assertTrue(items.none { it is ReaderMeasuredInlineItem.Image })
+        assertEquals("　　正文", items.filterIsInstance<ReaderMeasuredInlineItem.Text>()
+            .joinToString("") { it.value })
     }
 }

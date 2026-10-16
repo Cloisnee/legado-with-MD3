@@ -36,7 +36,6 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.gateway.ChapterSpeechGateway
-import io.legado.app.domain.gateway.CloudTtsEngineGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadSettingsGateway
@@ -73,10 +72,6 @@ import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.audio.AudioSynthQueue
 import io.legado.app.help.readaloud.audio.SfxLoudnessNormalizer
 import io.legado.app.help.readaloud.audio.SynthLane
-import io.legado.app.help.readaloud.playback.CharacterPerformanceInstructionBuilder
-import io.legado.app.help.readaloud.playback.CloudTtsAudioSynthesizer
-import io.legado.app.help.readaloud.playback.CloudTtsEmotionMapper
-import io.legado.app.help.readaloud.playback.CloudTtsRoleInstructionMapper
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import io.legado.app.help.readaloud.playback.SystemTtsFileSynthesizer
@@ -141,7 +136,7 @@ class HttpReadAloudService : BaseReadAloudService(),
 
     /**
      * 全局语速倍率, 由设置里的朗读语速换算而来, 在播放端 (ExoPlayer) 变速,
-     * 对所有来源的音频 (http/系统/云端合成) 统一生效。
+     * 对所有来源的音频 (http/系统/服务器合成) 统一生效。
      */
     private val globalPlaybackSpeed: Float
         get() = (speechRatePlay + 5) / 10f
@@ -188,9 +183,6 @@ class HttpReadAloudService : BaseReadAloudService(),
     private var playErrorNo = 0
     private val downloadTaskActiveLock = Mutex()
     private val systemTtsFileSynthesizer by lazy { SystemTtsFileSynthesizer(this) }
-    private val cloudTtsAudioSynthesizer by lazy {
-        CloudTtsAudioSynthesizer(get(CloudTtsEngineGateway::class.java))
-    }
 
     // ---- B11 响度均衡（播放端 LoudnessEnhancer；条目增益随 MediaItem.mediaId 携带）----
     private val loudness by lazy { GlobalContext.get().get<LoudnessNormalizer>() }
@@ -223,8 +215,9 @@ class HttpReadAloudService : BaseReadAloudService(),
             settings = { readAloudSettings },
             chapterKey = {
                 runCatching {
-                    val bookUrl = ReadBook.book?.bookUrl.orEmpty()
-                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                    val bookUrl = (bookSession.book ?: ReadBook.book)?.bookUrl.orEmpty()
+                    val idx = bookSession.chapterIndex.takeIf { it >= 0 }
+                        ?: readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
                     "$bookUrl|$idx"
                 }.getOrDefault("default")
             },
@@ -496,8 +489,9 @@ class HttpReadAloudService : BaseReadAloudService(),
 
                 // M1-B 播放门：本章计划（本行声效终态查询用；null=无计划层→不设门）
                 val gatePlan = runCatching {
-                    val b = ReadBook.book
-                    val idx = readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
+                    val b = bookSession.book ?: ReadBook.book
+                    val idx = bookSession.chapterIndex.takeIf { it >= 0 }
+                        ?: readerReadAloudChapter?.chapterIndex ?: ReadBook.durChapterIndex
                     if (b == null || idx < 0) null else AudioPlanStore.load(b.name, b.bookUrl, idx)
                 }.getOrNull()
 
@@ -565,18 +559,6 @@ class HttpReadAloudService : BaseReadAloudService(),
                                         ttsSynthTimeoutMs,
                                     )
                                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
-                                }
-
-                                ReadAloudVoice.ENGINE_CLOUD -> synthesizeWithRetry(cueLabel, speakText) {
-                                    if (cloudTtsAudioSynthesizer.synthesize(
-                                            routedVoice,
-                                            speakText,
-                                            cacheFile,
-                                            styleOverride = cueEmotion,
-                                            characterPerformance = characterPerformance,
-                                            roleType = cueRoleType,
-                                        )
-                                    ) null else "云端合成失败"
                                 }
 
                                 else -> {
@@ -707,7 +689,9 @@ class HttpReadAloudService : BaseReadAloudService(),
             chapterIndex = chapter.index,
             title = displayTitle,
             semanticContent = source.semanticContent,
-            pageStarts = ReadBook.readerPagination(chapter.index)?.pageStarts.orEmpty(),
+            pageStarts = bookSession.pagination?.takeIf {
+                bookSession.owns(book.bookUrl) && it.chapterIndex == chapter.index
+            }?.pageStarts.orEmpty(),
         )
         // 等该章朗读分析就绪再预合成：分析未就绪时会退化成「本地规则 + 默认声线」，
         // 白合成且污染缓存（用户实测：新章立刻用 duihuaA01 合成）
@@ -785,8 +769,8 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
 
     private suspend fun preDownloadAudios(httpTts: HttpTTS) {
-        val book = ReadBook.book ?: return
-        val currentIdx = ReadBook.durChapterIndex
+        val book = bookSession.book ?: return
+        val currentIdx = bookSession.chapterIndex
         val limit = readAloudSettings.audioPreDownloadNum
         val concurrency = readAloudSettings.ttsPreSynthesisConcurrency.coerceIn(1, 8)
         var consecutiveFailures = 0
@@ -964,16 +948,6 @@ class HttpReadAloudService : BaseReadAloudService(),
                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }
 
-                ReadAloudVoice.ENGINE_CLOUD -> {
-                    if (cloudTtsAudioSynthesizer.synthesize(
-                            routedVoice, speakText, cacheFile,
-                            styleOverride = cue?.emotion.orEmpty(),
-                            characterPerformance = cue?.characterPerformance,
-                            roleType = cue?.roleType ?: SpeechRoleType.Unknown,
-                        )
-                    ) null else "云端合成失败"
-                }
-
                 ReadAloudVoice.ENGINE_HTTP -> {
                     val inputStream = getSpeakStream(itemHttpTts, speakText)
                     if (inputStream != null) {
@@ -1129,8 +1103,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         return@async
                     }
                     val cue = prepared.queue.cues.getOrNull(index)
-                    if (routedVoice.engineType == ReadAloudVoice.ENGINE_CLOUD ||
-                        routedVoice.engineType == ReadAloudVoice.ENGINE_TTS_SERVER) {
+                    if (routedVoice.engineType == ReadAloudVoice.ENGINE_TTS_SERVER) {
                         val segIndex = index - prepared.queue.leadingTitleCueCount
                         val outcome = synthesizeSingleCueWithRetry(
                             routedVoice, cue, content, prepared, segIndex, httpTts,
@@ -1384,7 +1357,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         voiceForCue(playbackQueue, index, ReadAloud.httpTTS ?: return@any false).engineType in
             setOf(
                 ReadAloudVoice.ENGINE_SYSTEM,
-                ReadAloudVoice.ENGINE_CLOUD,
                 ReadAloudVoice.ENGINE_TTS_SERVER,
             )
     }
@@ -1407,7 +1379,6 @@ class HttpReadAloudService : BaseReadAloudService(),
             supportedEngineTypes = setOf(
                 ReadAloudVoice.ENGINE_HTTP,
                 ReadAloudVoice.ENGINE_SYSTEM,
-                ReadAloudVoice.ENGINE_CLOUD,
                 ReadAloudVoice.ENGINE_TTS_SERVER,
             ),
             defaultRoute = SpeechEngineRoute(

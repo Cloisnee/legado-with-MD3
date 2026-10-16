@@ -5,7 +5,7 @@ import io.legado.app.domain.model.settings.ThemeSettings
 import kotlinx.collections.immutable.ImmutableList
 
 /**
- * 欢迎引导流程（隐私 → WebDav → 书籍文件夹 → 主题）的 Compose 契约。
+ * 欢迎引导流程（隐私政策 → WebDav → 书籍文件夹 → 主题）的 Compose 契约。
  * 页面文案见 strings.xml 的 onboarding_* 资源。
  */
 @Stable

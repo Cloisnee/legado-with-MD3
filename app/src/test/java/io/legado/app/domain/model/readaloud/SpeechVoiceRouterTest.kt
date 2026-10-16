@@ -47,23 +47,6 @@ class SpeechVoiceRouterTest {
         assertTrue(routed.usedFallback)
     }
 
-    @Test
-    fun `keeps cloud voice on mixed engine playback coordinator`() {
-        val cloud = voice("cloud", ReadAloudVoice.ENGINE_CLOUD)
-        val routed = SpeechVoiceRouter.route(
-            cue = cue(cloud),
-            supportedEngineTypes = setOf(
-                ReadAloudVoice.ENGINE_HTTP,
-                ReadAloudVoice.ENGINE_SYSTEM,
-                ReadAloudVoice.ENGINE_CLOUD,
-            ),
-            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_SYSTEM, "default"),
-        )
-
-        assertEquals(ReadAloudVoice.ENGINE_CLOUD, routed.voice?.engineType)
-        assertEquals(cloud, routed.voice)
-    }
-
     private fun voice(id: String, type: String) = ReadAloudVoice(
         id = id,
         engineType = type,

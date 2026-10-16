@@ -51,6 +51,9 @@ class DirectLinkSettingsRepository : DirectLinkSettingsGateway {
     )
 }
 
+/**
+ * 本地密码：用于备份加密（webdav 配置等敏感信息导出前加密）。
+ */
 class LocalPasswordRepository : LocalPasswordGateway {
 
     override suspend fun setPassword(password: String?) {

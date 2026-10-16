@@ -33,15 +33,6 @@ object ReadAloudAudioCacheKeys {
         ReadAloudVoice.ENGINE_SYSTEM ->
             "system:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}"
 
-        ReadAloudVoice.ENGINE_CLOUD ->
-            "cloud:${voice.id}:${voice.revision}:" +
-                    "${CloudTtsEmotionMapper.VERSION}:$emotion:" +
-                    "${CharacterPerformanceInstructionBuilder.VERSION}:" +
-                    "${performance?.characterId.orEmpty()}:" +
-                    "${performance?.updatedAt ?: 0L}:" +
-                    "${CloudTtsRoleInstructionMapper.VERSION}:" +
-                    roleType.storageValue
-
         ReadAloudVoice.ENGINE_TTS_SERVER ->
             "tts_server:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}:$emotion"
 

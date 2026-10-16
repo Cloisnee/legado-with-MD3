@@ -81,14 +81,12 @@ object MainNavigator {
             }
         }
 
+        // 朗读通知的「回到正在读的书」不带 bookUrl（空即最后读过的那本），路由键和栈顶那份必然不相等。
+        // 栈顶已经是阅读页时再压一份，返回就要连点同样多次才出得了阅读页，所以在这里收住不压栈。
         if (route is MainRouteReadBook &&
             currentRoute is MainRouteReadBook &&
             (route.bookUrl == null || route.bookUrl == currentRoute.bookUrl)
-        ) {
-            // 朗读通知的「回到正在读的书」不带 bookUrl（空即最后读过的那本），路由键和栈顶那份
-            // 必然不相等。栈顶已经是阅读页时再压一份，返回就要连点同样多次才出得了阅读页。
-            return
-        }
+        ) return
 
         if (route is MainRouteReadBook) ReaderPerfTrace.marker("open.request")
         // 导航动画和阅读页组合要花几百毫秒, 这段时间足够把正文读出来并排版好
@@ -252,12 +250,10 @@ object MainNavigator {
                 }
             }
 
-            is MainRouteCloudTtsEngines,
             MainRouteTtsCache,
             is MainRouteScriptReview -> {
                 if (
                     currentRoute is MainRouteBookInfo ||
-                    currentRoute is MainRouteCloudTtsEngines ||
                     currentRoute == MainRouteTtsCache ||
                     currentRoute == MainRouteBookCacheManage ||
                     currentRoute is MainRouteReadBook ||
@@ -326,6 +322,8 @@ object MainNavigator {
             }
 
             MainRouteHighlightTagRule,
+            MainRouteDictRule,
+            MainRouteAllBookmark,
             MainRouteReadRecord -> {
                 if (currentRoute == MainRouteHome) {
                     backStack.add(route)
@@ -338,6 +336,26 @@ object MainNavigator {
 
             MainRouteAbout -> {
                 if (currentRoute == MainRouteHome) {
+                    backStack.add(route)
+                } else {
+                    backStack.clear()
+                    backStack.add(MainRouteHome)
+                    backStack.add(route)
+                }
+            }
+
+            // TXT 目录规则列表与它的预览页既可以从首页进（管理模式），也可以是压在目录页 /
+            // 阅读页之上的子页（选择 / 应用模式）。后者必须压栈，否则返回时下层页面被清掉，
+            // 选中的规则也就没有父页面可以回传。
+            is MainRouteTxtTocRule,
+            is MainRouteTxtTocRulePreview -> {
+                if (
+                    currentRoute == MainRouteHome ||
+                    currentRoute is MainRouteToc ||
+                    currentRoute is MainRouteTxtTocRulePreview ||
+                    currentRoute is MainRouteReadBook ||
+                    currentRoute is MainRouteReadManga
+                ) {
                     backStack.add(route)
                 } else {
                     backStack.clear()
@@ -391,7 +409,7 @@ object MainNavigator {
     fun onBackStackChanged() {
         backNavigationResetJob?.cancel()
         backNavigationResetJob = navigationScope.launch {
-            delay(500)
+            delay(100)
             backNavigationInProgress = false
         }
     }

@@ -121,7 +121,7 @@ fun ContentProcessesSheet(
                         content = {
                             Column {
                                 AppText(
-                                    text = stringResource(R.string.ai_text_clean_before),
+                                    text = stringResource(R.string.change_before),
                                     style = LegadoTheme.typography.labelSmall,
                                     color = LegadoTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -130,13 +130,13 @@ fun ContentProcessesSheet(
                                     modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
                                 )
                                 AppText(
-                                    text = stringResource(R.string.ai_text_clean_after),
+                                    text = stringResource(R.string.change_after),
                                     style = LegadoTheme.typography.labelSmall,
                                     color = LegadoTheme.colorScheme.onSurfaceVariant,
                                 )
                                 AppText(
                                     text = item.replacementText.ifEmpty {
-                                        stringResource(R.string.ai_text_clean_delete)
+                                        stringResource(R.string.change_delete_selected)
                                     },
                                     modifier = Modifier.padding(top = 2.dp),
                                     color = if (item.replacementText.isEmpty()) {
@@ -219,7 +219,7 @@ private fun ContentProcessItem(
 
             Spacer(Modifier.height(10.dp))
             AppText(
-                text = stringResource(R.string.ai_text_clean_before),
+                text = stringResource(R.string.change_before),
                 style = LegadoTheme.typography.labelSmall,
                 color = LegadoTheme.colorScheme.onSurfaceVariant,
             )
@@ -232,13 +232,13 @@ private fun ContentProcessItem(
 
             Spacer(Modifier.height(8.dp))
             AppText(
-                text = stringResource(R.string.ai_text_clean_after),
+                text = stringResource(R.string.change_after),
                 style = LegadoTheme.typography.labelSmall,
                 color = LegadoTheme.colorScheme.onSurfaceVariant,
             )
             AppText(
                 text = item.replacementText.ifEmpty {
-                    stringResource(R.string.ai_text_clean_delete)
+                    stringResource(R.string.change_delete_selected)
                 },
                 modifier = Modifier.padding(top = 2.dp),
                 color = if (item.replacementText.isEmpty()) {

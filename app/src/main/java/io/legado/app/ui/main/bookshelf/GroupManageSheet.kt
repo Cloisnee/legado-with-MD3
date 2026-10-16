@@ -358,3 +358,92 @@ private fun LazyGridItemScope.GroupManageGridItem(
         }
     }
 }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LazyGridItemScope.GroupManageGridItem(
+    state: ReorderableLazyGridState,
+    key: Any,
+    title: String,
+    subtitle: String?,
+    isEnabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onClickEdit: () -> Unit,
+    reorderIndex: Int,
+    reorderItemCount: Int,
+    onMoveItem: (from: Int, to: Int) -> Unit
+) {
+    val hapticFeedback = LocalHapticFeedback.current
+    ReorderableItem(state = state, key = key) { isDragging ->
+        val elevation by animateDpAsState(
+            targetValue = if (isDragging) 8.dp else 0.dp,
+            label = "DragElevation"
+        )
+        GlassCard(
+            cornerRadius = 12.dp,
+            containerColor = LegadoTheme.colorScheme.onSheetContent,
+            elevation = elevation,
+            modifier = Modifier
+                .reorderAccessibility(
+                    index = reorderIndex,
+                    itemCount = reorderItemCount,
+                    onMove = onMoveItem
+                )
+                .zIndex(if (isDragging) 1f else 0f)
+                .longPressDraggableHandle(
+                    onDragStarted = {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                    },
+                    onDragStopped = {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                    }
+                )
+                .animateItem()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column() {
+                    Row(
+                        modifier = Modifier.clickable(
+                            onClick = onClickEdit
+                        ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        AppText(
+                            text = title,
+                            style = LegadoTheme.typography.titleSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        AppIcon(
+                            modifier = Modifier
+                                .size(12.dp),
+                            imageVector = AppIcons.Edit,
+                            contentDescription = stringResource(R.string.edit)
+                        )
+                    }
+                    if (!subtitle.isNullOrBlank()) {
+                        AppText(
+                            text = subtitle,
+                            style = LegadoTheme.typography.bodySmall,
+                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                TinySwitch(
+                    checked = isEnabled,
+                    onCheckedChange = onEnabledChange
+                )
+            }
+
+        }
+    }
+}

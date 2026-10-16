@@ -15,6 +15,16 @@ sealed interface BookPageResult {
     data object InfoEdited : BookPageResult
     data object RulesClosed : BookPageResult
     data object BookDeleted : BookPageResult
+
+    /**
+     * 选好了一条 TXT 目录规则。
+     *
+     * 父页面决定怎么用：[MainRouteToc] 拿它保存并重新解析目录，[MainRouteReadBook] 拿它直接
+     * 套到正在读的本地书上。两个入口（规则列表的选择模式、规则预览页的应用）产出同一种结果，
+     * 由父页面的类型区分语义。
+     */
+    @Stable
+    data class TxtTocRuleChosen(val rule: String) : BookPageResult
 }
 
 /**
@@ -79,4 +89,15 @@ class MainNavRouteTracker {
         }
         _bookPageResults.value = pageResults
     }
+
+    /**
+     * 进程内最后一次看到的阅读页路由（栈顶不是阅读页时给 null）。
+     *
+     * 用它的理由：MIUI 之类会把任务栈清掉却留着进程（朗读的前台服务还在跑），再点图标时
+     * 系统给的是一个 `savedInstanceState == null` 的全新 MainActivity。这时阅读页的活动
+     * 状态确实没了，但导航栈的进程内快照还在——不接上它，用户看到的就是
+     * 「朗读中挂后台，回来落到书架」。用户自己退回书架时栈顶已经不是阅读页，
+     * 这里返回 null，不会把阅读页硬塞回去。
+     */
+    fun lastReadBookRoute(): MainRouteReadBook? = currentRoute as? MainRouteReadBook
 }

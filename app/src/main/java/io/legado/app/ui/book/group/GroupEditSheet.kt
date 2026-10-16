@@ -105,8 +105,6 @@ fun GroupEditContent(
     val context = LocalContext.current
     var groupName by remember(group) { mutableStateOf(group?.groupName ?: "") }
     var enableRefresh by remember(group) { mutableStateOf(group?.enableRefresh ?: true) }
-    var isPrivate by remember(group) { mutableStateOf(group?.isPrivate ?: false) }
-    var showDisablePrivateDialog by remember(group) { mutableStateOf(false) }
     var selectedSortIndex by remember(group) { mutableIntStateOf(group?.bookSort ?: -1) }
     var pattern by remember(tagGroupRule) { mutableStateOf(tagGroupRule?.pattern ?: "") }
     var showPattern by remember(tagGroupRule) { mutableStateOf(tagGroupRule != null || pattern.isNotBlank()) }
@@ -116,7 +114,6 @@ fun GroupEditContent(
     val sortEntryValues = remember(sortOptions) {
         Array(sortOptions.size) { (it - 1).toString() }
     }
-    val canSetPrivate = group == null || group.groupId > 0
 
     val selectImage = rememberLauncherForActivityResult(SelectImageContract()) { result ->
         result.uri?.let { uri ->
@@ -199,23 +196,6 @@ fun GroupEditContent(
             onCheckedChange = { enableRefresh = it }
         )
 
-        if (canSetPrivate) {
-            Spacer(modifier = Modifier.height(8.dp))
-
-            CompactSwitchSettingItem(
-                title = stringResource(R.string.private_group),
-                description = stringResource(R.string.private_group_desc),
-                checked = isPrivate,
-                onCheckedChange = { checked ->
-                    if (!checked && group?.isPrivate == true) {
-                        showDisablePrivateDialog = true
-                    } else {
-                        isPrivate = checked
-                    }
-                }
-            )
-        }
-
         Spacer(modifier = Modifier.height(8.dp))
 
         CompactSwitchSettingItem(
@@ -261,8 +241,7 @@ fun GroupEditContent(
                                 groupName = groupName,
                                 cover = coverPath,
                                 bookSort = selectedSortIndex,
-                                enableRefresh = enableRefresh,
-                                isPrivate = isPrivate
+                                enableRefresh = enableRefresh
                             ),
                             ruleToSave = ruleToSave,
                             ruleToDelete = ruleToDelete,
@@ -277,7 +256,7 @@ fun GroupEditContent(
                             groupName,
                             selectedSortIndex,
                             enableRefresh,
-                            isPrivate,
+                            false,
                             coverPath,
                             pattern = pattern.takeIf { showPattern && it.isNotBlank() },
                             onError = { error ->
@@ -297,19 +276,6 @@ fun GroupEditContent(
         )
     }
 
-    AppAlertDialog(
-        show = showDisablePrivateDialog,
-        onDismissRequest = { showDisablePrivateDialog = false },
-        title = stringResource(R.string.disable_private_group),
-        text = stringResource(R.string.sure_disable_private_group),
-        confirmText = stringResource(android.R.string.ok),
-        onConfirm = {
-            isPrivate = false
-            showDisablePrivateDialog = false
-        },
-        dismissText = stringResource(android.R.string.cancel),
-        onDismiss = { showDisablePrivateDialog = false }
-    )
 }
 
 internal fun groupCoverFileExtension(mimeType: String?): String {
@@ -349,7 +315,7 @@ fun GroupDeleteAction(
         onDismissRequest = { showDeleteDialog = false },
         title = stringResource(R.string.delete),
         text = stringResource(
-            if (group.isPrivate) R.string.sure_del_private_group else R.string.sure_del
+            R.string.sure_del
         ),
         confirmText = stringResource(android.R.string.ok),
         onConfirm = {

@@ -38,7 +38,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +96,8 @@ import io.legado.app.ui.widget.components.reader.readerMenuLiquidGlassAvailable
 import io.legado.app.ui.widget.components.reader.readerMenuSurfaceBrush
 import io.legado.app.ui.widget.components.settingItem.LocalSliderDragState
 import io.legado.app.ui.widget.components.settingItem.SliderDragState
+import io.legado.app.ui.widget.components.text.AppText
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.roundToInt
 
 /**
@@ -160,11 +161,11 @@ fun ReadBookMenuBar(
                     backdrop = backdrop,
                     hazeState = hazeState,
                     titleBarMode = preferences.titleBarMode,
+                    eyeProtectionActive = eyeProtectionActive,
                 )
                 if (state.menuConfig.showTitleBarIcons && state.menuConfig.titleBarIconPosition <= 1) {
                     FloatingIconRow(
                         state = state,
-                        preferences = preferences,
                         eyeProtectionActive = eyeProtectionActive,
                         colors = menuColors,
                         alignment = if (state.menuConfig.titleBarIconPosition == 0) {
@@ -275,7 +276,6 @@ fun ReadBookMenuBar(
                 ) {
                     FloatingIconRow(
                         state = state,
-                        preferences = preferences,
                         eyeProtectionActive = eyeProtectionActive,
                         colors = menuColors,
                         alignment = if (state.menuConfig.titleBarIconPosition == 2) {
@@ -345,8 +345,12 @@ private fun ReadBookMenuSurface(
         targetValue = if (dialogLikeRoute) 1f else 0f,
         label = "ReadBookMenuMorph",
     )
+    // 朗读设置这一页是我们自己加的按钮最密的一页（播放条 + 定时 + 上下章 + 四行开关
+    // + 两根滑块 + 底部五个动作），沿用官方那 64% 的高度装不下，只能上下滑才看全，
+    // 所以只给这一路抬高上限，其它路由的观感保持不变。
     val maxHeight = with(density) {
-        windowSize.height.toDp() * 0.64f
+        val fraction = if (route == ReadBookMenuRoute.ReadAloud) 0.92f else 0.64f
+        windowSize.height.toDp() * fraction
     }
     val screenWidth = with(density) { windowSize.width.toDp() }
     val dialogAvailableWidth = screenWidth - 48.dp
@@ -767,6 +771,9 @@ private fun ReadBookMenuSurface(
                                 onOpenMainMenu = {
                                     onIntent(ReadBookIntent.ReadMenuBack)
                                 },
+                                onShowReadAloudConfig = {
+                                    onIntent(ReadBookIntent.ShowReadAloudConfig)
+                                },
                                 onShowTimerSettings = { readAloudTimerSheetOpen = true },
                                 modifier = Modifier.padding(horizontal = 16.dp)
                             )
@@ -831,7 +838,7 @@ private fun ReadBookMenuRoutePage(
                 icon = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = stringResource(R.string.back),
             )
-            Text(
+            AppText(
                 text = title,
                 modifier = Modifier
                     .weight(1f)

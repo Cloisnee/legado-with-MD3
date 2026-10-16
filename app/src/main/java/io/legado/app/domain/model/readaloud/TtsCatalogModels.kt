@@ -13,7 +13,6 @@ data class TtsEngineDescriptor(
 
 enum class TtsEngineKind {
     System,
-    Cloud,
     Http,
 }
 

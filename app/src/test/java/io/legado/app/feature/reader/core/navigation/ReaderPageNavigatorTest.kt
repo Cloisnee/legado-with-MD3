@@ -107,8 +107,10 @@ class ReaderPageNavigatorTest {
         val base = ReaderPageWindow(current = page(0, 0))
         val next = ReaderPageWindow(current = page(1, 20))
         val jumped = ReaderPageWindow(current = page(0, 0, 9))
+        val rewrappedBase = ReaderPageWindow(current = page(0, 0))
         assertEquals(next, ReaderPageNavigator.resolveWindow(base, base, next))
         assertEquals(next, ReaderPageNavigator.resolveWindow(next, base, next))
+        assertEquals(next, ReaderPageNavigator.resolveWindow(rewrappedBase, base, next))
         assertEquals(jumped, ReaderPageNavigator.resolveWindow(jumped, base, next))
     }
 
@@ -127,6 +129,88 @@ class ReaderPageNavigatorTest {
         assertEquals(1, index)
         assertEquals(0, window.previous?.id?.pageIndex)
         assertEquals(2, window.next?.id?.pageIndex)
+    }
+
+    @Test
+    fun previousChapterPaginationCompletingAfterChapterAdvanceKeepsCurrentChapter() {
+        val currentPage = page(index = 1, start = 40, chapterIndex = 5)
+        val pages = listOf(
+            page(index = 0, start = 0, chapterIndex = 4),
+            page(index = 1, start = 30, chapterIndex = 4),
+            page(index = 2, start = 60, chapterIndex = 4),
+            page(index = 0, start = 0, chapterIndex = 5),
+            currentPage,
+        )
+
+        val index = ReaderPageNavigator.locateAfterPagination(
+            pages, chapterIndex = 5, chapterPosition = 55, previousPageId = currentPage.id,
+        )
+
+        assertEquals(currentPage.id, index?.let { pages[it].id })
+    }
+
+    @Test
+    fun nextChapterPaginationCompletingAfterPlaybackStopsKeepsFinishedChapter() {
+        val finishedPage = page(index = 1, start = 40, chapterIndex = 5)
+        val pages = listOf(
+            page(index = 0, start = 0, chapterIndex = 5),
+            finishedPage,
+            page(index = 0, start = 0, chapterIndex = 6),
+            page(index = 1, start = 30, chapterIndex = 6),
+        )
+
+        val index = ReaderPageNavigator.locateAfterPagination(
+            pages, chapterIndex = 5, chapterPosition = 59, previousPageId = finishedPage.id,
+        )
+
+        assertEquals(finishedPage.id, index?.let { pages[it].id })
+    }
+
+    @Test
+    fun lateCurrentChapterPaginationReplacesThePreviousChapterFallback() {
+        val previousPage = page(index = 1, start = 40, chapterIndex = 4)
+        val currentPage = page(index = 1, start = 50, chapterIndex = 5)
+        val pages = listOf(
+            page(index = 0, start = 0, chapterIndex = 4), previousPage,
+            page(index = 0, start = 0, chapterIndex = 5), currentPage,
+        )
+
+        val index = ReaderPageNavigator.locateAfterPagination(
+            pages, chapterIndex = 5, chapterPosition = 55, previousPageId = previousPage.id,
+        )
+
+        assertEquals(currentPage.id, index?.let { pages[it].id })
+    }
+
+    @Test
+    fun missingCurrentChapterKeepsVisiblePageIdentityWhenPrecedingPagesAreInserted() {
+        val visiblePage = page(index = 1, start = 40, chapterIndex = 4)
+        val pages = listOf(
+            page(index = 0, start = 0, chapterIndex = 3),
+            page(index = 1, start = 30, chapterIndex = 3),
+            page(index = 0, start = 0, chapterIndex = 4),
+            visiblePage,
+        )
+
+        val index = ReaderPageNavigator.locateAfterPagination(
+            pages, chapterIndex = 5, chapterPosition = 0, previousPageId = visiblePage.id,
+        )
+
+        assertEquals(3, index)
+        assertEquals(visiblePage.id, index?.let { pages[it].id })
+    }
+
+    @Test
+    fun missingCurrentAndPreviousPageDoesNotPublishTheFirstChapter() {
+        val pages = listOf(page(index = 0, start = 0, chapterIndex = 3))
+
+        assertNull(ReaderPageNavigator.locateAfterPagination(
+            pages, chapterIndex = 5, chapterPosition = 0,
+            previousPageId = ReaderPageId(chapterIndex = 4, pageIndex = 1),
+        ))
+        assertNull(ReaderPageNavigator.locateAfterPagination(
+            emptyList(), chapterIndex = 5, chapterPosition = 0, previousPageId = null,
+        ))
     }
 
     @Test

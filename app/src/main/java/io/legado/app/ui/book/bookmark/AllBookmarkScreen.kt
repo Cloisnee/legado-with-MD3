@@ -16,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -358,39 +359,39 @@ private fun BookOverview(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        AppText(
-                            text = book.key.name,
-                            style = LegadoTheme.typography.titleMediumEmphasized,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (book.key.author.isNotBlank()) AppText(
-                            text = book.key.author,
-                            style = LegadoTheme.typography.labelMediumEmphasized,
-                            color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        )
-                        AppText(
-                            text = stringResource(
-                                R.string.feature_bookmarks_counts,
-                                book.bookmarkCount,
-                                book.markingCount,
-                            ),
-                            style = LegadoTheme.typography.labelSmall,
-                            color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (book.matchedMarkingId != null) AppText(
-                            text = stringResource(R.string.feature_bookmarks_match_hint),
-                            style = LegadoTheme.typography.labelSmall,
-                            color = LegadoTheme.colorScheme.primary,
-                        )
+                            AppText(
+                                text = book.key.name,
+                                style = LegadoTheme.typography.titleMediumEmphasized,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (book.key.author.isNotBlank()) AppText(
+                                text = book.key.author,
+                                style = LegadoTheme.typography.labelMediumEmphasized,
+                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                            )
+                            AppText(
+                                text = stringResource(
+                                    R.string.feature_bookmarks_counts,
+                                    book.bookmarkCount,
+                                    book.markingCount,
+                                ),
+                                style = LegadoTheme.typography.labelSmall,
+                                color = LegadoTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (book.matchedMarkingId != null) AppText(
+                                text = stringResource(R.string.feature_bookmarks_match_hint),
+                                style = LegadoTheme.typography.labelSmall,
+                                color = LegadoTheme.colorScheme.primary,
+                            )
                     }
-                    CoilBookCover(
-                        name = book.key.name,
-                        author = book.key.author,
-                        path = book.coverPath,
-                        sourceOrigin = book.sourceOrigin,
-                        modifier = Modifier.width(52.dp),
-                    )
+                        CoilBookCover(
+                            name = book.key.name,
+                            author = book.key.author,
+                            path = book.coverPath,
+                            sourceOrigin = book.sourceOrigin,
+                            modifier = Modifier.width(52.dp),
+                        )
                 }
             }
         }

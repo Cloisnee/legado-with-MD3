@@ -11,7 +11,6 @@ import io.legado.app.data.dao.BookSourceDao
 import io.legado.app.data.dao.BookmarkDao
 import io.legado.app.data.dao.CacheDao
 import io.legado.app.data.dao.ChapterSpeechDao
-import io.legado.app.data.dao.CloudTtsEngineDao
 import io.legado.app.data.dao.CookieDao
 import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.ExactChapterPageCountDao
@@ -21,6 +20,7 @@ import io.legado.app.data.dao.HomepageCustomSetDao
 import io.legado.app.data.dao.HomepageModuleDao
 import io.legado.app.data.dao.HttpTTSDao
 import io.legado.app.data.dao.KeyboardAssistsDao
+import io.legado.app.data.dao.ReadAloudAudioDownloadDao
 import io.legado.app.data.dao.ReadAloudVoiceDao
 import io.legado.app.data.dao.ReadRecordDao
 import io.legado.app.data.dao.ReplaceRuleDao
@@ -53,8 +53,8 @@ val appDatabaseModule = module {
     factory<BookContentProcessDao> { get<AppDatabase>().bookContentProcessDao }
     factory<BookMarkingDao> { get<AppDatabase>().bookMarkingDao }
     factory<ReadAloudVoiceDao> { get<AppDatabase>().readAloudVoiceDao }
+    factory<ReadAloudAudioDownloadDao> { get<AppDatabase>().readAloudAudioDownloadDao }
     factory<ChapterSpeechDao> { get<AppDatabase>().chapterSpeechDao }
-    factory<CloudTtsEngineDao> { get<AppDatabase>().cloudTtsEngineDao }
     factory<ReplaceRuleDao> { get<AppDatabase>().replaceRuleDao }
     factory<SearchBookDao> { get<AppDatabase>().searchBookDao }
     factory<SearchKeywordDao> { get<AppDatabase>().searchKeywordDao }

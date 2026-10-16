@@ -2592,7 +2592,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 引擎编辑器（复刻原版添加云 TTS 参数） ----------------
+    // ---------------- 引擎编辑器（复刻原版参数） ----------------
     EngineEditorSheet(
         value = engineEditor,
         isNew = isNewEngine,

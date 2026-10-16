@@ -446,10 +446,10 @@ private fun ContentProcessesPage(
             title = contentProcessTitle(item),
             content = {
                 Column {
-                    AppText(stringResource(R.string.ai_text_clean_before))
+                    AppText(stringResource(R.string.change_before))
                     AppText(item.selectedText, modifier = Modifier.padding(bottom = 8.dp))
-                    AppText(stringResource(R.string.ai_text_clean_after))
-                    AppText(item.replacementText.ifEmpty { stringResource(R.string.ai_text_clean_delete) })
+                    AppText(stringResource(R.string.change_after))
+                    AppText(item.replacementText.ifEmpty { stringResource(R.string.change_delete_selected) })
                 }
             },
             confirmText = stringResource(R.string.ok),

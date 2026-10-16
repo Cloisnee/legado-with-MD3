@@ -157,12 +157,10 @@ data class MainRouteBookInfo(
     val origin: String? = null,
     val coverPath: String? = null,
     val sharedCoverKey: String? = null,
-    val useCoverMorph: Boolean = true,
     val openRequestId: Long = 0L,
+    /** 封面形变开关（旧契约；W6 morph 换系统后复核）。 */
+    val useCoverMorph: Boolean = true,
 ) : MainRoute
-
-@Serializable
-data class MainRouteCloudTtsEngines(val bookUrl: String? = null) : MainRoute
 
 @Serializable
 data object MainRouteTtsCache : MainRoute
@@ -223,6 +221,31 @@ data class MainRouteSearchContent(
 data object MainRouteHighlightTagRule : MainRoute
 
 @Serializable
+data object MainRouteDictRule : MainRoute
+
+/**
+ * TXT 目录规则列表。
+ *
+ * [pickForBookUrl] 非空表示**选择模式**：这是为 [MainRouteToc] 挑一条规则而打开的，
+ * 选中后把结果回传给那个目录页（见 `BookPageResult.TxtTocRuleChosen`），而不是切换选中态。
+ */
+@Serializable
+data class MainRouteTxtTocRule(
+    val initialRule: String? = null,
+    val pickForBookUrl: String? = null,
+) : MainRoute
+
+/** TXT 目录规则预览：把一条规则套到 [bookUrl] 这本书上，可应用，也可跳到规则列表。 */
+@Serializable
+data class MainRouteTxtTocRulePreview(
+    val bookUrl: String,
+    val currentTocRegex: String? = null,
+) : MainRoute
+
+@Serializable
+data object MainRouteAllBookmark : MainRoute
+
+@Serializable
 data object MainRouteAbout : MainRoute
 
 object MainRouteConst {
@@ -243,7 +266,7 @@ object MainRouteConst {
     const val ROUTE_SETTINGS_THEME = "settings/theme"
     const val ROUTE_SETTINGS_BACKUP = "settings/backup"
     const val ROUTE_SETTINGS_CUSTOM_THEME = "settings/custom_theme"
-    const val ROUTE_SETTINGS_LAB_CONFIG = "settings/lab_config"
+        const val ROUTE_SETTINGS_LAB_CONFIG = "settings/lab_config"
     const val ROUTE_SETTINGS_DOWNLOAD_CACHE = "settings/download_cache"
     const val ROUTE_IMPORT_LOCAL = "import/local"
     const val ROUTE_IMPORT_REMOTE = "import/remote"
