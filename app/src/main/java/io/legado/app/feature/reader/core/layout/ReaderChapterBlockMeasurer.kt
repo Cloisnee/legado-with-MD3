@@ -7,6 +7,7 @@ import io.legado.app.feature.reader.core.source.ReaderChapterSourceBlock
 import io.legado.app.feature.reader.core.source.ReaderInlineSourceStyle
 import io.legado.app.feature.reader.core.style.ReaderCharacterStyle
 import io.legado.app.feature.reader.core.style.ReaderCharacterStyleResolver
+import io.legado.app.feature.reader.core.style.ReaderCompiledStyleRanges
 import io.legado.app.feature.reader.core.style.ReaderStyleRange
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -41,12 +42,36 @@ data class ReaderImageDimensions(val widthPx: Float, val heightPx: Float)
 
 enum class ReaderImageLayoutMode { AUTO, INLINE, STANDALONE, FULL_WIDTH, SINGLE_PAGE }
 
+/**
+ * 决定行内图**宽**的那一个字符：旧 View 的行内图占位宽不是字号，而是该字符在**本段 paint**
+ * 下的实际 advance。前两项是旧 `ChapterProvider` 插进正文的替换字；第三项是框架给 `ImageSpan`
+ * 插入的 `\uFFFC`，只用于旧 `setTypeHtml` 的行末特例。
+ */
+enum class ReaderInlineImagePlaceholder(val placeholderChar: String) {
+    /**
+     * 旧 `srcReplaceChar`（`袮`）：书级 `imgStyleText`、单图 style 精确为 `"text"`，以及
+     * "小图自动嵌入"（旧 `iStyle = "text"`）。
+     */
+    SRC_REPLACE("袮"),
+
+    /** 旧 `reviewChar`（`꧁`）：仅单图 style 精确为 `"TEXT"`（段评图标）。 */
+    REVIEW("꧁"),
+
+    /**
+     * 框架给 `ImageSpan` 插入的对象替换字符 `\uFFFC`。旧 `setTypeHtml` 在**行末**取不到下一字
+     * 横向位置时改用 `measureText("\uFFFC")`，因此它也是旧版行末行内图的绘制宽。
+     */
+    OBJECT_REPLACEMENT("\uFFFC"),
+}
+
 data class ReaderImageOptions(
     val layoutMode: ReaderImageLayoutMode? = null,
     val requestedWidthPx: Float? = null,
     val requestedWidthFraction: Float? = null,
     val horizontalAlignment: ReaderTextAlignment? = null,
     val action: String? = null,
+    /** 只在 [ReaderImageLayoutMode.INLINE] 下参与排版：用哪个占位字量行内图的宽。 */
+    val inlinePlaceholder: ReaderInlineImagePlaceholder = ReaderInlineImagePlaceholder.SRC_REPLACE,
 )
 
 fun interface ReaderImageDimensionsResolver {
@@ -54,7 +79,13 @@ fun interface ReaderImageDimensionsResolver {
 }
 
 fun interface ReaderImageOptionsResolver {
-    fun resolve(source: String): ReaderImageOptions?
+    /**
+     * @param htmlParagraph 该图来自旧 `TextChapterLayout.setTypeHtml` 的 HTML 段落（`<usehtml>`）。
+     *   旧实现里两条路径对单图 style 的规则并不一致：HTML 用 `iStyle?.uppercase() == "TEXT"`
+     *   （不区分大小写），纯文本用字面量 `iStyle == "text" || iStyle == "TEXT"`。解析器需要知道
+     *   是替哪条路径解析，才能给出同样的结果。
+     */
+    fun resolve(source: String, htmlParagraph: Boolean): ReaderImageOptions?
 }
 
 data class ReaderChapterMeasureStyle(
@@ -78,12 +109,55 @@ data class ReaderChapterMeasureStyle(
     val letterSpacingEm: Float? = null,
     val bodyIndentText: String? = null,
     val imageLayoutMode: ReaderImageLayoutMode = ReaderImageLayoutMode.AUTO,
+    /**
+     * 书级 `imageStyle` 为 `LEFT`/`RIGHT` 时的整图对齐。旧 `setTypeImage` 用「有效样式」
+     * （单图 style 优先）取对齐，单图 style 存在但不是 LEFT/RIGHT 时**不**回落到书级。
+     */
+    val imageAlignment: ReaderTextAlignment? = null,
     val imageAvailableWidthPx: Float? = null,
+    /** true = 带 click 动作脚本的图片（段评气泡）不参与排版：不产出测量项，也不解析图片尺寸。 */
+    val excludeActionImages: Boolean = false,
 )
 
 sealed interface ReaderChapterMeasureResult {
     data class Success(val blocks: List<ReaderMeasuredBlock>) : ReaderChapterMeasureResult
     data class Unsupported(val reason: String) : ReaderChapterMeasureResult
+}
+
+/** Optional clock supplied by the platform while profiling; core pagination stays platform-free. */
+class ReaderChapterMeasureMetrics(private val nanoTime: () -> Long) {
+    var shapingNs: Long = 0
+        private set
+    var styleLookupNs: Long = 0
+        private set
+    var shapingCalls: Long = 0
+        private set
+    var styleLookups: Long = 0
+        private set
+
+    fun shape(shaper: ReaderTextShaper, text: String): GlyphClusters {
+        val start = nanoTime()
+        return try {
+            shaper.shape(text)
+        } finally {
+            shapingNs += nanoTime() - start
+            shapingCalls++
+        }
+    }
+
+    fun resolveStyle(
+        ranges: ReaderCompiledStyleRanges,
+        position: Int,
+        isTitle: Boolean
+    ): ReaderCharacterStyle? {
+        val start = nanoTime()
+        return try {
+            ranges.resolve(position, isTitle)
+        } finally {
+            styleLookupNs += nanoTime() - start
+            styleLookups++
+        }
+    }
 }
 
 class ReaderChapterBlockMeasurer(
@@ -92,7 +166,9 @@ class ReaderChapterBlockMeasurer(
     private val imageDimensionsResolver: ReaderImageDimensionsResolver,
     private val textShaperFactory: ReaderTextShaperFactory = ReaderTextShaperFactory { bodyShaper },
     private val htmlSourceResolver: ReaderHtmlSourceResolver = ReaderHtmlSourceResolver { _, _ -> null },
-    private val imageOptionsResolver: ReaderImageOptionsResolver = ReaderImageOptionsResolver { null },
+    private val imageOptionsResolver: ReaderImageOptionsResolver =
+        ReaderImageOptionsResolver { _, _ -> null },
+    private val metrics: ReaderChapterMeasureMetrics? = null,
 ) {
     /**
      * 测量整章。给出 [onBlock] 时每产出一个 block 就立即回调——旧 View
@@ -104,6 +180,8 @@ class ReaderChapterBlockMeasurer(
         style: ReaderChapterMeasureStyle,
         onBlock: ((ReaderMeasuredBlock) -> Unit)? = null,
     ): ReaderChapterMeasureResult {
+        val compiledStyleRanges = style.styleRanges.takeIf { it.isNotEmpty() }
+            ?.let(ReaderCharacterStyleResolver::compile)
         // `blocks += x` 就是 `add(x)`：覆写 add 即可在每个追加点回调，无需在六处追加点重复。
         val blocks = object : ArrayList<ReaderMeasuredBlock>(source.blocks.size) {
             override fun add(element: ReaderMeasuredBlock): Boolean {
@@ -117,8 +195,23 @@ class ReaderChapterBlockMeasurer(
         }
         val bodyIndentText = style.bodyIndentText ?: "　".repeat(style.bodyIndentCharacters.coerceAtLeast(0))
         val bodyIndentWidth by lazy {
-            val shaped = shaper(style.bodyStyle).shape(bodyIndentText)
+            val bodyShaper = shaper(style.bodyStyle)
+            val shaped =
+                metrics?.shape(bodyShaper, bodyIndentText) ?: bodyShaper.shape(bodyIndentText)
             shaped.widthsPx.sum() + (style.letterSpacingEm ?: 0f) * style.bodyStyle.fontSizePx * shaped.text.size
+        }
+        // 行内图的占位宽 = 旧 View 插入正文的占位字（`袮` / `꧁`）在**本段 paint** 下的 advance，
+        // 不是字号。同一样式只求一次，避免每张图都新建 TextPaint 再量一遍。
+        val inlinePlaceholderWidths = mutableMapOf<Pair<String, ReaderTextStyle>, Float>()
+        fun inlinePlaceholderWidth(
+            placeholder: ReaderInlineImagePlaceholder,
+            textStyle: ReaderTextStyle,
+        ): Float = inlinePlaceholderWidths.getOrPut(placeholder.placeholderChar to textStyle) {
+            val placeholderShaper = shaper(textStyle)
+            val shaped = metrics?.shape(placeholderShaper, placeholder.placeholderChar)
+                ?: placeholderShaper.shape(placeholder.placeholderChar)
+            // 字体缺字时可能量到 0 宽（旧版对应一个画不出来的零宽图），回落到字号保证至少一格。
+            shaped.widthsPx.firstOrNull()?.takeIf { it > 0f } ?: textStyle.fontSizePx
         }
         suspend fun addStyledParagraph(
             items: List<ReaderChapterInlineSource>,
@@ -130,11 +223,16 @@ class ReaderChapterBlockMeasurer(
             restLineMarginPx: Float = 0f,
             alignmentOverride: ReaderTextAlignment? = null,
             decorations: List<ReaderParagraphDecoration> = emptyList(),
-            justifyAtWordBoundaries: Boolean = false,
+            /**
+             * 该段来自旧 `setTypeHtml` 的 HTML 块。它同时决定旧的整行补空格/附加行距
+             * （[ReaderMeasuredBlock.InlineParagraph.justifyAtWordBoundaries]）与旧 HTML 路径
+             * 的图片规则（见 [resolveImageLayout]）。
+             */
+            fromHtmlBlock: Boolean = false,
         ) {
             // 旧 `TextChapterLayout` 在每段排版前 `currentCoroutineContext().ensureActive()`。
             // 排版是不可中断的长循环：取消 / 重启时必须在段落边界停下，否则旧任务会把整章算完
-            // 并一直持有整章对象图（追更216e，源 dde6b0968）。
+            // 并一直持有整章对象图（见议题 #2396 的 OOM）。
             currentCoroutineContext().ensureActive()
             val baseStyle = if (isTitle) style.titleStyle.copy(
                 fontSizePx = style.titleStyle.fontSizePx * titleScale,
@@ -165,6 +263,7 @@ class ReaderChapterBlockMeasurer(
             }?.let { it.chapterPosition + bodyIndentText.length }
             var emittedContent = false
             var hasStandaloneImage = false
+            var droppedActionImage = false
             val inline = mutableListOf<ReaderMeasuredInlineItem>()
             fun flushInline(skipBlank: Boolean = false) {
                 if (inline.isEmpty()) return
@@ -187,7 +286,8 @@ class ReaderChapterBlockMeasurer(
                     restLineIndentWidthPx = restLineMarginPx,
                     leadingIndentItems = leadingIndentItems,
                     decorations = decorations,
-                    justifyAtWordBoundaries = justifyAtWordBoundaries,
+                    // 旧 HTML 块才有整行补空格与附加行距。
+                    justifyAtWordBoundaries = fromHtmlBlock,
                     alignment = alignmentOverride ?: if (isTitle) style.titleAlignment else style.bodyAlignment,
                     lineHeightPx = lineHeight ?: baseStyle.fontSizePx,
                     baselineOffsetPx = baselineOffset ?: baseStyle.fontSizePx,
@@ -204,28 +304,42 @@ class ReaderChapterBlockMeasurer(
                 when (item) {
                     is ReaderChapterInlineSource.Text -> {
                         val htmlStyle = baseStyle.merge(item.style)
-                        val initiallyShaped = shaper(htmlStyle).shape(item.value)
+                        val pieceText = item.value
                         var offset = 0
-                        initiallyShaped.text.forEachIndexed { clusterIndex, cluster ->
+                        val initialShaper = shaper(htmlStyle)
+                        val initiallyShaped = if (pieceText.isEmpty()) null
+                            else metrics?.shape(initialShaper, pieceText) ?: initialShaper.shape(pieceText)
+                        // 同一区间内相邻字形的解析结果是同一个实例：合并后的样式和它的 shaper
+                        // 只算一次即可。切成多段配音后，每一段各带一套缓存。
+                        var cachedRangeStyle: ReaderCharacterStyle? = null
+                        var cachedTextStyle = htmlStyle
+                        var cachedTextStyleIsPlain = true
+                        var cachedShaper = initialShaper
+                        var hasCachedStyle = false
+                        initiallyShaped?.text?.forEachIndexed { clusterIndex, cluster ->
                             val position = item.chapterPosition + offset
-                            val rangeStyle = style.styleRanges
-                                .takeIf(List<ReaderStyleRange>::isNotEmpty)
+                            val rangeStyle = compiledStyleRanges
                                 ?.let {
-                                    ReaderCharacterStyleResolver.resolve(
-                                        it,
-                                        position,
-                                        isTitle
-                                    )
+                                    if (metrics != null) metrics.resolveStyle(it, position, isTitle)
+                                    else it.resolve(position, isTitle)
                                 }
-                            val textStyle = htmlStyle.merge(rangeStyle)
-                            val textShaper = shaper(textStyle)
+                            if (!hasCachedStyle || rangeStyle !== cachedRangeStyle) {
+                                cachedRangeStyle = rangeStyle
+                                cachedTextStyle = htmlStyle.merge(rangeStyle)
+                                cachedTextStyleIsPlain = cachedTextStyle == htmlStyle
+                                cachedShaper = shaper(cachedTextStyle)
+                                hasCachedStyle = true
+                            }
+                            val textStyle = cachedTextStyle
+                            val textShaper = cachedShaper
                             // The paragraph was already shaped with htmlStyle to obtain its
                             // grapheme clusters. For the overwhelmingly common unstyled glyph,
                             // reuse that width instead of shaping the same glyph a second time.
-                            val width = if (textStyle == htmlStyle) {
+                            val width = if (cachedTextStyleIsPlain) {
                                 initiallyShaped.widthsPx.getOrElse(clusterIndex) { 0f }
                             } else {
-                                textShaper.shape(cluster).widthsPx.firstOrNull() ?: 0f
+                                (metrics?.shape(textShaper, cluster) ?: textShaper.shape(cluster))
+                                    .widthsPx.firstOrNull() ?: 0f
                             }
                             // The paragraph already owns the base line box (including the special
                             // subtitle bounds). Style overrides and baseline-shift spans need
@@ -258,20 +372,25 @@ class ReaderChapterBlockMeasurer(
                         }
                     }
                     is ReaderChapterInlineSource.Image -> {
+                        // excludeActionImages 开启时：带动作脚本的行内图（段评气泡）整体
+                        // 不参与排版，且在图片尺寸解析之前跳过（不触发任何取图请求）
+                        val options = imageOptionsResolver.resolve(item.source, fromHtmlBlock)
+                        if (style.excludeActionImages && options?.action != null) {
+                            droppedActionImage = true
+                            return@forEach
+                        }
                         // A broken image must not make the entire chapter disappear. The bitmap
                         // loader already supplies an error image; reserve stable line geometry
                         // until real dimensions are available.
                         val placeholderExtent = (lineHeight ?: baseStyle.fontSizePx).coerceAtLeast(1f)
                         val originalSize = imageDimensionsResolver.resolve(item.source)
                             ?: ReaderImageDimensions(placeholderExtent, placeholderExtent)
-                        val options = imageOptionsResolver.resolve(item.source)
                         val requestedWidth = options?.requestedWidthFraction?.let { fraction ->
                             style.imageAvailableWidthPx?.times(fraction)
                         } ?: options?.requestedWidthPx
                         val size = originalSize.withWidth(requestedWidth)
-                        val mode = options?.layoutMode ?: if (
-                            style.imagePageBreakBefore && style.imagePageBreakAfter
-                        ) ReaderImageLayoutMode.SINGLE_PAGE else style.imageLayoutMode
+                        val layout = style.resolveImageLayout(options, fromHtmlBlock)
+                        val mode = layout.mode
                         val standalone = mode != ReaderImageLayoutMode.INLINE && (
                             mode == ReaderImageLayoutMode.STANDALONE ||
                             mode == ReaderImageLayoutMode.FULL_WIDTH ||
@@ -286,35 +405,52 @@ class ReaderChapterBlockMeasurer(
                                 intrinsicWidthPx = size.widthPx,
                                 intrinsicHeightPx = size.heightPx,
                                 chapterPosition = item.chapterPosition,
-                                action = options?.action,
-                                horizontalAlignment = options?.horizontalAlignment ?: ReaderTextAlignment.CENTER,
+                                // 整图也要带动作：书源写在 src 尾随 JSON 里的 click（例如唤起章评）
+                                // 只有解析成功时才有值，消费侧是 `ReadBookController.handleComposeImageClick`。
+                                action = if (layout.preservesAction) options?.action else null,
+                                horizontalAlignment = layout.alignment,
                                 scaleMode = mode.toScaleMode(),
                                 pageBreakBefore = mode == ReaderImageLayoutMode.SINGLE_PAGE,
                                 pageBreakAfter = mode == ReaderImageLayoutMode.SINGLE_PAGE,
                             )
                         } else {
                             // 文字嵌入（行内图）：对照旧 `TextChapterLayout` 的 ImageColumn —— 占位宽
-                            // 恒为**一个字符格**（旧版就是替换字 袮/祢 的宽度），高按原图比例从该宽度
-                            // 换算，因此立图可以高于当前行；扁平宽图只占一格宽、很矮。
-                            val cellWidthPx = baseStyle.fontSizePx
-                            val aspect =
-                                size.heightPx.coerceAtLeast(1f) / size.widthPx.coerceAtLeast(1f)
+                            // 取占位字（书级文字嵌入固定 `袮`；单图 style 精确为 `"TEXT"` 时是 `꧁`）
+                            // 在**本段 paint** 下的实际 advance（不是字号），高按原图比例从该宽度换算，
+                            // 因此立图可以高于当前行；扁平宽图只占一格宽、很矮。
+                            // HTML 段落例外：旧 `setTypeHtml` 的占位宽/行盒高来自 ImageSpan 本身。
+                            val span = item.htmlSpanExtent
+                            val cellWidthPx = span?.widthPx
+                                ?: inlinePlaceholderWidth(layout.placeholder, baseStyle)
+                            val cellHeightPx = span?.heightPx ?: (
+                                    cellWidthPx * (size.heightPx.coerceAtLeast(1f) /
+                                            size.widthPx.coerceAtLeast(1f))
+                                    )
                             inline += ReaderMeasuredInlineItem.Image(
                                 source = item.source,
                                 widthPx = cellWidthPx,
-                                heightPx = cellWidthPx * aspect,
+                                heightPx = cellHeightPx,
                                 chapterPosition = item.chapterPosition,
-                                action = options?.action,
+                                action = if (layout.preservesAction) options?.action else null,
+                                // 旧 `setTypeHtml` 行末图宽 = `measureText("\uFFFC")`。
+                                lineFinalWidthPx = span?.let {
+                                    inlinePlaceholderWidth(
+                                        ReaderInlineImagePlaceholder.OBJECT_REPLACEMENT,
+                                        baseStyle,
+                                    )
+                                },
                             )
                         }
                     }
                     is ReaderChapterInlineSource.BlankLine -> Unit
                 }
             }
-            flushInline(skipBlank = hasStandaloneImage)
+            // 被剔除的段评图视同独立图参与空白抑制：整行图片段自带的缩进/空白
+            // 填充不再残留为空行（与「图不存在」的排版等价）
+            flushInline(skipBlank = hasStandaloneImage || droppedActionImage)
         }
         source.blocks.forEachIndexed { index, block ->
-            // 非段落块（独立图块 / 分页块）也要在块边界响应取消，与旧实现同粒度。（追更216e）
+            // 非段落块（独立图块 / 分页块）也要在块边界响应取消，与旧实现同粒度。
             currentCoroutineContext().ensureActive()
             when (block) {
                 is ReaderChapterSourceBlock.Text -> {
@@ -334,25 +470,40 @@ class ReaderChapterBlockMeasurer(
                     }
                 }
                 is ReaderChapterSourceBlock.Image -> {
+                    // 独立图块是新 core 的概念，没有对应的旧分支，按纯文本路径规则处理。
+                    val options = imageOptionsResolver.resolve(block.source, htmlParagraph = false)
+                    if (style.excludeActionImages && options?.action != null) return@forEachIndexed
+                    val layout = style.resolveImageLayout(options, htmlParagraph = false)
+                    if (layout.mode == ReaderImageLayoutMode.INLINE) {
+                        // 书级文字嵌入：独立图块同样按占位字行内排版（旧版所有 <img> 一律行内）。
+                        addStyledParagraph(
+                            items = listOf(
+                                ReaderChapterInlineSource.Image(
+                                    block.source,
+                                    block.chapterPosition
+                                ),
+                            ),
+                            isTitle = false,
+                            applyBodyIndent = false,
+                        )
+                        return@forEachIndexed
+                    }
                     val placeholderExtent = (style.bodyLineHeightPx ?: style.bodyStyle.fontSizePx)
                         .coerceAtLeast(1f)
                     val originalSize = imageDimensionsResolver.resolve(block.source)
                         ?: ReaderImageDimensions(placeholderExtent, placeholderExtent)
-                    val options = imageOptionsResolver.resolve(block.source)
                     val requestedWidth = options?.requestedWidthFraction?.let { fraction ->
                         style.imageAvailableWidthPx?.times(fraction)
                     } ?: options?.requestedWidthPx
                     val size = originalSize.withWidth(requestedWidth)
-                    val mode = options?.layoutMode ?: if (
-                        style.imagePageBreakBefore && style.imagePageBreakAfter
-                    ) ReaderImageLayoutMode.SINGLE_PAGE else style.imageLayoutMode
+                    val mode = layout.mode
                     blocks += ReaderMeasuredBlock.Image(
                         source = block.source,
                         intrinsicWidthPx = size.widthPx,
                         intrinsicHeightPx = size.heightPx,
                         chapterPosition = block.chapterPosition,
-                        action = options?.action,
-                        horizontalAlignment = options?.horizontalAlignment ?: ReaderTextAlignment.CENTER,
+                        action = if (layout.preservesAction) options?.action else null,
+                        horizontalAlignment = layout.alignment,
                         scaleMode = mode.toScaleMode(),
                         pageBreakBefore = mode == ReaderImageLayoutMode.SINGLE_PAGE,
                         pageBreakAfter = mode == ReaderImageLayoutMode.SINGLE_PAGE,
@@ -379,7 +530,7 @@ class ReaderChapterBlockMeasurer(
                             restLineMarginPx = paragraph.restLineMarginPx,
                             alignmentOverride = paragraph.alignment,
                             decorations = paragraph.decorations,
-                            justifyAtWordBoundaries = true,
+                            fromHtmlBlock = true,
                         )
                     }
                 }
@@ -429,6 +580,72 @@ private fun fallbackHtmlParagraphs(
     return paragraphs
 }
 
+/** 单张图的排版决策，行内源与独立图两个分支共用（见 [resolveImageLayout]）。 */
+private data class ReaderResolvedImageLayout(
+    val mode: ReaderImageLayoutMode,
+    val placeholder: ReaderInlineImagePlaceholder,
+    val alignment: ReaderTextAlignment,
+    /**
+     * 这一张图能否带上 src 尾随 JSON 解析出来的 click。
+     *
+     * false 只出现在根本没解析 JSON 的短路分支（书级文字嵌入、HTML 段落无 `,{...}`）：
+     * 那里没有动作可带。行内与整图两个分支都用它做闸门。
+     */
+    val preservesAction: Boolean,
+)
+
+/**
+ * 复刻旧 `TextChapterLayout` 的两条图片路径，它们的规则并不一致：
+ *
+ * **纯文本（`getTextChapter` 的 `else` 分支）**
+ * - 书级 `imgStyleText`（[ReaderImageLayoutMode.INLINE]）先整体短路：不解析单图 JSON，所有
+ *   `<img>` 一律用一个 `srcReplaceChar`（`袮`）占位行内排版。
+ * - 否则单图 style 才能覆盖书级；TEXT 只认字面量 `"text"`/`"TEXT"`，`"Text"` 走整图。
+ *
+ * **HTML 段落（`setTypeHtml`）**
+ * - 不受书级短路影响：书级 `imageStyle` 只是"单图 style 缺失"时的 fallback。
+ * - 单图 style 用 `iStyle?.uppercase() == "TEXT"`（不区分大小写）判内联。
+ * - src 里没有 `,{...}` 时直接 `setTypeImage(imageStyle)`：**不做 <80px 自动行内**，书级 TEXT
+ *   也会落到 `setTypeImage` 的 `else`（夹小整图）。
+ *
+ * `click` 只取决于那一支有没有解析 JSON：解析到了（`preservesAction`）行内图和整图都带动作，
+ * 书级文字嵌入的短路分支连 JSON 都没读，所以任何图都不带动作。
+ */
+private fun ReaderChapterMeasureStyle.resolveImageLayout(
+    options: ReaderImageOptions?,
+    htmlParagraph: Boolean,
+): ReaderResolvedImageLayout {
+    if (!htmlParagraph && imageLayoutMode == ReaderImageLayoutMode.INLINE) {
+        return ReaderResolvedImageLayout(
+            mode = ReaderImageLayoutMode.INLINE,
+            placeholder = ReaderInlineImagePlaceholder.SRC_REPLACE,
+            alignment = ReaderTextAlignment.CENTER,
+            preservesAction = false,
+        )
+    }
+    if (htmlParagraph && options == null) {
+        return ReaderResolvedImageLayout(
+            mode = ReaderImageLayoutMode.STANDALONE,
+            placeholder = ReaderInlineImagePlaceholder.SRC_REPLACE,
+            // 旧 `setTypeImage(imageStyle)`：对齐只认书级样式，默认居中。
+            alignment = imageAlignment ?: ReaderTextAlignment.CENTER,
+            preservesAction = false,
+        )
+    }
+    val mode = options?.layoutMode ?: if (imagePageBreakBefore && imagePageBreakAfter) {
+        ReaderImageLayoutMode.SINGLE_PAGE
+    } else {
+        imageLayoutMode
+    }
+    return ReaderResolvedImageLayout(
+        mode = mode,
+        placeholder = options?.inlinePlaceholder ?: ReaderInlineImagePlaceholder.SRC_REPLACE,
+        // 旧版对齐取自"有效样式"（单图 style 优先，缺失才回落到书级），不是链式兜底。
+        alignment = options?.horizontalAlignment ?: imageAlignment ?: ReaderTextAlignment.CENTER,
+        preservesAction = true,
+    )
+}
+
 private fun ReaderImageDimensions.withWidth(requestedWidthPx: Float?): ReaderImageDimensions {
     val width = requestedWidthPx?.takeIf { it > 0f && widthPx > 0f } ?: return this
     return ReaderImageDimensions(width, heightPx * width / widthPx)
@@ -462,5 +679,11 @@ private fun ReaderTextStyle.merge(override: ReaderCharacterStyle?): ReaderTextSt
         italic = override.italic ?: italic,
         fontSizePx = (fontSizePx + override.fontSizeOffsetPx).coerceAtLeast(1f),
         backgroundImage = override.backgroundImage ?: backgroundImage,
+        // 命中排版取较大者：两条规则在同一处命中时，留白要按「留得最多的那条」算，
+        // 后一条把前一条抹成 0 会让已生效的间距凭空消失。
+        matchSpacingBeforePx = maxOf(matchSpacingBeforePx, override.matchSpacingBeforePx),
+        matchSpacingAfterPx = maxOf(matchSpacingAfterPx, override.matchSpacingAfterPx),
+        linePadTopPx = maxOf(linePadTopPx, override.linePadTopPx),
+        linePadBottomPx = maxOf(linePadBottomPx, override.linePadBottomPx),
     )
 }

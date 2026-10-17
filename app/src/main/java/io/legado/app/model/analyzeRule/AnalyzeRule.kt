@@ -211,12 +211,16 @@ class AnalyzeRule(
                 val sourceRule = ruleList.first()
                 putRule(sourceRule.putMap)
                 sourceRule.makeUpRule(result)
-                // 对齐上游：JS/JSON 规则必须先按各自模式求值，再退化为键值直接访问。
-                // 少了前两个分支时，"$.name" / "@js:xxx" 会被当成字面量键名 → 返回空。
                 result = when {
+                    // 快捷路径同样要按 mode 分发（与下方通用路径一致）：`@js:` 书源列表
+                    // 规则产出的 JS 对象条目上，`$.x` / `@js:xxx` 若被当字面量键名处理会
+                    // 返回空，BookList 丢掉空书名条目 → 书源校验把搜索/发现误判为失效。
                     sourceRule.mode == Mode.Js -> evalJS(sourceRule.rule, result)
-                    sourceRule.mode == Mode.Json -> getAnalyzeByJSonPath(result).getStringList(sourceRule.rule)
+                    sourceRule.mode == Mode.Json ->
+                        getAnalyzeByJSonPath(result).getStringList(sourceRule.rule)
+                    // get {{}}
                     sourceRule.getParamSize() > 1 -> sourceRule.rule
+                    // 键值直接访问
                     else -> result[sourceRule.rule]
                 }
                 result?.let {
@@ -311,15 +315,18 @@ class AnalyzeRule(
                 val sourceRule = ruleList.first()
                 putRule(sourceRule.putMap)
                 sourceRule.makeUpRule(result)
-                // 对齐上游：JS/JSON 规则必须先按各自模式求值，再退化为键值直接访问。
-                // 少了前两个分支时，"$.name" / "@js:xxx" 会被当成字面量键名 → 返回空。
                 result = when {
-                    sourceRule.mode == Mode.Js -> evalJS(sourceRule.rule, result)?.toString()
-                    sourceRule.mode == Mode.Json -> getAnalyzeByJSonPath(result).getString(sourceRule.rule)
+                    // 与 getStringList 同理：JS 对象条目必须按 mode 分发，否则 `$.name`
+                    // 与 `@js:xxx` 都会被当字面量键名而返回空串。
+                    sourceRule.mode == Mode.Js -> evalJS(sourceRule.rule, result)
+                    sourceRule.mode == Mode.Json ->
+                        getAnalyzeByJSonPath(result).getString(sourceRule.rule)
+                    // get {{}}
                     sourceRule.getParamSize() > 1 -> sourceRule.rule
+                    // 键值直接访问
                     else -> result[sourceRule.rule]?.toString()
                 }?.let {
-                    replaceRegex(it, sourceRule)
+                    replaceRegex(it.toString(), sourceRule)
                 }
             } else if (result is LinkedTreeMap<*, *>) {
                 result = result[ruleList.first().rule]?.toString()

@@ -1,15 +1,15 @@
 package io.legado.app.ui.book.read
 
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.core.net.toUri
@@ -35,6 +35,7 @@ import io.legado.app.ui.book.read.sheet.ReaderMoreActionsSheet
 import io.legado.app.ui.book.read.sheet.ShadowSetSheet
 import io.legado.app.ui.book.read.sheet.SimulatedReadingSheet
 import io.legado.app.ui.book.read.sheet.TextProcessingSheet
+import io.legado.app.ui.book.read.sheet.TitleBarActionConfigSheet
 import io.legado.app.ui.book.read.sheet.ToolButtonConfigSheet
 import io.legado.app.ui.book.read.sheet.UnderlineConfigSheet
 import io.legado.app.ui.dict.DictSheet
@@ -42,10 +43,11 @@ import io.legado.app.ui.widget.components.FontFolderState
 import io.legado.app.ui.widget.components.FontSelectSheet
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.bookmark.BookmarkEditSheet
+import io.legado.app.ui.widget.components.button.series.MediumPlainButton
 import io.legado.app.ui.widget.components.changeSource.ChangeSourceSheet
+import io.legado.app.ui.widget.components.checkBox.CheckboxItem
 import io.legado.app.ui.widget.components.log.AppLogSheet
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
-import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.flow.collectLatest
 
@@ -143,20 +145,21 @@ fun ReadBookScreen(
         dismissText = stringResource(R.string.read_record_alias_keep_separate),
         onDismiss = { onIntent(ReadBookIntent.ResolveReadRecordAlias(false, rememberAliasChoice)) },
         content = {
-            Row(
-                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            Column(
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Checkbox(
+                CheckboxItem(
+                    title = stringResource(R.string.read_record_alias_remember),
                     checked = rememberAliasChoice,
                     onCheckedChange = { rememberAliasChoice = it },
                 )
-                AppText(stringResource(R.string.read_record_alias_remember))
-                TextButton(onClick = {
-                    onIntent(ReadBookIntent.ClearReadRecordAliasDecisions)
-                }) {
-                    AppText(stringResource(R.string.read_record_alias_revoke))
-                }
+                MediumPlainButton(
+                    onClick = {
+                        onIntent(ReadBookIntent.ClearReadRecordAliasDecisions)
+                    },
+                    modifier = Modifier.align(Alignment.End),
+                    text = stringResource(R.string.read_record_alias_revoke),
+                )
             }
         },
     )
@@ -262,6 +265,13 @@ fun ReadBookScreen(
     // for proper enter/exit animations
     val dismissSheet = { onIntent(ReadBookIntent.DismissSheet) }
 
+    // 听书下载悬浮窗：和其余卡片一样常挂，show 由 sheet 类型驱动，退场动画才有地方播
+    io.legado.app.ui.book.read.sheet.ReaderAudioDownloadSheet(
+        show = state.activeSheet is ReadBookSheet.AudioDownload,
+        onDismissRequest = dismissSheet,
+        menuConfig = state.menuConfig,
+    )
+
     ShadowSetSheet(
         show = state.activeSheet is ReadBookSheet.ShadowSet,
         config = state.sheetConfig,
@@ -346,10 +356,18 @@ fun ReadBookScreen(
         onDismissRequest = dismissSheet,
         onIntent = onIntent,
     )
+    TitleBarActionConfigSheet(
+        show = state.activeSheet is ReadBookSheet.TitleBarActionConfig,
+        items = state.menuConfig.titleBarActions,
+        customIcons = state.menuConfig.titleBarCustomIcons,
+        onDismissRequest = dismissSheet,
+        onIntent = onIntent,
+    )
     HighlightRuleConfigSheet(
         show = state.activeSheet is ReadBookSheet.HighlightRuleConfig,
         state = highlightRuleState,
         allConfigNames = state.sheetConfig.configNames,
+        config = state.sheetConfig,
         onDismissRequest = dismissSheet,
         onIntent = onIntent,
     )
@@ -460,6 +478,8 @@ fun ReadBookScreen(
                 },
             )
         }
+
+        is ReadBookSheet.AudioDownload -> Unit
 
         is ReadBookSheet.Charset -> {
             CharsetConfigSheet(

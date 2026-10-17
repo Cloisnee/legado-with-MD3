@@ -28,9 +28,11 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -723,27 +725,33 @@ fun BookItem(
     }
 
     val cover: @Composable (Modifier) -> Unit = { coverModifier ->
-        BookshelfCover(
-            name = book.name,
-            author = book.author,
-            path = book.getDisplayCover(),
-            isUpdating = isUpdating,
-            modifier = coverModifier,
-            coverModifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(5f / 7f),
-            sourceOrigin = book.origin,
-            // 传本书 bookUrl：封面命中本地（含别名）缓存时
-            // 不解析书源规则、不弹登录提示、不重新下载
-            bookUrl = book.bookUrl,
-            badgeText = if (layoutMode != 0) unreadText else null,
-            showBadgeDot = showUpdateBadge,
-            leftBottomText = matchedSourceLabel ?: bookTypeLabel,
-            showLoadingPlaceholder = true,
-            sharedTransitionScope = sharedTransitionScope,
-            animatedVisibilityScope = animatedVisibilityScope,
-            sharedCoverKey = sharedCoverKey,
-        )
+        Box(modifier = coverModifier) {
+            BookshelfCover(
+                name = book.name,
+                author = book.author,
+                path = book.getDisplayCover(),
+                isUpdating = isUpdating,
+                modifier = Modifier.fillMaxSize(),
+                coverModifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(5f / 7f),
+                sourceOrigin = book.origin,
+                // 传本书 bookUrl：封面命中本地（含别名）缓存时
+                // 不解析书源规则、不弹登录提示、不重新下载
+                bookUrl = book.bookUrl,
+                badgeText = if (layoutMode != 0) unreadText else null,
+                showBadgeDot = showUpdateBadge,
+                leftBottomText = matchedSourceLabel ?: bookTypeLabel,
+                showLoadingPlaceholder = true,
+                // 模糊与"已隐藏"叠加层都交给封面组件在**共享元素节点内部**渲染。
+                // 这是关键：转场时 overlay 只搬运 sharedBounds 节点自己的内容，
+                // 加在祖先上的 blur、放在外面的兄弟节点都会被落下，
+                // 表现就是"动画一开始模糊和点阵就没了"。
+                sharedTransitionScope = sharedTransitionScope,
+                animatedVisibilityScope = animatedVisibilityScope,
+                sharedCoverKey = sharedCoverKey,
+            )
+        }
     }
     val accessibilityLabel = bookAccessibilityLabel(
         name = book.name,
@@ -802,7 +810,18 @@ fun BookItem(
         desc = book.durChapterTitle ?: "",
         columnContent = if (showListDetails) {
             {
-                val kindList = bookUi.displayTags
+                val kindList = remember(
+                    book,
+                    settings.bookshelfShowCustomTags,
+                    settings.bookshelfShowSourceTags,
+                    settings.bookshelfShowWordCount,
+                ) {
+                    book.getDisplayTags(
+                        showCustomTags = settings.bookshelfShowCustomTags,
+                        showSourceTags = settings.bookshelfShowSourceTags,
+                        showWordCount = settings.bookshelfShowWordCount,
+                    )
+                }
                 if (settings.bookshelfShowTag && kindList.isNotEmpty()) {
                     Row(
                         modifier = Modifier

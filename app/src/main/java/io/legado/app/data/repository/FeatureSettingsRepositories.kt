@@ -133,6 +133,7 @@ internal fun Preferences.toDownloadCacheSettings(): DownloadCacheSettings =
         bitmapCacheSize = compatDsInt(PreferKey.bitmapCacheSize) ?: 50,
         imageRetainNum = compatDsInt(PreferKey.imageRetainNum) ?: 0,
         preDownloadNum = compatDsInt(PreferKey.preDownloadNum) ?: 10,
+        preDownloadNumPrev = compatDsInt(PreferKey.preDownloadNumPrev) ?: 0,
         threadCount = compatDsInt(PreferKey.threadCount) ?: 16,
         cacheBookThreadCount = compatDsInt(PreferKey.cacheBookThreadCount) ?: 16,
         userAgent = compatDsString(PreferKey.userAgent).orEmpty().ifBlank {
@@ -147,6 +148,7 @@ internal fun DownloadCacheSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.bitmapCacheSize to bitmapCacheSize,
     PreferKey.imageRetainNum to imageRetainNum,
     PreferKey.preDownloadNum to preDownloadNum,
+    PreferKey.preDownloadNumPrev to preDownloadNumPrev,
     PreferKey.threadCount to threadCount,
     PreferKey.cacheBookThreadCount to cacheBookThreadCount,
     PreferKey.userAgent to userAgent,
@@ -248,6 +250,7 @@ internal fun Preferences.toAppShellSettings(): AppShellSettings = AppShellSettin
     useFloatingBottomBarLiquidGlass =
         compatDsBoolean(PreferKey.useFloatingBottomBarLiquidGlass) ?: false,
     tabletInterface = compatDsString(PreferKey.tabletInterface) ?: "auto",
+    multiPaneMode = compatDsString(PreferKey.multiPaneMode) ?: "auto",
     labelVisibilityMode = compatDsString(PreferKey.labelVisibilityMode) ?: "auto",
     defaultHomePage = compatDsString(PreferKey.defaultHomePage) ?: "bookshelf",
     mainNavigationOrder = compatDsString(PreferKey.mainNavigationOrder)
@@ -280,6 +283,7 @@ internal fun AppShellSettings.toPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.useFloatingBottomBar to useFloatingBottomBar,
     PreferKey.useFloatingBottomBarLiquidGlass to useFloatingBottomBarLiquidGlass,
     PreferKey.tabletInterface to tabletInterface,
+    PreferKey.multiPaneMode to multiPaneMode,
     PreferKey.labelVisibilityMode to labelVisibilityMode,
     PreferKey.defaultHomePage to defaultHomePage,
     PreferKey.mainNavigationOrder to mainNavigationOrder,

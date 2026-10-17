@@ -80,6 +80,7 @@ data class BookInfoBookUi(
     val isLocal: Boolean,
     val type: Int,
     val canUpdate: Boolean,
+    val disableReadRecord: Boolean,
     val splitLongChapter: Boolean,
     val durChapterTitle: String?,
     val latestChapterTitle: String?,
@@ -236,6 +237,7 @@ sealed interface BookInfoIntent {
 
     /** 简介 HTML 图片长按。 */
     data class IntroImageLongClick(val source: String) : BookInfoIntent
+
 }
 
 sealed interface BookInfoEffect {
@@ -301,6 +303,7 @@ enum class BookInfoMenuAction {
     SyncRemote,
     Refresh,
     ReadRecord,
+    ToggleReadRecordDisabled,
     Login,
     Top,
     SetSourceVariable,

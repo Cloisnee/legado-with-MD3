@@ -1,7 +1,6 @@
 package io.legado.app.ui.book.read
 
 import android.content.Context
-import android.content.Intent
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -33,8 +32,10 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,13 +51,12 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
@@ -72,14 +72,14 @@ import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.ReadMenuBlurMode
-import io.legado.app.core.ui.morph.BookMorphHost
 import io.legado.app.feature.reader.ReaderBackgroundSurface
 import io.legado.app.feature.reader.ReaderCanvasSurface
 import io.legado.app.feature.reader.core.gesture.ReaderTapActionGrid
 import io.legado.app.feature.reader.core.model.readerBackgroundAlpha
+import io.legado.app.feature.reader.core.transition.ReaderPageTurnSpeed
 import io.legado.app.feature.reader.core.transition.ReaderTransitionMode
-import io.legado.app.feature.reader.core.transition.ReaderViewportLayerPolicy
 import io.legado.app.feature.reader.platform.ReaderPerfTrace
+import io.legado.app.help.IntentHelp
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.book.read.page.entities.PageDirection
@@ -88,7 +88,9 @@ import io.legado.app.ui.book.read.sheet.ReaderBookSourceActions
 import io.legado.app.ui.book.read.sheet.TextSelectMenuConfigSheet
 import io.legado.app.ui.book.searchContent.SearchContentResult
 import io.legado.app.ui.login.SourceLoginType
+import io.legado.app.ui.main.AndroidPlatformCapabilities
 import io.legado.app.ui.main.MainActivity
+import io.legado.app.ui.main.readerSharedBounds
 import io.legado.app.ui.replace.ReplaceEditRoute
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.LocalAppUiConfiguration
@@ -147,15 +149,22 @@ fun ReadBookRouteScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     sharedCoverKey: String? = null,
+    isTopRoute: Boolean = true,
     onEffectsReady: () -> Unit = {},
     onOpenSearch: (word: String?, bookUrl: String, autoFocus: Boolean) -> Unit = { _, _, _ -> },
     onOpenBookInfo: (name: String, author: String, bookUrl: String) -> Unit,
     onOpenToc: (bookUrl: String, initialPage: Int) -> Unit,
+    /** 「本地目录规则」：菜单入口打开规则预览页；应用结果由宿主的书页结果通道回灌。 */
+    onOpenTocRulePreview: (bookUrl: String, tocRegex: String?) -> Unit = { _, _ -> },
     onOpenReplaceRule: (bookUrl: String?, editor: ReplaceEditRoute?) -> Unit,
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit = { _, _, _ -> },
     onOpenReadAloudPlayer: () -> Unit = {},
-    onNavigateBack: () -> Unit = {},
+    onOpenTtsCache: () -> Unit = {},
+    onNavigateBack: () -> Boolean = { true },
 ) {
+    // 归因定界：与末尾 compose.screen.end 成对。若首帧 `Compose:recompose` 里出现
+    // begin 之前的空档，说明那部分耗时在本屏之外（导航宿主 / 共享转场层）。
+    ReaderPerfTrace.marker("compose.screen.begin")
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val readPreferences by viewModel.readPreferences.collectAsStateWithLifecycle()
     val markingState by viewModel.markingState.collectAsStateWithLifecycle()
@@ -197,21 +206,35 @@ fun ReadBookRouteScreen(
                     !state.menuConfig.readMenuFloatingBottomBar &&
                             state.menuConfig.readMenuBottomBarBlurMode == ReadMenuBlurMode.LiquidGlass
                     )
-    val canMorphBack = state.activeSheet == null &&
-            !state.isShowingSearchResult &&
-            !state.isAutoPage &&
-            !state.menuState.canNavigateBack &&
-            state.activeDialog == null
+    val canHandleBack = isTopRoute
 
-    BackHandler(enabled = !canMorphBack) {
-        when {
+    var isDismissed by remember { mutableStateOf(false) }
+
+    val performExit: () -> Boolean = {
+        if (isDismissed) {
+            true
+        } else {
+            onNavigateBack().also { popped ->
+                if (popped) isDismissed = true
+            }
+        }
+    }
+
+    val requestClose: () -> Unit = {
+        if (!isDismissed) {
+            viewModel.onIntent(ReadBookIntent.CloseReadBook())
+        }
+    }
+
+    BackHandler(enabled = canHandleBack) {        when {
             state.activeSheet != null -> viewModel.onIntent(ReadBookIntent.DismissSheet)
             state.isShowingSearchResult -> viewModel.onIntent(ReadBookIntent.ExitSearch)
             state.isAutoPage -> viewModel.onIntent(ReadBookIntent.StopAutoPage)
             state.menuState.canNavigateBack -> viewModel.onIntent(ReadBookIntent.ReadMenuBack)
-            else -> viewModel.onIntent(ReadBookIntent.CloseReadBook())
+            else -> requestClose()
         }
     }
+
     DisposableEffect(controller) {
         controller.onComposeRendererAttached()
         onDispose {
@@ -310,16 +333,6 @@ fun ReadBookRouteScreen(
         uri?.let { viewModel.onIntent(ReadBookIntent.BookmarkBadgeImageSelected(it)) }
     }
 
-    val txtTocRuleLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            result.data?.getStringExtra("tocRegex")?.let { rule ->
-                viewModel.onIntent(ReadBookIntent.TocRegexResult(rule))
-            }
-        }
-    }
-
     val importHighlightRulePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -399,6 +412,7 @@ fun ReadBookRouteScreen(
                             is ReadBookEffect.OpenSearch -> {
                                 onOpenSearch(effect.word, effect.bookUrl, effect.autoFocus)
                             }
+                            ReadBookEffect.OpenTtsCache -> onOpenTtsCache()
                             is ReadBookEffect.MenuSettingReplace -> {
                                 onOpenReplaceRule(ReadBook.book?.bookUrl, null)
                             }
@@ -419,13 +433,7 @@ fun ReadBookRouteScreen(
                                 onOpenReplaceRule(ReadBook.book?.bookUrl, editRoute)
                             }
                             is ReadBookEffect.MenuTocRegex -> {
-                                val intent = Intent(
-                                    context,
-                                    io.legado.app.ui.book.toc.rule.preview.TxtTocRulePreviewActivity::class.java
-                                )
-                                intent.putExtra("bookUrl", effect.bookUrl)
-                                intent.putExtra("tocRegex", effect.tocRegex)
-                                txtTocRuleLauncher.launch(intent)
+                                onOpenTocRulePreview(effect.bookUrl, effect.tocRegex)
                             }
                             is ReadBookEffect.OpenFontFolderPicker -> {
                                 fontFolderPicker.launch(null)
@@ -467,6 +475,10 @@ fun ReadBookRouteScreen(
 
                             is ReadBookEffect.OpenHighlightRuleExportPicker -> {
                                 exportHighlightRulePicker.launch("highlightRule.json")
+                            }
+
+                            is ReadBookEffect.Finish -> {
+                                if (!isDismissed) performExit()
                             }
 
                             // All other effects — delegate to bridge (View/Window/Activity operations)
@@ -603,12 +615,10 @@ fun ReadBookRouteScreen(
     // swaps a simulated-page turn to its cached/placeholder successor. Keeping the last complete
     // window for that gap prevents the root reader background from becoming a visible fallback.
     var lastReadablePageWindow by remember {
-        mutableStateOf<io.legado.app.feature.reader.core.model.ReaderPageWindow?>(
-            null
-        )
+        mutableStateOf(readerPageWindow.takeIf { it.current != null })
     }
-    LaunchedEffect(readerPageWindow.current?.id, readerPageWindow.current?.layoutRevision) {
-        if (readerPageWindow.current != null) lastReadablePageWindow = readerPageWindow
+    if (readerPageWindow.current != null && lastReadablePageWindow !== readerPageWindow) {
+        lastReadablePageWindow = readerPageWindow
     }
     val displayedReaderPageWindow =
         readerPageWindow.takeIf { it.current != null } ?: lastReadablePageWindow
@@ -617,47 +627,35 @@ fun ReadBookRouteScreen(
     // 真正的排版失败仍要让位给可重试的错误态，不能留着过期正文。
     val hasReadablePage = displayedReaderPageWindow?.current != null &&
             readerPaginationError == null
-    var readerContentRevealAllowed by remember(sharedCoverKey) {
-        mutableStateOf(sharedCoverKey == null || animatedVisibilityScope == null)
-    }
-    LaunchedEffect(sharedCoverKey, animatedVisibilityScope) {
-        if (!readerContentRevealAllowed) {
-            delay(240)
-            readerContentRevealAllowed = true
+    var firstReadablePageTraced by remember { mutableStateOf(false) }
+    LaunchedEffect(hasReadablePage) {
+        if (hasReadablePage && !firstReadablePageTraced) {
+            firstReadablePageTraced = true
+            ReaderPerfTrace.marker("surface.page-ready")
         }
     }
-    var isDismissed by remember { mutableStateOf(false) }
-    var closingFromController by remember { mutableStateOf(false) }
-    val dismissReader: () -> Unit = {
-        if (!isDismissed) {
-            isDismissed = true
-            if (!closingFromController) {
-                viewModel.onIntent(ReadBookIntent.CloseReadBook())
-            }
-            onNavigateBack()
-        }
-    }
-
-    BookMorphHost(
-        anchorKey = sharedCoverKey,
-        backgroundColor = readerPlaceholderColor,
-        backEnabled = canMorphBack,
-        predictiveBackEnabled = true,
-        onDismiss = dismissReader,
-    ) { onCollapse ->
-        LaunchedEffect(onCollapse) {
-            controller.onClose = {
-                closingFromController = true
-                onCollapse()
-            }
-        }
-        Box(
-            Modifier
-                .fillMaxSize()
-                .semantics { testTagsAsResourceId = true }
-                .background(readerPlaceholderColor)
-        ) {
-        Box(
+    val platformCapabilities =
+        remember(controller) { AndroidPlatformCapabilities(controller.activity) }
+    val displayConfiguration = LocalConfiguration.current
+    val displayCornerRadiusPx =
+        remember(displayConfiguration) { platformCapabilities.displayCornerRadiusPx }
+    // 控制器自己发起的关闭（菜单里的「退出阅读」等）复用同一条退栈路径。
+    SideEffect { controller.onClose = requestClose }
+    // 阅读页是普通 nav3 目的地：转场是 `readerEntryMetadata` 的 600ms 交叉淡入淡出，
+    // 封面飞行交给共享元素 —— 正文被当成「只裁剪、不缩放」的一块面，从封面那一格长到满屏。
+    Box(
+        Modifier
+            .fillMaxSize()
+            .semantics { testTagsAsResourceId = true }
+            .readerSharedBounds(
+                sharedTransitionScope = sharedTransitionScope,
+                animatedVisibilityScope = animatedVisibilityScope,
+                sharedCoverKey = sharedCoverKey,
+                displayCornerRadiusPx = displayCornerRadiusPx,
+                density = density,
+            )
+            .background(readerPlaceholderColor)
+    ) {        Box(
             Modifier
                 .fillMaxSize()
                 .onSizeChanged { size ->
@@ -669,30 +667,35 @@ fun ReadBookRouteScreen(
                     )
                 }
         ) {
-            // 滚动模式的背景由画布内的固定层绘制（画布还要当菜单 haze 的源），根层再画一遍
-            // 会让半透明背景图叠加两次、比设置值更浓，且与分页模式（页面自绘不透明底色挡住
-            // 根层，实际只画一次）观感不一致。画布可见时让出根层，其它状态仍由根层兜底。
-            val readerCanvasVisible = readerContentRevealAllowed && hasReadablePage
+            // 背景由画布自己负责：滚动模式是画布内的固定层，分页模式是每页自绘的不透明底色
+            // 与背景图（`readerSurfaceColor` 不透明，根层这一遍会被整屏遮住）。画布可见时
+            // 一律让出根层，否则每个翻页帧都要重画一次未压缩的全屏背景位图；画布不可见
+            // （首个可读页之前、退出之后）仍由根层兜底。
+            val readerCanvasVisible = hasReadablePage
             val readerTransitionMode = ReaderTransitionMode.fromPageAnim(controller.pageAnim)
-            if (!(ReaderViewportLayerPolicy.usesFixedBackground(readerTransitionMode) &&
-                        readerCanvasVisible)
-            ) {
+            if (!readerCanvasVisible) {
+                // 归因用：成对 marker 夹住子树，其间隔即该子树的组合耗时（都在
+                // `Compose:recompose` 之内）。子系统不用 tracing 时 marker 是空操作。
+                ReaderPerfTrace.marker("compose.background.begin")
                 ReaderBackgroundSurface(
                     backgroundImage = readerBackground.drawable,
                     backgroundImageAlpha = readerBackgroundAlpha(state.styleConfig.bgAlpha),
                     modifier = Modifier.fillMaxSize(),
                     animateAppearance = true,
                 )
+                ReaderPerfTrace.marker("compose.background.end")
             }
             AnimatedVisibility(
                 visible = readerCanvasVisible,
                 enter = fadeIn(animationSpec = tween(400)),
                 exit = fadeOut(animationSpec = tween(450)),
             ) {
+                ReaderPerfTrace.marker("compose.canvas.begin")
                 ReaderCanvasSurface(
                     hostPages = displayedReaderPageWindow ?: readerPageWindow,
+                    redrawRevision = readerRenderState.redrawRevision,
                     transitionMode = readerTransitionMode,
-                backgroundColor = readerSurfaceColor,
+                    pageTurnSpeed = ReaderPageTurnSpeed.fromValue(state.styleConfig.pageAnimSpeed),                backgroundColor = readerSurfaceColor,
                 backgroundImage = readerBackground.drawable,
                 backgroundRevision = readerBackground.revision,
                 backgroundImageAlpha = readerBackgroundAlpha(state.styleConfig.bgAlpha),
@@ -702,6 +705,11 @@ fun ReadBookRouteScreen(
                 autoPageIndicatorColor = LegadoTheme.colorScheme.primary,
                 modifier = Modifier
                     .fillMaxSize()
+                    .then(
+                        if (displayedReaderPageWindow?.current?.isPlaceholder == false) {
+                            Modifier.testTag("reader_content")
+                        } else Modifier
+                    )
                     .then(
                         if (useMenuHazeSource) {
                             Modifier.hazeSource(menuHazeState)
@@ -754,6 +762,7 @@ fun ReadBookRouteScreen(
                     externalSelections = controller.composeSelections,
                     onVisibleBodyTextPositionProvider = controller::setComposeVisibleBodyTextPositionProvider,
                 )
+                ReaderPerfTrace.marker("compose.canvas.end")
             }
             AnimatedVisibility(
                 // 旧 View 把消息画成页（chrome 保留）；只有画布无从成页（还没有窗口/视口）
@@ -797,6 +806,7 @@ fun ReadBookRouteScreen(
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
+        ReaderPerfTrace.marker("compose.chrome.begin")
         ReadBookColorTheme(
             styleConfig = state.styleConfig,
             preferences = readPreferences,
@@ -824,7 +834,6 @@ fun ReadBookRouteScreen(
                 onIntent = viewModel::onIntent,
                 seekState = viewModel.seekState,
             )
-            // 朗读胶囊改由全局叠层（ReadAloudShellHost）承载，本页不再内联渲染，避免双胶囊。
             if (featureOverlaysInitialized) {
                 ReadBookOverlayRoute(
                     viewModel = viewModel,
@@ -842,11 +851,15 @@ fun ReadBookRouteScreen(
                 )
             }
             val bookNavigationSheet = state.activeSheet as? ReadBookSheet.BookNavigation
+            ReaderPerfTrace.marker("compose.sheet.begin")
             ReaderBookSheetRoute(
                 show = bookNavigationSheet != null,
                 bookUrl = state.book?.bookUrl.orEmpty(),
                 initialTab = bookNavigationSheet?.initialTab
                     ?: io.legado.app.ui.book.read.sheet.ReaderBookSheetTab.Information,
+                onEditLocalTocRule = { regex ->
+                    state.book?.bookUrl?.let { onOpenTocRulePreview(it, regex) }
+                },
                 onDismissRequest = { viewModel.onIntent(ReadBookIntent.DismissSheet) },
                 onChapterClick = { index, chapterPos ->
                     viewModel.onIntent(ReadBookIntent.DismissSheet)
@@ -887,6 +900,8 @@ fun ReadBookRouteScreen(
                     onDisable = { viewModel.onIntent(ReadBookIntent.DisableSource) },
                 ),
             )
+            ReaderPerfTrace.marker("compose.sheet.end")
+            ReaderPerfTrace.marker("compose.selection.begin")
             ReaderTextSelectionOverlay(
                 controller = controller,
                 viewModel = viewModel,
@@ -903,6 +918,7 @@ fun ReadBookRouteScreen(
                     configItems = emptyList()
                 }
             }
+            ReaderPerfTrace.marker("compose.selection.end")
             TextSelectMenuConfigSheet(
                 show = showSelectMenuConfigSheet,
                 items = configItems,
@@ -919,7 +935,7 @@ fun ReadBookRouteScreen(
                 onSaved = { items -> controller.saveMenuConfig(items) }
             )
         }
-    }
+        ReaderPerfTrace.marker("compose.chrome.end")
     }
     ReaderPerfTrace.marker("compose.screen.end")
 }

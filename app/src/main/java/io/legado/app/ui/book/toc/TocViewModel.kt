@@ -28,7 +28,9 @@ import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isMobi
 import io.legado.app.help.bookmark.BookmarkExporter
+import io.legado.app.help.readaloud.playback.ReadAloudAudioStore
 import io.legado.app.model.CacheBook
+import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.cache.CacheBookDownloadState
 import io.legado.app.model.localBook.EpubFile
@@ -84,7 +86,8 @@ data class TocItemUi(
     val isDur: Boolean,
     val isSelected: Boolean,
     val downloadState: DownloadState,
-    val wordCount: String?
+    val wordCount: String?,
+    val hasAudioDownload: Boolean
 ) : SelectableItem<Int>
 
 @Immutable
@@ -171,7 +174,8 @@ sealed interface TocEffect {
 data class TocDomainItem(
     val chapter: BookChapter,
     val displayTitle: String,
-    val downloadState: DownloadState
+    val downloadState: DownloadState,
+    val hasAudioDownload: Boolean = false
 )
 
 private data class DownloadContext(
@@ -277,20 +281,22 @@ class TocViewModel(
     private val cachedChapterRescan = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     private val _cachedChapterIndices: StateFlow<Set<Int>> = bookState.filterNotNull()
-        .map { it.bookUrl }
+        .map { it.bookUrl to it.getFolderName() }
         .distinctUntilChanged()
-        .flatMapLatest { bookUrl ->
+        .flatMapLatest { (bookUrl, _) ->
             flow {
-                val book = bookRepository.getBook(bookUrl) ?: return@flow
-                suspend fun scanCached(): Set<Int> = bookRepository.getChapters(bookUrl)
-                    .filter { chapter ->
-                        // 显示用宽松判定：有正文即算已缓存（缺图不再判为未缓存）；
-                        // 下载是否需要补图仍用严格的 isChapterCacheComplete。
-                        chapter.isVolume || withContext(Dispatchers.IO) {
-                            BookHelp.hasContent(book, chapter)
+                suspend fun scanCached(): Set<Int> {
+                    val book = bookRepository.getBook(bookUrl) ?: return emptySet()
+                    return bookRepository.getChapters(bookUrl)
+                        .filter { chapter ->
+                            // 显示用宽松判定：有正文即算已缓存（缺图不再判为未缓存）；
+                            // 下载是否需要补图仍用严格的 isChapterCacheComplete。
+                            chapter.isVolume || withContext(Dispatchers.IO) {
+                                BookHelp.hasContent(book, chapter)
+                            }
                         }
-                    }
-                    .mapTo(mutableSetOf()) { it.index }
+                        .mapTo(mutableSetOf()) { it.index }
+                }
 
                 var cached = scanCached()
                 emit(cached)
@@ -304,7 +310,9 @@ class TocViewModel(
                         scanCached()
                     } else if (chapter.isVolume ||
                         withContext(Dispatchers.IO) {
-                            BookHelp.hasContent(book, chapter)
+                            bookRepository.getBook(bookUrl)?.let {
+                                BookHelp.hasContent(it, chapter)
+                            } == true
                         }
                     ) {
                         cached + chapter.index
@@ -474,13 +482,28 @@ class TocViewModel(
     private var titleCacheJob: Job? = null
     private var lastTitleCacheKey: TitleCacheKey? = null
 
+    /** 目录行右侧那两枚状态图标的数据源：本章分配过角色 / 本章下载过听书音频。 */
+    private data class TocStatusFlags(
+        val assigned: Set<Int> = emptySet(),
+        val downloaded: Set<Int> = emptySet(),
+    )
+
+    private val statusFlagsFlow: Flow<TocStatusFlags> = bookUrlFlow
+        .filterNotNull()
+        .flatMapLatest { url ->
+            ReadAloudAudioStore.flowDownloadedChapters(url)
+                .map { downloaded -> TocStatusFlags(emptySet(), downloaded) }
+        }
+        .flowOn(Dispatchers.IO)
+
     override val rawDataFlow: Flow<List<TocDomainItem>> = combine(
         bookState.filterNotNull().map { it.bookUrl }.distinctUntilChanged()
             .flatMapLatest { bookRepository.flowChapters(it) },
         downloadContextFlow,
         uiConfigFlow,
-        titleReplaceState
-    ) { originalChapters, downloadCtx, config, titleState ->
+        titleReplaceState,
+        statusFlagsFlow
+    ) { originalChapters, downloadCtx, config, titleState, statusFlags ->
         val book = bookState.value ?: return@combine emptyList()
 
         val processedChapters = if (config.isReverse) {
@@ -513,7 +536,8 @@ class TocViewModel(
                 TocDomainItem(
                     chapter = chapter,
                     displayTitle = titleState.titles[chapter.index] ?: baseTitle,
-                    downloadState = DownloadState.LOCAL
+                    downloadState = DownloadState.LOCAL,
+                    hasAudioDownload = chapter.index in statusFlags.downloaded,
                 )
             }
         }
@@ -537,7 +561,8 @@ class TocViewModel(
             TocDomainItem(
                 chapter,
                 titleState.titles[chapter.index] ?: baseTitle,
-                downloadState
+                downloadState,
+                statusFlags.downloaded.contains(chapter.index),
             )
         }
 
@@ -607,7 +632,8 @@ class TocViewModel(
             isDur = false,
             isSelected = false,
             downloadState = downloadState,
-            wordCount = wordCountText
+            wordCount = wordCountText,
+            hasAudioDownload = hasAudioDownload,
         )
     }
 
@@ -864,6 +890,7 @@ class TocViewModel(
             clearSelection()
         }
     }
+
 
     fun downloadSelected() {
         val book = bookState.value ?: return

@@ -207,6 +207,16 @@ fun CharacterManageScreen(
         edVoice = r.voice
     }
 
+    // 保存后的终态类型/年龄：入库联动（裸属→路人、特殊→特殊）优先于界面上的类型选择
+    fun draftFinalRole(): String = when (pendingJoinKind) {
+        "裸属" -> "路人"
+        "特殊" -> "特殊"
+        else -> edRole
+    }
+
+    fun draftFinalAge(role: String = draftFinalRole()): String =
+        if (role == "特殊") "系统" else edAge
+
     fun commitEdit() {
         val idx = editIdx ?: return
         val target = records.getOrNull(idx) ?: return
@@ -216,9 +226,9 @@ fun CharacterManageScreen(
             context.toastOnUi("主名不能为空")
             return
         }
-        val actualAge = if (edRole == "特殊") "系统" else edAge
         // 入库联动：保存时统一落「转池 / 加【第N章】后缀（n=首次出场章节）/ 剧本同步」
         val joinKind = pendingJoinKind
+        val actualAge = draftFinalAge()
         var finalName = newName
         val finalRole = when (joinKind) {
             "裸属" -> "路人"
@@ -227,7 +237,9 @@ fun CharacterManageScreen(
         }
         if (joinKind == "裸属") {
             val first = target.appearanceChapters.minOrNull()
-            if (first != null) finalName = newName + "【第${first + 1}章】"
+            if (first != null && !newName.contains("【第")) {
+                finalName = newName + "【第${first + 1}章】"
+            }
         }
         scope.launch {
             // 「复制元素 + 换新列表」：原地修改 + 结构等价会让 Compose 判无变化、不重组
@@ -267,9 +279,11 @@ fun CharacterManageScreen(
             return
         }
         // 类型切换自动标记（核心/特殊→路人 加【第N章】；路人→核心/特殊 去【第N章】）
+        // 入库联动（裸属/特殊）优先：终态类型才是校验与后缀的依据
+        val finalRole = draftFinalRole()
         val oldType = target.roletype.ifBlank { "核心" }
         var name = newName
-        if (oldType != "路人" && edRole == "路人") {
+        if (oldType != "路人" && finalRole == "路人") {
             if (!name.contains("【第")) {
                 var lc = target.lastAppearanceChapter
                 if (lc < 0 && target.appearanceChapters.isNotEmpty()) {
@@ -277,15 +291,15 @@ fun CharacterManageScreen(
                 }
                 name = name + "【第" + (if (lc >= 0) lc + 1 else 1) + "章】"
             }
-        } else if (oldType == "路人" && edRole != "路人") {
+        } else if (oldType == "路人" && finalRole != "路人") {
             if (name.length > 3 && name.endsWith("】") && name.contains("【第")) {
                 val mark = name.lastIndexOf("【第")
                 if (mark > 0) name = name.substring(0, mark)
             }
         }
         edName = name
-        val actualAge = if (edRole == "特殊") "系统" else edAge
-        val expected = repo.expectedVoicePrefix(edRole, edGender, actualAge)
+        val finalAge = draftFinalAge(finalRole)
+        val expected = repo.expectedVoicePrefix(finalRole, edGender, finalAge)
         val prefix = repo.voiceAgePrefix(edVoice)
         if (edVoice.isNotEmpty() && prefix != expected) {
             mismatchConfirm = true
@@ -887,8 +901,8 @@ fun CharacterManageScreen(
                 title = "声线",
                 description = edVoice.ifBlank { "未设置（点按选择）" },
                 onClick = {
-                    val actualAge = if (edRole == "特殊") "系统" else edAge
-                    picker = VoiceTagPickRequest(edRole, edGender, actualAge, "选择声线") {
+                    val role = draftFinalRole()
+                    picker = VoiceTagPickRequest(role, edGender, draftFinalAge(role), "选择声线") {
                         edVoice = it
                     }
                 },
@@ -1174,15 +1188,19 @@ fun CharacterManageScreen(
         onDismissRequest = { mismatchConfirm = false },
         title = "音色与性别/年龄不符",
         text = "当前音色「$edVoice」与类型/性别/年龄（期望前缀「${
-            repo.expectedVoicePrefix(edRole, edGender, if (edRole == "特殊") "系统" else edAge)
+            repo.expectedVoicePrefix(
+                draftFinalRole(),
+                edGender,
+                draftFinalAge(draftFinalRole()),
+            )
         }」）不一致。\n\n确认：保留该音色直接保存\n取消：重新选择匹配的音色",
         confirmText = "确认",
         onConfirm = { commitEdit() },
         dismissText = "取消",
         onDismiss = {
             mismatchConfirm = false
-            val actualAge = if (edRole == "特殊") "系统" else edAge
-            picker = VoiceTagPickRequest(edRole, edGender, actualAge, "选择声线") {
+            val role = draftFinalRole()
+            picker = VoiceTagPickRequest(role, edGender, draftFinalAge(role), "选择声线") {
                 edVoice = it
             }
         },

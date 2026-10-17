@@ -2,7 +2,6 @@ package io.legado.app.ui.ttssrv
 
 import android.app.Application
 import android.widget.LinearLayout
-import android.content.ClipData
 import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,12 +25,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.foundation.background
@@ -55,8 +52,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,7 +59,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.legado.app.R
-import io.legado.app.data.entities.HttpTTS
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
 import io.legado.app.data.repository.AuditionOutcome
@@ -104,11 +98,9 @@ import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
-import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
-import io.legado.app.utils.GSON
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -199,13 +191,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var detailText by remember { mutableStateOf<String?>(null) }
 
     var showEngineSheet by remember { mutableStateOf(false) }
-    var engineList by remember { mutableStateOf<List<HttpTTS>>(emptyList()) }
-    var engineEditor by remember { mutableStateOf<HttpTTS?>(null) }
-    var isNewEngine by remember { mutableStateOf(false) }
-    var engineMenuOpen by remember { mutableStateOf(false) }
-    var showNetImport by remember { mutableStateOf(false) }
-    var netImportUrl by remember { mutableStateOf("") }
-    var showDeleteEngine by remember { mutableStateOf<HttpTTS?>(null) }
 
     var showDeleteEntry by remember { mutableStateOf<EntryRow?>(null) }
     var renameTarget by remember { mutableStateOf<EntryRow?>(null) }
@@ -294,7 +279,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             plugins = repo.loadPlugins()
             groups = repo.loadGroups()
             engineValue = repo.currentEngineValue()
-            engineList = repo.loadHttpTtsList()
             engineLoaded = true
         }
     }
@@ -671,43 +655,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     context.toastOnUi(msg)
                     reload()
                 }
-            }
-        }
-    }
-
-    val engineImportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val text = runCatching {
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)
-                            ?.bufferedReader()?.use { it.readText() }
-                    }
-                }.getOrNull()
-                if (text.isNullOrBlank()) {
-                    context.toastOnUi("读取文件为空或失败")
-                } else {
-                    context.toastOnUi(repo.importHttpTts(text))
-                    reload()
-                }
-            }
-        }
-    }
-
-    val engineExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val json = repo.exportHttpTtsJson()
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(json.toByteArray())
-                    }
-                }
-                context.toastOnUi("导出成功")
             }
         }
     }
@@ -2489,7 +2436,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 引擎切换（MD3：添加/编辑/删除/导入导出/全局直选） ----------------
+    // ---------------- 引擎切换（MD3：系统 / 内置两档全局直选） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
         show = showEngineSheet,
@@ -2497,60 +2444,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         title = "切换朗读引擎",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                MediumTonalButton(
-                    onClick = {
-                        isNewEngine = true
-                        engineEditor = HttpTTS(name = "", url = "", speed = 5)
-                    },
-                    icon = Icons.Default.Add,
-                    contentDescription = "添加引擎",
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Box {
-                    MediumTonalButton(
-                        onClick = { engineMenuOpen = true },
-                        icon = Icons.Default.MoreVert,
-                        contentDescription = "更多",
-                    )
-                    RoundDropdownMenu(
-                        expanded = engineMenuOpen,
-                        onDismissRequest = { engineMenuOpen = false },
-                    ) {
-                        RoundDropdownMenuItem(
-                            text = "本地导入",
-                            onClick = {
-                                engineMenuOpen = false
-                                engineImportLauncher.launch(
-                                    arrayOf("application/json", "text/plain", "*/*")
-                                )
-                            },
-                        )
-                        RoundDropdownMenuItem(
-                            text = "网络导入",
-                            onClick = {
-                                engineMenuOpen = false
-                                netImportUrl = ""
-                                showNetImport = true
-                            },
-                        )
-                        RoundDropdownMenuItem(
-                            text = "导出",
-                            onClick = {
-                                engineMenuOpen = false
-                                engineExportLauncher.launch("httpTTS.json")
-                            },
-                        )
-                    }
-                }
-            }
-
             fun selectEngine(value: String?) {
                 showEngineSheet = false
                 scope.launch {
@@ -2574,92 +2467,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 editable = false,
                 onSelect = { selectEngine(TtsServerCenterRepository.BUILTIN_ENGINE_JSON) },
             )
-            engineList.forEach { h ->
-                EngineRow(
-                    label = "在线朗读 · ${h.name}",
-                    subtitle = h.url,
-                    current = engineValue == h.id.toString(),
-                    editable = true,
-                    onSelect = { selectEngine(h.id.toString()) },
-                    onEdit = {
-                        isNewEngine = false
-                        engineEditor = h
-                    },
-                    onDelete = { showDeleteEngine = h },
-                )
-            }
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
-
-    // ---------------- 引擎编辑器（复刻原版添加云 TTS 参数） ----------------
-    EngineEditorSheet(
-        value = engineEditor,
-        isNew = isNewEngine,
-        onDismiss = { engineEditor = null },
-        onSave = { saved ->
-            engineEditor = null
-            scope.launch {
-                repo.saveHttpTts(saved)
-                context.toastOnUi("已保存")
-                reload()
-            }
-        },
-    )
-
-    AppAlertDialog(
-        show = showNetImport,
-        onDismissRequest = { showNetImport = false },
-        title = "网络导入引擎",
-        content = {
-            AppTextField(
-                value = netImportUrl,
-                onValueChange = { netImportUrl = it },
-                label = "URL（httpTTS.json / 直链）",
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
-        confirmText = "导入",
-        onConfirm = {
-            val url = netImportUrl.trim()
-            showNetImport = false
-            if (url.isNotBlank()) {
-                scope.launch {
-                    context.toastOnUi("下载中…")
-                    context.toastOnUi(repo.importHttpTts(url))
-                    reload()
-                }
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { showNetImport = false },
-    )
-
-    AppAlertDialog(
-        show = showDeleteEngine != null,
-        onDismissRequest = { showDeleteEngine = null },
-        title = "删除引擎",
-        text = "确认删除「在线朗读 · ${showDeleteEngine?.name.orEmpty()}」？",
-        confirmText = "删除",
-        onConfirm = {
-            val h = showDeleteEngine ?: return@AppAlertDialog
-            showDeleteEngine = null
-            scope.launch {
-                repo.deleteHttpTts(h.id)
-                if (engineValue == h.id.toString()) {
-                    repo.applyEngine(
-                        TtsServerCenterRepository.BUILTIN_ENGINE_JSON,
-                        forBook = false,
-                    )
-                }
-                context.toastOnUi("已删除")
-                reload()
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { showDeleteEngine = null },
-    )
 
     // ---------------- 删除确认（单条） ----------------
     AppAlertDialog(
@@ -2886,215 +2696,6 @@ private fun EngineRow(
         },
         modifier = Modifier.fillMaxWidth(),
     )
-}
-
-@Composable
-private fun EngineEditorSheet(
-    value: HttpTTS?,
-    isNew: Boolean,
-    onDismiss: () -> Unit,
-    onSave: (HttpTTS) -> Unit,
-) {
-    var cached by remember { mutableStateOf(value) }
-    if (value != null) cached = value
-    val source = cached ?: return
-    val context = LocalContext.current
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-
-    var name by remember(source) { mutableStateOf(source.name) }
-    var url by remember(source) { mutableStateOf(source.url) }
-    var contentType by remember(source) { mutableStateOf(source.contentType.orEmpty()) }
-    var concurrentRate by remember(source) { mutableStateOf(source.concurrentRate ?: "0") }
-    var header by remember(source) { mutableStateOf(source.header.orEmpty()) }
-    var loginUrl by remember(source) { mutableStateOf(source.loginUrl.orEmpty()) }
-    var loginUi by remember(source) { mutableStateOf(source.loginUi.orEmpty()) }
-    var loginCheckJs by remember(source) { mutableStateOf(source.loginCheckJs.orEmpty()) }
-    var jsLib by remember(source) { mutableStateOf(source.jsLib.orEmpty()) }
-    var speed by remember(source) { mutableStateOf((source.speed ?: 5).toFloat()) }
-
-    fun current() = source.copy(
-        name = name.trim(),
-        url = url.trim(),
-        contentType = contentType.ifBlank { null },
-        concurrentRate = concurrentRate,
-        header = header.ifBlank { null },
-        loginUrl = loginUrl.ifBlank { null },
-        loginUi = loginUi.ifBlank { null },
-        loginCheckJs = loginCheckJs.ifBlank { null },
-        jsLib = jsLib.ifBlank { null },
-        speed = speed.toInt(),
-        lastUpdateTime = System.currentTimeMillis(),
-    )
-
-    AppModalBottomSheet(
-        animateContentSize = false,
-        show = value != null,
-        onDismissRequest = onDismiss,
-        title = if (isNew) "添加引擎" else "编辑引擎",
-        startAction = {
-            var expanded by remember { mutableStateOf(false) }
-            Box {
-                MediumTonalButton(
-                    onClick = { expanded = true },
-                    icon = Icons.Default.MoreVert,
-                    contentDescription = "更多",
-                )
-                RoundDropdownMenu(expanded, { expanded = false }) {
-                    RoundDropdownMenuItem(
-                        text = "复制文本",
-                        onClick = {
-                            expanded = false
-                            scope.launch {
-                                clipboard.setClipEntry(
-                                    ClipEntry(
-                                        ClipData.newPlainText("httpTTS", GSON.toJson(current()))
-                                    )
-                                )
-                            }
-                        },
-                    )
-                    RoundDropdownMenuItem(
-                        text = "粘贴源",
-                        onClick = {
-                            expanded = false
-                            scope.launch {
-                                val text = clipboard.getClipEntry()?.clipData
-                                    ?.getItemAt(0)?.coerceToText(context)?.toString()
-                                    ?: return@launch
-                                HttpTTS.fromJson(text).getOrNull()?.let { imported ->
-                                    name = imported.name
-                                    url = imported.url
-                                    contentType = imported.contentType.orEmpty()
-                                    concurrentRate = imported.concurrentRate ?: "0"
-                                    header = imported.header.orEmpty()
-                                    loginUrl = imported.loginUrl.orEmpty()
-                                    loginUi = imported.loginUi.orEmpty()
-                                    loginCheckJs = imported.loginCheckJs.orEmpty()
-                                    jsLib = imported.jsLib.orEmpty()
-                                    speed = (imported.speed ?: 5).toFloat()
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-        },
-        endAction = {
-            MediumTonalButton(
-                onClick = {
-                    val c = current()
-                    if (c.name.isBlank() || c.url.isBlank()) {
-                        context.toastOnUi("名称 / URL 不能为空")
-                    } else {
-                        onSave(c)
-                    }
-                },
-                icon = Icons.Default.Check,
-                contentDescription = "保存",
-            )
-        },
-    ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                AppTextField(
-                    name,
-                    { name = it },
-                    label = stringResource(R.string.name),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    url,
-                    { url = it },
-                    label = "URL",
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                TinySliderSettingItem(
-                    title = stringResource(R.string.read_aloud_speed),
-                    description = stringResource(R.string.tts_source_speed_summary),
-                    value = speed,
-                    valueRange = 0f..80f,
-                    steps = 79,
-                    onValueChange = { speed = it },
-                )
-            }
-            item {
-                AppTextField(
-                    contentType,
-                    { contentType = it },
-                    label = "Content-Type",
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    concurrentRate,
-                    { concurrentRate = it },
-                    label = stringResource(R.string.concurrent_rate),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    header,
-                    { header = it },
-                    label = stringResource(R.string.source_http_header),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginUrl,
-                    { loginUrl = it },
-                    label = stringResource(R.string.login_url),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginUi,
-                    { loginUi = it },
-                    label = stringResource(R.string.login_ui),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginCheckJs,
-                    { loginCheckJs = it },
-                    label = stringResource(R.string.login_check_js),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    jsLib,
-                    { jsLib = it },
-                    label = "jsLib",
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item { Spacer(Modifier.height(16.dp)) }
-        }
-    }
 }
 
 @Composable

@@ -35,6 +35,9 @@ private const val PUBLIC_BOOK_FILTER =
 @Dao
 interface BookDao {
 
+    @Query("UPDATE books SET disableReadRecord = :disabled WHERE bookUrl = :bookUrl")
+    fun setReadRecordDisabled(bookUrl: String, disabled: Boolean)
+
     fun flowByGroup(groupId: Long): Flow<List<Book>> {
         return when (groupId) {
             BookGroup.IdRoot -> flowRoot()
@@ -704,6 +707,13 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE bookUrl = :bookUrl")
     fun getBook(bookUrl: String): Book?
 
+    /**
+     * 按 bookUrl 批量取书，供跨分组多选解析选中实体（选中项可能不在当前分组列表里）。
+     * 调用方负责分批，避免单次绑定参数超过 SQLite 上限。
+     */
+    @Query("SELECT * FROM books WHERE bookUrl IN (:bookUrls)")
+    suspend fun getBooksByUrls(bookUrls: Set<String>): List<Book>
+
     @Query(
         """
         SELECT
@@ -833,6 +843,15 @@ interface BookDao {
         """update books set lastCheckCount = 0, durChapterIndex = :durChapterIndex, durChapterPos = :durChapterPos, durChapterTime = :durChapterTime where bookUrl = :bookUrl"""
     )
     fun upReadProgress(bookUrl: String, durChapterIndex: Int, durChapterPos: Int, durChapterTime: Long)
+
+    @Query("""UPDATE books SET lastCheckCount = 0, durChapterIndex = :chapterIndex,
+        durChapterPos = :chapterPosition, durChapterTitle = :chapterTitle, durChapterTime = :updatedAt
+        WHERE bookUrl = :bookUrl""")
+    fun upReadAloudProgress(bookUrl: String, chapterIndex: Int, chapterPosition: Int,
+        chapterTitle: String?, updatedAt: Long)
+
+    @Query("UPDATE books SET syncTime = :syncTime WHERE bookUrl = :bookUrl AND syncTime < :syncTime")
+    fun upSyncTime(bookUrl: String, syncTime: Long)
 
     @Query("update books set `group` = :newGroupId where `group` = :oldGroupId")
     fun upGroup(oldGroupId: Long, newGroupId: Long)
@@ -1166,4 +1185,5 @@ interface BookDao {
         """
     )
     fun flowBookShelfPreviewByUserGroup(groupId: Long): Flow<List<BookShelfItem>>
+
 }

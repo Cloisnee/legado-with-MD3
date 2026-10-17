@@ -29,4 +29,10 @@ object IntentAction {
     const val init = "init"
     const val remove = "remove"
     const val stopPlay = "stopPlay"
+
+    /** 听书音频下载：把指定章节区间的朗读音频合成到下载区，之后朗读直接播本地文件。 */
+    const val downloadReadAloudAudio = "downloadReadAloudAudio"
+
+    /** 取消正在跑的听书音频下载。 */
+    const val cancelDownloadReadAloudAudio = "cancelDownloadReadAloudAudio"
 }

@@ -3,11 +3,11 @@ package io.legado.app.ui.book.read
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import io.legado.app.R
-import io.legado.app.data.entities.HttpTTS
-import io.legado.app.data.repository.HttpTtsRepository
+import io.legado.app.constant.EventBus
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.domain.model.PlaybackTimer
+import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.VoiceCatalogEntry
 import io.legado.app.domain.model.settings.ReadAloudSettings
@@ -19,11 +19,19 @@ import io.legado.app.model.ReadAloudSessionStore
 import io.legado.app.model.ReadBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.readaloud.ReadAloudPlayerOverlayBus
+import io.legado.app.utils.TTSCacheUtils
+import io.legado.app.utils.postEvent
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 朗读域（R2.2 续批）。
+ * 朗读域。
  *
  * 管朗读设置的读写、播放传输控制、声音目录同步和 TTS 缓存清理。
  *
@@ -39,10 +47,16 @@ class ReadAloudDelegate(
     private val readSettingsRepository: ReadSettingsRepository,
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
-    private val httpTtsRepository: HttpTtsRepository,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
     private val readAloudDataRepository: ReadAloudDataRepository,
 ) {
+
+    val readerSessions = combine(
+        readAloudSessionStore.state, ReadBook.snapshot,
+        ReadAloud.bookSession.state.map { it.book?.bookUrl }.distinctUntilChanged(),
+    ) { session, reader, playingBookUrl ->
+        session to (reader.bookUrl != null && reader.bookUrl == playingBookUrl)
+    }
 
     interface Host {
         val uiState: ReadBookUiState
@@ -103,12 +117,11 @@ class ReadAloudDelegate(
     }
 
     /**
-     * 刷新声音目录。朗读引擎可能在 cloudtts 页被新增/删除，
+     * 刷新声音目录。朗读引擎可能在朗读设置页被新增/删除，
      * 打开朗读设置弹层和 VM 构造时各同步一次。
      */
     suspend fun syncConfiguredTtsVoices(
         systemTtsLabel: String = context.getString(R.string.system_tts),
-        httpTtsList: List<HttpTTS> = httpTtsRepository.getAllSync(),
     ) {
         // 批212d：tts_server 只收「当前启用池」+ 条目开启者；身份=条目 id；未选池时不动 tts 目录
         val activeBanks = runCatching { readAloudDataRepository.loadActiveVoiceBanks() }
@@ -128,16 +141,6 @@ class ReadAloudDelegate(
                             engineType = ReadAloudVoice.ENGINE_SYSTEM,
                             engineId = engine.name,
                             displayName = engine.label,
-                        )
-                    )
-                }
-                httpTtsList.forEach { httpTts ->
-                    add(
-                        VoiceCatalogEntry(
-                            engineType = ReadAloudVoice.ENGINE_HTTP,
-                            engineId = httpTts.id.toString(),
-                            displayName = httpTts.name,
-                            sourceRevision = httpTts.lastUpdateTime,
                         )
                     )
                 }
@@ -175,9 +178,9 @@ class ReadAloudDelegate(
             },
             managedSources = setOf(ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS),
             removeMissingEngineTypes = if (activeBanks.isEmpty()) {
-                setOf(ReadAloudVoice.ENGINE_HTTP)
+                emptySet()
             } else {
-                setOf(ReadAloudVoice.ENGINE_HTTP, "tts_server")
+                setOf("tts_server")
             },
         )
     }
@@ -185,7 +188,7 @@ class ReadAloudDelegate(
     // --- 播放控制 ---
 
     fun updateProgress(chapterStart: Int) {
-        if (BaseReadAloudService.isPlay() && chapterStart > 0) {
+        if (ReadBook.isCurrentBookReadAloud && BaseReadAloudService.isPlay() && chapterStart > 0) {
             host.publishReadAloudProgress(chapterStart)
         }
     }
@@ -200,16 +203,13 @@ class ReadAloudDelegate(
     fun nextParagraph() = ReadAloud.nextParagraph(context)
 
     /** 朗读面板换章：朗读驱动的章节移动，页面跟随朗读，不视为手动脱离。 */
-    fun prevChapter() = BaseReadAloudService.withSpeechNavigation {
-        ReadBook.moveToPrevChapter(upContent = true, toLast = false)
-    }
+    fun prevChapter() = ReadAloud.previousChapter(context)
 
-    fun nextChapter() = BaseReadAloudService.withSpeechNavigation {
-        ReadBook.moveToNextChapter(true)
-    }
+    fun nextChapter() = ReadAloud.nextChapter(context)
 
     /** 回到朗读位置：恢复页面跟随朗读，并跳到朗读所在章节/字符位置。全程不打断当前朗读。 */
     fun backToSpeakingPosition() {
+        if (!ReadBook.isCurrentBookReadAloud) return
         readAloudSessionStore.restoreReadAloudFollow()
         val speakingChapterIndex = BaseReadAloudService.currentChapterIndex
         val speakingChapterStart = BaseReadAloudService.currentProgress
@@ -259,6 +259,159 @@ class ReadAloudDelegate(
     fun openClassicControls() {
         host.updateState { it.copy(activeSheet = null) }
         host.openReadMenuRoute(ReadBookMenuRoute.ReadAloud)
+    }
+
+    fun openConfigSheet() {
+        // 从底栏重新打开算「新一次设置」，回到常规页；被整屏页盖住再回来才停在那一 tab
+        host.updateState {
+            it.copy(activeSheet = ReadBookSheet.ReadAloudConfig, readAloudConfigTab = 0)
+        }
+        scope.launch { syncConfiguredTtsVoices() }
+    }
+
+    /** 卡片里滑页/点 tab：tab 住在状态里，弹层被拆掉重建才不会退回常规。 */
+    fun setConfigTab(tab: Int) {
+        host.updateState { it.copy(readAloudConfigTab = tab.coerceIn(0, 2)) }
+    }
+
+    /*
+     * 下面三个目的地是整屏 NavKey。`activeSheet` 与 `readAloudConfigTab` 分开管：
+     * 推送整屏页时不清空 `activeSheet`，返回时弹层自己摊回来、tab 由
+     * `readAloudConfigTab` 记住；朗读设置卡片被整屏页盖住时由 ReadBookScreen
+     * 按导航栈顶收起，避免窗口级浮层悬在新页面上面。
+     */
+    fun openTtsEnginesAndVoices() {
+        host.emitEffect(ReadBookEffect.OpenTtsEnginesAndVoices)
+    }
+
+    fun openTtsCache() {
+        host.emitEffect(ReadBookEffect.OpenTtsCache)
+    }
+
+    fun openSystemTtsSettings() {
+        host.emitEffect(ReadBookEffect.OpenSystemTtsSettings)
+    }
+
+    fun clearTtsCache() {
+        TTSCacheUtils.clearTtsCache()
+        host.emitEffect(
+            ReadBookEffect.TtsCacheCleared(context.getString(R.string.clear_cache_success))
+        )
+    }
+
+    // --- 四个数值选择弹层 ---
+
+    fun openPreDownloadNumPicker() {
+        host.updateState {
+            it.copy(
+                preDownloadNum = host.preDownloadNum,
+                activeSheet = ReadBookSheet.PreDownloadConfig,
+            )
+        }
+    }
+
+    fun openPreSynthesisConcurrencyPicker() {
+        host.updateState {
+            it.copy(
+                preSynthesisConcurrency =
+                    readAloudSettingsRepository.currentSettings.ttsPreSynthesisConcurrency,
+                activeSheet = ReadBookSheet.PreSynthesisConcurrencyConfig,
+            )
+        }
+    }
+
+    fun openParagraphIntervalPicker() {
+        host.updateState {
+            it.copy(
+                readAloudParagraphInterval =
+                    readAloudSettingsRepository.currentSettings.ttsParagraphInterval,
+                activeSheet = ReadBookSheet.ParagraphIntervalConfig,
+            )
+        }
+    }
+
+    fun openCacheCleanTimePicker() {
+        host.updateState {
+            it.copy(
+                audioCacheCleanTime = readAloudSettingsRepository.currentSettings.audioCacheCleanTime,
+                activeSheet = ReadBookSheet.AudioCacheCleanConfig,
+            )
+        }
+    }
+
+    fun applyPreDownloadNum(value: Int) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            readSettingsRepository.setPreDownloadNum(value)
+        }
+        host.updateState {
+            it.copy(preDownloadNum = value, activeSheet = ReadBookSheet.ReadAloudConfig)
+        }
+    }
+
+    fun applyPreSynthesisConcurrency(value: Int) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            readAloudSettingsRepository.update {
+                it.copy(ttsPreSynthesisConcurrency = value.coerceIn(1, 8))
+            }
+        }
+        host.updateState {
+            it.copy(preSynthesisConcurrency = value, activeSheet = ReadBookSheet.ReadAloudConfig)
+        }
+    }
+
+    fun applyAudioCacheCleanTime(value: Int) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            readAloudSettingsRepository.update { it.copy(audioCacheCleanTime = value) }
+        }
+        host.updateState {
+            it.copy(audioCacheCleanTime = value, activeSheet = ReadBookSheet.ReadAloudConfig)
+        }
+    }
+
+    fun applyParagraphInterval(value: Int) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            readAloudSettingsRepository.update { it.copy(ttsParagraphInterval = value) }
+        }
+        host.updateState { it.copy(readAloudParagraphInterval = value) }
+    }
+
+    // --- 开关类设置 ---
+
+    fun setIgnoreAudioFocus(value: Boolean) = updateSettings { it.copy(ignoreAudioFocus = value) }
+
+    fun setPauseOnPhoneCall(value: Boolean) =
+        updateSettings { it.copy(pauseReadAloudWhilePhoneCalls = value) }
+
+    fun setWakeLock(value: Boolean) = updateSettings { it.copy(readAloudWakeLock = value) }
+
+    fun setKeepOnExit(value: Boolean) = updateSettings { it.copy(keepReadAloudOnExit = value) }
+
+    fun setShowCapsule(value: Boolean) = updateSettings { it.copy(showReadAloudCapsule = value) }
+
+    fun setCapsuleAutoCollapse(value: Boolean) =
+        updateSettings { it.copy(capsuleAutoCollapse = value) }
+
+    fun setMediaButtonPerNext(value: Boolean) = updateSettings { it.copy(mediaButtonPerNext = value) }
+
+    fun setSystemMediaCompat(value: Boolean) =
+        updateSettings { it.copy(systemMediaControlCompatibilityChange = value) }
+
+    fun setAndroidMediaControl(value: Boolean) =
+        updateSettings { it.copy(androidMediaControlEnabled = value) }
+
+    fun setStreamAudio(value: Boolean) {
+        updateSettings { it.copy(streamReadAloudAudio = value) }
+        if (value) postEvent(EventBus.MEDIA_BUTTON, false)
+    }
+
+    fun resetCapsulePosition() {
+        host.updateState { it.copy(readAloudCapsuleOffsetX = 0f, readAloudCapsuleOffsetY = 0f) }
+        updateSettings { it.copy(capsuleOffsetX = 0f, capsuleOffsetY = 0f) }
+    }
+
+    fun setCapsulePosition(x: Float, y: Float) {
+        host.updateState { it.copy(readAloudCapsuleOffsetX = x, readAloudCapsuleOffsetY = y) }
+        updateSettings { it.copy(capsuleOffsetX = x, capsuleOffsetY = y) }
     }
 
     fun setTtsFollowSys(value: Boolean) {
@@ -341,6 +494,57 @@ class ReadAloudDelegate(
             ReadAloud.upTtsSpeechRate(context)
         }
         host.updateState { it.copy(readAloudTtsSpeechRate = value) }
+    }
+
+    fun setDefaultInterface(value: String) {
+        updateSettings {
+            it.copy(
+                defaultInterface = value.takeIf { candidate ->
+                    candidate in ReadAloudSettingsRepository.AVAILABLE_INTERFACES
+                } ?: ReadAloudSettingsRepository.DEFAULT_INTERFACE_CLASSIC
+            )
+        }
+        host.updateState { it.copy(defaultReadAloudInterface = value) }
+    }
+
+    /**
+     * 原版「多说话人」开关。换掉合成管线要重启服务：
+     * 正在朗读时重启，重启前记住页内位置，等服务真的回到 Idle 再重放，避免新旧管线叠音。
+     */
+    fun setUseMultiSpeaker(value: Boolean) {
+        scope.launch {
+            val shouldRestart = ReadBook.isCurrentBookReadAloud
+            val resumePlaying = shouldRestart && !BaseReadAloudService.pause
+            val chapterPosition = readAloudSessionStore.state.value.playback.chapterPosition
+            readAloudSettingsRepository.update { it.copy(useMultiSpeaker = value) }
+            host.updateState { it.copy(useMultiSpeaker = value) }
+            if (shouldRestart) {
+                restartReadAloudWithNewPipeline(resumePlaying, chapterPosition)
+            }
+        }
+    }
+
+    /**
+     * 换掉朗读管线后重启朗读服务。
+     *
+     * 先 stop 并等旧服务真的回到 Idle 再重放，否则新旧两条管线会同时出声（叠音）。
+     * [chapterPosition] 是重启前记住的页内位置，让用户听回来刚才那句而不是章首。
+     */
+    private suspend fun restartReadAloudWithNewPipeline(resumePlaying: Boolean, chapterPosition: Int) {
+        if (ReadBook.readerChapterInputWindow.current == null) return
+        ReadAloud.stop(context)
+        val stopped = withTimeoutOrNull(2_000) {
+            readAloudSessionStore.state.first {
+                it.status == ReadAloudSessionStatus.Idle
+            }
+        }
+        if (stopped == null) return
+        ReadAloud.refreshReadAloudClass()
+        ReadAloud.play(
+            context = context,
+            play = resumePlaying,
+            chapterPosition = chapterPosition.coerceAtLeast(0),
+        )
     }
 
     private inline fun updateSettings(

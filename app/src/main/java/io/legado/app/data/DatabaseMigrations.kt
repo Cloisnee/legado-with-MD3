@@ -22,6 +22,7 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
             migration_102_103, migration_105_106, migration_106_107, migration_107_108,
+            migration_108_109, migration_109_110,
         )
     }
 
@@ -749,4 +750,43 @@ object DatabaseMigrations {
             )
         }
     }
+    /**
+     * 108 → 109：收敛 0716——对齐上游新增（按我方自编号体系）。
+     * - books：+`disableReadRecord`（单本关闭阅读记录；全局开关见 LocalPreferences）
+     * - highlightRules：+命中字距/行距 + 九宫格左右偏移 共 6 列
+     * - httpTTS：+`synthesisThreadCount`（源声明并发上限 1..8）
+     * - read_aloud_voices：+`excluded`（用户主动排除；行保留防复插）
+     * - 新表 read_aloud_audio_downloads（听书音频下载进度；章节+句子两条进度共用）
+     */
+    private val migration_108_109 = object : Migration(108, 109) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `books` ADD COLUMN `disableReadRecord` INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `letterSpacingBefore` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `letterSpacingAfter` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `lineSpacingTop` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `lineSpacingBottom` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `bgLengthOffsetLeft` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `highlightRules` ADD COLUMN `bgLengthOffsetRight` REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `httpTTS` ADD COLUMN `synthesisThreadCount` INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("ALTER TABLE `read_aloud_voices` ADD COLUMN `excluded` INTEGER NOT NULL DEFAULT 0")
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `read_aloud_audio_downloads` (
+                    `bookUrl` TEXT NOT NULL, `chapterIndex` INTEGER NOT NULL, `title` TEXT NOT NULL,
+                    `files` TEXT NOT NULL, `createTime` INTEGER NOT NULL,
+                    PRIMARY KEY(`bookUrl`, `chapterIndex`))"""
+            )
+        }
+    }
+
+    /**
+     * 109 → 110：拔除在线朗读（HttpTTS）——实体与 Dao 撤除、表保留不删。
+     * 仅对齐 Room 实体集变化（identity hash 换新）；`httpTTS` 表结构与数据原地保留，
+     * 供旧备份/降级排查兼容，不读不写零成本。
+     */
+    private val migration_109_110 = object : Migration(109, 110) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // 有意留空：只换版本号，不动任何表。
+        }
+    }
+
 }

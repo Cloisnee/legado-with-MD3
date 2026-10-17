@@ -369,12 +369,12 @@ fun TopReadingListCard(
                         textAlign = TextAlign.Center,
                         color = if (index < 3) LegadoTheme.colorScheme.primary else LegadoTheme.colorScheme.onSurfaceVariant
                     )
-                    CoilBookCover(
-                        name = book.bookName,
-                        author = book.bookAuthor,
-                        path = coverPath,
-                        modifier = Modifier.width(40.dp)
-                    )
+                        CoilBookCover(
+                            name = book.bookName,
+                            author = book.bookAuthor,
+                            path = coverPath,
+                            modifier = Modifier.width(40.dp)
+                        )
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         AppText(

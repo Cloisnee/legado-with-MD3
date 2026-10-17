@@ -1,7 +1,5 @@
 package io.legado.app.ui.book.read.sheet
 
-import android.app.Activity
-import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -52,8 +50,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.outlined.DownloadForOffline
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -92,14 +88,16 @@ import io.legado.app.ui.book.toc.TocItemUi
 import io.legado.app.ui.book.toc.TocMarkingItemUi
 import io.legado.app.ui.book.toc.TocUiState
 import io.legado.app.ui.book.toc.TocViewModel
-import io.legado.app.ui.book.toc.rule.preview.TxtTocRulePreviewActivity
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.AppFloatingActionButtonMenu
+import io.legado.app.ui.widget.components.ChapterStatusIcons
 import io.legado.app.ui.widget.components.EmptyMessage
 import io.legado.app.ui.widget.components.FabMenuItem
 import io.legado.app.ui.widget.components.bookmark.BookmarkEditSheet
+import io.legado.app.ui.widget.components.button.series.SmallPlainButton
 import io.legado.app.ui.widget.components.card.NormalCard
 import io.legado.app.ui.widget.components.card.TextCard
+import io.legado.app.ui.widget.components.icon.AppIcon
 import io.legado.app.ui.widget.components.image.cover.CoilBookCover
 import io.legado.app.ui.widget.components.lazylist.FastScrollLazyColumn
 import io.legado.app.ui.widget.components.menuItem.MenuItemIcon
@@ -144,6 +142,11 @@ fun ReaderBookSheetRoute(
     onOpenChapterUrl: () -> Unit = {},
     onToggleReadUrlInBrowser: () -> Unit = {},
     sourceActions: ReaderBookSourceActions? = null,
+    /**
+     * 「本地目录规则」：只对本地 txt 书出现，由宿主导航到规则预览页；应用结果走书页结果通道
+     * 回灌阅读页，规则保存后本面板会随 `bookRepository.flowBook` 自动刷新。
+     */
+    onEditLocalTocRule: (String?) -> Unit = {},
     viewModel: TocViewModel = koinViewModel(key = "reader-book-sheet-$bookUrl"),
 ) {
     val state by viewModel.screenState.collectAsStateWithLifecycle()
@@ -154,15 +157,6 @@ fun ReaderBookSheetRoute(
         ActivityResultContracts.CreateDocument("*/*")
     ) { uri: Uri? ->
         uri?.let { viewModel.onIntent(TocIntent.ExportBookmarks(it, pendingExportMarkdown)) }
-    }
-    val tocRegexLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.onIntent(
-                TocIntent.SaveTocRegex(result.data?.getStringExtra("tocRegex").orEmpty())
-            )
-        }
     }
 
     LaunchedEffect(bookUrl) {
@@ -207,13 +201,7 @@ fun ReaderBookSheetRoute(
                 ReaderBookSheetTab.Marks -> Unit
             }
         },
-        onEditLocalTocRule = { regex ->
-            tocRegexLauncher.launch(
-                Intent(context, TxtTocRulePreviewActivity::class.java)
-                    .putExtra("bookUrl", bookUrl)
-                    .putExtra("tocRegex", regex)
-            )
-        },
+        onEditLocalTocRule = onEditLocalTocRule,
         onExportBookmarks = { isMarkdown, fileName ->
             pendingExportMarkdown = isMarkdown
             exportLauncher.launch(fileName)
@@ -645,7 +633,7 @@ private fun CompactSearchField(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(
+                AppIcon(
                     imageVector = Icons.Default.Search,
                     contentDescription = null,
                     tint = LegadoTheme.colorScheme.onSurfaceVariant,
@@ -696,7 +684,7 @@ private fun CompactToolIconBox(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
+        AppIcon(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = contentColor,
@@ -912,7 +900,7 @@ private fun ReaderSheetVolumeItem(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
+            AppIcon(
                 imageVector = Icons.Default.ExpandMore,
                 contentDescription = null,
                 modifier = Modifier
@@ -971,7 +959,7 @@ private fun ReaderSheetChapterItem(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (item.isVip && !item.isPay) {
-                        Icon(
+                        AppIcon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = stringResource(R.string.a11y_vip_locked),
                             tint = LegadoTheme.colorScheme.error,
@@ -998,6 +986,12 @@ private fun ReaderSheetChapterItem(
                     )
                 }
             }
+            ChapterStatusIcons(
+                item = item,
+                iconSize = 14.dp,
+                spacing = 3.dp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
             ReaderSheetChapterStatus(
                 item = item,
                 showWordCount = showWordCount,
@@ -1048,30 +1042,19 @@ private fun ReaderSheetChapterStatus(
         item.downloadState == DownloadState.SUCCESS -> ReaderSheetStatusIcon(
             imageVector = Icons.Default.CheckCircle,
         )
-        item.downloadState == DownloadState.ERROR -> IconButton(
+        item.downloadState == DownloadState.ERROR -> SmallPlainButton(
             onClick = onDownloadClick,
             enabled = enabled,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Default.Refresh,
-                contentDescription = stringResource(R.string.a11y_retry_chapter, item.title),
-                tint = LegadoTheme.colorScheme.error,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        item.downloadState == DownloadState.NONE -> IconButton(
+            icon = Icons.Default.Refresh,
+            contentDescription = stringResource(R.string.a11y_retry_chapter, item.title),
+        )
+
+        item.downloadState == DownloadState.NONE -> SmallPlainButton(
             onClick = onDownloadClick,
             enabled = enabled,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.DownloadForOffline,
-                contentDescription = stringResource(R.string.download_chapter, item.title),
-                tint = LegadoTheme.colorScheme.outline,
-                modifier = Modifier.size(16.dp),
-            )
-        }
+            icon = Icons.Outlined.DownloadForOffline,
+            contentDescription = stringResource(R.string.download_chapter, item.title),
+        )
     }
 }
 
@@ -1079,7 +1062,7 @@ private fun ReaderSheetChapterStatus(
 private fun ReaderSheetStatusIcon(
     imageVector: ImageVector,
 ) {
-    Icon(
+    AppIcon(
         imageVector = imageVector,
         contentDescription = null,
         tint = LegadoTheme.colorScheme.secondary,
@@ -1290,7 +1273,7 @@ private fun ReaderSheetBookmarkItem(
                     modifier = Modifier.weight(1f),
                 )
                 if (item.isDur) {
-                    Icon(
+                    AppIcon(
                         imageVector = Icons.Default.LocationOn,
                         contentDescription = null,
                         tint = contentColor,
@@ -1427,7 +1410,7 @@ private fun ReaderSheetMarkingItem(
                     )
                 }
                 if (item.isDur) {
-                    Icon(
+                    AppIcon(
                         imageVector = Icons.Default.LocationOn,
                         contentDescription = null,
                         tint = contentColor,

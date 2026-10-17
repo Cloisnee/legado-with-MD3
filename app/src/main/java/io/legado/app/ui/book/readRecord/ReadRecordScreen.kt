@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,6 +61,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -1177,12 +1179,12 @@ fun LatestReadItem(
             .adaptiveHorizontalPadding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CoilBookCover(
-            name = record.bookName,
-            author = record.bookAuthor,
-            path = coverPath,
-            modifier = Modifier.width(44.dp)
-        )
+            CoilBookCover(
+                name = record.bookName,
+                author = record.bookAuthor,
+                path = coverPath,
+                modifier = Modifier.width(44.dp)
+            )
 
         SelectionCheckmark(inSelectionMode, isSelected)
 
@@ -1264,7 +1266,6 @@ fun TimelineSessionItem(
         duration,
         endTimeText
     )
-
     val nodeRadius = 4.dp
     val lineWidth = 2.dp
     val timelineX = 16.dp
@@ -1323,12 +1324,12 @@ fun TimelineSessionItem(
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                CoilBookCover(
-                    name = session.bookName,
-                    author = session.bookAuthor,
-                    path = coverPath,
-                    modifier = Modifier.width(44.dp)
-                )
+                    CoilBookCover(
+                        name = session.bookName,
+                        author = session.bookAuthor,
+                        path = coverPath,
+                        modifier = Modifier.width(44.dp)
+                    )
                 SelectionCheckmark(inSelectionMode, isSelected)
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
@@ -1382,7 +1383,6 @@ fun ReadRecordItem(
         author,
         formatDuring(detail.readTime)
     )
-
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1398,12 +1398,12 @@ fun ReadRecordItem(
             .padding(all = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CoilBookCover(
-            name = detail.bookName,
-            author = detail.bookAuthor,
-            path = coverPath,
-            modifier = Modifier.width(44.dp)
-        )
+            CoilBookCover(
+                name = detail.bookName,
+                author = detail.bookAuthor,
+                path = coverPath,
+                modifier = Modifier.width(44.dp)
+            )
 
         SelectionCheckmark(inSelectionMode, isSelected)
 
@@ -1425,7 +1425,10 @@ fun ReadRecordItem(
             )
             Spacer(modifier = Modifier.height(8.dp))
             AppText(
-                text = stringResource(R.string.reading_time_with_value, formatDuring(detail.readTime)),
+                text = stringResource(
+                    R.string.reading_time_with_value,
+                    formatDuring(detail.readTime)
+                ),
                 color = LegadoTheme.colorScheme.primary,
                 style = LegadoTheme.typography.labelMedium,
                 maxLines = 1,
