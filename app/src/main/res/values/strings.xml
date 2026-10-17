@@ -3015,6 +3015,7 @@
     <string name="read_aloud_audio_download_cancel_hint">Cancelled, stops after the current sentence</string>
     <string name="read_aloud_audio_download_failed_count">%1$d sentences failed to synthesize, not downloaded</string>
     <string name="read_aloud_audio_download_summary">Downloaded chapters play the local audio when you start reading aloud — no network, no re-synthesis.</string>
+    <string name="read_aloud_audio_download_delete_hint">Delete audio in Cache management → Audiobook</string>
     <string name="read_aloud_audio_download_chapter_no_script">No script for this chapter yet — generate it in the analysis/script page first</string>
     <string name="read_aloud_audio_download_range_no_script">Pick chapters with scripts for both ends of the range</string>
     <string name="read_aloud_audio_download_range_skipped_note">%1$d chapters in this range have no script and will be skipped</string>

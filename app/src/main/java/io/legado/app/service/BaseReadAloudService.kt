@@ -844,39 +844,6 @@ abstract class BaseReadAloudService : BaseService(),
         postEvent(EventBus.TTS_PROGRESS, progress)
     }
 
-    /** 同一个音效单元只响一次的判据（[takeCueSounds] 消费这里）。 */
-    private var soundedCue: io.legado.app.domain.model.readaloud.ReadAloudPlaybackCue? = null
-
-    /**
-     * 解析这一朗读单元身上挂的音效串，取出 `(路径, 延迟千分位)`；同一个单元只给一次。
-     *
-     * 串格式：多条换行分隔、可带 `#千分位`（与生产方契约一致）；本函数是唯一解析端。
-     *
-     * 音效**不另起朗读单元**：一个单元就是一次串行的 TTS 合成请求，多一个单元多一次串行等待。
-     * 因此千分位只能按命中字符在单元内的占比估算，不是精确时长。
-     * 消费方：Http 路由子类 scheduleCueSounds（媒体时钟定位）；系统 TTS 直读走 [playCueSounds]。
-     */
-    protected fun takeCueSounds(index: Int): List<Pair<String, Int>> {
-        val cue = playbackQueue.cues.getOrNull(index) ?: return emptyList()
-        if (cue.soundEffect.isBlank() || cue === soundedCue) return emptyList()
-        soundedCue = cue
-        return cue.soundEffect
-            .split("\n")
-            .filter { it.isNotBlank() }
-            .map { entry ->
-                val at = entry.indexOf('#')
-                val path = if (at > 0) entry.substring(0, at) else entry
-                val permille = if (at > 0) entry.substring(at + 1).toIntOrNull() ?: 0 else 0
-                path to permille
-            }
-    }
-
-    /** 系统 TTS 直读那条路的音效：本移植版统一走自建声效引擎，此处不重复播。 */
-    protected fun playCueSounds(index: Int) {
-    }
-
-
-
     protected fun updateReadAloudProgressSnapshot(progress: Int) {
         currentChapterIndex = readerReadAloudChapter?.chapterIndex ?: currentChapterIndex
         val newProgress = progress.coerceAtLeast(0)

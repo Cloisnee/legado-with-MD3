@@ -3,7 +3,6 @@ package io.legado.app.help.readaloud.audio
 import android.app.Application
 import android.content.Context
 import com.github.jing332.compat.fs.TtsDirProvider
-import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.help.readaloud.analysis.queueRefs
@@ -74,7 +73,7 @@ class AudioSynthQueue(
 
     private val entries = HashMap<String, Entry>()      // "SFX|关键词"
     private val chapterCounts = HashMap<String, Int>()  // 章节键 → 已入队次数
-    private val skipLogged = HashSet<String>()
+    private val skipReasons = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     private val queue = Channel<Entry>(Channel.UNLIMITED)
     private var loaded = false
@@ -138,18 +137,18 @@ class AudioSynthQueue(
                 }
             }
             if (refs.isEmpty()) {
-                logSkipOnce(key, "${lane.label}「$kw」缺失，但未分配「合成·${lane.label}」模型")
+                noteSkip(key, "${lane.label}「$kw」缺失，但未分配「合成·${lane.label}」模型")
                 return
             }
             val cap = settings().alChapterSynthCap
             if (cap <= 0) {
-                logSkipOnce(key, "${lane.label}「$kw」缺失（自动补缺已关闭）")
+                noteSkip(key, "${lane.label}「$kw」缺失（自动补缺已关闭）")
                 return
             }
             val ck = (ckOverride ?: chapterKey()).ifBlank { "default" }
             val used = chapterCounts[ck] ?: 0
             if (used >= cap) {
-                logSkipOnce(key, "${lane.label}「$kw」缺失（本章补缺已达上限 $cap）")
+                noteSkip(key, "${lane.label}「$kw」缺失（本章补缺已达上限 $cap）")
                 return
             }
             val entry = Entry(lane, kw, "pending", updatedAt = now, chapterKey = ck, desc = desc)
@@ -363,12 +362,17 @@ class AudioSynthQueue(
     fun entryStatus(lane: SynthLane, keyword: String): String =
         runCatching { entries["${lane.name}|$keyword"]?.status.orEmpty() }.getOrDefault("")
 
-    /** P1.6.2：跳过原因（无模型/达上限/已关闭）一次性写入音频日志（不再只做内存去重） */
-    private fun logSkipOnce(key: String, reason: String) {
-        if (skipLogged.add(key)) {
-            AppLog.putAudio("【音效与背景音】补缺跳过：$reason")
-        }
+    /**
+     * 跳过原因登记（不逐条打日志）：键 = `轨道|关键词`。
+     * 章末由 AudioChapterPrelude 汇总成一条按原因分组的账。
+     */
+    private fun noteSkip(key: String, reason: String) {
+        skipReasons[key] = reason
     }
+
+    /** 某条目最近一次被跳过的原因（"" = 未记录）；章末汇总用 */
+    fun entrySkipReason(lane: SynthLane, keyword: String): String =
+        skipReasons["${lane.name}|$keyword"].orEmpty()
 
     private fun now(): Long = System.currentTimeMillis()
 

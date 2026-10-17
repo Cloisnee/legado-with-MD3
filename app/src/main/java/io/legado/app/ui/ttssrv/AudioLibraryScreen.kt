@@ -62,6 +62,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.R
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.readaloud.audio.CloudWordnetPrefs
 import io.legado.app.help.readaloud.audio.AudioLibrary
 import io.legado.app.help.readaloud.audio.AudioMissingRow
 import io.legado.app.help.readaloud.audio.AudioNetStore
@@ -649,9 +650,9 @@ fun AudioLibraryScreen(
             ActionItem(
                 text = "补充云端词网",
                 onClick = {
-                    val enabled = AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true
-                    val repoCfg = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
-                    val tokenCfg = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
+                    val enabled = CloudWordnetPrefs.enabled()
+                    val repoCfg = CloudWordnetPrefs.repo()
+                    val tokenCfg = CloudWordnetPrefs.token()
                     val ids = selectedIds.filterIsInstance<String>().toSet()
                     val picked = allAssets.filter { it.id in ids }
                     when {
@@ -664,8 +665,8 @@ fun AudioLibraryScreen(
                         picked.isEmpty() -> scope.launch {
                             snackbarHostState.showSnackbar("请先选择要补充的条目")
                         }
-                        picked.size > 20 -> scope.launch {
-                            snackbarHostState.showSnackbar("单批最多 20 条，请分批提交")
+                        picked.size > 50 -> scope.launch {
+                            snackbarHostState.showSnackbar("单批最多 50 条，请分批提交")
                         }
                         else -> {
                             scope.launch {
@@ -681,6 +682,7 @@ fun AudioLibraryScreen(
                                 cloudPushing = true
                                 val msg = pushToCloud(context.applicationContext, picked)
                                 cloudPushing = false
+                                reload() // 小字态实时刷新：已修改→未修改、未上传→已上传
                                 selectedIds = emptySet()
                                 snackbarHostState.showSnackbar(msg)
                             }
@@ -1136,8 +1138,8 @@ private suspend fun pushToCloud(
     appContext: android.content.Context,
     picked: List<AudioLibrary.AudioAsset>,
 ): String {
-    val repo = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
-    val token = AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty()
+    val repo = CloudWordnetPrefs.repo()
+    val token = CloudWordnetPrefs.token()
     // 先确保词网就绪（冷启动下 snapshot 为空会退化为「全部上传→服务端去重」，浪费流量）
     // P1.5：强制复核——保证「库内同名只并词」判定基于最新词网（节流窗口内的近期批也生效）
     runCatching { AudioNetStore.ensureLoaded(appContext, force = true) }

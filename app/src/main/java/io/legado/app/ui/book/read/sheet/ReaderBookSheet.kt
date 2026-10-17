@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FindReplace
@@ -716,7 +715,6 @@ private fun ReaderBookTocPage(
         action.selectedIds.size,
     )
     val cancelText = stringResource(R.string.cancel)
-    val deleteAudioText = stringResource(R.string.read_aloud_audio_download_delete)
     val fabItems = remember(
         selected,
         action.selectedIds,
@@ -724,7 +722,6 @@ private fun ReaderBookTocPage(
         invertText,
         bookmarkText,
         downloadSelectedText,
-        deleteAudioText,
         cancelText,
     ) {
         listOf(
@@ -739,9 +736,6 @@ private fun ReaderBookTocPage(
             },
             FabMenuItem(Icons.Default.Download, downloadSelectedText) {
                 onIntent(TocIntent.DownloadSelected)
-            },
-            FabMenuItem(Icons.Default.DownloadForOffline, deleteAudioText) {
-                onIntent(TocIntent.DeleteAudioDownloadsForSelected)
             },
             FabMenuItem(Icons.Default.Clear, cancelText) {
                 onIntent(TocIntent.ClearSelection)

@@ -125,17 +125,17 @@ class AudioChapterPrelude(
     private fun splitUndone(
         prep: Prep,
         q: AudioSynthQueue,
-    ): Triple<List<String>, List<String>, List<String>> {
+    ): Triple<List<String>, List<String>, List<Pair<SynthLane, String>>> {
         val failed = ArrayList<String>()
         val inflight = ArrayList<String>()
-        val skipped = ArrayList<String>()
+        val skipped = ArrayList<Pair<SynthLane, String>>()
         prep.enqueued.forEach { (lane, labels) ->
             labels.forEach { l ->
                 when (q.entryStatus(lane, l)) {
                     "done" -> {}
                     "failed" -> failed += l
                     "pending", "running" -> inflight += l
-                    else -> skipped += l
+                    else -> skipped += lane to l
                 }
             }
         }
@@ -147,7 +147,7 @@ class AudioChapterPrelude(
         no: String,
         failed: List<String>,
         inflight: List<String>,
-        skipped: List<String>,
+        skipped: List<Pair<SynthLane, String>>,
     ) {
         if (failed.isNotEmpty()) {
             AppLog.putAudio(
@@ -160,10 +160,27 @@ class AudioChapterPrelude(
             )
         }
         if (skipped.isNotEmpty()) {
-            AppLog.putAudio(
-                "【音效与背景音·未入队·$no】${skipped.size} 条：${skipped.joinToString("、")}（跳过：无模型或达上限）"
-            )
+            // H：跳过不再逐条刷屏——按原因分组，只打一条总账
+            val q = queue()
+            val groups = LinkedHashMap<String, MutableList<String>>()
+            skipped.forEach { (lane, label) ->
+                val reason = q?.entrySkipReason(lane, label).orEmpty()
+                groups.getOrPut(reasonGroup(reason)) { mutableListOf() }.add(label)
+            }
+            val detail = groups.entries.joinToString("；") { (group, names) ->
+                "$group ${names.size} 条（${names.joinToString("、")}）"
+            }
+            AppLog.putAudio("【音效与背景音·补缺跳过·$no】共 ${skipped.size} 条：$detail")
         }
+    }
+
+    /** 跳过原因归类（无模型 / 达上限 / 已关闭 / 其它） */
+    private fun reasonGroup(reason: String): String = when {
+        reason.contains("未分配") -> "无模型"
+        reason.contains("上限") -> "达上限"
+        reason.contains("关闭") -> "已关闭"
+        reason.isBlank() -> "未记录"
+        else -> "其它"
     }
 
     /** P1.5 · 跨栏素材忽略日志（同轨未命中、异轨有材 → 转补缺合成；每条一次） */

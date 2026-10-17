@@ -239,10 +239,13 @@ class AudioLaneEngine(
         // P1.6.2+：本地扫描/规则层只服务音效（环境/BGM 由 AI 判定；本地不再兜底）
         AudioRuleEngine.pick(appContext, DemoLanes.Lane.SFX, text, isTitle)?.let { pick ->
             val keyword = pick.resolved?.asset?.name ?: pick.hit.label
-            if (allowSfx(keyword)) {
-                val now = System.currentTimeMillis()
-                lastSfxAt = now
-                lastSfxByKeyword[keyword] = now
+            // B34.2·⑨：显式延迟优先；否则按句内命中位置换算——闸门按「计划发声时刻」判
+            val delayMs = pick.hit.delayMs.takeIf { it > 0 }
+                ?: AudioPositions.delayMs(text.length, pick.hit.posRatio, config.charsPerSec)
+            val fireAt = System.currentTimeMillis() + delayMs
+            if (allowSfx(keyword, fireAt)) {
+                lastSfxAt = fireAt
+                lastSfxByKeyword[keyword] = fireAt
                 if (playSfx(pick, text.length)) {
                     laneLog(index, "音效=$keyword（${pick.hit.source.label}）")
                 }
@@ -319,7 +322,12 @@ class AudioLaneEngine(
             val net = localFirst.second
             if (net == null && localFirst.first == null) logCrossLaneIgnore(SynthLane.SFX, item.tag)
             val keyword = localFirst.first?.asset?.name ?: net?.name ?: item.tag
-            if (!allowSfx(keyword)) {
+            // B34.2·⑨：显式延迟优先；否则按句内位置（AI 前/中/后或规则命中位）换算。
+            // 闸门按「计划发声时刻」判定——同段多条音效各自有延迟，不再被段首一次性误伤。
+            val delayMs = item.delayMs.takeIf { it > 0 }
+                ?: AudioPositions.delayMs(text.length, item.posRatio, config.charsPerSec)
+            val fireAt = System.currentTimeMillis() + delayMs
+            if (!allowSfx(keyword, fireAt)) {
                 laneLog(index, "音效=$keyword（闸门跳过）")
                 return@forEach
             }
@@ -333,12 +341,8 @@ class AudioLaneEngine(
                 markMissing("音效", keyword, item.desc)
                 return@forEach
             }
-            val now = System.currentTimeMillis()
-            lastSfxAt = now
-            lastSfxByKeyword[keyword] = now
-            // B34.2·⑨：显式延迟优先；否则按句内位置（AI 前/中/后或规则命中位）换算
-            val delayMs = item.delayMs.takeIf { it > 0 }
-                ?: AudioPositions.delayMs(text.length, item.posRatio, config.charsPerSec)
+            lastSfxAt = fireAt
+            lastSfxByKeyword[keyword] = fireAt
             if (fireSfx(resolved, gain = 1.0f, delayMs = delayMs)) {
                 laneLog(index, "音效=$keyword（Ai导演）")
             }
@@ -551,10 +555,10 @@ class AudioLaneEngine(
     }
 
     /** B33.3c：闸门滑条化（全局最小间隔 + 同素材冷却；0=不限） */
-    private fun allowSfx(keyword: String): Boolean {
-        val now = System.currentTimeMillis()
-        if (now - lastSfxAt < config.sfxMinGapMs) return false
-        if (now - (lastSfxByKeyword[keyword] ?: 0L) < config.sfxCooldownMs) return false
+    /** 闸门按「计划发声时刻」判定：段内多条音效各自有延迟，不再被段首一次性误伤。 */
+    private fun allowSfx(keyword: String, fireAt: Long): Boolean {
+        if (fireAt - lastSfxAt < config.sfxMinGapMs) return false
+        if (fireAt - (lastSfxByKeyword[keyword] ?: 0L) < config.sfxCooldownMs) return false
         return true
     }
 

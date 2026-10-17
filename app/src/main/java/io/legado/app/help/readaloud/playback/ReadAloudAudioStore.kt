@@ -2,39 +2,23 @@ package io.legado.app.help.readaloud.playback
 
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.ReadAloudAudioDownload
-import io.legado.app.utils.FileUtils
-import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
-import splitties.init.appCtx
-import java.io.File
 
 /**
- * 听书音频的下载区。
+ * 听书下载的「完成标记」。
  *
- * 文件按书放在 `filesDir/readAloudAudio/<bookUrl 的 md5>/`，文件名沿用朗读缓存那一套
- * （引擎 + 语速 + 句子文本的 md5，`.mp3`）。正因为名字一致，朗读侧只要在这两个目录里
- * 找到同名文件就直接播，不用再联网——「下载过的章节点朗读就是播下载好的」。
+ * 自 v1.2 起音频只有一套文件：直接落在朗读缓存目录
+ * （`<数据根>/data/audio/<书名>/<章>/`，命名见 [ReadAloudAudioCacheKeys]），
+ * 不再复制到独立下载区。本对象只维护 `read_aloud_audio_downloads` 标记表：
+ * 章是否被主动下载过、下载了多少句——听书下载列表与目录页图标都读它。
  *
- * 为什么不共用朗读缓存目录（`externalCacheDir` 那份）：那一个是**缓存**，退出朗读会按设置清、
- * 系统存储紧张也会回收，下载的东西不能被清掉；而且删除要能精确到章，所以文件名清单
- * 记在 `read_aloud_audio_downloads` 表里（文件名是内容哈希，反推不出属于哪一章）。
+ * 音频的删除统一到「缓存管理 → 书籍音频」；删章 / 删书 / 清空 / 自动清理时，
+ * 由调用方调 [deleteChapterMarker] / [deleteBookMarkers] / [clearAll] 同步摘标记。
  */
 object ReadAloudAudioStore {
-
-    /**
-     * 无声占位音频的大小：合成失败时落的那份 `R.raw.silent_sound`，字节数和资源完全一致。
-     *
-     * 认不出它就会被它骗：一句合成失败留下 2160 字节的空壳，之后朗读在缓存或下载区
-     * 认到同名文件，当成「已经有音频了」不再重新合成，这一句永远只有 0.1 秒空白。
-     */
-    private const val SILENT_SOUND_BYTES = 2160L
-
-    /** 这份文件是不是无声占位（不是真音频）。 */
-    fun isSilentPlaceholder(file: File?): Boolean =
-        file != null && file.length() == SILENT_SOUND_BYTES
 
     /** 下载进度：章节和句子两条，界面要同时显示。 */
     data class Progress(
@@ -66,37 +50,6 @@ object ReadAloudAudioStore {
         _progress.value = _progress.value.copy(running = false)
     }
 
-    private fun dirOf(bookUrl: String): File = File(
-        appCtx.filesDir,
-        "readAloudAudio".plus(File.separator).plus(MD5Utils.md5Encode16(bookUrl)),
-    )
-
-    /** 这一句已经下载好的音频；没有、半截文件、无声占位都返回 null。 */
-    fun downloadedFile(bookUrl: String?, fileName: String): File? {
-        if (bookUrl.isNullOrEmpty()) return null
-        val file = File(dirOf(bookUrl), "$fileName.mp3")
-        return file.takeIf { it.isFile && it.length() > 0L && !isSilentPlaceholder(it) }
-    }
-
-    /** 把合成在缓存目录里的那份复制进下载区（缓存会被清，下载区不会）。 */
-    fun saveFrom(bookUrl: String, fileName: String, source: File): File? {
-        val dir = dirOf(bookUrl)
-        dir.mkdirs()
-        val target = File(dir, "$fileName.mp3")
-        if (isSilentPlaceholder(target)) {
-            // 下载失败留下的空壳：让新合成出来的那份覆盖它
-            FileUtils.delete(target.absolutePath)
-        } else if (target.isFile && target.length() > 0L) {
-            // 合成缓存已清、下载区仍留有完整文件：视为命中，不重复合成
-            return target
-        }
-        if (!source.isFile || source.length() <= 0L) return null
-        return runCatching {
-            source.copyTo(target, overwrite = true)
-            target
-        }.getOrNull()
-    }
-
     suspend fun list(bookUrl: String): List<ReadAloudAudioDownload> =
         appDb.readAloudAudioDownloadDao.getForBook(bookUrl)
 
@@ -119,25 +72,18 @@ object ReadAloudAudioStore {
         )
     }
 
-    /** 删掉一章的下载音频与记录，返回删掉的句子数。 */
-    suspend fun delete(bookUrl: String, chapterIndex: Int): Int {
-        val row = appDb.readAloudAudioDownloadDao.getOne(bookUrl, chapterIndex) ?: return 0
-        val dir = dirOf(bookUrl)
-        row.fileNames.forEach { File(dir, "$it.mp3").delete() }
+    /** 摘掉一章的下载标记（音频本体在缓存目录，由缓存管理删除）。 */
+    suspend fun deleteChapterMarker(bookUrl: String, chapterIndex: Int) {
         appDb.readAloudAudioDownloadDao.delete(bookUrl, chapterIndex)
-        return row.sentenceCount
     }
 
-    /** 删掉若干章的下载音频，返回删掉的句子数（目录页长按菜单用）。 */
-    suspend fun deleteChapters(bookUrl: String, chapterIndices: Collection<Int>): Int =
-        chapterIndices.sumOf { delete(bookUrl, it) }
-
-    /** 整本书的下载音频全清（书架/缓存管理里用）。 */
-    suspend fun deleteBook(bookUrl: String): Int {
-        val rows = appDb.readAloudAudioDownloadDao.getForBook(bookUrl)
-        val dir = dirOf(bookUrl)
-        rows.flatMap { it.fileNames }.forEach { File(dir, "$it.mp3").delete() }
+    /** 摘掉整本书的下载标记（缓存管理删书时用）。 */
+    suspend fun deleteBookMarkers(bookUrl: String) {
         appDb.readAloudAudioDownloadDao.deleteForBook(bookUrl)
-        return rows.sumOf { it.sentenceCount }
+    }
+
+    /** 清空全部下载标记（清空音频缓存时用）。 */
+    suspend fun clearAll() {
+        appDb.readAloudAudioDownloadDao.deleteAll()
     }
 }

@@ -158,7 +158,6 @@ sealed interface TocIntent {
     data object ClearSelection : TocIntent
     data object SelectFromLast : TocIntent
     data object AddBookmarksForSelected : TocIntent
-    data object DeleteAudioDownloadsForSelected : TocIntent
     data object ToggleUseReplace : TocIntent
     data object ToggleShowWordCount : TocIntent
     data object ReverseToc : TocIntent
@@ -674,7 +673,6 @@ class TocViewModel(
             TocIntent.ClearSelection -> clearSelection()
             TocIntent.SelectFromLast -> selectFromLast()
             TocIntent.AddBookmarksForSelected -> addBookmarksForSelected()
-            TocIntent.DeleteAudioDownloadsForSelected -> deleteAudioDownloadsForSelected()
             TocIntent.ToggleUseReplace -> toggleUseReplace()
             TocIntent.ToggleShowWordCount -> toggleShowWordCount()
             TocIntent.ReverseToc -> reverseToc()
@@ -893,36 +891,6 @@ class TocViewModel(
         }
     }
 
-    /** 删除所选章节的听书音频（目录长按菜单「删除听书」）。 */
-    fun deleteAudioDownloadsForSelected() = deleteSelectedChapters(
-        { book, index -> ReadAloudAudioStore.delete(book.bookUrl, index) },
-        R.string.read_aloud_audio_download_deleted_chapters,
-    )
-
-    /**
-     * 对所选章节逐章执行 [action]，完成后提示删了几章、清掉选择。
-     *
-     * 正在朗读这本书时让朗读侧重排队列。
-     */
-    private fun deleteSelectedChapters(
-        action: suspend (Book, Int) -> Unit,
-        doneMessageRes: Int,
-    ) = viewModelScope.launch(Dispatchers.IO) {
-        val book = bookState.value ?: return@launch
-        val indices = uiState.value.items
-            .asSequence()
-            .filter { it.id in uiState.value.selectedIds }
-            .filterNot { it.isVolume }
-            .map { it.id }
-            .toList()
-        if (indices.isEmpty()) {
-            showMessage(R.string.select_chapters)
-            return@launch
-        }
-        indices.forEach { index -> action(book, index) }
-        showMessage(context.getString(doneMessageRes, indices.size))
-        withContext(Dispatchers.Main) { clearSelection() }
-    }
 
     fun downloadSelected() {
         val book = bookState.value ?: return

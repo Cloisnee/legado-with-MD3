@@ -225,7 +225,6 @@ fun TocScreen(
     val invertSelectionText = stringResource(R.string.invert_selection)
     val selectFollowingText = stringResource(R.string.select_following)
     val addBookmarkText = stringResource(R.string.bookmark_add)
-    val deleteAudioText = stringResource(R.string.read_aloud_audio_download_delete)
     val bookmarkDefaultFileName = stringResource(R.string.bookmark)
 
     val topBarTitle = remember(
@@ -324,8 +323,7 @@ fun TocScreen(
         state.selectedIds,
         invertSelectionText,
         selectFollowingText,
-        addBookmarkText,
-        deleteAudioText
+        addBookmarkText
     ) {
         listOf(
             ActionItem(
@@ -343,11 +341,6 @@ fun TocScreen(
                 icon = Icons.Default.BookmarkAdd,
                 onClick = { onIntent(TocIntent.AddBookmarksForSelected) }
             ),
-            ActionItem(
-                text = deleteAudioText,
-                icon = Icons.Default.Download,
-                onClick = { onIntent(TocIntent.DeleteAudioDownloadsForSelected) }
-            )
         )
     }
 

@@ -3011,6 +3011,7 @@
     <string name="read_aloud_audio_download_cancel_hint">已取消，正在合成的这句完成后停止</string>
     <string name="read_aloud_audio_download_failed_count">%1$d 句合成失败，未下载</string>
     <string name="read_aloud_audio_download_summary">下载过的章节点朗读就直接播本地音频，不联网、不重新合成。</string>
+    <string name="read_aloud_audio_download_delete_hint">删除音频请到「缓存管理 → 书籍音频」</string>
     <string name="read_aloud_audio_download_chapter_no_script">本章暂无剧本：先在分析/剧本页生成</string>
     <string name="read_aloud_audio_download_range_no_script">起止章需选有剧本的章</string>
     <string name="read_aloud_audio_download_range_skipped_note">范围内 %1$d 章暂无剧本，将自动跳过</string>

@@ -139,14 +139,24 @@ class TtsCacheViewModel : ViewModel() {
 
             is TtsCacheIntent.DeleteBookAudio -> viewModelScope.launch {
                 _uiState.update { it.copy(activeDialog = null) }
+                val bookUrl = runCatching { dataRepository.loadBookUrl(intent.book) }.getOrDefault("")
                 audioCache.deleteBook(intent.book)
+                if (bookUrl.isNotBlank()) {
+                    runCatching { ReadAloudAudioStore.deleteBookMarkers(bookUrl) }
+                }
                 _effects.tryEmit(TtsCacheEffect.ShowToast("已删除《${intent.book}》的音频缓存"))
                 loadAudioCache()
             }
 
             is TtsCacheIntent.DeleteChapterAudio -> viewModelScope.launch {
                 _uiState.update { it.copy(activeDialog = null) }
+                val bookUrl = runCatching { dataRepository.loadBookUrl(intent.book) }.getOrDefault("")
                 audioCache.deleteChapter(intent.book, intent.chapterIndex)
+                if (bookUrl.isNotBlank()) {
+                    runCatching {
+                        ReadAloudAudioStore.deleteChapterMarker(bookUrl, intent.chapterIndex)
+                    }
+                }
                 val chapterUi = _uiState.value.books.firstOrNull { it.book == intent.book }
                     ?.chapters?.firstOrNull { it.chapterIndex == intent.chapterIndex }
                 _effects.tryEmit(

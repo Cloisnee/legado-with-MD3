@@ -1,6 +1,8 @@
 package io.legado.app.utils
 
+import io.legado.app.data.appDb
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
+import io.legado.app.help.coroutine.Coroutine
 import org.koin.core.context.GlobalContext
 import splitties.init.appCtx
 import java.io.File
@@ -14,5 +16,9 @@ object TTSCacheUtils {
         val base = appCtx.externalCacheDir ?: appCtx.cacheDir
         FileUtils.delete(File(base, "httpTTS").absolutePath)
         FileUtils.delete(File(base, "httpTTS_cache").absolutePath)
+        // 「已下载」标记同步清空（音频本体就在缓存目录里，已随上一步删除）
+        Coroutine.async {
+            runCatching { appDb.readAloudAudioDownloadDao.deleteAll() }
+        }
     }
 }

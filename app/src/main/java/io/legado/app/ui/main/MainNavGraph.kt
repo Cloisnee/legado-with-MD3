@@ -675,8 +675,6 @@ fun MainActivity.mainEntryProvider(
             onBackClick = { onNavigateBack() },
             onNavigateToOther = { pushRoute(MainRouteSettingsOther) },
             onNavigateToRead = { pushRoute(MainRouteSettingsRead) },
-            // [ttsrv] 朗读设置：指向我方的朗读设置页
-            onNavigateToReadAloud = { pushRoute(MainRouteReadAloudSettings) },
             onNavigateToCover = { pushRoute(MainRouteSettingsCover) },
             onNavigateToTheme = { pushRoute(MainRouteSettingsTheme) },
             onNavigateToBackup = { pushRoute(MainRouteSettingsBackup) },

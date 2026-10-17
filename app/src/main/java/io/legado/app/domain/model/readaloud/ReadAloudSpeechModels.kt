@@ -135,12 +135,6 @@ data class SpeechPlanItem(
     val voice: ReadAloudVoice?,
     val fallbackVoices: List<ReadAloudVoice>,
     val characterPerformance: CharacterPerformanceProfile? = null,
-    /**
-     * 随单元下发的音效串（多条换行分隔、可带 `#千分位`），格式契约见
-     * 生产方分析管线，消费方 [ReadAloudPlaybackQueue.from] → BaseReadAloudService.takeCueSounds。
-     * 空 = 不放。
-     */
-    val soundEffect: String = "",
 )
 
 data class ChapterSpeechAnalysisResult(

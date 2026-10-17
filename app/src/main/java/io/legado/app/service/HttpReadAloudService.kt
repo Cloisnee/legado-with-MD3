@@ -290,11 +290,18 @@ class HttpReadAloudService : BaseReadAloudService(),
             // 过期清理（audioCacheCleanTime<=0 表示持久保留，交由音频管理页删除）
             if (book.isNotEmpty() && chapterIndex >= 0) {
                 runCatching {
-                    audioCache.cleanupExpired(
+                    val removed = audioCache.cleanupExpired(
                         book = book,
                         keepChapterIndex = chapterIndex,
                         keepMinutes = readAloudSettings.audioCacheCleanTime,
                     )
+                    // 自动清理过的章同步摘「已下载」标记（一视同仁，不豁免）
+                    val bookUrl = ReadBook.book?.bookUrl
+                    if (removed.isNotEmpty() && !bookUrl.isNullOrBlank()) {
+                        removed.forEach { idx ->
+                            runCatching { ReadAloudAudioStore.deleteChapterMarker(bookUrl, idx) }
+                        }
+                    }
                 }
             }
         }
@@ -411,19 +418,9 @@ class HttpReadAloudService : BaseReadAloudService(),
                         },
                     )
                     audioDownloadSystemSkipped.addAndGet(result.skippedOtherEngine)
-                    var saved = 0
-                    val fileNames = ArrayList<String>()
-                    result.files.forEach { file ->
-                        val name = file.nameWithoutExtension
-                        if (ReadAloudAudioStore.saveFrom(bookUrl, name, file) != null) {
-                            fileNames.add(name)
-                            saved++
-                            audioDownloadSentences.incrementAndGet()
-                        }
-                    }
-                    if (result.files.size > saved) {
-                        audioDownloadFailed.addAndGet(result.files.size - saved)
-                    }
+                    // 音频已直接合成进「书籍音频」目录（不再复制）；这里只记“已下载”标记
+                    val fileNames = result.files.map { it.nameWithoutExtension }
+                    audioDownloadSentences.addAndGet(fileNames.size)
                     audioDownloadFailed.addAndGet(result.failed)
                     if (fileNames.isNotEmpty()) {
                         ReadAloudAudioStore.record(bookUrl, index, label, fileNames)
@@ -531,6 +528,8 @@ class HttpReadAloudService : BaseReadAloudService(),
         loudnessBalanceOn = runCatching { loudnessRepo.readLoudnessBalanceNow() }.getOrDefault(false)
         if (!loudnessBalanceOn) return
         // B11.1：学习进度变化时留一条可见日志（无变化不刷；P1.6.2 增记声效样本数）
+        // 声效计数的存储上下文由声效引擎初始化时注入；这里先补一次，避免首章日志读到 0（仅日志时序）
+        runCatching { SfxLoudnessNormalizer.remember(applicationContext) }
         val voices = loudness.learnedVoiceCount()
         val samples = loudness.learnedSampleCount()
         val sfxCount = runCatching { SfxLoudnessNormalizer.learnedCount() }.getOrDefault(0)
@@ -632,7 +631,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         downloadTask = execute {
             downloadTaskActiveLock.withLock {
                 ensureActive()
-                val downloadBookUrl = (bookSession.book ?: ReadBook.book)?.bookUrl.orEmpty()
 
                 // M1-B 播放门：本章计划（本行声效终态查询用；null=无计划层→不设门）
                 val gatePlan = runCatching {
@@ -669,18 +667,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val cacheFile = cueCacheFile(segIndex, text, voiceKey)
                     val speakText = text.replace(AppPattern.notReadAloudRegex, "")
                     val cueLabel = cueLabel(index, routedVoice)
-                    // 下载区优先：下载过的章节点朗读直接播本地下载音频，不联网、不重新合成
-                    val downloadFile = if (downloadBookUrl.isNotEmpty()) {
-                        ReadAloudAudioStore.downloadedFile(
-                            bookUrl = downloadBookUrl,
-                            fileName = cacheFile.nameWithoutExtension,
-                        )
-                    } else {
-                        null
-                    }
-                    if (downloadFile != null) {
-                        chapterHit++
-                    } else if (speakText.isEmpty()) {
+                    if (speakText.isEmpty()) {
                         AppLog.putAudio("【音频缓存·${chapterTag()}】空文本→静音占位 $cueLabel | ${snippet(text)}")
                     } else if (!cacheFile.isValidAudio()) {
                         val t0 = System.currentTimeMillis()
@@ -753,10 +740,8 @@ class HttpReadAloudService : BaseReadAloudService(),
                     }
                     // B11 响度均衡：条目增益随 MediaItem 携带（切段时应用；未启用=0）
                     val cueGainMb = if (loudnessBalanceOn) loudness.gainMbFor(routedVoice) else 0
-                    val playFile = downloadFile
-                        ?: if (cacheFile.isValidAudio()) cacheFile else silentFile
                     val mediaItem = MediaItem.fromUri(
-                        Uri.fromFile(playFile)
+                        Uri.fromFile(if (cacheFile.isValidAudio()) cacheFile else silentFile)
                     ).buildUpon().setMediaId(cueGainMb.toString()).build()
                     // M1-B 播放门：推进前等本行音效到合成终态（成功→放、失败→跳；不设上限）
                     gateCueSfxTerminal(gatePlan, index)

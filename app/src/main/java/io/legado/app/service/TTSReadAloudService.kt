@@ -253,8 +253,6 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
                     ttsUtteranceListener.onDone(utteranceId)
                     return@execute
                 }
-                // 音效轨：这一单元身上挂了音效就一起响
-                playCueSounds(nowSpeak)
                 AppLog.putDebug("TTS开始Speak: ${spoken.text}")
                 val queueMode = if (hasSpeechPlaybackQueue
                     && continuesCurrentSpeech && paragraphStartPos == 0 && !isDelay

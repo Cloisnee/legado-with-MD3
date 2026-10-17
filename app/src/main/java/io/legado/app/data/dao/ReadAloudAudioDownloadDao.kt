@@ -52,4 +52,7 @@ interface ReadAloudAudioDownloadDao {
 
     @Query("DELETE FROM read_aloud_audio_downloads WHERE bookUrl = :bookUrl")
     suspend fun deleteForBook(bookUrl: String)
+
+    @Query("DELETE FROM read_aloud_audio_downloads")
+    suspend fun deleteAll()
 }

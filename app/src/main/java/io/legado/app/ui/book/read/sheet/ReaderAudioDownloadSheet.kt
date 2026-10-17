@@ -23,7 +23,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
@@ -33,7 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +58,6 @@ import io.legado.app.ui.widget.components.castCardMaxHeight
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.core.context.GlobalContext
 
@@ -87,8 +84,6 @@ fun ReaderAudioDownloadSheet(
     val bookUrl = book.bookUrl
     val context = LocalContext.current
     val cancelHintMsg = stringResource(R.string.read_aloud_audio_download_cancel_hint)
-    val deletedCountMsg = stringResource(R.string.read_aloud_audio_download_deleted)
-    val scope = rememberCoroutineScope()
     val chapterCount = book.totalChapterNum.coerceAtLeast(1)
     val progress by ReadAloudAudioStore.progress.collectAsState()
     var refreshKey by remember { mutableStateOf(0) }
@@ -188,7 +183,15 @@ fun ReaderAudioDownloadSheet(
                                 ),
                             )
                             MediumTonalButton(
-                                onClick = { byRange = true },
+                                onClick = {
+                                    byRange = true
+                                    // G1：按「已生成剧本」的章范围预填起止（不连续无妨，执行端逐章跳过）
+                                    val set = scriptChapters
+                                    if (set != null && set.isNotEmpty()) {
+                                        startText = (set.min() + 1).toString()
+                                        endText = (set.max() + 1).toString()
+                                    }
+                                },
                                 modifier = Modifier.weight(1f),
                                 selected = byRange,
                                 text = stringResource(
@@ -376,15 +379,15 @@ fun ReaderAudioDownloadSheet(
                             DownloadedRow(
                                 row = row,
                                 isCurrent = row.chapterIndex == ReadBook.durChapterIndex,
-                                onDelete = {
-                                    scope.launch {
-                                        val deleted = ReadAloudAudioStore.delete(
-                                            bookUrl, row.chapterIndex,
-                                        )
-                                        context.toastOnUi(deletedCountMsg.format(deleted))
-                                        refreshKey++
-                                    }
-                                },
+                            )
+                        }
+                        if (downloaded.isNotEmpty()) {
+                            AppText(
+                                text = stringResource(
+                                    R.string.read_aloud_audio_download_delete_hint,
+                                ),
+                                style = LegadoTheme.typography.labelSmall,
+                                color = LegadoTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -483,7 +486,6 @@ private fun ProgressLine(
 private fun DownloadedRow(
     row: ReadAloudAudioDownload,
     isCurrent: Boolean,
-    onDelete: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -528,11 +530,6 @@ private fun DownloadedRow(
             ),
             style = LegadoTheme.typography.labelSmall,
             color = LegadoTheme.colorScheme.onSurfaceVariant,
-        )
-        MediumTonalButton(
-            onClick = onDelete,
-            icon = Icons.Default.Delete,
-            contentDescription = stringResource(R.string.read_aloud_audio_download_delete),
         )
     }
 }
