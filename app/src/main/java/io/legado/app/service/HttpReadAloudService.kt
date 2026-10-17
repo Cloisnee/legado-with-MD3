@@ -283,7 +283,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         exoPlayer.release()
         loudnessEnhancer?.release()
         loudnessEnhancer = null
-        cache.release()
         val book = ReadBook.book?.name.orEmpty()
         val chapterIndex = readerReadAloudChapter?.chapterIndex ?: -1
         Coroutine.async {
