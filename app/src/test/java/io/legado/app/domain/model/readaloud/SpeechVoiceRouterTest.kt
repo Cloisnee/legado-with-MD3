@@ -8,11 +8,11 @@ class SpeechVoiceRouterTest {
 
     @Test
     fun `uses primary voice supported by backend`() {
-        val primary = voice("http-primary", ReadAloudVoice.ENGINE_HTTP)
+        val primary = voice("server-primary", ReadAloudVoice.ENGINE_TTS_SERVER)
         val routed = SpeechVoiceRouter.route(
             cue = cue(primary),
-            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP),
-            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_HTTP, "default"),
+            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_TTS_SERVER),
+            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_TTS_SERVER, "default"),
         )
 
         assertEquals(primary, routed.voice)
@@ -22,12 +22,12 @@ class SpeechVoiceRouterTest {
     @Test
     fun `skips incompatible and unavailable voices before fallback`() {
         val system = voice("system", ReadAloudVoice.ENGINE_SYSTEM)
-        val unavailable = voice("unavailable", ReadAloudVoice.ENGINE_HTTP).copy(available = false)
-        val fallback = voice("fallback", ReadAloudVoice.ENGINE_HTTP)
+        val unavailable = voice("unavailable", ReadAloudVoice.ENGINE_TTS_SERVER).copy(available = false)
+        val fallback = voice("fallback", ReadAloudVoice.ENGINE_TTS_SERVER)
         val routed = SpeechVoiceRouter.route(
             cue = cue(system, listOf(unavailable, fallback)),
-            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP),
-            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_HTTP, "default"),
+            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_TTS_SERVER),
+            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_TTS_SERVER, "default"),
         )
 
         assertEquals(fallback, routed.voice)
@@ -38,11 +38,11 @@ class SpeechVoiceRouterTest {
     fun `creates runtime route when no configured voice is executable`() {
         val routed = SpeechVoiceRouter.route(
             cue = cue(null),
-            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP),
-            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_HTTP, "42"),
+            supportedEngineTypes = setOf(ReadAloudVoice.ENGINE_TTS_SERVER),
+            defaultRoute = SpeechEngineRoute(ReadAloudVoice.ENGINE_TTS_SERVER, "42"),
         )
 
-        assertEquals(ReadAloudVoice.ENGINE_HTTP, routed.voice?.engineType)
+        assertEquals(ReadAloudVoice.ENGINE_TTS_SERVER, routed.voice?.engineType)
         assertEquals("42", routed.voice?.engineId)
         assertTrue(routed.usedFallback)
     }

@@ -3015,6 +3015,12 @@
     <string name="read_aloud_audio_download_cancel_hint">Cancelled, stops after the current sentence</string>
     <string name="read_aloud_audio_download_failed_count">%1$d sentences failed to synthesize, not downloaded</string>
     <string name="read_aloud_audio_download_summary">Downloaded chapters play the local audio when you start reading aloud — no network, no re-synthesis.</string>
+    <string name="read_aloud_audio_download_chapter_no_script">No script for this chapter yet — generate it in the analysis/script page first</string>
+    <string name="read_aloud_audio_download_range_no_script">Pick chapters with scripts for both ends of the range</string>
+    <string name="read_aloud_audio_download_range_skipped_note">%1$d chapters in this range have no script and will be skipped</string>
+    <string name="read_aloud_audio_download_skipped_count">Skipped %1$d chapters (no script)</string>
+    <string name="read_aloud_audio_download_system_voice_hint">Some sentences use the system voice; downloading them is not supported yet (skipped)</string>
+    <string name="read_aloud_audio_download_badge_book">%1$d chapters downloaded</string>
     <string name="read_aloud_overlay_permission">Display capsule over other apps</string>
     <string name="read_aloud_overlay_granted">Allowed. The capsule appears outside this app while read aloud is running.</string>
     <string name="read_aloud_overlay_required">Grant permission to use the capsule on the home screen and in other apps. The in-app capsule works without it.</string>

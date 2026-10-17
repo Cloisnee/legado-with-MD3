@@ -13,7 +13,6 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.data.repository.BookRepository
 import io.legado.app.data.repository.BookSourceRepository
-import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.RssRepository
 import io.legado.app.data.repository.SearchRepository
 import io.legado.app.domain.gateway.DownloadCacheSettingsGateway
@@ -39,7 +38,6 @@ class SourceLoginViewModel(
     private val bookRepository: BookRepository,
     private val bookSourceRepository: BookSourceRepository,
     private val rssRepository: RssRepository,
-    private val httpTtsRepository: HttpTtsRepository,
     private val searchRepository: SearchRepository,
     private val downloadCacheSettingsGateway: DownloadCacheSettingsGateway,
 ) : ViewModel() {
@@ -194,8 +192,6 @@ class SourceLoginViewModel(
             }
 
             SourceLoginType.RssSource -> intent.sourceKey?.let { rssRepository.getByKey(it) }
-            SourceLoginType.HttpTts -> intent.sourceKey?.toLongOrNull()
-                ?.let { httpTtsRepository.findById(it) }
         }.also {
             if (book == null) {
                 book = intent.bookUrl?.let { url ->

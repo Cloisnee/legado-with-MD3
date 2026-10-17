@@ -23,6 +23,8 @@ data class AudioChapterUi(
     val state: AudioChapterState = AudioChapterState.Idle,
     val progressLabel: String? = null,
     val progress: Float = 0f,
+    /** 本章已在听书下载区（朗读时优先播本地下载音频） */
+    val downloaded: Boolean = false,
 ) {
     val missing: Int get() = (total - cached).coerceAtLeast(0)
     val isCached: Boolean get() = total > 0 && cached >= total
@@ -40,6 +42,8 @@ data class AudioBookUi(
     val total: Int,
     val sizeBytes: Long,
     val chapters: ImmutableList<AudioChapterUi>,
+    /** 已下载听书的章数（下载区；与朗读侧共用同一 Store） */
+    val downloadedChapters: Int = 0,
 ) {
     val progress: Float get() = if (total <= 0) 0f else cached.toFloat() / total
     val cachedCount: Int get() = chapters.count { it.isCached }

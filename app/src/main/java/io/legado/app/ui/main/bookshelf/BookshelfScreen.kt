@@ -586,18 +586,6 @@ fun BookshelfScreen(
                         )
                     }
 
-                    AnimatedVisibility(visible = isEditMode) {
-                        TopBarActionButton(
-                            onClick = {
-                                if (selectedBookUrls.isNotEmpty()) {
-                                    onIntent(BookshelfIntent.ShowOverlay(BookshelfOverlay.DeleteBooksConfirmDialog))
-                                }
-                            },
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = stringResource(R.string.delete_selected)
-                        )
-                    }
-
                     if (!isEditMode) {
                         Box {
                             TopBarActionButton(

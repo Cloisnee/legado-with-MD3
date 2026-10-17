@@ -50,8 +50,6 @@ import io.legado.app.data.repository.HighlightTagRuleRepository
 import io.legado.app.data.repository.HomeDashboardRepository
 import io.legado.app.data.repository.HomepageModulesRepository
 import io.legado.app.data.repository.HomepageSettingsRepository
-import io.legado.app.data.repository.HttpTtsEngineRepository
-import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ImportBookSettingsRepository
 import io.legado.app.data.repository.LabSettingsRepository
 import io.legado.app.data.repository.LocalBookRepository
@@ -116,7 +114,6 @@ import io.legado.app.domain.gateway.ExploreBooksGateway
 import io.legado.app.domain.gateway.HomeDashboardGateway
 import io.legado.app.domain.gateway.HomepageModulesGateway
 import io.legado.app.domain.gateway.HomepageSettingsGateway
-import io.legado.app.domain.gateway.HttpTtsEngineGateway
 import io.legado.app.domain.gateway.ImportBookSettingsGateway
 import io.legado.app.domain.gateway.LabSettingsGateway
 import io.legado.app.domain.gateway.LocalBookGateway
@@ -175,7 +172,6 @@ import io.legado.app.domain.usecase.ShrinkDatabaseUseCase
 import io.legado.app.domain.usecase.StartBookSourceCheckUseCase
 import io.legado.app.domain.usecase.SyncReadAloudVoicesUseCase
 import io.legado.app.domain.usecase.SynthesizeChapterAudioUseCase
-import io.legado.app.domain.usecase.SyncHttpTtsCatalogUseCase
 import io.legado.app.domain.usecase.SyncTtsServerVoicesUseCase
 import io.legado.app.domain.usecase.UpdateBooksGroupUseCase
 import io.legado.app.domain.usecase.UploadReadingProgressUseCase
@@ -195,7 +191,6 @@ import io.legado.app.model.ReaderSession
 import io.legado.app.service.playback.PlaybackCapsuleGatewayAdapter
 import io.legado.app.ui.about.AboutViewModel
 import io.legado.app.ui.association.ImportDictRuleViewModel
-import io.legado.app.ui.association.ImportHttpTtsViewModel
 import io.legado.app.ui.association.ImportReplaceRuleViewModel
 import io.legado.app.ui.association.ImportRssSourceViewModel
 import io.legado.app.ui.association.ImportTxtTocRuleViewModel
@@ -350,9 +345,7 @@ val appModule = module {
     // （prefetchForOpen / upData 判 callBack != null），register 还会给上一个持有者
     // 发 notifyBookChanged——单例会把两个 ReadBookViewModel 的注册身份混成一个。
     factory<ReaderSession> { LegacyReaderSession() }
-    single<HttpTtsEngineGateway> { HttpTtsEngineRepository(get()) }
     single<ReadAloudSettingsGateway> { get<ReadAloudSettingsRepository>() }
-    singleOf(::HttpTtsRepository)
     singleOf(::ApplyReadSettingUseCase)
     singleOf(::HighlightRuleRepository)
     singleOf(::HighlightTagRuleRepository)
@@ -385,8 +378,7 @@ val appModule = module {
     singleOf(::LoudnessNormalizer)
     singleOf(::SynthesizeChapterAudioUseCase)
     singleOf(::SyncTtsServerVoicesUseCase)
-    // [合并0716] 上游件保留：httpTTS 目录同步 / 书架封面预热
-    singleOf(::SyncHttpTtsCatalogUseCase)
+    // [合并0716] 上游件保留：书架封面预热
     singleOf(::BookshelfCoverPreloader)
     singleOf(::AiSpeechClient)
     singleOf(::AnalysisConfigStore)
@@ -478,7 +470,6 @@ val appModule = module {
 
     viewModelOf(::DictRuleViewModel)
     viewModelOf(::ImportDictRuleViewModel)
-    viewModelOf(::ImportHttpTtsViewModel)
     viewModelOf(::ImportReplaceRuleViewModel)
     viewModelOf(::ImportRssSourceViewModel)
     viewModelOf(::ImportTxtTocRuleViewModel)
@@ -571,7 +562,6 @@ val appModule = module {
             bookRepository = get(),
             bookSourceRepository = get(),
             rssRepository = get(),
-            httpTtsRepository = get(),
             searchRepository = get(),
             downloadCacheSettingsGateway = get(),
         )
@@ -615,7 +605,6 @@ val appModule = module {
             downloadCacheSettingsGateway = get(),
             backupSettingsGateway = get(),
             themeSettingsGateway = get(),
-            httpTtsRepository = get(),
             bookSourceRepository = get(),
             bookmarkRepository = get(),
             bookRepository = get(),

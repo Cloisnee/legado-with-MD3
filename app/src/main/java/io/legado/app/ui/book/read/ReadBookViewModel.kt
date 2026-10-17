@@ -18,7 +18,6 @@ import io.legado.app.data.repository.BookRepository
 import io.legado.app.data.repository.BookSourceRepository
 import io.legado.app.data.repository.BookmarkRepository
 import io.legado.app.data.repository.HighlightRuleRepository
-import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadPreferences
 import io.legado.app.data.repository.ReadRecordRepository
@@ -131,7 +130,6 @@ class ReadBookViewModel(
     private val downloadCacheSettingsGateway: DownloadCacheSettingsGateway,
     private val backupSettingsGateway: BackupSettingsGateway,
     private val themeSettingsGateway: ThemeSettingsGateway,
-    private val httpTtsRepository: HttpTtsRepository,
     private val bookSourceRepository: BookSourceRepository,
     private val bookmarkRepository: BookmarkRepository,
     private val bookRepository: BookRepository,
@@ -489,7 +487,6 @@ class ReadBookViewModel(
         readSettingsRepository = readSettingsRepository,
         readAloudSettingsRepository = readAloudSettingsRepository,
         readAloudSessionStore = readAloudSessionStore,
-        httpTtsRepository = httpTtsRepository,
         syncReadAloudVoicesUseCase = syncReadAloudVoicesUseCase,
         readAloudDataRepository = readAloudDataRepository,
     ) }
@@ -2555,11 +2552,4 @@ internal fun readStyleExportFileName(styleName: String): String {
 
 private fun Int.coerceSearchResultIndex(resultSize: Int): Int {
     return if (resultSize <= 0) 0 else coerceIn(0, resultSize - 1)
-}
-
-private fun String.isHttpTtsImportUri(): Boolean {
-    val uri = runCatching { Uri.parse(this) }.getOrNull() ?: return false
-    return uri.scheme in setOf("legado", "yuedu")
-            && uri.host == "import"
-            && uri.path.equals("/httpTTS", ignoreCase = true)
 }

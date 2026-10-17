@@ -30,7 +30,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
-import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.data.repository.ReadAloudSettingsRepository
@@ -58,7 +57,6 @@ import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
-import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
@@ -259,15 +257,6 @@ fun ReadAloudSettingsScreen(
                         checked = st.systemMediaControlCompatibilityChange,
                         onCheckedChange = { v ->
                             update { it.copy(systemMediaControlCompatibilityChange = v) }
-                        },
-                    )
-                    TinySwitchSettingItem(
-                        title = stringResource(R.string.stream_read_aloud_audio),
-                        description = stringResource(R.string.stream_read_aloud_audio_summary),
-                        checked = st.streamReadAloudAudio,
-                        onCheckedChange = { v ->
-                            update { it.copy(streamReadAloudAudio = v) }
-                            if (v) postEvent(EventBus.MEDIA_BUTTON, false)
                         },
                     )
                     TinySwitchSettingItem(

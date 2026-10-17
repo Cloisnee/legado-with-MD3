@@ -7,7 +7,6 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
 import io.legado.app.data.appDb
-import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
@@ -18,7 +17,6 @@ import io.legado.app.service.TTSReadAloudService
 import io.legado.app.service.readaloud.ReadAloudBookSession
 import io.legado.app.utils.GSON
 import io.legado.app.utils.LogUtils
-import io.legado.app.utils.StringUtils
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.startForegroundServiceCompat
@@ -42,7 +40,6 @@ object ReadAloud {
         get() = selectedAloudClass ?: getReadAloudClass().also { selectedAloudClass = it }
         set(value) { selectedAloudClass = value }
     val ttsEngine get() = (bookSession.book ?: ReadBook.book)?.getTtsEngine() ?: aloudSettingsGateway.currentSettings.ttsEngine
-    var httpTTS: HttpTTS? = null
     var coordinatorDefaultEngineType: String = ReadAloudVoice.ENGINE_SYSTEM
         private set
     var coordinatorDefaultEngineId: String = ""
@@ -69,34 +66,14 @@ object ReadAloud {
                 coordinatorDefaultEngineType = selection.engineType
                 coordinatorDefaultEngineId = selection.engineId
                 coordinatorDefaultSpeakerId = selection.speakerId
-                httpTTS = HttpTTS(
-                    id = Long.MIN_VALUE,
-                    name = selection.displayName.ifBlank { "TTS Server" })
                 return HttpReadAloudService::class.java
             }
-        if (ttsEngine.isNullOrBlank()) {
-            setSystemCoordinatorDefault(ttsEngine)
-            findCoordinatorHttpSeed()?.let {
-                httpTTS = it
-                return HttpReadAloudService::class.java
-            }
-            return TTSReadAloudService::class.java
-        }
-        if (StringUtils.isNumeric(ttsEngine)) {
-            httpTTS = appDb.httpTTSDao.get(ttsEngine.toLong())
-            if (httpTTS != null) {
-                coordinatorDefaultEngineType = ReadAloudVoice.ENGINE_HTTP
-                coordinatorDefaultEngineId = ttsEngine
-                coordinatorDefaultSpeakerId = ""
-                return HttpReadAloudService::class.java
-            }
-        }
         setSystemCoordinatorDefault(ttsEngine)
-        findCoordinatorHttpSeed()?.let {
-            httpTTS = it
-            return HttpReadAloudService::class.java
+        return if (needsFileSynthesisUpgrade()) {
+            HttpReadAloudService::class.java
+        } else {
+            TTSReadAloudService::class.java
         }
-        return TTSReadAloudService::class.java
     }
 
     private fun setSystemCoordinatorDefault(serializedEngine: String?) {
@@ -106,51 +83,40 @@ object ReadAloud {
         coordinatorDefaultSpeakerId = ""
     }
 
-    private fun findCoordinatorHttpSeed(): HttpTTS? {
-        val settings = aloudSettingsGateway.currentSettings
-        // 「多角色朗读」开关决定用不用角色音，也就决定能不能留在系统 TTS 直读：
-        // 角色音里有 HTTP/TTS Server 音色时只有文件合成那条服务能发声，系统直读会把它们过滤掉。
-        // 「多角色分配」只是正文胶囊与手动分配的入口，不该改变引擎——关掉多角色朗读就必须
-        // 回到用户在朗读设置里选的默认引擎。
-        if (!settings.useMultiSpeaker) return null
-        return runCatching {
-            val bookUrl = (bookSession.book ?: ReadBook.book)?.bookUrl ?: return@runCatching null
-            val (httpVoices, systemRoutes) = runBlocking {
-                val voiceIds = appDb.readAloudVoiceDao.getBindings(bookUrl)
-                    .mapTo(hashSetOf()) { it.voiceId }
-                val voices = appDb.readAloudVoiceDao.getVoices().filter {
-                    it.id in voiceIds && it.engineType in setOf(
-                        ReadAloudVoice.ENGINE_HTTP,
-                        ReadAloudVoice.ENGINE_TTS_SERVER,
-                    ) &&
-                        it.enabled && it.available
-                }
-                voices.filter {
-                    it.engineType == ReadAloudVoice.ENGINE_HTTP
-                } to voices.filter { it.engineType == ReadAloudVoice.ENGINE_SYSTEM }
-                    .mapTo(hashSetOf()) { it.engineId to it.speakerId }
+    /**
+     * 多角色朗读要不要升级到文件合成那条服务（HttpReadAloudService）。
+     *
+     * 升级条件（任一）：
+     * 1) 本书绑定了内置引擎（tts_server）音色——系统直读会把它们过滤成旁白；
+     * 2) 本书绑定了 ≥2 路系统音色（engineId+speakerId 不同）——直读换音色要 setVoice，
+     *    这类引擎的 onDone 比耳朵提前（缓冲尾没放完就报完成），长句会被冲掉尾巴；
+     *    文件合成 + 自己的播放器按真实播放结束翻页，句界不再听引擎的回调。
+     * 「多角色分配」只是正文胶囊与手动分配的入口，不改变引擎；开关关闭时一律回默认引擎。
+     */
+    private fun needsFileSynthesisUpgrade(): Boolean = runCatching {
+        if (!aloudSettingsGateway.currentSettings.useMultiSpeaker) return@runCatching false
+        val bookUrl = (bookSession.book ?: ReadBook.book)?.bookUrl ?: return@runCatching false
+        runBlocking {
+            val voiceIds = appDb.readAloudVoiceDao.getBindings(bookUrl)
+                .mapTo(hashSetOf()) { it.voiceId }
+            val voices = appDb.readAloudVoiceDao.getVoices().filter {
+                it.id in voiceIds && it.enabled && it.available
             }
-            // 全系统音色也要升级的两个理由：
-            // 1) 变声器的混响/金属感挂在**我们持有播放器的**那条音频会话上，直读时音频是引擎
-            //    自己的 AudioTrack，会话号不给外部应用（试听之所以有效果，就是因为它是文件合成
-            //    + 我们的 ExoPlayer）。
-            // 2) 一句旁白一句角色音地换音色——直读换音色要 setVoice，而这类引擎的 onDone 比耳朵
-            //    提前好几秒（长句是「音频写完」就报完成，缓冲里还剩两三秒没放出去），这一次
-            //    调用正好把上一句的尾巴冲掉：角色长句读到一半跳下一句就是这么来的。文件合成 +
-            //    自己的播放器按真实播放结束翻页，句界不再听引擎的回调。
-            if (httpVoices.isEmpty() && systemRoutes.size < 2) {
-                return@runCatching null
+            val serverVoices = voices.filter {
+                it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER
+            }
+            val systemRoutes = voices.filter { it.engineType == ReadAloudVoice.ENGINE_SYSTEM }
+                .mapTo(hashSetOf()) { it.engineId to it.speakerId }
+            if (serverVoices.isEmpty() && systemRoutes.size < 2) {
+                return@runBlocking false
             }
             AppLog.put(
                 "多角色朗读: 升级文件合成 系统音色 ${systemRoutes.size} 路 " +
-                    "HTTP/服务器音色 ${httpVoices.size} 个",
+                    "服务器音色 ${serverVoices.size} 个",
             )
-            httpVoices.firstOrNull { it.engineType == ReadAloudVoice.ENGINE_HTTP }
-                ?.engineId?.toLongOrNull()?.let(appDb.httpTTSDao::get)
-                ?: appDb.httpTTSDao.all.firstOrNull()
-                ?: HttpTTS(id = Long.MIN_VALUE, name = "TTS coordinator")
-        }.getOrNull()
-    }
+            true
+        }
+    }.getOrDefault(false)
 
     fun upReadAloudClass() {
         stop(appCtx)
@@ -207,8 +173,7 @@ object ReadAloud {
         run {
             val settings = aloudSettingsGateway.currentSettings
             AppLog.put(
-                "多角色朗读: 走${aloudClass.simpleName} 多角色朗读=${settings.useMultiSpeaker} " +
-                    "合成服务=${httpTTS?.name ?: "无"}",
+                "多角色朗读: 走${aloudClass.simpleName} 多角色朗读=${settings.useMultiSpeaker}",
             )
         }
         val intent = Intent(context, aloudClass)

@@ -7,6 +7,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
 import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.usecase.SynthesizeChapterAudioUseCase
+import io.legado.app.help.readaloud.playback.ReadAloudAudioStore
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.persistentListOf
@@ -209,6 +210,14 @@ class TtsCacheViewModel : ViewModel() {
                 val author = dataRepository.loadBookAuthor(book)
                 val titles = dataRepository.loadChapterTitles(book)
                 val lineCounts = dataRepository.loadChapterLineCounts(book)
+                // 听书下载区（与朗读侧同一 Store）：按 bookUrl 查已下载章集合，两处状态互通
+                val bookUrl = runCatching { dataRepository.loadBookUrl(book) }.getOrDefault("")
+                val downloadedSet = if (bookUrl.isBlank()) {
+                    emptySet()
+                } else {
+                    runCatching { ReadAloudAudioStore.downloadedChapters(bookUrl) }
+                        .getOrDefault(emptySet())
+                }
                 val chapters = lineCounts.entries
                     .sortedBy { it.key }
                     .map { (chapterIndex, total) ->
@@ -219,6 +228,7 @@ class TtsCacheViewModel : ViewModel() {
                             cached = stats.cached,
                             total = stats.total,
                             sizeBytes = stats.sizeBytes,
+                            downloaded = chapterIndex in downloadedSet,
                         )
                     }
                 AudioBookUi(
@@ -228,6 +238,7 @@ class TtsCacheViewModel : ViewModel() {
                     total = chapters.sumOf { it.total },
                     sizeBytes = chapters.sumOf { it.sizeBytes },
                     chapters = chapters.toImmutableList(),
+                    downloadedChapters = downloadedSet.size,
                 )
             }
             // 保留进行中的任务状态：返回本页会重新扫描，若不保留会把「等待/缓存中/暂停」清成空闲

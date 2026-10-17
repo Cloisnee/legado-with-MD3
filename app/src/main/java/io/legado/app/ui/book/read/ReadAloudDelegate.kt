@@ -4,8 +4,6 @@ import android.content.Context
 import android.speech.tts.TextToSpeech
 import io.legado.app.R
 import io.legado.app.constant.EventBus
-import io.legado.app.data.entities.HttpTTS
-import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.domain.model.PlaybackTimer
@@ -49,7 +47,6 @@ class ReadAloudDelegate(
     private val readSettingsRepository: ReadSettingsRepository,
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
-    private val httpTtsRepository: HttpTtsRepository,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
     private val readAloudDataRepository: ReadAloudDataRepository,
 ) {
@@ -125,7 +122,6 @@ class ReadAloudDelegate(
      */
     suspend fun syncConfiguredTtsVoices(
         systemTtsLabel: String = context.getString(R.string.system_tts),
-        httpTtsList: List<HttpTTS> = httpTtsRepository.getAllSync(),
     ) {
         // 批212d：tts_server 只收「当前启用池」+ 条目开启者；身份=条目 id；未选池时不动 tts 目录
         val activeBanks = runCatching { readAloudDataRepository.loadActiveVoiceBanks() }
@@ -145,16 +141,6 @@ class ReadAloudDelegate(
                             engineType = ReadAloudVoice.ENGINE_SYSTEM,
                             engineId = engine.name,
                             displayName = engine.label,
-                        )
-                    )
-                }
-                httpTtsList.forEach { httpTts ->
-                    add(
-                        VoiceCatalogEntry(
-                            engineType = ReadAloudVoice.ENGINE_HTTP,
-                            engineId = httpTts.id.toString(),
-                            displayName = httpTts.name,
-                            sourceRevision = httpTts.lastUpdateTime,
                         )
                     )
                 }
@@ -192,9 +178,9 @@ class ReadAloudDelegate(
             },
             managedSources = setOf(ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS),
             removeMissingEngineTypes = if (activeBanks.isEmpty()) {
-                setOf(ReadAloudVoice.ENGINE_HTTP)
+                emptySet()
             } else {
-                setOf(ReadAloudVoice.ENGINE_HTTP, "tts_server")
+                setOf("tts_server")
             },
         )
     }

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.data.entities.ReadAloudAudioDownload
 import io.legado.app.help.readaloud.playback.ReadAloudAudioStore
+import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.read.ReadMenuConfig
@@ -60,6 +62,7 @@ import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.koin.core.context.GlobalContext
 
 /**
  * 听书下载：把选定章节的朗读音频整章合成到本地，之后点朗读直接播本地文件、不联网。
@@ -89,6 +92,17 @@ fun ReaderAudioDownloadSheet(
     val chapterCount = book.totalChapterNum.coerceAtLeast(1)
     val progress by ReadAloudAudioStore.progress.collectAsState()
     var refreshKey by remember { mutableStateOf(0) }
+    val readAloudDataRepository = remember { GlobalContext.get().get<ReadAloudDataRepository>() }
+    // 剧本门禁：只下本章要求本章有剧本；按范围时两端的章也要有剧本（范围内无剧本章执行端跳过）
+    val scriptChapters by produceState(
+        initialValue = null as Set<Int>?,
+        key1 = bookUrl,
+        key2 = refreshKey,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            readAloudDataRepository.loadChapters(book.name).toSet()
+        }
+    }
     // null = 还没查完库。第一帧就断言「本章没下载过」会闪一句假话。
     val rows by produceState(
         initialValue = null as List<ReadAloudAudioDownload>?,
@@ -105,6 +119,16 @@ fun ReaderAudioDownloadSheet(
     var startText by remember(currentChapterIndex) { mutableStateOf((currentChapterIndex + 1).toString()) }
     var endText by remember(currentChapterIndex) { mutableStateOf((currentChapterIndex + 1).toString()) }
     val range = downloadRange(byRange, startText, endText, chapterCount)
+    // 下载结束自动刷新「已下载」列表与剧本集合
+    var wasRunning by remember { mutableStateOf(false) }
+    LaunchedEffect(progress.running) {
+        if (wasRunning && !progress.running) refreshKey++
+        wasRunning = progress.running
+    }
+    val scriptLoaded = scriptChapters
+    val currentHasScript = scriptLoaded?.contains(currentChapterIndex) == true
+    val rangeHasScriptEnds = range != null && scriptLoaded != null &&
+        range.first in scriptLoaded && range.second in scriptLoaded
 
     CastImeScope {
         Box(
@@ -191,6 +215,15 @@ fun ReaderAudioDownloadSheet(
                                 },
                             )
                         }
+                        if (scriptLoaded != null && !currentHasScript) {
+                            AppText(
+                                text = stringResource(
+                                    R.string.read_aloud_audio_download_chapter_no_script,
+                                ),
+                                style = LegadoTheme.typography.labelSmall,
+                                color = LegadoTheme.colorScheme.error,
+                            )
+                        }
                         if (byRange) {
                             CastFieldStack(
                                 specs = listOf(
@@ -212,17 +245,33 @@ fun ReaderAudioDownloadSheet(
                                     ),
                                 ),
                             )
+                            val rangeError = range == null ||
+                                (scriptLoaded != null && !rangeHasScriptEnds)
                             AppText(
                                 text = if (range == null) {
                                     stringResource(R.string.read_aloud_audio_download_invalid_range)
-                                } else {
+                                } else if (scriptLoaded != null && !rangeHasScriptEnds) {
                                     stringResource(
-                                        R.string.read_aloud_audio_download_range_count,
-                                        range.second - range.first + 1,
+                                        R.string.read_aloud_audio_download_range_no_script,
                                     )
+                                } else {
+                                    val missing = scriptLoaded?.let { set ->
+                                        (range.first..range.second).count { it !in set }
+                                    } ?: 0
+                                    if (missing > 0) {
+                                        stringResource(
+                                            R.string.read_aloud_audio_download_range_skipped_note,
+                                            missing,
+                                        )
+                                    } else {
+                                        stringResource(
+                                            R.string.read_aloud_audio_download_range_count,
+                                            range.second - range.first + 1,
+                                        )
+                                    }
                                 },
                                 style = LegadoTheme.typography.labelSmall,
-                                color = if (range == null) {
+                                color = if (rangeError) {
                                     LegadoTheme.colorScheme.error
                                 } else {
                                     LegadoTheme.colorScheme.onSurfaceVariant
@@ -239,7 +288,8 @@ fun ReaderAudioDownloadSheet(
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
-                                enabled = range != null && !progress.running,
+                                enabled = range != null && !progress.running &&
+                                    if (byRange) rangeHasScriptEnds else currentHasScript,
                                 icon = Icons.Default.Download,
                                 text = stringResource(R.string.read_aloud_audio_download_start),
                             )
@@ -293,6 +343,16 @@ fun ReaderAudioDownloadSheet(
                                     ),
                                     style = LegadoTheme.typography.bodySmall,
                                     color = LegadoTheme.colorScheme.error,
+                                )
+                            }
+                            if (progress.skipped > 0) {
+                                AppText(
+                                    text = stringResource(
+                                        R.string.read_aloud_audio_download_skipped_count,
+                                        progress.skipped,
+                                    ),
+                                    style = LegadoTheme.typography.bodySmall,
+                                    color = LegadoTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }

@@ -18,7 +18,7 @@ import java.io.File
  * （引擎 + 语速 + 句子文本的 md5，`.mp3`）。正因为名字一致，朗读侧只要在这两个目录里
  * 找到同名文件就直接播，不用再联网——「下载过的章节点朗读就是播下载好的」。
  *
- * 为什么不共用 `externalCacheDir/httpTTS`：那一个是**缓存**，退出朗读会按设置清、
+ * 为什么不共用朗读缓存目录（`externalCacheDir` 那份）：那一个是**缓存**，退出朗读会按设置清、
  * 系统存储紧张也会回收，下载的东西不能被清掉；而且删除要能精确到章，所以文件名清单
  * 记在 `read_aloud_audio_downloads` 表里（文件名是内容哈希，反推不出属于哪一章）。
  */
@@ -46,6 +46,8 @@ object ReadAloudAudioStore {
         val sentenceTotal: Int = 0,
         val sentenceDone: Int = 0,
         val failed: Int = 0,
+        /** 无剧本被跳过的章数（听书下载的剧本门禁） */
+        val skipped: Int = 0,
     ) {
         val chapterFraction: Float
             get() = if (chapterTotal <= 0) 0f else chapterDone.toFloat() / chapterTotal

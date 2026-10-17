@@ -18,7 +18,6 @@ import io.legado.app.data.dao.HighlightRuleDao
 import io.legado.app.data.dao.HighlightTagRuleDao
 import io.legado.app.data.dao.HomepageCustomSetDao
 import io.legado.app.data.dao.HomepageModuleDao
-import io.legado.app.data.dao.HttpTTSDao
 import io.legado.app.data.dao.KeyboardAssistsDao
 import io.legado.app.data.dao.ReadAloudAudioDownloadDao
 import io.legado.app.data.dao.ReadAloudVoiceDao
@@ -66,7 +65,6 @@ val appDatabaseModule = module {
     factory<CookieDao> { get<AppDatabase>().cookieDao }
     factory<TxtTocRuleDao> { get<AppDatabase>().txtTocRuleDao }
     factory<ReadRecordDao> { get<AppDatabase>().readRecordDao }
-    factory<HttpTTSDao> { get<AppDatabase>().httpTTSDao }
     factory<CacheDao> { get<AppDatabase>().cacheDao }
     factory<RuleSubDao> { get<AppDatabase>().ruleSubDao }
     factory<DictRuleDao> { get<AppDatabase>().dictRuleDao }

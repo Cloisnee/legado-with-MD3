@@ -19,18 +19,9 @@ data class ReadAloudVoice(
 ) {
     companion object {
         const val ENGINE_SYSTEM = "system"
-        const val ENGINE_HTTP = "http"
         const val ENGINE_TTS_SERVER = "tts_server"
         const val MANAGED_BY_USER = "user"
         const val MANAGED_BY_CONFIGURED_TTS = "configured_tts"
-
-        /**
-         * 源自带目录：从 httpTTS 源的 `speakersJson` / `emotionsJson` 导入的音色。
-         *
-         * 单独一个取值，是为了不和 [MANAGED_BY_CONFIGURED_TTS] 混在一次回收里——
-         * 后者每次同步都以「当前引擎列表」为全集，会把源自带的目录行整批删掉。
-         */
-        const val MANAGED_BY_HTTP_SOURCE_CATALOG = "http_source_catalog"
     }
 }
 

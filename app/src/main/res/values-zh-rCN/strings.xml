@@ -3011,6 +3011,12 @@
     <string name="read_aloud_audio_download_cancel_hint">已取消，正在合成的这句完成后停止</string>
     <string name="read_aloud_audio_download_failed_count">%1$d 句合成失败，未下载</string>
     <string name="read_aloud_audio_download_summary">下载过的章节点朗读就直接播本地音频，不联网、不重新合成。</string>
+    <string name="read_aloud_audio_download_chapter_no_script">本章暂无剧本：先在分析/剧本页生成</string>
+    <string name="read_aloud_audio_download_range_no_script">起止章需选有剧本的章</string>
+    <string name="read_aloud_audio_download_range_skipped_note">范围内 %1$d 章暂无剧本，将自动跳过</string>
+    <string name="read_aloud_audio_download_skipped_count">已跳过 %1$d 章（暂无剧本）</string>
+    <string name="read_aloud_audio_download_system_voice_hint">部分句子为系统声线，暂不支持下载（已跳过）</string>
+    <string name="read_aloud_audio_download_badge_book">已下载听书 %1$d 章</string>
     <string name="read_aloud_overlay_permission">允许胶囊显示在其他应用上层</string>
     <string name="read_aloud_overlay_granted">已授权。朗读运行时可在桌面和其他应用上使用胶囊。</string>
     <string name="read_aloud_overlay_required">授权后可在桌面和其他应用上使用胶囊，未授权不影响应用内胶囊。</string>

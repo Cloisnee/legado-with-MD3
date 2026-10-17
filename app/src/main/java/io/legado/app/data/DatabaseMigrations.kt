@@ -22,7 +22,7 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
             migration_102_103, migration_105_106, migration_106_107, migration_107_108,
-            migration_108_109,
+            migration_108_109, migration_109_110,
         )
     }
 
@@ -775,6 +775,17 @@ object DatabaseMigrations {
                     `files` TEXT NOT NULL, `createTime` INTEGER NOT NULL,
                     PRIMARY KEY(`bookUrl`, `chapterIndex`))"""
             )
+        }
+    }
+
+    /**
+     * 109 → 110：拔除在线朗读（HttpTTS）——实体与 Dao 撤除、表保留不删。
+     * 仅对齐 Room 实体集变化（identity hash 换新）；`httpTTS` 表结构与数据原地保留，
+     * 供旧备份/降级排查兼容，不读不写零成本。
+     */
+    private val migration_109_110 = object : Migration(109, 110) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // 有意留空：只换版本号，不动任何表。
         }
     }
 

@@ -510,7 +510,7 @@ abstract class BaseReadAloudService : BaseService(),
             newReadAloud(true, pageIndex, startPos, chapterPosition)
             return
         }
-        if (play && chapterPosition == null && !sessionPrepared && standbyEnabled()) {
+        if (play && !sessionPrepared && standbyEnabled()) {
             enterStandby()
             return
         }
