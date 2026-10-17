@@ -70,6 +70,7 @@ import io.legado.app.utils.ChapterLabels
 import io.legado.app.utils.GSON
 import io.legado.app.utils.servicePendingIntent
 import io.legado.app.utils.toastOnUi
+import splitties.systemservices.notificationManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.Main
