@@ -141,7 +141,12 @@ data class TtsEngineContext(
      * 本入口直接使用条目自身的 config（source/audioParams/audioFormat），从根上杜绝二义。
      * configJson 来自声线目录条目的 traitsJson（= `_store/voices.json` 条目的 config）。
      */
-    internal fun synthesizeByConfig(configJson: String, text: String): SynthOutcome {
+    internal fun synthesizeByConfig(
+        configJson: String,
+        text: String,
+        /** 阅读朗读情绪（空 = 无）；桥给插件 `ttsrv.tts.emotion` */
+        emotion: String = "",
+    ): SynthOutcome {
         val found = runCatching {
             val cfg = JSONObject(configJson)
             val src = cfg.optJSONObject("source")
@@ -176,15 +181,16 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
-        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text, emotion) }
     }
 
     private fun synthesizeLocked(
         engine: TtsPluginEngineV2,
         found: TtsConfigStore.FoundConfig,
         text: String,
+        emotion: String = "",
     ): SynthOutcome {
-        // 注入插件特殊参数（source.data）与音频参数，插件侧经 ttsrv.tts.data / .speed 等读取
+        // 注入插件特殊参数（source.data）、音频参数与情绪，插件侧经 ttsrv.tts.data / .speed / .emotion 读取
         engine.source = PluginTtsSource(
             locale = found.locale,
             voice = found.voice,
@@ -193,6 +199,7 @@ data class TtsEngineContext(
             volume = found.volume,
             pitch = found.pitch,
             data = found.sourceData,
+            emotion = emotion,
         )
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f

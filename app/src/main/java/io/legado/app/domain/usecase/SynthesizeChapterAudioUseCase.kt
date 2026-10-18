@@ -9,6 +9,7 @@ import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
+import io.legado.app.domain.model.readaloud.ReadAloudEmotion
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
@@ -178,7 +179,8 @@ class SynthesizeChapterAudioUseCase(
             }
             val t0 = System.currentTimeMillis()
             val timeoutMs = settings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
-            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs)
+            val emotion = ReadAloudEmotion.forPlugin(row.emotion)
+            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
             val maxRetry = settings.ttsMaxRetry.coerceIn(0, 10)
             var retried = 0
             while (!outcome.ok && retried < maxRetry) {
@@ -187,7 +189,7 @@ class SynthesizeChapterAudioUseCase(
                     "【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
                 )
                 delay(500)
-                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs)
+                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
             }
             if (outcome.ok) {
                 done++

@@ -30,6 +30,8 @@ class TtsServerSynthesizer(context: Context) {
         text: String,
         output: File,
         timeoutMs: Long = TtsEngineContext.AUDITION_TIMEOUT,
+        /** 阅读朗读情绪（空 = 无）；桥给插件 `ttsrv.tts.emotion` */
+        emotion: String = "",
     ): Outcome = withContext(Dispatchers.IO) {
         if (traitsJson.isBlank() || traitsJson.trim() == "[]") {
             return@withContext Outcome(false, "声线缺少条目配置（按条目合成，不回退全局查找）")
@@ -44,7 +46,7 @@ class TtsServerSynthesizer(context: Context) {
                 context = appContext,
                 engineId = "",
                 synthTimeoutMs = timeoutMs,
-            ).synthesizeByConfig(traitsJson, text)
+            ).synthesizeByConfig(traitsJson, text, emotion)
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {

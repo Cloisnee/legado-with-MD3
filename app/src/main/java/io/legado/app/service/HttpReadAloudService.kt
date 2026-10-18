@@ -31,6 +31,7 @@ import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackQueue
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
+import io.legado.app.domain.model.readaloud.ReadAloudEmotion
 import io.legado.app.domain.model.readaloud.SpeechEngineRoute
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechRoleType
@@ -694,11 +695,13 @@ class HttpReadAloudService : BaseReadAloudService(),
 
                                 ReadAloudVoice.ENGINE_TTS_SERVER -> synthesizeWithRetry(cueLabel, speakText) {
                                     // 批212d：按「精确条目」合成（traitsJson=条目配置；不回退全局查找）
+                                    // 情绪按阅读侧口径下发（旁白/平静不发）；插件经 ttsrv.tts.emotion 读取
                                     val outcome = ttsServerSynthesizer.synthesize(
                                         routedVoice.traitsJson,
                                         speakText,
                                         cacheFile,
                                         ttsSynthTimeoutMs,
+                                        emotion = ReadAloudEmotion.forPlugin(cueEmotion),
                                     )
                                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                                 }
@@ -1069,6 +1072,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         speakText,
                         cacheFile,
                         ttsSynthTimeoutMs,
+                        emotion = ReadAloudEmotion.forPlugin(cue?.emotion),
                     )
                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }
