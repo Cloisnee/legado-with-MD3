@@ -1181,122 +1181,125 @@ private fun ModelLibraryPage(
                 )
             }
         }
-        var lastVendorKind: String? = null
-        config.providers.forEach { p ->
-            val vKind = if (p.kind == "audio") "audio" else "chat"
-            if (vKind != lastVendorKind) {
-                item(key = "sec_$vKind") {
-                    SectionTitle(if (vKind == "audio") "音频合成平台" else "分析模型")
-                }
-                lastVendorKind = vKind
+        // 分组标题按固定栏目输出：分析模型 → 音频合成平台。
+        // 原实现依赖「同 kind 相邻」推断分组，一旦 providers 顺序交错（新增服务商追加到末尾、
+        // 或删除中间条目）就会重复产出同一个 LazyColumn key，触发 IllegalArgumentException 崩溃。
+        listOf("chat" to "分析模型", "audio" to "音频合成平台").forEach { (vKind, vTitle) ->
+            val kindProviders = config.providers.filter {
+                (if (it.kind == "audio") "audio" else "chat") == vKind
             }
-            item(key = "vendor_${p.id}") {
-                val models = config.models.filter { it.providerId == p.id }
-                val enabledCount = models.count { it.enabled }
-                val expanded = expandedVendors[p.id] == true
-                val vSelActive = libActive && libCtx == "vendor"
-                val vSelected = p.id in selVendors
-                val rotation by animateFloatAsState(
-                    targetValue = if (expanded) 0f else -90f,
-                    label = "vendorArrow",
-                )
-                GlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    cornerRadius = 12.dp,
-                    containerColor = if (vSelected) {
-                        LegadoTheme.colorScheme.secondaryContainer
-                    } else {
-                        LegadoTheme.colorScheme.surfaceContainer
-                    },
-                    onClick = { onVendorClick(p) },
-                    onLongClick = { onVendorLongClick(p) },
-                ) {
-                    SelectionItemCardContent(
-                        title = p.name,
-                        subtitle = "共 ${models.size} 个模型 · ${p.protocol}",
-                        inSelectionMode = vSelActive,
-                        isSelected = vSelected,
-                        trailingAction = {
-                            CountTag(enabledCount, models.size)
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (expanded) "收起" else "展开",
-                                modifier = Modifier
-                                    .rotate(rotation)
-                                    .clickable { onToggleExpand(p.id) }
-                                    .padding(4.dp),
-                            )
-                        },
-                    )
-                }
-            }
-            if (expandedVendors[p.id] == true) {
-                item(key = "vendor_search_${p.id}") {
-                    SearchBar(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        query = vendorQueries[p.id].orEmpty(),
-                        onQueryChange = { q -> onQueryChange(p.id, q) },
-                        placeholder = "搜索 ${p.name} 的模型",
-                        shape = RoundedCornerShape(12.dp),
-                        autoFocus = false,
-                    )
-                }
-                val all = config.models.filter { it.providerId == p.id }
-                val q = vendorQueries[p.id].orEmpty()
-                val filtered = if (q.isBlank()) {
-                    all
-                } else {
-                    all.filter {
-                        it.name.contains(q, ignoreCase = true) ||
-                            it.modelId.contains(q, ignoreCase = true)
-                    }
-                }
-                items(filtered, key = { "model_${it.id}" }) { m ->
-                    val testState = when {
-                        testInflight[m.id] == true -> TestUi.Testing
-                        m.testOk == true -> TestUi.Pass(m.testLatencyMs ?: 0L)
-                        m.testOk == false -> TestUi.Fail(m.testMessage.orEmpty())
-                        else -> TestUi.Untested
-                    }
-                    val mSelActive = libActive && libCtx == "model"
-                    val mSelected = m.id in selModels
-                    GlassCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        cornerRadius = 12.dp,
-                        containerColor = if (mSelected) {
-                            LegadoTheme.colorScheme.secondaryContainer
-                        } else {
-                            LegadoTheme.colorScheme.surfaceContainer
-                        },
-                        onClick = { onModelClick(m) },
-                        onLongClick = { onModelLongClick(m) },
-                    ) {
-                        SelectionItemCardContent(
-                            title = m.name + when (val s = testState) {
-                                is TestUi.Pass -> " · ${s.latencyMs}ms"
-                                else -> ""
-                            },
-                            subtitle = m.modelId,
-                            isEnabled = m.enabled,
-                            inSelectionMode = mSelActive,
-                            isSelected = mSelected,
-                            trailingAction = if (libActive) null else {
-                                {
-                                    TestChip(testState) { onTestModel(m, p) }
-                                    AdaptiveSwitch(
-                                        checked = m.enabled,
-                                        onCheckedChange = { v -> onToggleModelEnabled(m, v) },
-                                        modifier = Modifier.scale(0.8f),
-                                    )
-                                }
-                            },
+            if (kindProviders.isNotEmpty()) {
+                item(key = "sec_$vKind") { SectionTitle(vTitle) }
+                kindProviders.forEach { p ->
+                    item(key = "vendor_${p.id}") {
+                        val models = config.models.filter { it.providerId == p.id }
+                        val enabledCount = models.count { it.enabled }
+                        val expanded = expandedVendors[p.id] == true
+                        val vSelActive = libActive && libCtx == "vendor"
+                        val vSelected = p.id in selVendors
+                        val rotation by animateFloatAsState(
+                            targetValue = if (expanded) 0f else -90f,
+                            label = "vendorArrow",
                         )
+                        GlassCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            cornerRadius = 12.dp,
+                            containerColor = if (vSelected) {
+                                LegadoTheme.colorScheme.secondaryContainer
+                            } else {
+                                LegadoTheme.colorScheme.surfaceContainer
+                            },
+                            onClick = { onVendorClick(p) },
+                            onLongClick = { onVendorLongClick(p) },
+                        ) {
+                            SelectionItemCardContent(
+                                title = p.name,
+                                subtitle = "共 ${models.size} 个模型 · ${p.protocol}",
+                                inSelectionMode = vSelActive,
+                                isSelected = vSelected,
+                                trailingAction = {
+                                    CountTag(enabledCount, models.size)
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = if (expanded) "收起" else "展开",
+                                        modifier = Modifier
+                                            .rotate(rotation)
+                                            .clickable { onToggleExpand(p.id) }
+                                            .padding(4.dp),
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    if (expandedVendors[p.id] == true) {
+                        item(key = "vendor_search_${p.id}") {
+                            SearchBar(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                query = vendorQueries[p.id].orEmpty(),
+                                onQueryChange = { q -> onQueryChange(p.id, q) },
+                                placeholder = "搜索 ${p.name} 的模型",
+                                shape = RoundedCornerShape(12.dp),
+                                autoFocus = false,
+                            )
+                        }
+                        val all = config.models.filter { it.providerId == p.id }
+                        val q = vendorQueries[p.id].orEmpty()
+                        val filtered = if (q.isBlank()) {
+                            all
+                        } else {
+                            all.filter {
+                                it.name.contains(q, ignoreCase = true) ||
+                                    it.modelId.contains(q, ignoreCase = true)
+                            }
+                        }
+                        items(filtered, key = { "model_${it.id}" }) { m ->
+                            val testState = when {
+                                testInflight[m.id] == true -> TestUi.Testing
+                                m.testOk == true -> TestUi.Pass(m.testLatencyMs ?: 0L)
+                                m.testOk == false -> TestUi.Fail(m.testMessage.orEmpty())
+                                else -> TestUi.Untested
+                            }
+                            val mSelActive = libActive && libCtx == "model"
+                            val mSelected = m.id in selModels
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                cornerRadius = 12.dp,
+                                containerColor = if (mSelected) {
+                                    LegadoTheme.colorScheme.secondaryContainer
+                                } else {
+                                    LegadoTheme.colorScheme.surfaceContainer
+                                },
+                                onClick = { onModelClick(m) },
+                                onLongClick = { onModelLongClick(m) },
+                            ) {
+                                SelectionItemCardContent(
+                                    title = m.name + when (val s = testState) {
+                                        is TestUi.Pass -> " · ${s.latencyMs}ms"
+                                        else -> ""
+                                    },
+                                    subtitle = m.modelId,
+                                    isEnabled = m.enabled,
+                                    inSelectionMode = mSelActive,
+                                    isSelected = mSelected,
+                                    trailingAction = if (libActive) null else {
+                                        {
+                                            TestChip(testState) { onTestModel(m, p) }
+                                            AdaptiveSwitch(
+                                                checked = m.enabled,
+                                                onCheckedChange = { v -> onToggleModelEnabled(m, v) },
+                                                modifier = Modifier.scale(0.8f),
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }
