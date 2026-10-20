@@ -42,8 +42,40 @@ private const val QWEN_LIST_JS = """(function(){
     try{
       if(!await waitSdk()){ window.__qw='ERR:no_sdk'; return; }
       var sdk=window.__QIANWEN_CHAT_SDK__;
+      var dev='';
+      try{ dev=await sdk.getUtdId({scene:'report'}); }catch(e){ try{ dev=await sdk.getUtdId(); }catch(e2){} }
+      var baseHeaders={
+        'content-type':'application/json',
+        'accept':'application/json',
+        'X-Platform':'pc_tongyi',
+        'X-DeviceId':dev,
+        'X-XSRF-TOKEN':window.csrfToken||''
+      };
       var bases=['https://qwen-live.qianwen.com',location.origin,'https://coral3.qianwen.com'];
       var errs=[];
+      try{
+        for(var wi=0; wi<20 && !(window.__core__&&window.__core__.requestService); wi++){ await new Promise(function(r){setTimeout(r,200);}); }
+        var rs=window.__core__&&window.__core__.requestService;
+        var callRs=null;
+        if(rs&&typeof rs.requestPromise==='function'){ callRs=function(o){ return rs.requestPromise(o); }; }
+        else if(rs&&typeof rs.request==='function'){ callRs=function(o){ return rs.request(o.url,{method:o.method,body:o.data,domainType:'feature'}); }; }
+        if(callRs){
+          var allRs=[], posRs=null, guardRs=0, rsOk=false, rsErr='empty';
+          while(guardRs++<20){
+            var uRs='https://qwen-live.qianwen.com/api/web/v1/user/voice/list?size=20&chid='+hex16()+(posRs!==null?('&next_pos='+encodeURIComponent(posRs)):'');
+            try{
+              var resRs=await callRs({url:uRs,method:'POST',data:{},useSignature:true,appendCommonParams:true,businessScene:'qwen_audio_asr',signScene:'qwen_audio_asr'});
+              var jRs=(resRs&&resRs.data!==undefined)?resRs.data:resRs;
+              if(!jRs||(jRs.code!==0&&jRs.code!==2000000)){ rsErr='code='+(jRs&&jRs.code)+' '+(jRs&&jRs.message); break; }
+              var arrRs=norm(jRs); allRs=allRs.concat(arrRs); rsOk=true;
+              posRs=(jRs.metadata&&jRs.metadata.next_pos);
+              if(posRs===null||posRs===undefined||posRs===''||!arrRs.length) break;
+            }catch(eRs){ rsErr='EX:'+(eRs&&(eRs.errorMsg||eRs.message||eRs)); break; }
+          }
+          if(rsOk&&allRs.length){ window.__qw=JSON.stringify(allRs); return; }
+          errs.push('requestService '+rsErr);
+        } else { errs.push('requestService no_api'); }
+      }catch(eRs){ errs.push('requestService EX:'+eRs); }
       for(var bi=0;bi<bases.length;bi++){
         for(var mi=0;mi<2;mi++){
           var method=mi===0?'POST':'GET';
@@ -55,7 +87,7 @@ private const val QWEN_LIST_JS = """(function(){
               u.searchParams.set('chid',hex16());
               if(pos!==null) u.searchParams.set('next_pos',String(pos));
               var signed=await sdk.qwenSign(u.toString());
-              var headers=Object.assign({'content-type':'application/json','accept':'application/json'}, signed.signedHeader||signed.signedHeaders||{});
+              var headers=Object.assign({}, baseHeaders, signed.signedHeader||signed.signedHeaders||{});
               var r=await fetch(signed.signedUrl||u.toString(),{method:method,headers:headers,credentials:'include',body:method==='POST'?'{}':undefined});
               var text=await r.text(); last='HTTP'+r.status+' '+text.slice(0,160);
               if(r.status!==200){ break; }
