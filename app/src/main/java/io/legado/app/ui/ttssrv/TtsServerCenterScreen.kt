@@ -2005,6 +2005,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         // 关键：不接管纵向手势，否则网页滚不动，只能看到上半截
         sheetGesturesEnabled = false,
         title = "登录：${varLoginField?.label.orEmpty()}",
+        startAction = {
+            MediumTonalButton(
+                onClick = { varLoginKey = null },
+                text = "关闭",
+                contentDescription = "关闭",
+            )
+        },
         endAction = {
             MediumTonalButton(
                 onClick = {
