@@ -41,6 +41,14 @@ import kotlin.coroutines.resume
 private const val LOGIN_PC_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
 
+/** 桌面站常用 user-scalable=no / touch-action:none，会禁掉双指缩放和拖动；登录页强制打开。 */
+private const val LOGIN_VIEWPORT_JS = """(function(){
+  var m=document.querySelector('meta[name=viewport]');
+  if(m){m.setAttribute('content','width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes');}
+  var s=document.getElementById('__login_touch_fix__');
+  if(!s){s=document.createElement('style');s.id='__login_touch_fix__';s.innerHTML='html,body,#__nuxt,#app,.nuxt{touch-action:auto !important;overflow:auto !important;}*{touch-action:auto !important;}';document.head.appendChild(s);}
+})()"""
+
 /** 补丁版口径：空/pc = 桌面 UA，mobile/android = WebView 默认 UA，其余按原样。 */
 fun resolveLoginUserAgent(ua: String): String = when (ua.trim().lowercase()) {
     "", "pc" -> LOGIN_PC_UA
@@ -73,12 +81,18 @@ fun PluginLoginWebView(
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     domStorageEnabled = true
                     useWideViewPort = true
-                    loadWithOverviewMode = true
+                    // 不自动缩放到整页：否则桌面站会被压得很小且无法左右拖
+                    loadWithOverviewMode = false
+                    setSupportZoom(true)
                     builtInZoomControls = true
                     javaScriptEnabled = true
                     displayZoomControls = false
+                    setSupportMultipleWindows(false)
                     if (userAgent.isNotBlank()) userAgentString = userAgent
                 }
+                webView.isFocusable = true
+                webView.isFocusableInTouchMode = true
+                webView.requestFocus()
                 webView.webViewClient = object : WebViewClient() {
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                         progress = 1
@@ -86,6 +100,10 @@ fun PluginLoginWebView(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         progress = 100
+                        view?.evaluateJavascript(LOGIN_VIEWPORT_JS, null)
+                        view?.postDelayed({
+                            view.evaluateJavascript(LOGIN_VIEWPORT_JS, null)
+                        }, 500)
                     }
 
                     override fun shouldOverrideUrlLoading(

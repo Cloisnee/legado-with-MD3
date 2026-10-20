@@ -56,9 +56,26 @@ private const val QWEN_LIST_JS = """(function(){
       try{
         for(var wi=0; wi<20 && !(window.__core__&&window.__core__.requestService); wi++){ await new Promise(function(r){setTimeout(r,200);}); }
         var rs=window.__core__&&window.__core__.requestService;
+        var via='none';
         var callRs=null;
-        if(rs&&typeof rs.requestPromise==='function'){ callRs=function(o){ return rs.requestPromise(o); }; }
-        else if(rs&&typeof rs.request==='function'){ callRs=function(o){ return rs.request(o.url,{method:o.method,body:o.data,domainType:'feature'}); }; }
+        if(rs&&typeof rs.createRequest==='function'){
+          via='createRequest';
+          callRs=function(o){
+            return new Promise(function(resolve,reject){
+              try{
+                var obs=rs.createRequest(o);
+                if(obs&&typeof obs.subscribe==='function') obs.subscribe({next:resolve,error:reject});
+                else resolve(obs);
+              }catch(e){ reject(e); }
+            });
+          };
+        } else if(rs&&typeof rs.requestPromise==='function'){
+          via='requestPromise';
+          callRs=function(o){ return rs.requestPromise(o); };
+        } else if(rs&&typeof rs.request==='function'){
+          via='request';
+          callRs=function(o){ return rs.request(o.url,{method:o.method,body:o.data,domainType:'feature'}); };
+        }
         if(callRs){
           var allRs=[], posRs=null, guardRs=0, rsOk=false, rsErr='empty';
           while(guardRs++<20){
@@ -73,7 +90,7 @@ private const val QWEN_LIST_JS = """(function(){
             }catch(eRs){ rsErr='EX:'+(eRs&&(eRs.errorMsg||eRs.message||eRs)); break; }
           }
           if(rsOk&&allRs.length){ window.__qw=JSON.stringify(allRs); return; }
-          errs.push('requestService '+rsErr);
+          errs.push('requestService['+via+'] '+rsErr);
         } else { errs.push('requestService no_api'); }
       }catch(eRs){ errs.push('requestService EX:'+eRs); }
       for(var bi=0;bi<bases.length;bi++){

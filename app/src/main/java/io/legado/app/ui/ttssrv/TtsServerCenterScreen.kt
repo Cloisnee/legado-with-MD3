@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -103,6 +105,7 @@ import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
+import io.legado.app.utils.sendToClip
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -1975,14 +1978,36 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (!debug.isNullOrBlank()) loginDebug = debug
     }
 
-    AppAlertDialog(
+    AppModalBottomSheet(
+        animateContentSize = false,
         show = loginDebug != null,
         onDismissRequest = { loginDebug = null },
         title = "音色列表抓取诊断",
-        text = loginDebug,
-        confirmText = "关闭",
-        onConfirm = { loginDebug = null },
-    )
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    loginDebug?.let { context.sendToClip(it) }
+                    context.toastOnUi("诊断已复制")
+                },
+                text = "复制",
+                contentDescription = "复制诊断",
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            SelectionContainer {
+                AppText(
+                    text = loginDebug.orEmpty(),
+                    style = LegadoTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
 
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
@@ -2385,7 +2410,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 SectionHint("— 插件变量 —")
                 TinyClickableSettingItem(
                     title = "来自插件 defVars",
-                    description = "补丁版同款：含 loginUrl 的变量点按即打开网页登录；binding 支持 cookies[.名] / locals[.名] / sessions[.名]",
+                    description = "补丁版同款：含 loginUrl 的变量点按即打开网页登录；binding 支持 cookies[.名] / locals[.名] / sessions[.名]；任意变量长按可手动填写",
                     onClick = {},
                 )
                 if (varFields.isEmpty()) {
@@ -2407,7 +2432,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                         }
                                         append(" · 点按网页登录（长按手动填写）")
                                     } else {
-                                        append(if (cur.isBlank()) "未设置" else cur)
+                                        if (f.key.endsWith("_data")) {
+                                            append(
+                                                if (cur.isBlank()) "未设置（点按/长按可粘贴列表）"
+                                                else "已缓存 ${cur.length} 字符（点按/长按编辑）"
+                                            )
+                                        } else {
+                                            append(if (cur.isBlank()) "未设置" else cur)
+                                        }
                                         if (f.description.isNotBlank()) {
                                             append(" · ")
                                             append(f.description)
@@ -2442,12 +2474,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                         varDlgKey = f.key
                                     }
                                 },
-                                onLongClick = if (f.canLogin) {
-                                    {
-                                        varDlgInput = cur
-                                        varDlgKey = f.key
-                                    }
-                                } else null,
+                                onLongClick = {
+                                    varDlgInput = cur
+                                    varDlgKey = f.key
+                                },
                             )
                         }
                     }

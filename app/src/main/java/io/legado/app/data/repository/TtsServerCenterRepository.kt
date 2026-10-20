@@ -440,6 +440,23 @@ class TtsServerCenterRepository(private val app: Application) {
                     fields[k] = VarField(k, label, desc, v)
                 }
             }
+            // 千问系：即使自动抓取还没成功，也给一个可长按手填的 <key>_data 行
+            val qwenLike = o.optString("pluginId").contains("qwen", ignoreCase = true) ||
+                o.optString("pluginId").contains("qianwen", ignoreCase = true) ||
+                o.optString("name").contains("千问")
+            val loginKey = fields.values.firstOrNull { it.canLogin }?.key
+            if (qwenLike && loginKey != null) {
+                val dataKey = "${loginKey}_data"
+                if (!fields.containsKey(dataKey)) {
+                    val baseLabel = fields[loginKey]?.label ?: loginKey
+                    fields[dataKey] = VarField(
+                        key = dataKey,
+                        label = "$baseLabel · 音色列表",
+                        description = "手动粘贴：[{\"voice\":\"id\",\"name\":\"名称\"}]",
+                        value = userVars.optString(dataKey).orEmpty(),
+                    )
+                }
+            }
             fields.values.toList()
         }.getOrDefault(emptyList())
     }
