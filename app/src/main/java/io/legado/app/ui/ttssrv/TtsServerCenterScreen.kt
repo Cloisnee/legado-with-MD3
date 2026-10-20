@@ -2,9 +2,7 @@ package io.legado.app.ui.ttssrv
 
 import android.app.Application
 import android.media.MediaPlayer
-import android.webkit.CookieManager
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -1994,14 +1992,23 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { varDlgKey = null },
     )
 
-    // 编辑插件 · 登录类变量：内置浏览器（弹层占满屏，WebView 已验证可正常渲染）
+    // 编辑插件 · 登录类变量：内置浏览器（补丁版 loginUrl/binding 语义）
     val cfg = androidx.compose.ui.platform.LocalConfiguration.current
     val screenHeight = cfg.screenHeightDp.dp
     val varLoginField = varFields.firstOrNull { it.key == varLoginKey }
+    // 千问系插件附带「登录后抓音色列表」；其它插件（如呱呱）只取登录态，不跑列表接口
+    val captureLoginVoiceList = varsEditorPlugin?.let {
+        it.pluginId.contains("qwen", ignoreCase = true) ||
+            it.pluginId.contains("qianwen", ignoreCase = true) ||
+            it.name.contains("千问")
+    } == true
     AppModalBottomSheet(
         animateContentSize = false,
         show = varLoginField != null,
-        onDismissRequest = { varLoginKey = null },
+        onDismissRequest = {
+            varLoginKey = null
+            varLoginWeb[0] = null
+        },
         // 关键：不接管纵向手势，否则网页滚不动，只能看到上半截
         sheetGesturesEnabled = false,
         title = "登录：${varLoginField?.label.orEmpty()}",
@@ -2016,45 +2023,60 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             MediumTonalButton(
                 onClick = {
                     val f = varLoginField ?: return@MediumTonalButton
-                    val cm = CookieManager.getInstance()
-                    runCatching { cm.flush() }
-                    val origin = runCatching {
-                        val u = java.net.URI(f.loginUrl)
-                        "${u.scheme}://${u.host}"
-                    }.getOrDefault(f.loginUrl)
-                    val allCookie = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
-                    // 兼容补丁版约定：binding "cookies.xxx" 取单个 Cookie，其余取整串
-                    val binding = varLoginField.binding
-                    val ck = if (binding.startsWith("cookies.")) {
-                        val name = binding.removePrefix("cookies.")
-                        allCookie.split(";").map { it.trim() }
-                            .firstOrNull { it.startsWith("$name=") }
-                            ?.substringAfter("=").orEmpty()
-                    } else allCookie
-                    if (ck.isBlank()) {
-                        context.toastOnUi("没拿到登录态：请确认已登录后再保存")
-                        return@MediumTonalButton
-                    }
-                    varValues[f.key] = ck
                     val wv = varLoginWeb[0]
                     if (wv == null) {
-                        varLoginKey = null
-                        context.toastOnUi("已保存登录态（${ck.length} 字符）")
+                        context.toastOnUi("网页还没加载完成")
                         return@MediumTonalButton
                     }
-                    context.toastOnUi("正在抓取音色列表…")
-                    wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
-                        pollJsValue(wv, "window.__qw||''", 14) { raw ->
-                            val json = runCatching {
-                                if (raw.startsWith("\"")) org.json.JSONTokener(raw).nextValue().toString() else raw
-                            }.getOrDefault("")
-                            if (json.isNotBlank() && !json.startsWith("ERR")) {
-                                varValues[f.key + "_data"] = json
-                                context.toastOnUi("已保存登录态与音色列表（${json.length} 字符）")
-                            } else {
-                                context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
-                            }
+                    scope.launch {
+                        val ck = runCatching {
+                            readPluginBinding(wv, f.loginUrl, f.binding)
+                        }.getOrElse {
+                            context.toastOnUi("读取登录态失败：${it.message.orEmpty()}")
+                            return@launch
+                        }
+                        if (ck.isBlank()) {
+                            context.toastOnUi(
+                                if (f.binding.isBlank()) "没拿到登录态：请确认已登录后再保存"
+                                else "没拿到 ${f.binding}：请确认已登录后再保存"
+                            )
+                            return@launch
+                        }
+                        varValues[f.key] = ck
+                        val pid = varsEditorPlugin?.pluginId
+                        if (!captureLoginVoiceList) {
+                            val saved = pid != null &&
+                                repo.savePluginUserVars(pid, varValues.toMap())
                             varLoginKey = null
+                            context.toastOnUi(
+                                if (saved) "已保存登录态并写入插件（${ck.length} 字符）"
+                                else "已填入「${f.label}」，但写入插件失败，请点右上角“保存”重试"
+                            )
+                            return@launch
+                        }
+                        context.toastOnUi("正在抓取音色列表…")
+                        wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
+                            pollJsValue(wv, "window.__qw||''", 14) { raw ->
+                                val json = runCatching {
+                                    if (raw.startsWith("\"")) org.json.JSONTokener(raw).nextValue().toString() else raw
+                                }.getOrDefault("")
+                                if (json.isNotBlank() && !json.startsWith("ERR")) {
+                                    varValues[f.key + "_data"] = json
+                                }
+                                scope.launch {
+                                    val saved = pid != null &&
+                                        repo.savePluginUserVars(pid, varValues.toMap())
+                                    if (json.isNotBlank() && !json.startsWith("ERR")) {
+                                        context.toastOnUi(
+                                            if (saved) "已保存登录态与音色列表（${json.length} 字符）"
+                                            else "已抓取音色列表，但写入插件失败"
+                                        )
+                                    } else {
+                                        context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
+                                    }
+                                    varLoginKey = null
+                                }
+                            }
                         }
                     }
                 },
@@ -2065,22 +2087,24 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     ) {
         val f = varLoginField
         if (f != null) {
-            SectionHint("在本页登录千问", "登录完成后点右上角「保存登录态」，自动抓取 Cookie 与音色列表")
-            AndroidView(
-                factory = { c ->
-                    WebView(c).apply {
-                        varLoginWeb[0] = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.userAgentString =
-                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
-                        webViewClient = WebViewClient()
-                        loadUrl(f.loginUrl)
+            SectionHint(
+                "登录 ${f.label}",
+                f.loginDesc.ifBlank {
+                    if (captureLoginVoiceList) {
+                        "登录完成后点右上角「保存登录态」，自动抓取 Cookie 与音色列表"
+                    } else {
+                        "登录完成后点右上角「保存登录态」，按 ${f.binding.ifBlank { "cookies" }} 取值"
                     }
                 },
+            )
+            PluginLoginWebView(
+                url = f.loginUrl,
+                ua = f.ua,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(screenHeight - 210.dp),
+                    .height((screenHeight * 0.62f).coerceIn(320.dp, 560.dp)),
+                onCreated = { varLoginWeb[0] = it },
+                onDestroyed = { varLoginWeb[0] = null },
             )
         }
     }
@@ -2486,7 +2510,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 SectionHint("— 插件变量 —")
                 TinyClickableSettingItem(
                     title = "来自插件 defVars",
-                    description = "补丁版同款：登录/凭据等全局变量；含 loginUrl 的登录类请填登录后取到的值",
+                    description = "补丁版同款：含 loginUrl 的变量点按即打开网页登录；binding 支持 cookies[.名] / locals[.名] / sessions[.名]",
                     onClick = {},
                 )
                 if (varFields.isEmpty()) {
@@ -2500,9 +2524,13 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             TinyClickableSettingItem(
                                 title = f.label,
                                 description = buildString {
-                                    if (f.loginUrl.isNotBlank()) {
+                                    if (f.canLogin) {
                                         append(if (cur.isBlank()) "未登录" else "已登录（${cur.length} 字符）")
-                                        append(" · 点按打开登录页，登录后自动保存登录态")
+                                        if (f.binding.isNotBlank()) {
+                                            append(" · ")
+                                            append(f.binding)
+                                        }
+                                        append(" · 点按网页登录（长按手动填写）")
                                     } else {
                                         append(if (cur.isBlank()) "未设置" else cur)
                                         if (f.description.isNotBlank()) {
@@ -2512,13 +2540,19 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     }
                                 },
                                 onClick = {
-                                    if (f.loginUrl.isNotBlank()) {
+                                    if (f.canLogin) {
                                         varLoginKey = f.key
                                     } else {
                                         varDlgInput = cur
                                         varDlgKey = f.key
                                     }
                                 },
+                                onLongClick = if (f.canLogin) {
+                                    {
+                                        varDlgInput = cur
+                                        varDlgKey = f.key
+                                    }
+                                } else null,
                             )
                         }
                     }
