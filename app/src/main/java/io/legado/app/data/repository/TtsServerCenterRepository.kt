@@ -74,6 +74,8 @@ data class VarField(
     val value: String,
     /** 非空表示这是登录类变量：点按打开内置 WebView 登录，保存时抓 Cookie 写入变量 */
     val loginUrl: String = "",
+    /** 补丁版约定：binding "cookies"=整串；"cookies.xxx"=只取名为 xxx 的 Cookie */
+    val binding: String = "",
 )
 
 data class AuditionOutcome(
@@ -416,6 +418,7 @@ class TtsServerCenterRepository(private val app: Application) {
                     } ?: "",
                     value = userVars.optString(k).orEmpty(),
                     loginUrl = schema?.optString("loginUrl").orEmpty(),
+                    binding = schema?.optString("binding").orEmpty(),
                 )
             }
             val ukeys = userVars.keys()

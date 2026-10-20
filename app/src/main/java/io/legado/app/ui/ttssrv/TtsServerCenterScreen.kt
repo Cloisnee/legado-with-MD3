@@ -1995,6 +1995,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     )
 
     // 编辑插件 · 登录类变量：内置浏览器（弹层占满屏，WebView 已验证可正常渲染）
+    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenHeight = cfg.screenHeightDp.dp
     val varLoginField = varFields.firstOrNull { it.key == varLoginKey }
     AppModalBottomSheet(
         animateContentSize = false,
@@ -2011,7 +2013,15 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         val u = java.net.URI(f.loginUrl)
                         "${u.scheme}://${u.host}"
                     }.getOrDefault(f.loginUrl)
-                    val ck = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
+                    val allCookie = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
+                    // 兼容补丁版约定：binding "cookies.xxx" 取单个 Cookie，其余取整串
+                    val binding = varLoginField.binding
+                    val ck = if (binding.startsWith("cookies.")) {
+                        val name = binding.removePrefix("cookies.")
+                        allCookie.split(";").map { it.trim() }
+                            .firstOrNull { it.startsWith("$name=") }
+                            ?.substringAfter("=").orEmpty()
+                    } else allCookie
                     if (ck.isBlank()) {
                         context.toastOnUi("没拿到登录态：请确认已登录后再保存")
                         return@MediumTonalButton
@@ -2061,7 +2071,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(660.dp),
+                    .height(screenHeight - 210.dp),
             )
         }
     }
