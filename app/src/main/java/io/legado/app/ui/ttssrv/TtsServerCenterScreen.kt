@@ -1994,95 +1994,75 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { varDlgKey = null },
     )
 
-    // 编辑插件 · 登录类变量：全屏内置浏览器（与阅读自带 WebView 同形态），登录后抓 Cookie 与音色列表
+    // 编辑插件 · 登录类变量：内置浏览器（弹层占满屏，WebView 已验证可正常渲染）
     val varLoginField = varFields.firstOrNull { it.key == varLoginKey }
-    if (varLoginField != null) {
-        Dialog(
-            onDismissRequest = { varLoginKey = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Surface(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        MediumTonalButton(
-                            onClick = { varLoginKey = null },
-                            text = "关闭",
-                            contentDescription = "关闭",
-                        )
-                        AppText(
-                            text = varLoginField.label,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 10.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        MediumTonalButton(
-                            onClick = {
-                                val cm = CookieManager.getInstance()
-                                runCatching { cm.flush() }
-                                val origin = runCatching {
-                                    val u = java.net.URI(varLoginField.loginUrl)
-                                    "${u.scheme}://${u.host}"
-                                }.getOrDefault(varLoginField.loginUrl)
-                                val ck = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
-                                if (ck.isBlank()) {
-                                    context.toastOnUi("没拿到登录态：请确认已登录后再保存")
-                                } else {
-                                    varValues[varLoginField.key] = ck
-                                    val wv = varLoginWeb[0]
-                                    if (wv == null) {
-                                        varLoginKey = null
-                                        context.toastOnUi("已保存登录态（${ck.length} 字符）")
-                                    } else {
-                                        context.toastOnUi("正在抓取音色列表…")
-                                        wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
-                                            pollJsValue(wv, "window.__qw||''", 14) { raw ->
-                                                val json = runCatching {
-                                                    if (raw.startsWith("\"")) {
-                                                        org.json.JSONTokener(raw).nextValue().toString()
-                                                    } else raw
-                                                }.getOrDefault("")
-                                                if (json.isNotBlank() && !json.startsWith("ERR")) {
-                                                    varValues[varLoginField.key + "_data"] = json
-                                                    context.toastOnUi("已保存登录态与音色列表（${json.length} 字符）")
-                                                } else {
-                                                    context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
-                                                }
-                                                varLoginKey = null
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            text = "保存登录态",
-                            contentDescription = "保存登录态",
-                        )
+    AppModalBottomSheet(
+        animateContentSize = false,
+        show = varLoginField != null,
+        onDismissRequest = { varLoginKey = null },
+        title = "登录：${varLoginField?.label.orEmpty()}",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val f = varLoginField ?: return@MediumTonalButton
+                    val cm = CookieManager.getInstance()
+                    runCatching { cm.flush() }
+                    val origin = runCatching {
+                        val u = java.net.URI(f.loginUrl)
+                        "${u.scheme}://${u.host}"
+                    }.getOrDefault(f.loginUrl)
+                    val ck = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
+                    if (ck.isBlank()) {
+                        context.toastOnUi("没拿到登录态：请确认已登录后再保存")
+                        return@MediumTonalButton
                     }
-                    AndroidView(
-                        factory = { c ->
-                            WebView(c).apply {
-                                varLoginWeb[0] = this
-                                settings.javaScriptEnabled = true
-                                settings.domStorageEnabled = true
-                                settings.userAgentString =
-                                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
-                                webViewClient = WebViewClient()
-                                loadUrl(varLoginField.loginUrl)
+                    varValues[f.key] = ck
+                    val wv = varLoginWeb[0]
+                    if (wv == null) {
+                        varLoginKey = null
+                        context.toastOnUi("已保存登录态（${ck.length} 字符）")
+                        return@MediumTonalButton
+                    }
+                    context.toastOnUi("正在抓取音色列表…")
+                    wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
+                        pollJsValue(wv, "window.__qw||''", 14) { raw ->
+                            val json = runCatching {
+                                if (raw.startsWith("\"")) org.json.JSONTokener(raw).nextValue().toString() else raw
+                            }.getOrDefault("")
+                            if (json.isNotBlank() && !json.startsWith("ERR")) {
+                                varValues[f.key + "_data"] = json
+                                context.toastOnUi("已保存登录态与音色列表（${json.length} 字符）")
+                            } else {
+                                context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
                             }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                    )
-                }
-            }
+                            varLoginKey = null
+                        }
+                    }
+                },
+                text = "保存登录态",
+                contentDescription = "保存登录态",
+            )
+        },
+    ) {
+        val f = varLoginField
+        if (f != null) {
+            SectionHint("在本页登录千问", "登录完成后点右上角「保存登录态」，自动抓取 Cookie 与音色列表")
+            AndroidView(
+                factory = { c ->
+                    WebView(c).apply {
+                        varLoginWeb[0] = this
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.userAgentString =
+                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+                        webViewClient = WebViewClient()
+                        loadUrl(f.loginUrl)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(660.dp),
+            )
         }
     }
 
