@@ -227,6 +227,12 @@
             android:enableOnBackInvokedCallback="true"
             android:configChanges="locale|layoutDirection|uiMode|orientation|screenSize|screenLayout"
             android:hardwareAccelerated="true" />
+        <activity
+            android:name=".ui.ttssrv.PluginLoginActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:configChanges="locale|layoutDirection|uiMode|orientation|screenSize|screenLayout"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
         <!-- 文件管理 -->
         <activity
             android:name=".ui.file.FileManageActivity"

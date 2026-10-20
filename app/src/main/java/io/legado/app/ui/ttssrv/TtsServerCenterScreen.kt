@@ -1,8 +1,8 @@
 package io.legado.app.ui.ttssrv
 
+import android.app.Activity
 import android.app.Application
 import android.media.MediaPlayer
-import android.webkit.WebView
 import android.widget.LinearLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,10 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Surface
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import io.legado.app.R
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
@@ -144,49 +141,6 @@ private class CenterListUiState<T>(
     override val isSearch: Boolean,
     override val isLoading: Boolean = false,
 ) : ListUiState<T>
-
-/** 在已登录的千问页面内分页抓取克隆音色（利用页面自身 SDK 签名），结果写入 window.__qw */
-private const val QWEN_LIST_JS = """(function(){
-  window.__qw='PENDING';
-  (async function(){
-    try{
-      var all=[], pos=null, guard=0;
-      while(guard++<60){
-        var u='/api/v1/user/voice/list?size=50'+(pos!==null?('&next_pos='+encodeURIComponent(pos)):'');
-        var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},credentials:'include',body:''});
-        var j=await r.json();
-        if(j.code!==0 && j.code!==2000000){ window.__qw='ERR:'+j.code+':'+(j.message||''); return; }
-        var vl=(j.data&&j.data.voice_list)||[];
-        for(var i=0;i<vl.length;i++){
-          if(vl[i].status && vl[i].status!=='COMPLETED') continue;
-          all.push({voice:vl[i].voice_id,name:vl[i].voice_name});
-        }
-        pos=(j.metadata&&j.metadata.next_pos);
-        if(!pos||!vl.length) break;
-      }
-      window.__qw=JSON.stringify(all);
-    }catch(e){ window.__qw='ERR:'+e; }
-  })();
-  return 'started';
-})()"""
-
-/** 轮询页面内的 window 变量，直到拿到非空结果或次数用尽 */
-private fun pollJsValue(wv: WebView, js: String, tries: Int, onDone: (String) -> Unit) {
-    if (tries <= 0) {
-        onDone("")
-        return
-    }
-    wv.evaluateJavascript(js) { v ->
-        val s = v.orEmpty()
-        if (s.isBlank() || s == "null" || s == "\"\"" || s == "\"PENDING\"") {
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                pollJsValue(wv, js, tries - 1, onDone)
-            }, 700)
-        } else {
-            onDone(s)
-        }
-    }
-}
 
 @Composable
 fun TtsServerCenterRouteScreen(onBackClick: () -> Unit) {
@@ -312,8 +266,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var edUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
     var edUiEmpty by remember { mutableStateOf(true) }
     var edTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
-    var varLoginKey by remember { mutableStateOf<String?>(null) }
-    val varLoginWeb = remember { arrayOfNulls<WebView>(1) }
+    var pendingLoginKey by remember { mutableStateOf<String?>(null) }
+    var pendingLoginPluginId by remember { mutableStateOf<String?>(null) }
+    var loginDebug by remember { mutableStateOf<String?>(null) }
     var varDlgKey by remember { mutableStateOf<String?>(null) }
     var varDlgInput by remember { mutableStateOf("") }
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
@@ -1992,122 +1947,42 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { varDlgKey = null },
     )
 
-    // 编辑插件 · 登录类变量：内置浏览器（补丁版 loginUrl/binding 语义）
-    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
-    val screenHeight = cfg.screenHeightDp.dp
-    val varLoginField = varFields.firstOrNull { it.key == varLoginKey }
-    // 千问系插件附带「登录后抓音色列表」；其它插件（如呱呱）只取登录态，不跑列表接口
-    val captureLoginVoiceList = varsEditorPlugin?.let {
-        it.pluginId.contains("qwen", ignoreCase = true) ||
-            it.pluginId.contains("qianwen", ignoreCase = true) ||
-            it.name.contains("千问")
-    } == true
-    AppModalBottomSheet(
-        animateContentSize = false,
-        show = varLoginField != null,
-        onDismissRequest = {
-            varLoginKey = null
-            varLoginWeb[0] = null
-        },
-        // 关键：不接管纵向手势，否则网页滚不动，只能看到上半截
-        sheetGesturesEnabled = false,
-        title = "登录：${varLoginField?.label.orEmpty()}",
-        startAction = {
-            MediumTonalButton(
-                onClick = { varLoginKey = null },
-                text = "关闭",
-                contentDescription = "关闭",
-            )
-        },
-        endAction = {
-            MediumTonalButton(
-                onClick = {
-                    val f = varLoginField ?: return@MediumTonalButton
-                    val wv = varLoginWeb[0]
-                    if (wv == null) {
-                        context.toastOnUi("网页还没加载完成")
-                        return@MediumTonalButton
-                    }
-                    scope.launch {
-                        val ck = runCatching {
-                            readPluginBinding(wv, f.loginUrl, f.binding)
-                        }.getOrElse {
-                            context.toastOnUi("读取登录态失败：${it.message.orEmpty()}")
-                            return@launch
-                        }
-                        if (ck.isBlank()) {
-                            context.toastOnUi(
-                                if (f.binding.isBlank()) "没拿到登录态：请确认已登录后再保存"
-                                else "没拿到 ${f.binding}：请确认已登录后再保存"
-                            )
-                            return@launch
-                        }
-                        varValues[f.key] = ck
-                        val pid = varsEditorPlugin?.pluginId
-                        if (!captureLoginVoiceList) {
-                            val saved = pid != null &&
-                                repo.savePluginUserVars(pid, varValues.toMap())
-                            varLoginKey = null
-                            context.toastOnUi(
-                                if (saved) "已保存登录态并写入插件（${ck.length} 字符）"
-                                else "已填入「${f.label}」，但写入插件失败，请点右上角“保存”重试"
-                            )
-                            return@launch
-                        }
-                        context.toastOnUi("正在抓取音色列表…")
-                        wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
-                            pollJsValue(wv, "window.__qw||''", 14) { raw ->
-                                val json = runCatching {
-                                    if (raw.startsWith("\"")) org.json.JSONTokener(raw).nextValue().toString() else raw
-                                }.getOrDefault("")
-                                if (json.isNotBlank() && !json.startsWith("ERR")) {
-                                    varValues[f.key + "_data"] = json
-                                }
-                                scope.launch {
-                                    val saved = pid != null &&
-                                        repo.savePluginUserVars(pid, varValues.toMap())
-                                    if (json.isNotBlank() && !json.startsWith("ERR")) {
-                                        context.toastOnUi(
-                                            if (saved) "已保存登录态与音色列表（${json.length} 字符）"
-                                            else "已抓取音色列表，但写入插件失败"
-                                        )
-                                    } else {
-                                        context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
-                                    }
-                                    varLoginKey = null
-                                }
-                            }
-                        }
-                    }
-                },
-                text = "保存登录态",
-                contentDescription = "保存登录态",
-            )
-        },
-    ) {
-        val f = varLoginField
-        if (f != null) {
-            SectionHint(
-                "登录 ${f.label}",
-                f.loginDesc.ifBlank {
-                    if (captureLoginVoiceList) {
-                        "登录完成后点右上角「保存登录态」，自动抓取 Cookie 与音色列表"
-                    } else {
-                        "登录完成后点右上角「保存登录态」，按 ${f.binding.ifBlank { "cookies" }} 取值"
-                    }
-                },
-            )
-            PluginLoginWebView(
-                url = f.loginUrl,
-                ua = f.ua,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height((screenHeight * 0.62f).coerceIn(320.dp, 560.dp)),
-                onCreated = { varLoginWeb[0] = it },
-                onDestroyed = { varLoginWeb[0] = null },
-            )
+    val pluginLoginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val key = pendingLoginKey
+        val pid = pendingLoginPluginId
+        pendingLoginKey = null
+        pendingLoginPluginId = null
+        if (result.resultCode != Activity.RESULT_OK || key == null) {
+            return@rememberLauncherForActivityResult
         }
+        val data = result.data ?: return@rememberLauncherForActivityResult
+        val value = data.getStringExtra(PluginLoginActivity.RESULT_VALUE).orEmpty()
+        val listData = data.getStringExtra(PluginLoginActivity.RESULT_DATA)
+        val debug = data.getStringExtra(PluginLoginActivity.RESULT_DEBUG)
+        if (value.isNotBlank()) {
+            varValues[key] = value
+            if (!listData.isNullOrBlank()) varValues[key + "_data"] = listData
+            scope.launch {
+                val ok = pid != null && repo.savePluginUserVars(pid, varValues.toMap())
+                context.toastOnUi(
+                    if (ok) "已保存登录态并写入插件"
+                    else "已填入登录态，但写入插件失败，请点右上角“保存”重试"
+                )
+            }
+        }
+        if (!debug.isNullOrBlank()) loginDebug = debug
     }
+
+    AppAlertDialog(
+        show = loginDebug != null,
+        onDismissRequest = { loginDebug = null },
+        title = "音色列表抓取诊断",
+        text = loginDebug,
+        confirmText = "关闭",
+        onConfirm = { loginDebug = null },
+    )
 
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
@@ -2541,7 +2416,27 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                 },
                                 onClick = {
                                     if (f.canLogin) {
-                                        varLoginKey = f.key
+                                        val p = varsEditorPlugin
+                                        if (p != null) {
+                                            pendingLoginKey = f.key
+                                            pendingLoginPluginId = p.pluginId
+                                            val capture = p.pluginId.contains("qwen", ignoreCase = true) ||
+                                                p.pluginId.contains("qianwen", ignoreCase = true) ||
+                                                p.name.contains("千问")
+                                            pluginLoginLauncher.launch(
+                                                PluginLoginActivity.startIntent(
+                                                    context = context,
+                                                    pluginId = p.pluginId,
+                                                    key = f.key,
+                                                    label = f.label,
+                                                    loginUrl = f.loginUrl,
+                                                    binding = f.binding,
+                                                    loginDesc = f.loginDesc,
+                                                    ua = f.ua,
+                                                    captureVoiceList = capture,
+                                                )
+                                            )
+                                        }
                                     } else {
                                         varDlgInput = cur
                                         varDlgKey = f.key
