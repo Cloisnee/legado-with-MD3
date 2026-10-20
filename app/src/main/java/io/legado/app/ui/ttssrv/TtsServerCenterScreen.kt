@@ -2002,6 +2002,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         animateContentSize = false,
         show = varLoginField != null,
         onDismissRequest = { varLoginKey = null },
+        // 关键：不接管纵向手势，否则网页滚不动，只能看到上半截
+        sheetGesturesEnabled = false,
         title = "登录：${varLoginField?.label.orEmpty()}",
         endAction = {
             MediumTonalButton(
