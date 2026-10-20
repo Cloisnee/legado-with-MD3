@@ -1,8 +1,11 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
-import android.widget.LinearLayout
 import android.media.MediaPlayer
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.LinearLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -140,6 +143,49 @@ private class CenterListUiState<T>(
     override val isLoading: Boolean = false,
 ) : ListUiState<T>
 
+/** 在已登录的千问页面内分页抓取克隆音色（利用页面自身 SDK 签名），结果写入 window.__qw */
+private const val QWEN_LIST_JS = """(function(){
+  window.__qw='PENDING';
+  (async function(){
+    try{
+      var all=[], pos=null, guard=0;
+      while(guard++<60){
+        var u='/api/v1/user/voice/list?size=50'+(pos!==null?('&next_pos='+encodeURIComponent(pos)):'');
+        var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},credentials:'include',body:''});
+        var j=await r.json();
+        if(j.code!==0 && j.code!==2000000){ window.__qw='ERR:'+j.code+':'+(j.message||''); return; }
+        var vl=(j.data&&j.data.voice_list)||[];
+        for(var i=0;i<vl.length;i++){
+          if(vl[i].status && vl[i].status!=='COMPLETED') continue;
+          all.push({voice:vl[i].voice_id,name:vl[i].voice_name});
+        }
+        pos=(j.metadata&&j.metadata.next_pos);
+        if(!pos||!vl.length) break;
+      }
+      window.__qw=JSON.stringify(all);
+    }catch(e){ window.__qw='ERR:'+e; }
+  })();
+  return 'started';
+})()"""
+
+/** 轮询页面内的 window 变量，直到拿到非空结果或次数用尽 */
+private fun pollJsValue(wv: WebView, js: String, tries: Int, onDone: (String) -> Unit) {
+    if (tries <= 0) {
+        onDone("")
+        return
+    }
+    wv.evaluateJavascript(js) { v ->
+        val s = v.orEmpty()
+        if (s.isBlank() || s == "null" || s == "\"\"" || s == "\"PENDING\"") {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                pollJsValue(wv, js, tries - 1, onDone)
+            }, 700)
+        } else {
+            onDone(s)
+        }
+    }
+}
+
 @Composable
 fun TtsServerCenterRouteScreen(onBackClick: () -> Unit) {
     val context = LocalContext.current
@@ -264,6 +310,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var edUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
     var edUiEmpty by remember { mutableStateOf(true) }
     var edTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
+    var varLoginKey by remember { mutableStateOf<String?>(null) }
+    val varLoginWeb = remember { arrayOfNulls<WebView>(1) }
     var varDlgKey by remember { mutableStateOf<String?>(null) }
     var varDlgInput by remember { mutableStateOf("") }
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
@@ -1942,6 +1990,78 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismiss = { varDlgKey = null },
     )
 
+    // 编辑插件 · 登录类变量：内置 WebView，登录后抓 Cookie 写入变量
+    val varLoginField = varFields.firstOrNull { it.key == varLoginKey }
+    AppModalBottomSheet(
+        animateContentSize = false,
+        show = varLoginField != null,
+        onDismissRequest = { varLoginKey = null },
+        title = "登录：${varLoginField?.label.orEmpty()}",
+        endAction = {
+            MediumTonalButton(
+                onClick = {
+                    val f = varLoginField ?: return@MediumTonalButton
+                    val cm = CookieManager.getInstance()
+                    runCatching { cm.flush() }
+                    val origin = runCatching {
+                        val u = java.net.URI(f.loginUrl)
+                        "${u.scheme}://${u.host}"
+                    }.getOrDefault(f.loginUrl)
+                    val ck = runCatching { cm.getCookie(origin) }.getOrNull().orEmpty()
+                    if (ck.isBlank()) {
+                        context.toastOnUi("没拿到登录态：请确认已登录后再保存")
+                        return@MediumTonalButton
+                    }
+                    varValues[f.key] = ck
+                    val wv = varLoginWeb[0]
+                    if (wv == null) {
+                        varLoginKey = null
+                        context.toastOnUi("已保存登录态（${ck.length} 字符）")
+                        return@MediumTonalButton
+                    }
+                    context.toastOnUi("正在抓取音色列表…")
+                    wv.evaluateJavascript(QWEN_LIST_JS) { _ ->
+                        pollJsValue(wv, "window.__qw||''", 14) { raw ->
+                            val json = runCatching {
+                                if (raw.startsWith("\"")) org.json.JSONTokener(raw).nextValue().toString() else raw
+                            }.getOrDefault("")
+                            if (json.isNotBlank() && !json.startsWith("ERR")) {
+                                varValues[f.key + "_data"] = json
+                                context.toastOnUi("已保存登录态与音色列表（${json.length} 字符）")
+                            } else {
+                                context.toastOnUi("已保存登录态；列表抓取失败：${json.take(60)}")
+                            }
+                            varLoginKey = null
+                        }
+                    }
+                },
+                text = "保存登录态",
+                contentDescription = "保存登录态",
+            )
+        },
+    ) {
+        val f = varLoginField
+        if (f != null) {
+            SectionHint("— 登录 —", "在本页完成登录，保存后 Cookie 写入变量 ${f.key}")
+            AndroidView(
+                factory = { c ->
+                    WebView(c).apply {
+                        varLoginWeb[0] = this
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.userAgentString =
+                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+                        webViewClient = WebViewClient()
+                        loadUrl(f.loginUrl)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(520.dp),
+            )
+        }
+    }
+
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
@@ -2357,15 +2477,24 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             TinyClickableSettingItem(
                                 title = f.label,
                                 description = buildString {
-                                    append(if (cur.isBlank()) "未设置" else cur)
-                                    if (f.description.isNotBlank()) {
-                                        append(" · ")
-                                        append(f.description)
+                                    if (f.loginUrl.isNotBlank()) {
+                                        append(if (cur.isBlank()) "未登录" else "已登录（${cur.length} 字符）")
+                                        append(" · 点按打开登录页，登录后自动保存登录态")
+                                    } else {
+                                        append(if (cur.isBlank()) "未设置" else cur)
+                                        if (f.description.isNotBlank()) {
+                                            append(" · ")
+                                            append(f.description)
+                                        }
                                     }
                                 },
                                 onClick = {
-                                    varDlgInput = cur
-                                    varDlgKey = f.key
+                                    if (f.loginUrl.isNotBlank()) {
+                                        varLoginKey = f.key
+                                    } else {
+                                        varDlgInput = cur
+                                        varDlgKey = f.key
+                                    }
                                 },
                             )
                         }

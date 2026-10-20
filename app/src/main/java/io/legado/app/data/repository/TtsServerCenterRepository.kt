@@ -72,6 +72,8 @@ data class VarField(
     val label: String,
     val description: String,
     val value: String,
+    /** 非空表示这是登录类变量：点按打开内置 WebView 登录，保存时抓 Cookie 写入变量 */
+    val loginUrl: String = "",
 )
 
 data class AuditionOutcome(
@@ -413,13 +415,18 @@ class TtsServerCenterRepository(private val app: Application) {
                         ).firstOrNull { it.isNotBlank() }.orEmpty()
                     } ?: "",
                     value = userVars.optString(k).orEmpty(),
+                    loginUrl = schema?.optString("loginUrl").orEmpty(),
                 )
             }
             val ukeys = userVars.keys()
             while (ukeys.hasNext()) {
                 val k = ukeys.next()
                 if (!fields.containsKey(k)) {
-                    fields[k] = VarField(k, k, "自定义", userVars.optString(k).orEmpty())
+                    val v = userVars.optString(k).orEmpty()
+                    // 登录变量自动抓取的附属数据（<key>_data）：不展示原文，避免刷屏
+                    val label = if (k.endsWith("_data")) k.removeSuffix("_data") + " · 音色列表" else k
+                    val desc = if (k.endsWith("_data")) "自动抓取（${v.length} 字符），无需手动编辑" else "自定义"
+                    fields[k] = VarField(k, label, desc, v)
                 }
             }
             fields.values.toList()
