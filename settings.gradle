@@ -8,6 +8,9 @@ pluginManagement {
             }
         }
         gradlePluginPortal()
+        // Maven Central 在 CI 会 429；优先走 Google 的 Central 镜像，华为云兜底
+        maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
         mavenCentral()
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/public' }
@@ -34,6 +37,9 @@ dependencyResolutionManagement {
                 includeGroupByRegex("com\\.github.*")
             }
         }
+        // Maven Central 在 CI 会 429；优先走 Google 的 Central 镜像，华为云兜底
+        maven { url 'https://maven-central.storage-download.googleapis.com/maven2/' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
         mavenCentral()
     }
 }

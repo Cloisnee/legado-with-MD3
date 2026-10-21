@@ -44,7 +44,7 @@ private const val LOGIN_PC_UA =
 /** 桌面站常用 user-scalable=no / touch-action:none，会禁掉双指缩放和拖动；登录页强制打开。 */
 private const val LOGIN_VIEWPORT_JS = """(function(){
   var m=document.querySelector('meta[name=viewport]');
-  if(m){m.setAttribute('content','width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes');}
+  if(m){m.setAttribute('content','width=1280, initial-scale=0.3, minimum-scale=0.1, maximum-scale=5.0, user-scalable=yes');}
   var s=document.getElementById('__login_touch_fix__');
   if(!s){s=document.createElement('style');s.id='__login_touch_fix__';s.innerHTML='html,body,#__nuxt,#app,.nuxt{touch-action:auto !important;overflow:auto !important;}*{touch-action:auto !important;}';document.head.appendChild(s);}
 })()"""
@@ -81,8 +81,8 @@ fun PluginLoginWebView(
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     domStorageEnabled = true
                     useWideViewPort = true
-                    // 不自动缩放到整页：否则桌面站会被压得很小且无法左右拖
-                    loadWithOverviewMode = false
+                    // 桌面站初始整页适配：保证右侧二维码可见；双指放大后仍可拖动
+                    loadWithOverviewMode = true
                     setSupportZoom(true)
                     builtInZoomControls = true
                     javaScriptEnabled = true

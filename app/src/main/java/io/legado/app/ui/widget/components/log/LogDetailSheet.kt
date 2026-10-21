@@ -19,6 +19,7 @@ fun LogDetailSheet(
     title: String = "Log",
     content: String,
     onDismissRequest: () -> Unit,
+    onCopy: (() -> Unit)? = null,
 ) {
     AppAlertDialog(
         show = show,
@@ -38,7 +39,9 @@ fun LogDetailSheet(
                 }
             }
         },
-        confirmText = stringResource(android.R.string.ok),
-        onConfirm = onDismissRequest
+        confirmText = if (onCopy != null) "复制" else stringResource(android.R.string.ok),
+        onConfirm = onCopy ?: onDismissRequest,
+        dismissText = if (onCopy != null) "关闭" else "取消",
+        onDismiss = if (onCopy != null) onDismissRequest else null,
     )
 }

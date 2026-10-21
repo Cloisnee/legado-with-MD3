@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -1978,36 +1976,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (!debug.isNullOrBlank()) loginDebug = debug
     }
 
-    AppModalBottomSheet(
-        animateContentSize = false,
+    LogDetailSheet(
         show = loginDebug != null,
-        onDismissRequest = { loginDebug = null },
         title = "音色列表抓取诊断",
-        endAction = {
-            MediumTonalButton(
-                onClick = {
-                    loginDebug?.let { context.sendToClip(it) }
-                    context.toastOnUi("诊断已复制")
-                },
-                text = "复制",
-                contentDescription = "复制诊断",
-            )
+        content = loginDebug.orEmpty(),
+        onDismissRequest = { loginDebug = null },
+        onCopy = {
+            loginDebug?.let { context.sendToClip(it) }
+            context.toastOnUi("诊断已复制")
         },
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 420.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            SelectionContainer {
-                AppText(
-                    text = loginDebug.orEmpty(),
-                    style = LegadoTheme.typography.bodySmall,
-                )
-            }
-        }
-    }
+    )
 
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
     AppModalBottomSheet(

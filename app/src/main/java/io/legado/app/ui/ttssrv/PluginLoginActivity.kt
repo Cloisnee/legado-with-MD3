@@ -132,6 +132,15 @@ class PluginLoginActivity : BaseComposeActivity() {
                     overflow = TextOverflow.Ellipsis,
                 )
                 MediumTonalButton(
+                    onClick = {
+                        webView?.settings?.loadWithOverviewMode = true
+                        webView?.settings?.setInitialScale(0)
+                        webView?.reload()
+                    },
+                    text = "适应",
+                    contentDescription = "适应屏幕",
+                )
+                MediumTonalButton(
                     onClick = { webView?.reload() },
                     icon = Icons.Default.Refresh,
                     contentDescription = "刷新",
