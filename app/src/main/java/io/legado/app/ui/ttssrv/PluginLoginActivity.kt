@@ -134,7 +134,7 @@ class PluginLoginActivity : BaseComposeActivity() {
                 MediumTonalButton(
                     onClick = {
                         webView?.settings?.loadWithOverviewMode = true
-                        webView?.settings?.setInitialScale(0)
+                        webView?.setInitialScale(0)
                         webView?.reload()
                     },
                     text = "适应",
