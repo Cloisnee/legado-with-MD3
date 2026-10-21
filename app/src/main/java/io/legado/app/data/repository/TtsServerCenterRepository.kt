@@ -20,6 +20,7 @@ import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -617,7 +618,25 @@ class TtsServerCenterRepository(private val app: Application) {
             // B12：数据型插件（猫箱-v2/微软翻译 等）的语言/声线数据在 EditorJS.onLoadData 里加载，
             // 不先执行它 → 列表为空（「加载中…或该语言无声音」）。幂等，每个引擎实例只跑一次。
             engine.ensureOnLoadData()
-            engine.getLocales().map { (k, v) -> LocaleOption(k, v) }
+            var lastError: Throwable? = null
+            var result: List<LocaleOption> = emptyList()
+            for (attempt in 0 until 4) {
+                try {
+                    result = engine.getLocales().map { (k, v) -> LocaleOption(k, v) }
+                    if (result.isNotEmpty()) break
+                } catch (e: Throwable) {
+                    lastError = e
+                }
+                delay(350)
+            }
+            writePluginDebug(
+                "last_locales_debug.txt",
+                "plugin=$pluginId count=${result.size} first=${result.take(5).joinToString { it.id }}"
+            )
+            lastError?.let { if (result.isEmpty()) throw it }
+            result
+        }.onFailure { e ->
+            writePluginDebug("last_locales_debug.txt", "ERR plugin=$pluginId\n${e.stackTraceToString()}")
         }.getOrDefault(emptyList())
     }
 
@@ -628,9 +647,37 @@ class TtsServerCenterRepository(private val app: Application) {
                 val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
                 // B12：同 loadLocales —— 数据型插件的声线表需先跑 onLoadData
                 engine.ensureOnLoadData()
-                engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
+                var lastError: Throwable? = null
+                var result: List<VoiceOption> = emptyList()
+                for (attempt in 0 until 4) {
+                    try {
+                        result = engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
+                        if (result.isNotEmpty()) break
+                    } catch (e: Throwable) {
+                        lastError = e
+                    }
+                    delay(350)
+                }
+                writePluginDebug(
+                    "last_voices_debug.txt",
+                    "plugin=$pluginId locale=$locale count=${result.size} first=${result.take(5).joinToString { it.id }}"
+                )
+                lastError?.let { if (result.isEmpty()) throw it }
+                result
+            }.onFailure { e ->
+                writePluginDebug(
+                    "last_voices_debug.txt",
+                    "ERR plugin=$pluginId locale=$locale\n${e.stackTraceToString()}"
+                )
             }.getOrDefault(emptyList())
         }
+
+    private fun writePluginDebug(fileName: String, text: String) {
+        runCatching {
+            val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+            File(dir, fileName).writeText("[${ts()}] $text")
+        }
+    }
 
     /** 插件直连试听（不依赖配置条目） */
     suspend fun auditionDirect(
