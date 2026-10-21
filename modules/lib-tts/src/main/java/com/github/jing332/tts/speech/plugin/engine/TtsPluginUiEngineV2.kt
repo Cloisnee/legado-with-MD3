@@ -6,10 +6,10 @@ import android.widget.LinearLayout
 import com.github.jing332.common.utils.dp
 import com.github.jing332.common.utils.toCountryFlagEmoji
 import com.github.jing332.database.entities.plugin.Plugin
-import com.github.jing332.script.toMap
 import com.github.jing332.compat.log.KLog
-import org.mozilla.javascript.ScriptRuntime
+import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
+import org.mozilla.javascript.Wrapper
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.to
@@ -93,30 +93,95 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
     }
 
     fun getVoices(locale: String): List<Voice> {
-        return engine.invokeMethod(editUiJsObject, FUNC_VOICES, locale).run {
-            when (this) {
-                is ScriptableObject -> {
-                    toMap<Any, Any>().map { (key, value) ->
-                        ScriptRuntime.toString(key) to value
-                    }.map { (key, value) ->
-                        var icon: String? = null
-                        var name: String = if (value is CharSequence) value.toString() else ""
+        return voiceResultToOptions(engine.invokeMethod(editUiJsObject, FUNC_VOICES, locale))
+    }
 
-                        if (value is ScriptableObject) {
-                            icon = value.get("iconUrl")?.toString()
-                                ?: value.get("icon")?.toString()
+    /**
+     * 兼容墨听D/JRead 的声线返回形态：
+     * Map、Scriptable、Wrapper、字符串、嵌套组、数组都能展开；避免 NOT_FOUND 把自己弄崩。
+     */
+    private fun voiceResultToOptions(result: Any?): List<Voice> {
+        val out = mutableListOf<Voice>()
+        val seen = hashSetOf<String>()
+        collectVoices("", result, out, seen)
+        return out
+    }
 
-                            name = value.get("name")?.toString() ?: name
-                        }
+    private fun collectVoices(
+        key: String,
+        raw: Any?,
+        out: MutableList<Voice>,
+        seen: MutableSet<String>,
+    ) {
+        val value = if (raw is Wrapper) raw.unwrap() else raw
+        if (value == null) return
 
+        if (value is CharSequence) {
+            val text = value.toString().trim()
+            if (text.isEmpty()) return
+            addVoice(key.ifBlank { text }, text, null, out, seen)
+            return
+        }
 
-                        Voice(key.toString(), name.toString(), icon)
-                    }
+        if (value is Map<*, *>) {
+            value.forEach { (k, v) -> collectVoices(k?.toString().orEmpty(), v, out, seen) }
+            return
+        }
+
+        if (value is Scriptable) {
+            if (looksLikeVoice(value)) {
+                val id = readString(value, listOf("id", "_id", "voice_id", "voiceId", "value", "code"))
+                    ?: key
+                val name = readString(value, listOf("name", "label", "title")) ?: id
+                val icon = readString(value, listOf("iconUrl", "icon"))
+                addVoice(id, name, icon, out, seen)
+                return
+            }
+            val ids = value.ids
+            if (ids != null) {
+                for (id in ids) {
+                    val child = ScriptableObject.getProperty(value, id.toString())
+                    if (child == null || child == Scriptable.NOT_FOUND) continue
+                    collectVoices(id.toString(), child, out, seen)
                 }
-
-                else -> emptyList()
             }
         }
+    }
+
+    private fun looksLikeVoice(value: Scriptable): Boolean {
+        val idKeys = listOf("id", "_id", "voice_id", "voiceId", "value", "code")
+        if (idKeys.any { hasProperty(value, it) }) return true
+        if (listOf("voices", "list", "children").any { hasProperty(value, it) }) return false
+        return listOf("name", "label", "title").any { hasProperty(value, it) }
+    }
+
+    private fun hasProperty(value: Scriptable, name: String): Boolean {
+        val v = ScriptableObject.getProperty(value, name)
+        return v != null && v != Scriptable.NOT_FOUND
+    }
+
+    private fun readString(value: Scriptable, names: List<String>): String? {
+        for (name in names) {
+            val v = ScriptableObject.getProperty(value, name)
+            if (v == null || v == Scriptable.NOT_FOUND) continue
+            val text = v.toString().trim()
+            if (text.isNotEmpty() && text != "undefined" && text != "null") return text
+        }
+        return null
+    }
+
+    private fun addVoice(
+        id: String?,
+        name: String?,
+        icon: String?,
+        out: MutableList<Voice>,
+        seen: MutableSet<String>,
+    ) {
+        val voiceId = id?.trim().orEmpty()
+        if (voiceId.isEmpty()) return
+        if (!seen.add(voiceId)) return
+        val voiceName = name?.trim().takeUnless { it.isNullOrEmpty() } ?: voiceId
+        out += Voice(voiceId, voiceName, icon)
     }
 
     fun onLoadData() {
