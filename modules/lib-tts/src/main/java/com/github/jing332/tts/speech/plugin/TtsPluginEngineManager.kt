@@ -15,28 +15,31 @@ object TtsPluginEngineManager : AbstractCachedManager<String, TtsPluginUiEngineV
     private val locks = ConcurrentHashMap<String, Any>()
 
     fun get(context: Context, plugin: Plugin): TtsPluginUiEngineV2 {
-        val lock = locks.computeIfAbsent(plugin.pluginId) { Any() }
+        // 关键：eval() 会用 PluginJS.id 改写 plugin.pluginId；缓存键必须在 eval 前捕获 JSON 的原始 pluginId。
+        val key = plugin.pluginId
+        val lock = locks.computeIfAbsent(key) { Any() }
         return synchronized(lock) {
             val t0 = System.currentTimeMillis()
-            val cached = cache.get(plugin.pluginId)
+            val cached = cache.get(key)
             if (cached != null && cached.plugin.code == plugin.code) {
                 PipelineProbe.log(
                     context, "engine.get",
-                    "pluginId" to plugin.pluginId,
+                    "pluginId" to key,
                     "cacheHit" to true,
                     "ms" to (System.currentTimeMillis() - t0)
                 )
                 return@synchronized cached
             }
-            if (cached != null) cache.remove(plugin.pluginId)
+            if (cached != null) cache.remove(key)
             val engine = TtsPluginUiEngineV2(context, plugin)
             val evalStart = System.currentTimeMillis()
             engine.eval()
             val evalMs = System.currentTimeMillis() - evalStart
-            cache.put(plugin.pluginId, engine)
+            cache.put(key, engine)
             PipelineProbe.log(
                 context, "engine.get",
-                "pluginId" to plugin.pluginId,
+                "pluginId" to key,
+                "jsId" to plugin.pluginId,
                 "cacheHit" to false,
                 "evalMs" to evalMs,
                 "ms" to (System.currentTimeMillis() - t0)

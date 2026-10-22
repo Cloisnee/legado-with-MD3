@@ -29,6 +29,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -757,7 +758,9 @@ class TtsServerCenterRepository(private val app: Application) {
         File(TtsDirProvider.baseDir(ctx), "_store/plugin_voices").apply { mkdirs() }
 
     private fun safeCacheName(raw: String): String =
-        raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+        MessageDigest.getInstance("MD5")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 
     private fun voiceCacheFile(pluginId: String, locale: String): File =
         File(voiceCacheDir(), safeCacheName(pluginId) + "__" + safeCacheName(locale) + ".json")

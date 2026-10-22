@@ -585,8 +585,15 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 新建条目：插件变化 → 语言列表
+    // 新建条目：插件变化 → 先清旧状态，再加载语言列表（只保留这一个 effect，避免两个 effect 互相清空）
     LaunchedEffect(nePluginId) {
+        neLocales = emptyList()
+        neVoiceSel = emptyList()
+        voiceList = emptyList()
+        voiceLoadedKey = ""
+        voiceLoading = false
+        nePreparing = nePluginId.isNotBlank()
+        neLocale = ""
         if (nePluginId.isBlank()) return@LaunchedEffect
         neLocales = repo.loadLocales(nePluginId).ifEmpty {
             listOf(
@@ -662,15 +669,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             edUiEmpty = layout.childCount == 0
             runCatching { engine.onVoiceChanged(t.locale, t.voice) }
         }
-    }
-
-    LaunchedEffect(nePluginId) {
-        neLocales = emptyList()
-        neVoiceSel = emptyList()
-        voiceList = emptyList()
-        voiceLoadedKey = ""
-        voiceLoading = false
-        nePreparing = nePluginId.isNotBlank()
     }
 
     // 新建条目后一次加载语言/声音；缓存起来，打开声音栏不再二次加载。
