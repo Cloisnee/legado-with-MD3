@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -235,7 +236,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voicePickerSheet by remember { mutableStateOf(false) }
     var voiceQuery by remember { mutableStateOf("") }
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
-    var voiceLoadToken by remember { mutableStateOf(0) }
+    var voiceLoading by remember { mutableStateOf(false) }
+    var voiceLoadTick by remember { mutableStateOf(0) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -588,18 +590,26 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 声音列表加载：用页面级 scope，不跟随 LaunchedEffect 的 key 变化被取消；
-    // token 只让最后一次请求更新 UI，避免 zh-CN → 克隆音色(N) 切换时把结果丢掉。
-    LaunchedEffect(voicePickerSheet, nePluginId, neLocale) {
+    // 切换插件时清空旧音色；不要在每次加载开始时清空，否则慢请求会先把列表闪空。
+    LaunchedEffect(nePluginId) {
+        voiceList = emptyList()
+        voiceLoading = false
+    }
+
+    // 声音列表加载：页面级 scope，任何一次非空结果都直接落 UI；空结果不覆盖旧列表。
+    LaunchedEffect(voicePickerSheet, nePluginId, neLocale, voiceLoadTick) {
         if (voicePickerSheet && nePluginId.isNotBlank()) {
-            val token = ++voiceLoadToken
             val pid = nePluginId
             val loc = neLocale
             scope.launch {
-                voiceList = emptyList()
-                val list = repo.loadVoices(pid, loc)
-                if (token == voiceLoadToken) {
-                    voiceList = list
+                voiceLoading = true
+                try {
+                    val list = repo.loadVoices(pid, loc)
+                    if (list.isNotEmpty()) {
+                        voiceList = list
+                    }
+                } finally {
+                    voiceLoading = false
                 }
             }
         }
@@ -1749,11 +1759,19 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         onDismissRequest = { voicePickerSheet = false },
         title = "选择声音 · 已选 ${neVoiceSel.size}",
         endAction = {
-            MediumTonalButton(
-                onClick = { voicePickerSheet = false },
-                icon = Icons.Default.Check,
-                contentDescription = "完成",
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MediumTonalButton(
+                    onClick = { voiceLoadTick++ },
+                    text = "刷新",
+                    contentDescription = "刷新声音列表",
+                )
+                Spacer(Modifier.width(8.dp))
+                MediumTonalButton(
+                    onClick = { voicePickerSheet = false },
+                    icon = Icons.Default.Check,
+                    contentDescription = "完成",
+                )
+            }
         },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -1768,7 +1786,29 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 autoFocus = false,
             )
             if (voiceList.isEmpty()) {
-                TinyClickableSettingItem(title = "加载中…（或该语言无声音）", onClick = {})
+                if (voiceLoading) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        AppText(
+                            text = "正在加载声音列表…",
+                            style = LegadoTheme.typography.bodySmall,
+                        )
+                    }
+                } else {
+                    TinyClickableSettingItem(
+                        title = "该语言暂无声音，点右上角「刷新」重试",
+                        onClick = { voiceLoadTick++ },
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier
