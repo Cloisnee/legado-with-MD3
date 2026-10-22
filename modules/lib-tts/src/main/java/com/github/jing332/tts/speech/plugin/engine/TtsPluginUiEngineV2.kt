@@ -10,6 +10,8 @@ import com.github.jing332.compat.log.KLog
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Wrapper
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.to
@@ -93,7 +95,66 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
     }
 
     fun getVoices(locale: String): List<Voice> {
+        // 优先走 getVoicesJson：大对象经过 JS→Kotlin 桥时会被截成最后一个值，
+        // 序列化成 JSON 字符串再交给宿主解析，绕开桥的对象转换。
+        val json = runCatching {
+            engine.invokeMethod(editUiJsObject, "getVoicesJson", locale)
+        }.getOrNull()
+        if (json is CharSequence) {
+            val text = json.toString().trim()
+            if (text.startsWith("{") || text.startsWith("[")) {
+                voicesFromJson(text)?.let { return it }
+            }
+        }
         return voiceResultToOptions(engine.invokeMethod(editUiJsObject, FUNC_VOICES, locale))
+    }
+
+    private fun voicesFromJson(text: String): List<Voice>? {
+        val out = mutableListOf<Voice>()
+        val seen = hashSetOf<String>()
+        try {
+            if (text.startsWith("[")) {
+                val arr = JSONArray(text)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    addJsonVoice(obj, "", out, seen)
+                }
+            } else {
+                val obj = JSONObject(text)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    when (val value = obj.opt(key)) {
+                        is JSONObject -> addJsonVoice(value, key, out, seen)
+                        is String -> addVoice(key, value, null, out, seen)
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            return null
+        }
+        return out
+    }
+
+    private fun addJsonVoice(
+        obj: JSONObject,
+        key: String,
+        out: MutableList<Voice>,
+        seen: MutableSet<String>,
+    ) {
+        val id = firstJsonString(obj, listOf("id", "_id", "voice_id", "voiceId", "value", "code"))
+            ?: key
+        val name = firstJsonString(obj, listOf("name", "label", "title")) ?: id
+        val icon = firstJsonString(obj, listOf("iconUrl", "icon"))
+        addVoice(id, name, icon, out, seen)
+    }
+
+    private fun firstJsonString(obj: JSONObject, names: List<String>): String? {
+        for (name in names) {
+            val value = obj.optString(name).trim()
+            if (value.isNotEmpty() && value != "null") return value
+        }
+        return null
     }
 
     /**
