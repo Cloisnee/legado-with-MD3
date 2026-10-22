@@ -152,7 +152,8 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         }
     }
 
-    private val mMutex by lazy { Mutex() } // stream lock
+    @Volatile
+    private var mMutex: Mutex = Mutex() // stream lock; cancelAudio 时整体换新，避免死回调永久占旧锁
 
     /**
      * 合成串行锁：同一插件引擎实例一次只允许一次合成。
@@ -172,6 +173,8 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         // JsBridgeInputStream.close() 会顺带释放 callback mutex，避免插件不回调 close 时永久锁死。
         runCatching { stream?.close() }
         runCatching { onStop() }
+        // 关键：丢弃旧锁。插件即使永远不回调 close，也不会把下一次合成卡死。
+        mMutex = Mutex()
     }
 
     /** 只包“JS 调用 + 结果包装”；音频流读取由调用方的 idle/总时限控制，避免 30s 把长音频掐断。 */
@@ -237,9 +240,7 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             return stream
         } catch (t: Throwable) {
             // 任何超时/异常都不能把 1KB 管道和 mMutex 留在半开状态。
-            runCatching { ins.close() }
-            currentAudioInputStream = null
-            runCatching { onStop() }
+            runCatching { cancelAudio() }
             throw t
         }
     }
@@ -283,14 +284,14 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             )
             getAudioV2(request, timeoutMs)
         } catch (t: Throwable) {
-            runCatching { onStop() }
+            runCatching { cancelAudio() }
             throw t
         }
 
         val stream = try {
             handleAudioResult(result)
         } catch (t: Throwable) {
-            runCatching { onStop() }
+            runCatching { cancelAudio() }
             throw t
         } ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
         currentAudioInputStream = stream
