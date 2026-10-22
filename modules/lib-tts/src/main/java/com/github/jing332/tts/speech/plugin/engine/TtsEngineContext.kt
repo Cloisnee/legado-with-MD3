@@ -7,6 +7,7 @@ import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.compat.log.KLog
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.script.simple.SimpleScriptEngine
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.script.simple.ext.JsExtensions
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
@@ -14,11 +15,10 @@ import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
-import kotlin.concurrent.withLock
-import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * 插件运行时上下文（JS 中通过 `ttsrv` 访问）。
@@ -40,7 +40,7 @@ data class TtsEngineContext(
 
     companion object {
         private const val TAG = "TtsEngineContext"
-        const val AUDITION_TIMEOUT = 30_000L
+        const val AUDITION_TIMEOUT = 120_000L
     }
 
     /** 合成结果：成功给音频字节，失败给可读原因（供朗读日志「音频缓存」分区展示） */
@@ -131,8 +131,21 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
-        // 同一插件引擎串行合成：并发会互相覆盖 engine.source / 抢占异步流（实测 duihuaA01 偶发 No data written）
-        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+        // 同一插件引擎串行合成；tryLock 防止一次卡死把整条朗读链永久占锁。
+        return try {
+            if (!engine.synthesisLock.tryLock(5, TimeUnit.SECONDS)) {
+                SynthOutcome(null, "合成忙（等待引擎锁超时）")
+            } else {
+                try {
+                    synthesizeLocked(engine, found, text)
+                } finally {
+                    engine.synthesisLock.unlock()
+                }
+            }
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
+            SynthOutcome(null, "合成被中断")
+        }
     }
 
     /**
@@ -181,7 +194,20 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
-        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text, emotion) }
+        return try {
+            if (!engine.synthesisLock.tryLock(5, TimeUnit.SECONDS)) {
+                SynthOutcome(null, "合成忙（等待引擎锁超时）")
+            } else {
+                try {
+                    synthesizeLocked(engine, found, text, emotion)
+                } finally {
+                    engine.synthesisLock.unlock()
+                }
+            }
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
+            SynthOutcome(null, "合成被中断")
+        }
     }
 
     private fun synthesizeLocked(
@@ -204,20 +230,70 @@ data class TtsEngineContext(
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
-        val bytes = try {
-            runBlocking {
-                withTimeout(synthTimeoutMs) {
-                    engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
-                }
-            }
-        } catch (t: TimeoutCancellationException) {
-            return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
+        // 启动超时只包 JS 调用；读流用独立 watchdog（close 触发 readBytes 返回），避免 30s 把长音频拦腰截断。
+        val t0 = System.currentTimeMillis()
+        PipelineProbe.log(
+            context, "synth.start",
+            "pluginId" to found.pluginId,
+            "voice" to found.voice,
+            "textLen" to text.length,
+            "timeoutMs" to synthTimeoutMs
+        )
+        val stream = try {
+            engine.getAudio(
+                text, found.locale, found.voice, rate, volume, pitch,
+                timeoutMs = synthTimeoutMs.coerceAtMost(90_000L)
+            )
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
-            return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.error",
+                "pluginId" to found.pluginId,
+                "stage" to "startup",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            return SynthOutcome(null, "合成启动异常: ${t.message ?: t.javaClass.simpleName}")
         }
-        if (bytes.isEmpty()) return SynthOutcome(null, "合成返回空音频")
+        val (bytes, timedOut) = try {
+            readAllWithTimeout(stream, synthTimeoutMs)
+        } catch (t: CancellationException) {
+            runCatching { engine.cancelAudio() }
+            throw t
+        } catch (t: Throwable) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.error",
+                "pluginId" to found.pluginId,
+                "stage" to "read",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
+        } finally {
+            runCatching { stream.close() }
+        }
+        if (timedOut) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.timeout",
+                "pluginId" to found.pluginId,
+                "ms" to (System.currentTimeMillis() - t0),
+                "timeoutMs" to synthTimeoutMs
+            )
+            return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
+        }
+        val data = bytes ?: return SynthOutcome(null, "合成返回空音频")
+        if (data.isEmpty()) return SynthOutcome(null, "合成返回空音频")
+        PipelineProbe.log(
+            context, "synth.end",
+            "pluginId" to found.pluginId,
+            "voice" to found.voice,
+            "ms" to (System.currentTimeMillis() - t0),
+            "bytes" to data.size
+        )
         // 音频格式归一化（白噪音修复）：webm/ogg/amr 等容器直通播放器解码；仅未识别格式按裸 PCM 包 WAV 头
         val sniffed = AudioSniffer.normalizeForPlayback(bytes, found.sampleRate)
         if (sniffed.wrappedPcm) {

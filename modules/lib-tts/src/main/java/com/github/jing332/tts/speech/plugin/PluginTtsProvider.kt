@@ -37,7 +37,8 @@ open class PluginTtsProvider(
             voice = source.voice,
             rate = speed,
             volume = volume,
-            pitch = pitch
+            pitch = pitch,
+            timeoutMs = 120_000L
         ) ?: throw IllegalStateException("Engine not initialized: ${plugin.pluginId}")
     }
 

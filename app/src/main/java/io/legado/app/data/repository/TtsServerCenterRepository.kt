@@ -5,6 +5,7 @@ import android.content.Context
 import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.tts.debug.SynthProbe
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
@@ -19,8 +20,11 @@ import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -28,6 +32,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * TTS-Server 管理中心 · 数据层（UI-1）
@@ -642,36 +647,150 @@ class TtsServerCenterRepository(private val app: Application) {
 
     suspend fun loadVoices(pluginId: String, locale: String): List<VoiceOption> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
-                val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
-                // B12：同 loadLocales —— 数据型插件的声线表需先跑 onLoadData
-                engine.ensureOnLoadData()
-                engine.ensureWarmup()
-                var lastError: Throwable? = null
-                var result: List<VoiceOption> = emptyList()
-                for (attempt in 0 until 4) {
-                    try {
-                        result = engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
-                        if (result.isNotEmpty()) break
-                    } catch (e: Throwable) {
-                        lastError = e
-                    }
-                    delay(350)
+            val cached = loadVoiceCache(pluginId, locale)
+            // 大列表（>=200）才走缓存直出；小列表可能是插件被分页超时截断的残片，走一次修复。
+            if (cached != null && cached.size >= 200) {
+                PipelineProbe.log(
+                    ctx, "voices.load",
+                    "pluginId" to pluginId,
+                    "locale" to locale,
+                    "cacheHit" to true,
+                    "count" to cached.size
+                )
+                // 先返回缓存，后台静默刷新；下一次打开列表即可看到最新结果。
+                maybeRefreshVoices(pluginId, locale)
+                return@withContext cached
+            }
+
+            val t0 = System.currentTimeMillis()
+            val result = runCatching { fetchVoices(pluginId, locale) }
+                .onFailure { e ->
+                    writePluginDebug(
+                        "last_voices_debug.txt",
+                        "ERR plugin=$pluginId locale=$locale\n${e.stackTraceToString()}"
+                    )
                 }
-                writePluginDebug(
-                    "last_voices_debug.txt",
-                    "plugin=$pluginId locale=$locale count=${result.size} first=${result.take(5).joinToString { it.id }}"
-                )
-                lastError?.let { if (result.isEmpty()) throw it }
-                result
-            }.onFailure { e ->
-                writePluginDebug(
-                    "last_voices_debug.txt",
-                    "ERR plugin=$pluginId locale=$locale\n${e.stackTraceToString()}"
-                )
-            }.getOrDefault(emptyList())
+                .getOrDefault(emptyList())
+            PipelineProbe.log(
+                ctx, "voices.load",
+                "pluginId" to pluginId,
+                "locale" to locale,
+                "cacheHit" to false,
+                "count" to result.size,
+                "ms" to (System.currentTimeMillis() - t0)
+            )
+            result
         }
+
+    private suspend fun fetchVoices(pluginId: String, locale: String): List<VoiceOption> {
+        val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return emptyList()
+        val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+        // B12：数据型插件的声线表需先跑 onLoadData
+        engine.ensureOnLoadData()
+        var lastError: Throwable? = null
+        var result: List<VoiceOption> = emptyList()
+        for (attempt in 0 until 2) {
+            try {
+                result = engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
+                if (result.isNotEmpty()) break
+            } catch (e: Throwable) {
+                lastError = e
+            }
+            delay(350)
+        }
+
+        if (result.isNotEmpty() && result.size < 200) {
+            // 插件自身缓存被分页超时截断：一次性 warmup 修复（只发生一次；warmup 与 getVoices 用 opLock 串行）。
+            engine.warmupOnce()
+            val refreshed = runCatching {
+                engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
+            }.getOrDefault(emptyList())
+            if (refreshed.size > result.size) result = refreshed
+        }
+
+        val cached = loadVoiceCache(pluginId, locale)
+        if (result.isNotEmpty() && cached != null && cached.size > 0 && result.size < cached.size * 0.8) {
+            // 分页超时/限流会返回一小段列表；不要用它覆盖完整缓存。
+            writePluginDebug(
+                "last_voices_debug.txt",
+                "PARTIAL plugin=$pluginId locale=$locale fresh=${result.size} cached=${cached.size}"
+            )
+            PipelineProbe.log(
+                ctx, "voices.partial",
+                "pluginId" to pluginId,
+                "locale" to locale,
+                "fresh" to result.size,
+                "cached" to cached.size
+            )
+            return cached
+        }
+
+        if (result.isNotEmpty()) saveVoiceCache(pluginId, locale, result)
+        writePluginDebug(
+            "last_voices_debug.txt",
+            "plugin=$pluginId locale=$locale count=${result.size} first=${result.take(5).joinToString { it.id }}"
+        )
+        lastError?.let { if (result.isEmpty()) throw it }
+        return result
+    }
+
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshingAt = ConcurrentHashMap<String, Long>()
+
+    private fun maybeRefreshVoices(pluginId: String, locale: String) {
+        val key = "$pluginId|$locale"
+        val now = System.currentTimeMillis()
+        val last = refreshingAt[key] ?: 0L
+        if (now - last < 120_000L) return
+        refreshingAt[key] = now
+        refreshScope.launch {
+            try {
+                fetchVoices(pluginId, locale)
+            } catch (_: Throwable) {
+            } finally {
+                refreshingAt.remove(key)
+            }
+        }
+    }
+
+    private fun voiceCacheDir(): File =
+        File(TtsDirProvider.baseDir(ctx), "_store/plugin_voices").apply { mkdirs() }
+
+    private fun safeCacheName(raw: String): String =
+        raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+
+    private fun voiceCacheFile(pluginId: String, locale: String): File =
+        File(voiceCacheDir(), safeCacheName(pluginId) + "__" + safeCacheName(locale) + ".json")
+
+    private fun loadVoiceCache(pluginId: String, locale: String): List<VoiceOption>? = runCatching {
+        val file = voiceCacheFile(pluginId, locale)
+        if (!file.exists()) return@runCatching null
+        val arr = JSONArray(file.readText())
+        buildList {
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id").trim()
+                if (id.isEmpty()) continue
+                val name = obj.optString("name").trim().ifEmpty { id }
+                val icon = obj.optString("icon").trim().takeIf { it.isNotEmpty() }
+                add(VoiceOption(id, name, icon))
+            }
+        }
+    }.getOrNull()
+
+    private fun saveVoiceCache(pluginId: String, locale: String, voices: List<VoiceOption>) {
+        runCatching {
+            val arr = JSONArray()
+            voices.forEach { v ->
+                arr.put(JSONObject().apply {
+                    put("id", v.id)
+                    put("name", v.name)
+                    if (!v.icon.isNullOrBlank()) put("icon", v.icon)
+                })
+            }
+            voiceCacheFile(pluginId, locale).writeText(arr.toString())
+        }
+    }
 
     private fun writePluginDebug(fileName: String, text: String) {
         runCatching {

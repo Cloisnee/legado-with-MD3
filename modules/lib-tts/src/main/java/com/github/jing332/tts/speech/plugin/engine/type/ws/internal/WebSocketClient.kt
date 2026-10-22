@@ -12,7 +12,11 @@ class WebSocketClient : WebSocketListener() {
     private lateinit var webSocket: WebSocket
 
     companion object {
-        private val client = OkHttpClient.Builder().writeTimeout(1, TimeUnit.SECONDS).build()
+        private val client = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(1, TimeUnit.SECONDS)
+            .build()
         private const val TAG = "WebSocketClient"
     }
 

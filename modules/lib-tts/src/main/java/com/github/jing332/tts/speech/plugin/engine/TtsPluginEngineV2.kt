@@ -1,10 +1,11 @@
 package com.github.jing332.tts.speech.plugin.engine
 
 import android.content.Context
-import com.github.jing332.compat.net.HostHttp
+import com.github.jing332.compat.net.PluginHttp
 import com.github.jing332.common.utils.limitLength
 import com.github.jing332.database.entities.plugin.Plugin
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.script.engine.RhinoScriptEngine
 import com.github.jing332.script.ensureArgumentsLength
 import com.github.jing332.script.runtime.NativeResponse
@@ -13,6 +14,7 @@ import com.github.jing332.script.simple.CompatScriptRuntime
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.script.withRhinoContext
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import okhttp3.Response
 import okhttp3.ResponseBody
@@ -138,7 +140,7 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             is CharSequence -> {
                 val str = result.toString()
                 if (str.startsWith("http://") || str.startsWith("https://")) {
-                    val resp: Response = HostHttp.get(str)
+                    val resp: Response = PluginHttp.get(str)
                     return resp.body?.check()?.byteStream()
                 } else
                     throw IllegalStateException(str)
@@ -164,10 +166,17 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
     private var currentAudioInputStream: InputStream? = null
 
     fun cancelAudio() {
-        runCatching { currentAudioInputStream?.close() }
+        PipelineProbe.log(context, "audio.cancel", "pluginId" to plugin.pluginId)
+        val stream = currentAudioInputStream
         currentAudioInputStream = null
+        // JsBridgeInputStream.close() 会顺带释放 callback mutex，避免插件不回调 close 时永久锁死。
+        runCatching { stream?.close() }
         runCatching { onStop() }
     }
+
+    /** 只包“JS 调用 + 结果包装”；音频流读取由调用方的 idle/总时限控制，避免 30s 把长音频掐断。 */
+    private suspend fun <T> runWithTimeout(timeoutMs: Long, block: suspend () -> T): T =
+        if (timeoutMs > 0L) withTimeout(timeoutMs) { block() } else block()
     private suspend fun newCallback(ins: JsBridgeInputStream): Scriptable {
         val callback = ins.getCallback(mMutex)
         return withRhinoContext { cx ->
@@ -212,17 +221,27 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         }
     }
 
-    private suspend fun getAudioV2(request: Map<String, Any>): InputStream {
+    private suspend fun getAudioV2(request: Map<String, Any>, timeoutMs: Long): InputStream {
         val ins = JsBridgeInputStream()
         currentAudioInputStream = ins
-        val jsObj = newCallback(ins)
-        val result = runInterruptible {
-            engine.invokeMethod(pluginJsObj, FUNC_GET_AUDIO_V2, request, jsObj)
-                ?: throw NoSuchMethodException("getAudioV2() not found")
+        try {
+            val result = runWithTimeout(timeoutMs) {
+                val jsObj = newCallback(ins)
+                runInterruptible {
+                    engine.invokeMethod(pluginJsObj, FUNC_GET_AUDIO_V2, request, jsObj)
+                        ?: throw NoSuchMethodException("getAudioV2() not found")
+                }
+            }
+            val stream = handleAudioResult(result) ?: ins
+            currentAudioInputStream = stream
+            return stream
+        } catch (t: Throwable) {
+            // 任何超时/异常都不能把 1KB 管道和 mMutex 留在半开状态。
+            runCatching { ins.close() }
+            currentAudioInputStream = null
+            runCatching { onStop() }
+            throw t
         }
-        val stream = handleAudioResult(result) ?: ins
-        currentAudioInputStream = stream
-        return stream
     }
 
     suspend fun getAudio(
@@ -232,22 +251,25 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         rate: Float = 1f,
         volume: Float = 1f,
         pitch: Float = 1f,
+        timeoutMs: Long = 30_000L,
     ): InputStream {
         val r = (rate * 50f).toInt()
         val v = (volume * 50f).toInt()
         val p = (pitch * 50f).toInt()
         val result = try {
-            runInterruptible {
-                engine.invokeMethod(
-                    pluginJsObj,
-                    FUNC_GET_AUDIO,
-                    text,
-                    locale,
-                    voice,
-                    r,
-                    v,
-                    p
-                )
+            runWithTimeout(timeoutMs) {
+                runInterruptible {
+                    engine.invokeMethod(
+                        pluginJsObj,
+                        FUNC_GET_AUDIO,
+                        text,
+                        locale,
+                        voice,
+                        r,
+                        v,
+                        p
+                    )
+                }
             }
         } catch (_: NoSuchMethodException) {
             val request = mapOf(
@@ -259,12 +281,25 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
                 "volume" to v,
                 "pitch" to p
             )
-            getAudioV2(request)
+            getAudioV2(request, timeoutMs)
+        } catch (t: Throwable) {
+            runCatching { onStop() }
+            throw t
         }
 
-        val stream = handleAudioResult(result)
-            ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
+        val stream = try {
+            handleAudioResult(result)
+        } catch (t: Throwable) {
+            runCatching { onStop() }
+            throw t
+        } ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
         currentAudioInputStream = stream
+        PipelineProbe.log(
+            context, "audio.stream",
+            "pluginId" to plugin.pluginId,
+            "timeoutMs" to timeoutMs,
+            "type" to stream.javaClass.simpleName
+        )
         return stream
     }
 

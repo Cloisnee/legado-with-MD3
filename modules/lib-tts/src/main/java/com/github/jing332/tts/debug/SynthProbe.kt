@@ -4,9 +4,9 @@ import android.content.Context
 import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
+import com.github.jing332.tts.speech.plugin.engine.readAllWithTimeout
 import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * 试听合成诊断器：逐步执行并返回完整报告（失败时定位到具体环节）。
@@ -21,7 +21,8 @@ object SynthProbe {
         engineId: String,
         tag: String,
         text: String,
-        timeoutMs: Long = 30_000L,
+        timeoutMs: Long = 120_000L,
+        startupTimeoutMs: Long = 90_000L,
     ): Result {
         val sb = StringBuilder()
         sb.appendLine("engineId=$engineId  tag=$tag")
@@ -70,24 +71,45 @@ object SynthProbe {
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
 
-        val bytes = try {
+        val stream = try {
             runBlocking {
-                withTimeout(timeoutMs) {
-                    engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
-                }
+                engine.getAudio(
+                    text, found.locale, found.voice, rate, volume, pitch,
+                    timeoutMs = startupTimeoutMs
+                )
             }
         } catch (t: Throwable) {
-            sb.appendLine("✗ 合成异常: ${t.javaClass.name}: ${t.message}")
+            runCatching { engine.cancelAudio() }
+            sb.appendLine("✗ 合成启动异常: ${t.javaClass.name}: ${t.message}")
             sb.appendLine(t.stackTraceToString().take(6000))
             return Result(null, sb.toString())
         }
-        if (bytes.isEmpty()) {
+        val (bytes, timedOut) = try {
+            readAllWithTimeout(stream, timeoutMs)
+        } catch (t: Throwable) {
+            runCatching { engine.cancelAudio() }
+            sb.appendLine("✗ 合成异常: ${t.javaClass.name}: ${t.message}")
+            sb.appendLine(t.stackTraceToString().take(6000))
+            return Result(null, sb.toString())
+        } finally {
+            runCatching { stream.close() }
+        }
+        if (timedOut) {
+            runCatching { engine.cancelAudio() }
+            sb.appendLine("✗ 合成超时(${timeoutMs}ms)")
+            return Result(null, sb.toString())
+        }
+        val data = bytes ?: run {
             sb.appendLine("✗ 合成结果为空(0B)")
             return Result(null, sb.toString())
         }
-        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
+        if (data.isEmpty()) {
+            sb.appendLine("✗ 合成结果为空(0B)")
+            return Result(null, sb.toString())
+        }
+        sb.appendLine("✓ 合成字节=${data.size}  首12字节=${data.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
 
-        val sniffed = AudioSniffer.normalizeForPlayback(bytes, found.sampleRate)
+        val sniffed = AudioSniffer.normalizeForPlayback(data, found.sampleRate)
         sb.appendLine(
             if (sniffed.wrappedPcm) {
                 "→ 未识别格式：按裸 PCM 包 WAV 头(${found.sampleRate} Hz) total=${sniffed.bytes.size}"
@@ -110,7 +132,8 @@ object SynthProbe {
         pitch: Float = 1f,
         data: Map<String, String> = emptyMap(),
         sampleRate: Int = 24000,
-        timeoutMs: Long = 30_000L,
+        timeoutMs: Long = 120_000L,
+        startupTimeoutMs: Long = 90_000L,
     ): Result {
         val sb = StringBuilder()
         sb.appendLine("pluginId=$pluginId  locale=$locale  voice=$voice")
@@ -133,6 +156,14 @@ object SynthProbe {
         }
         sb.appendLine("✓ 引擎加载完成")
 
+        val t0 = System.currentTimeMillis()
+        PipelineProbe.log(
+            context, "audition.start",
+            "pluginId" to pluginId,
+            "voice" to voice,
+            "textLen" to text.length
+        )
+
         engine.source = PluginTtsSource(
             locale = locale,
             voice = voice,
@@ -143,24 +174,71 @@ object SynthProbe {
             data = data,
         )
 
-        val bytes = try {
+        val stream = try {
             runBlocking {
-                withTimeout(timeoutMs) {
-                    engine.getAudio(text, locale, voice, speed, volume, pitch).readBytes()
-                }
+                engine.getAudio(
+                    text, locale, voice, speed, volume, pitch,
+                    timeoutMs = startupTimeoutMs
+                )
             }
         } catch (t: Throwable) {
-            sb.appendLine("✗ 合成异常: ${t.javaClass.name}: ${t.message}")
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "audition.error",
+                "pluginId" to pluginId,
+                "stage" to "startup",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            sb.appendLine("✗ 合成启动异常: ${t.javaClass.name}: ${t.message}")
             sb.appendLine(t.stackTraceToString().take(6000))
             return Result(null, sb.toString())
         }
-        if (bytes.isEmpty()) {
+        val (bytes, timedOut) = try {
+            readAllWithTimeout(stream, timeoutMs)
+        } catch (t: Throwable) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "audition.error",
+                "pluginId" to pluginId,
+                "stage" to "read",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            sb.appendLine("✗ 合成异常: ${t.javaClass.name}: ${t.message}")
+            sb.appendLine(t.stackTraceToString().take(6000))
+            return Result(null, sb.toString())
+        } finally {
+            runCatching { stream.close() }
+        }
+        if (timedOut) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "audition.timeout",
+                "pluginId" to pluginId,
+                "ms" to (System.currentTimeMillis() - t0),
+                "timeoutMs" to timeoutMs
+            )
+            sb.appendLine("✗ 合成超时(${timeoutMs}ms)")
+            return Result(null, sb.toString())
+        }
+        val data = bytes ?: run {
             sb.appendLine("✗ 合成结果为空(0B)")
             return Result(null, sb.toString())
         }
-        sb.appendLine("✓ 合成字节=${bytes.size}  首12字节=${bytes.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
+        if (data.isEmpty()) {
+            sb.appendLine("✗ 合成结果为空(0B)")
+            return Result(null, sb.toString())
+        }
+        PipelineProbe.log(
+            context, "audition.end",
+            "pluginId" to pluginId,
+            "ms" to (System.currentTimeMillis() - t0),
+            "bytes" to data.size
+        )
+        sb.appendLine("✓ 合成字节=${data.size}  首12字节=${data.take(12).joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
 
-        val sniffed = AudioSniffer.normalizeForPlayback(bytes, sampleRate)
+        val sniffed = AudioSniffer.normalizeForPlayback(data, sampleRate)
         sb.appendLine(
             if (sniffed.wrappedPcm) {
                 "→ 未识别格式：按裸 PCM 包 WAV 头(${sampleRate} Hz) total=${sniffed.bytes.size}"

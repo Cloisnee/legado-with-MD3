@@ -14,6 +14,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.to
 
 class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(context, plugin) {
@@ -74,8 +76,10 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
         }
     }
 
-    fun getLocales(): Map<String, String> {
-        return engine.invokeMethod(editUiJsObject, FUNC_LOCALES).run {
+    private val opLock = ReentrantLock()
+
+    fun getLocales(): Map<String, String> = opLock.withLock {
+        engine.invokeMethod(editUiJsObject, FUNC_LOCALES).run {
             when (this) {
                 is List<*> -> this.associate {
                     val locale = Locale.forLanguageTag(it.toString())
@@ -94,7 +98,7 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
         }
     }
 
-    fun getVoices(locale: String): List<Voice> {
+    fun getVoices(locale: String): List<Voice> = opLock.withLock {
         // 仅对提供 getVoicesJson 的插件走字符串通道（当前是千问 V7）；
         // 其他插件继续走补丁版原来的简单映射，避免把 name/gender/icon 当成音色。
         val json = runCatching {
@@ -197,22 +201,6 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
     }
 
     private val onLoadDataDone = AtomicBoolean(false)
-    private val warmupDone = AtomicBoolean(false)
-
-    /**
-     * 让插件在列表加载阶段就完成千问认证/领票据；避免第一次试听才触发 2 分钟认证。
-     * 插件没有 warmup 方法时静默跳过。
-     */
-    fun ensureWarmup() {
-        if (warmupDone.get()) return
-        synchronized(warmupDone) {
-            if (warmupDone.get()) return
-            runCatching {
-                val r = engine.invokeMethod(editUiJsObject, "warmup")
-                if (r?.toString() == "ok") warmupDone.set(true)
-            }
-        }
-    }
 
     /**
      * B12：数据初始化（onLoadData）幂等封装。
@@ -231,6 +219,21 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
                 onLoadDataDone.set(true)
             }
         }
+    }
+
+    private val warmupStarted = AtomicBoolean(false)
+
+    /**
+     * 后台一次性预热/修复插件声线缓存（只对暴露 warmup 的插件生效）。
+     * 不阻塞列表、不阻塞 UI；与 getLocales/getVoices 用 opLock 串行，避免读到半截 JSON。
+     */
+    fun warmupOnce() {
+        if (!warmupStarted.compareAndSet(false, true)) return
+        Thread {
+            opLock.withLock {
+                runCatching { engine.invokeMethod(editUiJsObject, "warmup") }
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     fun onLoadUI(context: Context, container: LinearLayout) {
