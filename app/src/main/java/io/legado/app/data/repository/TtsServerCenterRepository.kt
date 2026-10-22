@@ -766,16 +766,17 @@ class TtsServerCenterRepository(private val app: Application) {
         val file = voiceCacheFile(pluginId, locale)
         if (!file.exists()) return@runCatching null
         val arr = JSONArray(file.readText())
-        buildList {
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val id = obj.optString("id").trim()
-                if (id.isEmpty()) continue
-                val name = obj.optString("name").trim().ifEmpty { id }
-                val icon = obj.optString("icon").trim().takeIf { it.isNotEmpty() }
-                add(VoiceOption(id, name, icon))
-            }
+        val out = mutableListOf<VoiceOption>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i)
+            if (obj == null) continue
+            val id = obj.optString("id").trim()
+            if (id.isEmpty()) continue
+            val name = obj.optString("name").trim().ifEmpty { id }
+            val icon = obj.optString("icon").trim().takeIf { it.isNotEmpty() }
+            out.add(VoiceOption(id, name, icon))
         }
+        out
     }.getOrNull()
 
     private fun saveVoiceCache(pluginId: String, locale: String, voices: List<VoiceOption>) {
