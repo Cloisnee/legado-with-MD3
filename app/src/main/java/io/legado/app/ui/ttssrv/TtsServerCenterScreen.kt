@@ -107,6 +107,7 @@ import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.utils.sendToClip
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -238,6 +239,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
     var voiceLoading by remember { mutableStateOf(false) }
     var voiceLoadTick by remember { mutableStateOf(0) }
+    var voiceLoadedKey by remember { mutableStateOf("") }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -279,6 +281,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var renameGroupText by remember { mutableStateOf("") }
 
     val player = remember { MediaPlayer() }
+    var auditionJob by remember { mutableStateOf<Job?>(null) }
+    var auditionSeq by remember { mutableStateOf(0) }
+    var auditionVoiceId by remember { mutableStateOf<String?>(null) }
+    var auditionPluginId by remember { mutableStateOf("") }
     DisposableEffect(player) {
         onDispose { runCatching { player.release() } }
     }
@@ -397,6 +403,35 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             player.start()
         }.onFailure {
             context.toastOnUi("播放失败：${it.message.orEmpty()}")
+        }
+    }
+
+    fun stopAudition(pluginId: String? = null) {
+        auditionSeq++
+        auditionJob?.cancel()
+        auditionJob = null
+        auditionVoiceId = null
+        runCatching { if (player.isPlaying) player.stop() }
+        runCatching { player.reset() }
+        if (!pluginId.isNullOrBlank()) {
+            scope.launch { repo.cancelAudition(pluginId) }
+        }
+    }
+
+    fun startAudition(pluginId: String, locale: String, voice: String, text: String) {
+        stopAudition(auditionPluginId.ifBlank { pluginId })
+        val seq = auditionSeq
+        auditionPluginId = pluginId
+        auditionVoiceId = voice
+        auditionJob = scope.launch {
+            val r = repo.auditionDirect(
+                pluginId, locale, voice, text,
+                neSpeed, neVolume, nePitch, effectiveDataParams(),
+            )
+            if (seq == auditionSeq) {
+                auditionVoiceId = null
+                handleAuditionResult(r)
+            }
         }
     }
 
@@ -590,29 +625,43 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 切换插件时清空旧音色；不要在每次加载开始时清空，否则慢请求会先把列表闪空。
     LaunchedEffect(nePluginId) {
         voiceList = emptyList()
+        voiceLoadedKey = ""
         voiceLoading = false
     }
 
-    // 声音列表加载：页面级 scope，任何一次非空结果都直接落 UI；空结果不覆盖旧列表。
-    LaunchedEffect(voicePickerSheet, nePluginId, neLocale, voiceLoadTick) {
-        if (voicePickerSheet && nePluginId.isNotBlank()) {
-            val pid = nePluginId
-            val loc = neLocale
-            scope.launch {
-                voiceLoading = true
-                try {
-                    val list = repo.loadVoices(pid, loc)
-                    if (list.isNotEmpty()) {
-                        voiceList = list
-                    }
-                } finally {
-                    voiceLoading = false
+    // 新建条目后一次加载语言/声音；缓存起来，打开声音栏不再二次加载。
+    LaunchedEffect(nePluginId, neLocale, neLocales, voiceLoadTick) {
+        if (nePluginId.isBlank() || neLocales.isEmpty()) return@LaunchedEffect
+        val key = "$nePluginId|$neLocale|$voiceLoadTick"
+        if (key == voiceLoadedKey) return@LaunchedEffect
+        val pid = nePluginId
+        val loc = neLocale
+        scope.launch {
+            voiceLoading = true
+            try {
+                val list = repo.loadVoices(pid, loc)
+                if (list.isNotEmpty()) {
+                    voiceList = list
+                    voiceLoadedKey = key
                 }
+            } finally {
+                voiceLoading = false
             }
         }
+    }
+
+    LaunchedEffect(voicePickerSheet) {
+        if (voicePickerSheet && voiceList.isEmpty() && !voiceLoading) {
+            voiceLoadTick++
+        } else if (!voicePickerSheet) {
+            stopAudition(nePluginId)
+        }
+    }
+
+    LaunchedEffect(neStep2) {
+        if (!neStep2) stopAudition(nePluginId)
     }
 
     // 组默认收起（只对首次出现的组设置）
@@ -1642,7 +1691,36 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     )
                 }
             }
+            SectionHint("— 试听文本 —")
+            SplicedColumnGroup {
+                TinyClickableSettingItem(
+                    title = "试听文本",
+                    description = neAuditionText,
+                    onClick = {
+                        neTextInput = neAuditionText
+                        neTextDlg = true
+                    },
+                )
+            }
             SectionHint("— 音色基础信息 —")
+            if (voiceLoading) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    AppText(
+                        text = "正在加载声音列表…",
+                        style = LegadoTheme.typography.bodySmall,
+                    )
+                }
+            }
             SplicedColumnGroup {
                 TinyDropdownSettingItem(
                     title = "语言",
@@ -1656,22 +1734,18 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 )
                 TinyClickableSettingItem(
                     title = "声音",
-                    description = if (neVoiceSel.isEmpty()) {
-                        "未选择（点按选择：可多选 + 试听）"
-                    } else {
-                        "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
+                    description = when {
+                        voiceLoading -> "加载中…"
+                        neVoiceSel.isEmpty() -> if (voiceList.isEmpty()) {
+                            "未选择（点按选择：可多选 + 试听）"
+                        } else {
+                            "已加载 ${voiceList.size} 个，点按选择"
+                        }
+                        else -> "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
                     },
                     onClick = {
                         voiceQuery = ""
                         voicePickerSheet = true
-                    },
-                )
-                TinyClickableSettingItem(
-                    title = "试听文本",
-                    description = neAuditionText,
-                    onClick = {
-                        neTextInput = neAuditionText
-                        neTextDlg = true
                     },
                 )
             }
@@ -1858,20 +1932,22 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
-                            SmallPlainButton(
-                                onClick = {
-                                    scope.launch {
-                                        context.toastOnUi("正在合成…")
-                                        val r = repo.auditionDirect(
+                            if (auditionVoiceId == v.id) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                SmallPlainButton(
+                                    onClick = {
+                                        startAudition(
                                             nePluginId, neLocale, v.id, neAuditionText,
-                                            neSpeed, neVolume, nePitch, effectiveDataParams(),
                                         )
-                                        handleAuditionResult(r)
-                                    }
-                                },
-                                icon = Icons.Default.PlayArrow,
-                                contentDescription = "试听",
-                            )
+                                    },
+                                    icon = Icons.Default.PlayArrow,
+                                    contentDescription = "试听",
+                                )
+                            }
                         }
                     }
                 }

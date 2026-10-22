@@ -709,6 +709,15 @@ class TtsServerCenterRepository(private val app: Application) {
         }.getOrElse { AuditionOutcome(false, null, "写文件失败: ${it.stackTraceToString()}") }
     }
 
+    /** 取消当前试听：关闭音频流并调用插件 onStop，避免旧请求排队/补播。 */
+    suspend fun cancelAudition(pluginId: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching
+            val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+            engine.cancelAudio()
+        }
+    }
+
     // ---------------- 新建 / 编辑条目 ----------------
 
     /** 新条目批量创建：按所选插件声音生成 标签01..N；写入 source.data / audioParams / audioFormat；组含 roleType */

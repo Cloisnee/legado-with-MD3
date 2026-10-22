@@ -158,6 +158,16 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
      * 「No data written」/空音频）；不同插件是不同实例，仍可并行。
      */
     val synthesisLock = ReentrantLock()
+
+    /** 当前试听/合成的音频流；取消时关闭它，让阻塞的 readBytes 立刻返回。 */
+    @Volatile
+    private var currentAudioInputStream: InputStream? = null
+
+    fun cancelAudio() {
+        runCatching { currentAudioInputStream?.close() }
+        currentAudioInputStream = null
+        runCatching { onStop() }
+    }
     private suspend fun newCallback(ins: JsBridgeInputStream): Scriptable {
         val callback = ins.getCallback(mMutex)
         return withRhinoContext { cx ->
@@ -204,12 +214,15 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
 
     private suspend fun getAudioV2(request: Map<String, Any>): InputStream {
         val ins = JsBridgeInputStream()
+        currentAudioInputStream = ins
         val jsObj = newCallback(ins)
         val result = runInterruptible {
             engine.invokeMethod(pluginJsObj, FUNC_GET_AUDIO_V2, request, jsObj)
                 ?: throw NoSuchMethodException("getAudioV2() not found")
         }
-        return handleAudioResult(result) ?: ins
+        val stream = handleAudioResult(result) ?: ins
+        currentAudioInputStream = stream
+        return stream
     }
 
     suspend fun getAudio(
@@ -249,8 +262,10 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             getAudioV2(request)
         }
 
-        return handleAudioResult(result)
+        val stream = handleAudioResult(result)
             ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
+        currentAudioInputStream = stream
+        return stream
     }
 
 }
