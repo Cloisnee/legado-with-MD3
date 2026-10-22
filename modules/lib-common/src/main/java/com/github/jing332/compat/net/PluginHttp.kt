@@ -87,7 +87,7 @@ object PluginHttp {
     fun cancelGroup(group: Any) {
         val c = baseClient
         val all = c.dispatcher.runningCalls() + c.dispatcher.queuedCalls()
-        all.filter { it.request.tag(TagHolder::class.java)?.value == group }
+        all.filter { it.request().tag(TagHolder::class.java)?.value == group }
             .forEach { runCatching { it.cancel() } }
     }
 }
