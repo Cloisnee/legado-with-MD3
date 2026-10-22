@@ -240,10 +240,12 @@ data class TtsEngineContext(
             "timeoutMs" to synthTimeoutMs
         )
         val stream = try {
-            engine.getAudio(
-                text, found.locale, found.voice, rate, volume, pitch,
-                timeoutMs = synthTimeoutMs.coerceAtMost(90_000L)
-            )
+            runBlocking {
+                engine.getAudio(
+                    text, found.locale, found.voice, rate, volume, pitch,
+                    timeoutMs = synthTimeoutMs.coerceAtMost(90_000L)
+                )
+            }
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
