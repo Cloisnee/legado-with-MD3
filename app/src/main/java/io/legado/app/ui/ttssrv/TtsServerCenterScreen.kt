@@ -2,11 +2,17 @@ package io.legado.app.ui.ttssrv
 
 import android.app.Activity
 import android.app.Application
-import android.media.MediaPlayer
+import android.net.Uri
 import android.widget.LinearLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -281,7 +287,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     var renameGroupText by remember { mutableStateOf("") }
 
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var player by remember { mutableStateOf<ExoPlayer?>(null) }
     var auditionJob by remember { mutableStateOf<Job?>(null) }
     var auditionSeq by remember { mutableStateOf(0) }
     var auditionVoiceId by remember { mutableStateOf<String?>(null) }
@@ -409,22 +415,28 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     fun play(path: String) {
         stopPlayer()
-        val p = MediaPlayer()
+        val p = ExoPlayer.Builder(context).build()
         player = p
-        p.setOnCompletionListener { stopPlayer() }
-        p.setOnErrorListener { _, what, extra ->
-            context.toastOnUi("播放失败：what=$what extra=$extra")
-            stopPlayer()
-            true
-        }
-        runCatching {
-            p.setDataSource(path)
-            p.prepare()
-            p.start()
-        }.onFailure {
-            stopPlayer()
-            context.toastOnUi("播放失败：${it.message.orEmpty()}")
-        }
+        p.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                context.toastOnUi("播放失败：${error.message.orEmpty()}")
+                stopPlayer()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) stopPlayer()
+            }
+        })
+        p.setPlaybackParameters(
+            PlaybackParameters(
+                neSpeed.coerceIn(0.25f, 4f),
+                nePitch.coerceIn(0.25f, 4f),
+            )
+        )
+        p.volume = neVolume.coerceIn(0f, 1f)
+        p.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))))
+        p.prepare()
+        p.play()
     }
 
     fun handleAuditionResult(r: AuditionOutcome) {
