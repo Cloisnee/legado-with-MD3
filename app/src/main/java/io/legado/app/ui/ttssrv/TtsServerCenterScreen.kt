@@ -244,7 +244,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voiceQuery by remember { mutableStateOf("") }
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
     var voiceLoading by remember { mutableStateOf(false) }
-    var voiceLoadTick by remember { mutableStateOf(0) }
     var voiceLoadedKey by remember { mutableStateOf("") }
     var nePreparing by remember { mutableStateOf(false) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
@@ -666,6 +665,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     LaunchedEffect(nePluginId) {
+        neLocales = emptyList()
+        neVoiceSel = emptyList()
         voiceList = emptyList()
         voiceLoadedKey = ""
         voiceLoading = false
@@ -673,9 +674,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     // 新建条目后一次加载语言/声音；缓存起来，打开声音栏不再二次加载。
-    LaunchedEffect(nePluginId, neLocale, neLocales, voiceLoadTick) {
+    LaunchedEffect(nePluginId, neLocale, neLocales) {
         if (nePluginId.isBlank() || neLocales.isEmpty()) return@LaunchedEffect
-        val key = "$nePluginId|$neLocale|$voiceLoadTick"
+        val key = "$nePluginId|$neLocale"
         if (key == voiceLoadedKey) return@LaunchedEffect
         val pid = nePluginId
         val loc = neLocale
@@ -692,12 +693,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 voiceLoading = false
                 nePreparing = false
             }
-        }
-    }
-
-    LaunchedEffect(voicePickerSheet) {
-        if (voicePickerSheet && voiceList.isEmpty() && !voiceLoading) {
-            voiceLoadTick++
         }
     }
 
@@ -1862,6 +1857,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         nePluginId = p.pluginId
                         nePluginName = p.name
                         neVoiceSel = emptyList()
+                        neLocales = emptyList()
+                        voiceList = emptyList()
+                        voiceLoadedKey = ""
+                        nePreparing = true
                         // 默认从「对话」档开始；若目标分组已固定类型，下方同步效应会自动跟随并锁定
                         neAssign = VoiceBankRoleType.ASSIGN_DIALOG
                         neRole = VoiceBankRoleType.CORE
@@ -1886,25 +1885,14 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
         title = "选择声音 · 已选 ${neVoiceSel.size}",
         endAction = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                MediumTonalButton(
-                    onClick = {
-                        stopAudition(nePluginId)
-                        voiceLoadTick++
-                    },
-                    text = "刷新",
-                    contentDescription = "刷新声音列表",
-                )
-                Spacer(Modifier.width(8.dp))
-                MediumTonalButton(
-                    onClick = {
-                        stopAudition(nePluginId)
-                        voicePickerSheet = false
-                    },
-                    icon = Icons.Default.Check,
-                    contentDescription = "完成",
-                )
-            }
+            MediumTonalButton(
+                onClick = {
+                    stopAudition(nePluginId)
+                    voicePickerSheet = false
+                },
+                icon = Icons.Default.Check,
+                contentDescription = "完成",
+            )
         },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -1938,8 +1926,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     }
                 } else {
                     TinyClickableSettingItem(
-                        title = "该语言暂无声音，点右上角「刷新」重试",
-                        onClick = { voiceLoadTick++ },
+                        title = "该语言暂无声音",
+                        onClick = {},
                     )
                 }
             } else {

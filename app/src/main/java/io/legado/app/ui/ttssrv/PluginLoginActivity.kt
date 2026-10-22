@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -118,7 +120,7 @@ class PluginLoginActivity : BaseComposeActivity() {
             ) {
                 MediumTonalButton(
                     onClick = { finish() },
-                    text = "关闭",
+                    icon = Icons.Default.Close,
                     contentDescription = "关闭",
                 )
                 AppText(
@@ -137,7 +139,7 @@ class PluginLoginActivity : BaseComposeActivity() {
                         webView?.setInitialScale(0)
                         webView?.reload()
                     },
-                    text = "适应",
+                    icon = Icons.Default.ZoomOutMap,
                     contentDescription = "适应屏幕",
                 )
                 MediumTonalButton(
@@ -188,7 +190,6 @@ class PluginLoginActivity : BaseComposeActivity() {
                         }
                     },
                     icon = Icons.Default.Check,
-                    text = "保存登录态",
                     contentDescription = "保存登录态",
                 )
             }

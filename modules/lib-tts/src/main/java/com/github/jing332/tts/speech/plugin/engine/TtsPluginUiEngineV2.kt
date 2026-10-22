@@ -197,6 +197,22 @@ class TtsPluginUiEngineV2(context: Context, plugin: Plugin) : TtsPluginEngineV2(
     }
 
     private val onLoadDataDone = AtomicBoolean(false)
+    private val warmupDone = AtomicBoolean(false)
+
+    /**
+     * 让插件在列表加载阶段就完成千问认证/领票据；避免第一次试听才触发 2 分钟认证。
+     * 插件没有 warmup 方法时静默跳过。
+     */
+    fun ensureWarmup() {
+        if (warmupDone.get()) return
+        synchronized(warmupDone) {
+            if (warmupDone.get()) return
+            runCatching {
+                val r = engine.invokeMethod(editUiJsObject, "warmup")
+                if (r?.toString() == "ok") warmupDone.set(true)
+            }
+        }
+    }
 
     /**
      * B12：数据初始化（onLoadData）幂等封装。

@@ -647,6 +647,7 @@ class TtsServerCenterRepository(private val app: Application) {
                 val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
                 // B12：同 loadLocales —— 数据型插件的声线表需先跑 onLoadData
                 engine.ensureOnLoadData()
+                engine.ensureWarmup()
                 var lastError: Throwable? = null
                 var result: List<VoiceOption> = emptyList()
                 for (attempt in 0 until 4) {
