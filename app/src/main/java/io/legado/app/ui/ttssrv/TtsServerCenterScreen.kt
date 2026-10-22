@@ -281,13 +281,16 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     var renameGroupText by remember { mutableStateOf("") }
 
-    val player = remember { MediaPlayer() }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var auditionJob by remember { mutableStateOf<Job?>(null) }
     var auditionSeq by remember { mutableStateOf(0) }
     var auditionVoiceId by remember { mutableStateOf<String?>(null) }
     var auditionPluginId by remember { mutableStateOf("") }
-    DisposableEffect(player) {
-        onDispose { runCatching { player.release() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            player?.let { runCatching { it.release() } }
+            player = null
+        }
     }
 
     fun reload() {
@@ -396,13 +399,30 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (selEntries.isEmpty()) selGroupContext = null
     }
 
+    fun stopPlayer() {
+        player?.let { p ->
+            runCatching { p.stop() }
+            runCatching { p.release() }
+        }
+        player = null
+    }
+
     fun play(path: String) {
+        stopPlayer()
+        val p = MediaPlayer()
+        player = p
+        p.setOnCompletionListener { stopPlayer() }
+        p.setOnErrorListener { _, what, extra ->
+            context.toastOnUi("播放失败：what=$what extra=$extra")
+            stopPlayer()
+            true
+        }
         runCatching {
-            player.reset()
-            player.setDataSource(path)
-            player.prepare()
-            player.start()
+            p.setDataSource(path)
+            p.prepare()
+            p.start()
         }.onFailure {
+            stopPlayer()
             context.toastOnUi("播放失败：${it.message.orEmpty()}")
         }
     }
@@ -428,8 +448,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         auditionJob?.cancel()
         auditionJob = null
         auditionVoiceId = null
-        runCatching { if (player.isPlaying) player.stop() }
-        runCatching { player.reset() }
+        stopPlayer()
         if (!pluginId.isNullOrBlank()) {
             scope.launch { repo.cancelAudition(pluginId) }
         }
@@ -442,8 +461,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         auditionJob = null
         auditionVoiceId = voice
         auditionPluginId = pluginId
-        runCatching { if (player.isPlaying) player.stop() }
-        runCatching { player.reset() }
+        stopPlayer()
         val seq = auditionSeq
         auditionJob = scope.launch {
             // 第一次试听不取消；后续先等旧请求的 cancelAudio 完成，再开新请求，避免取消晚到关掉新流。
