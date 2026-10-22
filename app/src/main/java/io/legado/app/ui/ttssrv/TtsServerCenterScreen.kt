@@ -240,6 +240,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voiceLoading by remember { mutableStateOf(false) }
     var voiceLoadTick by remember { mutableStateOf(0) }
     var voiceLoadedKey by remember { mutableStateOf("") }
+    var nePreparing by remember { mutableStateOf(false) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -435,11 +436,20 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     fun startAudition(pluginId: String, locale: String, voice: String, text: String) {
-        stopAudition(auditionPluginId.ifBlank { pluginId })
-        val seq = auditionSeq
-        auditionPluginId = pluginId
+        val oldPlugin = auditionPluginId
+        auditionSeq++
+        auditionJob?.cancel()
+        auditionJob = null
         auditionVoiceId = voice
+        auditionPluginId = pluginId
+        runCatching { if (player.isPlaying) player.stop() }
+        runCatching { player.reset() }
+        val seq = auditionSeq
         auditionJob = scope.launch {
+            // 第一次试听不取消；后续先等旧请求的 cancelAudio 完成，再开新请求，避免取消晚到关掉新流。
+            if (oldPlugin.isNotBlank()) {
+                repo.cancelAudition(oldPlugin)
+            }
             val r = repo.auditionDirect(
                 pluginId, locale, voice, text,
                 neSpeed, neVolume, nePitch, effectiveDataParams(),
@@ -629,6 +639,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         voiceList = emptyList()
         voiceLoadedKey = ""
         voiceLoading = false
+        nePreparing = nePluginId.isNotBlank()
     }
 
     // 新建条目后一次加载语言/声音；缓存起来，打开声音栏不再二次加载。
@@ -638,6 +649,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (key == voiceLoadedKey) return@LaunchedEffect
         val pid = nePluginId
         val loc = neLocale
+        nePreparing = true
         scope.launch {
             voiceLoading = true
             try {
@@ -648,6 +660,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 }
             } finally {
                 voiceLoading = false
+                nePreparing = false
             }
         }
     }
@@ -655,13 +668,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     LaunchedEffect(voicePickerSheet) {
         if (voicePickerSheet && voiceList.isEmpty() && !voiceLoading) {
             voiceLoadTick++
-        } else if (!voicePickerSheet) {
-            stopAudition(nePluginId)
         }
-    }
-
-    LaunchedEffect(neStep2) {
-        if (!neStep2) stopAudition(nePluginId)
     }
 
     // 组默认收起（只对首次出现的组设置）
@@ -1494,7 +1501,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppModalBottomSheet(
         animateContentSize = false,
         show = neStep2,
-        onDismissRequest = { neStep2 = false },
+        onDismissRequest = {
+            stopAudition(nePluginId)
+            neStep2 = false
+        },
         title = "新建条目 · ${nePluginName}",
         endAction = {
             MediumTonalButton(
@@ -1703,7 +1713,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 )
             }
             SectionHint("— 音色基础信息 —")
-            if (voiceLoading) {
+            if (nePreparing) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1716,26 +1726,34 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     )
                     Spacer(Modifier.width(8.dp))
                     AppText(
-                        text = "正在加载声音列表…",
+                        text = "正在加载语言和声音…",
                         style = LegadoTheme.typography.bodySmall,
                     )
                 }
             }
             SplicedColumnGroup {
-                TinyDropdownSettingItem(
-                    title = "语言",
-                    selectedValue = neLocale,
-                    displayEntries = neLocales.map { it.name }.toTypedArray(),
-                    entryValues = neLocales.map { it.id }.toTypedArray(),
-                    onValueChange = {
-                        neLocale = it
-                        neVoiceSel = emptyList()
-                    },
-                )
+                if (nePreparing) {
+                    TinyClickableSettingItem(
+                        title = "语言",
+                        description = "加载中…",
+                        onClick = {},
+                    )
+                } else {
+                    TinyDropdownSettingItem(
+                        title = "语言",
+                        selectedValue = neLocale,
+                        displayEntries = neLocales.map { it.name }.toTypedArray(),
+                        entryValues = neLocales.map { it.id }.toTypedArray(),
+                        onValueChange = {
+                            neLocale = it
+                            neVoiceSel = emptyList()
+                        },
+                    )
+                }
                 TinyClickableSettingItem(
                     title = "声音",
                     description = when {
-                        voiceLoading -> "加载中…"
+                        nePreparing -> "加载中…"
                         neVoiceSel.isEmpty() -> if (voiceList.isEmpty()) {
                             "未选择（点按选择：可多选 + 试听）"
                         } else {
@@ -1744,8 +1762,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         else -> "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
                     },
                     onClick = {
-                        voiceQuery = ""
-                        voicePickerSheet = true
+                        if (!nePreparing) {
+                            voiceQuery = ""
+                            voicePickerSheet = true
+                        }
                     },
                 )
             }
@@ -1830,18 +1850,27 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppModalBottomSheet(
         animateContentSize = false,
         show = voicePickerSheet,
-        onDismissRequest = { voicePickerSheet = false },
+        onDismissRequest = {
+            stopAudition(nePluginId)
+            voicePickerSheet = false
+        },
         title = "选择声音 · 已选 ${neVoiceSel.size}",
         endAction = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 MediumTonalButton(
-                    onClick = { voiceLoadTick++ },
+                    onClick = {
+                        stopAudition(nePluginId)
+                        voiceLoadTick++
+                    },
                     text = "刷新",
                     contentDescription = "刷新声音列表",
                 )
                 Spacer(Modifier.width(8.dp))
                 MediumTonalButton(
-                    onClick = { voicePickerSheet = false },
+                    onClick = {
+                        stopAudition(nePluginId)
+                        voicePickerSheet = false
+                    },
                     icon = Icons.Default.Check,
                     contentDescription = "完成",
                 )
