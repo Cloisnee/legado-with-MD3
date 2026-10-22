@@ -246,6 +246,8 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voiceLoading by remember { mutableStateOf(false) }
     var voiceLoadedKey by remember { mutableStateOf("") }
     var nePreparing by remember { mutableStateOf(false) }
+    // 每次在插件选择器里选中插件都递增：同插件二次进入也能重跑加载 effect。
+    var nePluginSessionTick by remember { mutableStateOf(0) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -586,7 +588,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     // 新建条目：插件变化 → 先清旧状态，再加载语言列表（只保留这一个 effect，避免两个 effect 互相清空）
-    LaunchedEffect(nePluginId) {
+    LaunchedEffect(nePluginId, nePluginSessionTick) {
         neLocales = emptyList()
         neVoiceSel = emptyList()
         voiceList = emptyList()
@@ -609,7 +611,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     // 新建条目：插件 UI 会话（补丁版添加插件TTS同款：onLoadData → onLoadUI 到真实容器）
-    LaunchedEffect(nePluginId) {
+    LaunchedEffect(nePluginId, nePluginSessionTick) {
         pluginUiEngine = null
         pluginUiLayout = null
         pluginUiEmpty = true
@@ -1859,6 +1861,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         voiceList = emptyList()
                         voiceLoadedKey = ""
                         nePreparing = true
+                        nePluginSessionTick++
                         // 默认从「对话」档开始；若目标分组已固定类型，下方同步效应会自动跟随并锁定
                         neAssign = VoiceBankRoleType.ASSIGN_DIALOG
                         neRole = VoiceBankRoleType.CORE
