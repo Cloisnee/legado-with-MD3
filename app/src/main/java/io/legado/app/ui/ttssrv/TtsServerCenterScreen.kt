@@ -235,6 +235,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voicePickerSheet by remember { mutableStateOf(false) }
     var voiceQuery by remember { mutableStateOf("") }
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
+    var voiceLoadToken by remember { mutableStateOf(0) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -587,10 +588,20 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 声音列表加载
+    // 声音列表加载：用页面级 scope，不跟随 LaunchedEffect 的 key 变化被取消；
+    // token 只让最后一次请求更新 UI，避免 zh-CN → 克隆音色(N) 切换时把结果丢掉。
     LaunchedEffect(voicePickerSheet, nePluginId, neLocale) {
         if (voicePickerSheet && nePluginId.isNotBlank()) {
-            voiceList = repo.loadVoices(nePluginId, neLocale)
+            val token = ++voiceLoadToken
+            val pid = nePluginId
+            val loc = neLocale
+            scope.launch {
+                voiceList = emptyList()
+                val list = repo.loadVoices(pid, loc)
+                if (token == voiceLoadToken) {
+                    voiceList = list
+                }
+            }
         }
     }
 
