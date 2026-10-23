@@ -62,7 +62,12 @@ data class TtsEngineContext(
     }
 
     /** 合成结果：成功给音频字节，失败给可读原因（供朗读日志「音频缓存」分区展示） */
-    data class SynthOutcome(val bytes: ByteArray?, val reason: String? = null) {
+    data class SynthOutcome(
+        val bytes: ByteArray? = null,
+        val reason: String? = null,
+        /** 这次失败是「流读完但 0 字节」——冷启动认证窗口的特征，值得重试一次 */
+        val emptyBytes: Boolean = false,
+    ) {
         val ok: Boolean get() = bytes != null
     }
 
@@ -155,7 +160,17 @@ data class TtsEngineContext(
                 SynthOutcome(null, "合成忙（等待引擎锁超时）")
             } else {
                 try {
-                    synthesizeLocked(engine, found, text)
+                    var outcome = synthesizeLocked(engine, found, text)
+                    if (outcome.emptyBytes && engine.emptyRetried.compareAndSet(false, true)) {
+                        PipelineProbe.log(
+                            context, "synth.empty.retry",
+                            "pluginId" to found.pluginId, "voice" to found.voice
+                        )
+                        runCatching { engine.cancelAudio() }
+                        Thread.sleep(400)
+                        outcome = synthesizeLocked(engine, found, text)
+                    }
+                    outcome
                 } finally {
                     engine.synthesisLock.unlock()
                 }
@@ -217,7 +232,17 @@ data class TtsEngineContext(
                 SynthOutcome(null, "合成忙（等待引擎锁超时）")
             } else {
                 try {
-                    synthesizeLocked(engine, found, text, emotion)
+                    var outcome = synthesizeLocked(engine, found, text, emotion)
+                    if (outcome.emptyBytes && engine.emptyRetried.compareAndSet(false, true)) {
+                        PipelineProbe.log(
+                            context, "synth.empty.retry",
+                            "pluginId" to found.pluginId, "voice" to found.voice
+                        )
+                        runCatching { engine.cancelAudio() }
+                        Thread.sleep(400)
+                        outcome = synthesizeLocked(engine, found, text, emotion)
+                    }
+                    outcome
                 } finally {
                     engine.synthesisLock.unlock()
                 }
@@ -305,8 +330,8 @@ data class TtsEngineContext(
             )
             return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
         }
-        val data = bytes ?: return SynthOutcome(null, "合成返回空音频")
-        if (data.isEmpty()) return SynthOutcome(null, "合成返回空音频")
+        val data = bytes ?: return SynthOutcome(null, "合成返回空音频", emptyBytes = true)
+        if (data.isEmpty()) return SynthOutcome(null, "合成返回空音频", emptyBytes = true)
         PipelineProbe.log(
             context, "synth.end",
             "pluginId" to found.pluginId,

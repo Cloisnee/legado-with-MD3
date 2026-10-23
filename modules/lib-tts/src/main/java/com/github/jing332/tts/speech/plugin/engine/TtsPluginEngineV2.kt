@@ -188,6 +188,9 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
      */
     val synthesisLock = ReentrantLock()
 
+    /** 0B 一次性重试标记：每个引擎实例只给一次机会，避免永久坏插件把每一句都拖成两次。 */
+    val emptyRetried = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** 当前试听/合成的音频流；取消时关闭它，让阻塞的 readBytes 立刻返回。 */
     @Volatile
     private var currentAudioInputStream: InputStream? = null
