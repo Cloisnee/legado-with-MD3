@@ -19,6 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.jvm.Transient
 
 /**
  * 插件运行时上下文（JS 中通过 `ttsrv` 访问）。
@@ -37,6 +38,23 @@ data class TtsEngineContext(
     /** 单次合成请求超时（毫秒；朗读侧按设置注入，默认 30s） */
     val synthTimeoutMs: Long = AUDITION_TIMEOUT
 ) : JsExtensions(context, engineId) {
+
+    /**
+     * 宿主注入的后台执行器：在带 Rhino Context 的线程里执行 JS 函数。
+     * 插件侧 `ttsrv.runAsync(fn)` 用它做「票据预取」这类不阻塞当前合成的后台任务。
+     * 直接在插件里 `new java.lang.Thread(...)` 调 JS 函数会缺 Context（Rhino 抛
+     * "no Context associated with current thread"），异常又被插件吞掉 → 预取静默失效。
+     */
+    @Transient
+    var asyncRunner: ((org.mozilla.javascript.Function) -> Unit)? = null
+
+    /** 插件侧异步执行入口：`ttsrv.runAsync(function(){ ... })` */
+    fun runAsync(fn: Any?) {
+        val f = fn as? org.mozilla.javascript.Function
+            ?: throw IllegalArgumentException("runAsync 需要传入函数")
+        val runner = asyncRunner ?: throw IllegalStateException("runAsync 未初始化")
+        runner(f)
+    }
 
     companion object {
         private const val TAG = "TtsEngineContext"

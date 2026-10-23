@@ -68,6 +68,32 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
 
     protected var engine: RhinoScriptEngine = RhinoScriptEngine(runtime)
 
+    init {
+        // 给插件一个能安全跑后台 JS 的入口（ttsrv.runAsync）：
+        // 自行 new java.lang.Thread 调 JS 会缺 Rhino Context，异常被插件吞掉后预取静默失效。
+        ttsrv.asyncRunner = { fn ->
+            Thread {
+                val cx = org.mozilla.javascript.Context.enter()
+                try {
+                    cx.optimizationLevel = -1
+                    val scope = engine.scope ?: engine.globalScope
+                    fn.call(cx, scope, scope, emptyArray<Any?>())
+                } catch (t: Throwable) {
+                    PipelineProbe.log(
+                        context, "async.error",
+                        "pluginId" to plugin.pluginId,
+                        "err" to (t.message ?: t.javaClass.simpleName)
+                    )
+                } finally {
+                    org.mozilla.javascript.Context.exit()
+                }
+            }.apply {
+                isDaemon = true
+                name = "ttsrv-async-${plugin.pluginId}"
+            }.start()
+        }
+    }
+
     open protected fun execute(script: String): Any? =
         engine.execute(script.toScriptSource(sourceName = plugin.pluginId))
 
