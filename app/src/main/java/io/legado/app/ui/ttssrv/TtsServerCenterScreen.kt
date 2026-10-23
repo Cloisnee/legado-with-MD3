@@ -477,8 +477,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         stopPlayer()
         val seq = auditionSeq
         auditionJob = scope.launch {
-            // 第一次试听不取消；后续先等旧请求的 cancelAudio 完成，再开新请求，避免取消晚到关掉新流。
-            if (oldPlugin.isNotBlank()) {
+            // 只在「换插件」时取消旧引擎：同插件连点时 cancelAudio 会换新 mMutex 并关流，
+            // 旧协程的清理可能晚到、把新请求的流一起关掉（症状：连点第二个声音无声/0B）。
+            // 同插件的并发已由 SynthProbe 的 synthesisLock 串行化。
+            if (oldPlugin.isNotBlank() && oldPlugin != pluginId) {
                 repo.cancelAudition(oldPlugin)
             }
             val r = repo.auditionDirect(
