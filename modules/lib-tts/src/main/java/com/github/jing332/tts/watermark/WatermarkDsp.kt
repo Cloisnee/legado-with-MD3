@@ -260,6 +260,39 @@ object WatermarkDsp {
         return (dot / sqrt(na * nb)).toFloat()
     }
 
+    /**
+     * 用模板的**后半段**做探针。叠加态时水印前半段常被台词压住，整模板匹配会被稀释到 0.5 以下；
+     * 而尾部通常干净（台词早已说完），0.6s 探针能拿到 0.98+。
+     * @return Match.startSample 已换算成**水印起点**
+     */
+    fun locateByProbe(
+        pcm: FloatArray,
+        template: FloatArray,
+        probeFrom: Int,
+        probeFrames: Int,
+        minScore: Float,
+    ): List<Match> {
+        val frames = pcm.size / HOP
+        if (frames < probeFrames + 8) return emptyList()
+        val m = mel(pcm, 0, frames)
+        val out = ArrayList<Match>()
+        val last = frames - probeFrames
+        for (i in 0..last) {
+            var acc = 0f
+            var a = i * NMEL
+            var b = probeFrom * NMEL
+            for (f in 0 until probeFrames) {
+                for (k in 0 until NMEL) acc += m[a + k] * template[b + k]
+                a += NMEL
+                b += NMEL
+            }
+            acc /= (probeFrames * NMEL)
+            if (acc >= minScore) out.add(Match(acc, i * HOP - probeFrom * HOP))
+        }
+        out.sortByDescending { it.score }
+        return out
+    }
+
     /** 水印时长（样本数） */
     fun watermarkSamples(): Int = WATERMARK_FRAMES * HOP
 

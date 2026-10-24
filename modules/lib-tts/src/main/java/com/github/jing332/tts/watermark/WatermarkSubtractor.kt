@@ -48,7 +48,7 @@ object WatermarkSubtractor {
             while (lag <= 7200) {
                 val s = startSampleHint + lag
                 if (s >= 0 && s + len <= pcm.size) {
-                    val sc = fullNcc(pcm, wm, s)
+                    val sc = maxBlockNcc(pcm, wm, s)
                     if (sc > bestScore) { bestScore = sc; bestLag = lag }
                 }
                 lag += 48
@@ -57,12 +57,14 @@ object WatermarkSubtractor {
             while (l <= bestLag + 48) {
                 val s = startSampleHint + l
                 if (s >= 0 && s + len <= pcm.size) {
-                    val sc = fullNcc(pcm, wm, s)
+                    val sc = maxBlockNcc(pcm, wm, s)
                     if (sc > bestScore) { bestScore = sc; bestLag = l }
                 }
                 l++
             }
             start = startSampleHint + bestLag
+            // 对齐后若连一块都到不了 0.90，说明不是我们这段录音 → 不做
+            if (bestScore < 0.90f) return null
         }
         if (start < 0 || start + len > pcm.size) return null
         val seg = FloatArray(len) { pcm[start + it] }
@@ -72,7 +74,7 @@ object WatermarkSubtractor {
         var cleanFrom = -1
         var i = 0
         while (i + h100 <= len) {
-            if (ncc(seg, wm, i, h100) >= CLEAN_THRESHOLD) {
+            if (nccSame(seg, wm, i, h100) >= CLEAN_THRESHOLD) {
                 cleanFrom = i
                 break
             }
@@ -156,6 +158,34 @@ object WatermarkSubtractor {
         return Result(out, cleanFrom.toFloat() / WatermarkDsp.SAMPLE_RATE, (k * ts.first() + b0).toFloat(), (k * ts.last() + b0).toFloat(), resDb)
     }
 
+    /** 同偏移相关：以 from 为起点、两者同偏移比较（纯净段判定用） */
+    private fun nccSame(x: FloatArray, y: FloatArray, from: Int, n: Int): Float {
+        var mx = 0.0; var my = 0.0
+        for (i in 0 until n) { mx += x[from + i]; my += y[from + i] }
+        mx /= n; my /= n
+        var num = 0.0; var dx = 0.0; var dy = 0.0
+        for (i in 0 until n) {
+            val a = x[from + i] - mx
+            val b = y[from + i] - my
+            num += a * b; dx += a * a; dy += b * b
+        }
+        val d = sqrt(dx * dy)
+        return if (d < 1e-12) 0f else (num / d).toFloat()
+    }
+
+    /** 对齐目标：窗口内**最大** 100 ms 块相关（叠加态下整窗相关会被台词稀释） */
+    private fun maxBlockNcc(x: FloatArray, y: FloatArray, from: Int): Float {
+        val block = 4800
+        var best = -9f
+        var i = 0
+        while (i + block <= y.size) {
+            val v = ncc(x, y, from + i, block)
+            if (v > best) best = v
+            i += block
+        }
+        return best
+    }
+
     /** 整窗归一化相关（对齐用） */
     private fun fullNcc(x: FloatArray, y: FloatArray, from: Int): Float {
         val n = y.size
@@ -175,12 +205,12 @@ object WatermarkSubtractor {
 
     private fun ncc(x: FloatArray, y: FloatArray, from: Int, n: Int): Float {
         var mx = 0.0; var my = 0.0
-        for (i in 0 until n) { mx += x[from + i]; my += y[from + i] }
+        for (i in 0 until n) { mx += x[from + i]; my += y[i] }
         mx /= n; my /= n
         var num = 0.0; var dx = 0.0; var dy = 0.0
         for (i in 0 until n) {
             val a = x[from + i] - mx
-            val b = y[from + i] - my
+            val b = y[i] - my
             num += a * b; dx += a * a; dy += b * b
         }
         val d = sqrt(dx * dy)

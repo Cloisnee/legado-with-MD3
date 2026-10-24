@@ -73,7 +73,9 @@ object AudioWatermarkStripper {
 
         val t0 = android.os.SystemClock.elapsedRealtime()
         // 低阈值先取候选：减法分支需要它（叠加态 mel 只有 0.67~0.78）
-        val matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
+        // 先用"模板最后 0.3s"做探针（叠加态下正文通常已说完，末段最干净），再退回整模板
+        var matches = WatermarkDsp.locateByProbe(decoded.pcm, template, 90, 30, 0.90f)
+        if (matches.isEmpty()) matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
         if (matches.isEmpty()) return Outcome(bytes, false, "未命中水印")
 
         val best = matches[0]
@@ -81,7 +83,10 @@ object AudioWatermarkStripper {
         val bl = WatermarkDsp.bandLimitDelta(decoded.pcm, best.startSample)
 
         // A. 干净拼接（三道闸门全过）→ 切除：无损、不重编码
-        val canCut = best.score >= WatermarkDsp.MATCH_THRESHOLD && bl >= 12f && ec >= 0.65f
+        // 包络 ≥0.90 = 这一窗几乎就是水印本身（台词没压住），此时无需再看窄带 Δ
+        // —— 之前死抠 Δ≥12，把"干净拼接"误送进减法（真机已复现）
+        val canCut = best.score >= WatermarkDsp.MATCH_THRESHOLD &&
+            (ec >= 0.90f || (ec >= 0.65f && bl >= 12f))
         if (!canCut) {
             // B. 叠加态 / 边界情况 → 相减（自带纯净段校验，判错会返回 null，不误伤）
             return subtractPath(context, bytes, decoded, best, ec, bl, logDir, keepRaw)
