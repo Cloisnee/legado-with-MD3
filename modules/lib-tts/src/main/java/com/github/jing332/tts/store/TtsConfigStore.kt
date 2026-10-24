@@ -104,7 +104,12 @@ object TtsConfigStore {
             if (id.isBlank()) {
                 skip++; continue
             }
-            if (ordered.containsKey(id)) replace++ else add++
+            val old = ordered[id]
+            if (old != null) replace++ else add++
+            // 覆盖导入时保留旧 userVars（Bearer/Token 等），避免用户重填凭据
+            if (old != null && !o.has("userVars")) {
+                old.optJSONObject("userVars")?.let { runCatching { o.put("userVars", it) } }
+            }
             ordered[id] = o
         }
         val out = JSONArray()
