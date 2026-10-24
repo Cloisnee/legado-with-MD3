@@ -52,10 +52,10 @@ object AudioWatermarkStripper {
         if (!com.github.jing332.tts.store.TtsConfigStore.declaresWatermark(context, pluginId)) {
             return Outcome(bytes, false, "插件未声明水印，跳过")
         }
-        return strip(bytes, logDir, keepRaw)
+        return strip(context, bytes, logDir, keepRaw)
     }
 
-    fun strip(bytes: ByteArray, logDir: File? = null, keepRaw: Boolean = false): Outcome {
+    fun strip(context: android.content.Context?, bytes: ByteArray, logDir: File? = null, keepRaw: Boolean = false): Outcome {
         val head = Mp3Truncator.head(bytes) ?: return Outcome(bytes, false, "非 MP3，跳过")
         if (bytes.size !in MIN_BYTES..MAX_BYTES) return Outcome(bytes, false, "体积超范围，跳过")
 
@@ -85,7 +85,8 @@ object AudioWatermarkStripper {
         // 叠加态下切会把台词一起切掉，宁可不动。
         val ec = WatermarkDsp.envelopeCorr(decoded.pcm, best.startSample, WatermarkTemplate.ENV)
         if (ec < 0.65f) {
-            return Outcome(bytes, false, "命中 %.3f 但包络相关 %.2f（疑似叠加），跳过".format(best.score, ec))
+            // 叠加态：走"相减 + 谱减"，产出 WAV
+            return subtractPath(context, bytes, decoded, best, ec, bl, logDir, keepRaw)
         }
         val sr = WatermarkDsp.SAMPLE_RATE
         val durSec = decoded.pcm.size.toDouble() / sr
@@ -127,6 +128,76 @@ object AudioWatermarkStripper {
             writeLog(logDir, "$note | Δ$blStr | 包络$ecStr | 候选 ${matches.size} | ${cost}ms$rawTag")
         }
         return Outcome(outBytes, true, note)
+    }
+
+    /** 叠加态：按纯净段拟合增益 → 相减 → 重叠段谱减 → 写 WAV */
+    private fun subtractPath(
+        context: android.content.Context?,
+        bytes: ByteArray,
+        decoded: Decoded,
+        best: WatermarkDsp.Match,
+        ec: Float,
+        bl: Float,
+        logDir: File?,
+        keepRaw: Boolean,
+    ): Outcome {
+        if (context == null) return Outcome(bytes, false, "无 Context，无法加载模板")
+        val wm = runCatching {
+            context.assets.open("watermark_wm.pcm").use { ins ->
+                val b = ins.readBytes()
+                FloatArray(b.size / 2) { i ->
+                    ((((b[i * 2 + 1].toInt() shl 8) or (b[i * 2].toInt() and 0xFF)).toShort())).toFloat() / 32768f
+                }
+            }
+        }.getOrNull() ?: return Outcome(bytes, false, "模板资源缺失")
+
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val r = WatermarkSubtractor.subtract(decoded.pcm, best.startSample, wm)
+            ?: return Outcome(bytes, false, "叠加态：未找到纯净段（命中 %.3f/包络 %.2f），跳过".format(best.score, ec))
+
+        // 截到水印末尾，补 250ms 静音（时长与原始一致）
+        val end = best.startSample + wm.size
+        val tail = WatermarkDsp.SAMPLE_RATE / 4
+        val outPcm = FloatArray(end + tail)
+        System.arraycopy(r.pcm, 0, outPcm, 0, minOf(end, r.pcm.size))
+        val wav = toWav(outPcm, WatermarkDsp.SAMPLE_RATE)
+        val cost = android.os.SystemClock.elapsedRealtime() - t0
+        val note = "叠加相减（增益 %.2f→%.2f, 纯净段 %.2fs, 残余 %.1f dB, %dms）".format(
+            r.gainFrom, r.gainTo, r.cleanFromSec, r.residualDb, cost
+        )
+        runCatching { writeLog(logDir, "$note | 命中 ${"%.3f".format(best.score)} | 包络 $ec | Δ$bl") }
+        if (keepRaw) saveRaw(logDir, bytes)
+        return Outcome(wav, true, note)
+    }
+
+    /** PCM(float) → WAV(16bit) 字节 */
+    private fun toWav(pcm: FloatArray, sr: Int): ByteArray {
+        val dataLen = pcm.size * 2
+        val out = ByteArray(44 + dataLen)
+        fun putInt(o: Int, v: Int) {
+            out[o] = (v and 0xFF).toByte()
+            out[o + 1] = ((v shr 8) and 0xFF).toByte()
+            out[o + 2] = ((v shr 16) and 0xFF).toByte()
+            out[o + 3] = ((v shr 24) and 0xFF).toByte()
+        }
+        fun putShort(o: Int, v: Int) {
+            out[o] = (v and 0xFF).toByte()
+            out[o + 1] = ((v shr 8) and 0xFF).toByte()
+        }
+        putInt(0, 0x46464952); putInt(4, 36 + dataLen); putInt(8, 0x45564157)
+        putInt(12, 0x20746D66); putInt(16, 16); putShort(20, 1); putShort(22, 1)
+        putInt(24, sr); putInt(28, sr * 2); putShort(32, 2); putShort(34, 16)
+        putInt(36, 0x61746164); putInt(40, dataLen)
+        for (i in pcm.indices) {
+            val s = (pcm[i].coerceIn(-1f, 1f) * 32767).toInt()
+            puts(out, 44 + i * 2, s)
+        }
+        return out
+    }
+
+    private fun puts(out: ByteArray, o: Int, v: Int) {
+        out[o] = (v and 0xFF).toByte()
+        out[o + 1] = ((v shr 8) and 0xFF).toByte()
     }
 
     // ---------------- 解码 ----------------
