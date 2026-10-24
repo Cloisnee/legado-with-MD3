@@ -66,6 +66,7 @@ import io.legado.app.data.repository.AiModelEntry
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiModelsConfig
 import io.legado.app.data.repository.AiProvider
+import io.legado.app.data.repository.AiThinkingMode
 import io.legado.app.data.repository.AudioSynthPlatforms
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -87,7 +88,6 @@ import io.legado.app.ui.widget.components.menuItem.RoundDropdownMenuItem
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
-import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.GlassMediumFlexibleTopAppBar
@@ -137,6 +137,19 @@ private val SOUND_CARDS = listOf(
     "synthAmb" to "合成 · 环境声",
 )
 
+/** 关闭思考方式 → 下拉显示文案（顺序与 AiThinkingMode.ALL 一致） */
+private val THINKING_MODE_LABELS = linkedMapOf(
+    AiThinkingMode.AUTO to "自动（按协议）",
+    AiThinkingMode.REASONING_EFFORT_NONE to "reasoning_effort = none",
+    AiThinkingMode.REASONING_EFFORT_MINIMAL to "reasoning_effort = minimal",
+    AiThinkingMode.REASONING_OBJECT_NONE to "reasoning.effort = none",
+    AiThinkingMode.ENABLE_THINKING_FALSE to "enable_thinking = false",
+    AiThinkingMode.THINKING_DISABLED to "thinking = disabled",
+    AiThinkingMode.CHAT_TEMPLATE_KWARGS to "chat_template_kwargs",
+    AiThinkingMode.THINKING_BUDGET_ZERO to "thinking_budget = 0",
+    AiThinkingMode.NONE to "不发送（不干预）",
+)
+
 private fun stageTitle(key: String?): String =
     (STAGE_CARDS + SOUND_CARDS).firstOrNull { it.first == key }?.second ?: "阶段"
 
@@ -182,7 +195,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var qAttempts by remember { mutableStateOf("2") }
     var qValidate by remember { mutableStateOf("2") }
     var qTimeoutSec by remember { mutableStateOf("120") }
-    var qDisableThinking by remember { mutableStateOf(true) }
+    var qThinkingMode by remember { mutableStateOf(AiThinkingMode.AUTO) }
     var showQuotaMenu by remember { mutableStateOf(false) }
     var queueCtx by remember { mutableStateOf<String?>(null) }
     var selQueue by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -666,8 +679,10 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     },
                     onOpenAddSheet = { key -> addStageKey = key },
                     onQueueItemClick = { key, id ->
-                        if (queueCtx == key) {
-                            selQueue = if (id in selQueue) selQueue - id else selQueue + id
+                        if (queueCtx == key && selQueue.isNotEmpty()) {
+                            val next = if (id in selQueue) selQueue - id else selQueue + id
+                            selQueue = next
+                            if (next.isEmpty()) queueCtx = null
                         } else {
                             val c = cfg
                             val m = c?.models?.firstOrNull { it.id == id }
@@ -676,16 +691,18 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                 qAttempts = m.requestAttempts.toString()
                                 qValidate = m.validateRetries.toString()
                                 qTimeoutSec = (m.timeoutMs / 1000L).toString()
-                                qDisableThinking = m.disableThinking
+                                qThinkingMode = m.effectiveThinkingMode
                             }
                         }
                     },
                     onQueueItemLongClick = { key, id ->
-                        if (queueCtx != key) {
+                        if (queueCtx != key || selQueue.isEmpty()) {
                             queueCtx = key
                             selQueue = setOf(id)
                         } else {
-                            selQueue = if (id in selQueue) selQueue - id else selQueue + id
+                            val next = if (id in selQueue) selQueue - id else selQueue + id
+                            selQueue = next
+                            if (next.isEmpty()) queueCtx = null
                         }
                     },
                 )
@@ -988,7 +1005,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                             qAttempts = "2"
                             qValidate = "2"
                             qTimeoutSec = "120"
-                            qDisableThinking = true
+                            qThinkingMode = AiThinkingMode.AUTO
                         },
                     )
                 }
@@ -1042,11 +1059,13 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                         modifier = Modifier.padding(vertical = 4.dp),
                     )
                 } else {
-                    TinySwitchSettingItem(
-                        title = "关闭思考",
-                        description = "开启：按协议附加关闭思考字段（enable_thinking / thinking）；关闭：不干预",
-                        checked = qDisableThinking,
-                        onCheckedChange = { qDisableThinking = it },
+                    TinyDropdownSettingItem(
+                        title = "关闭思考方式",
+                        selectedValue = qThinkingMode,
+                        displayEntries = THINKING_MODE_LABELS.values.toTypedArray(),
+                        entryValues = THINKING_MODE_LABELS.keys.toTypedArray(),
+                        description = "自动：OpenAI 兼容发 enable_thinking；新版网关可改 reasoning_effort；不发送=不干预",
+                        onValueChange = { qThinkingMode = AiThinkingMode.normalize(it) },
                     )
                 }
             }
@@ -1064,7 +1083,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                             val validate = (qValidate.toIntOrNull() ?: 2).coerceIn(0, 5)
                             val timeoutMs = ((qTimeoutSec.toLongOrNull() ?: 120L)
                                 .coerceIn(5L, 600L)) * 1000L
-                            val disableThinking = qDisableThinking
+                            val thinkingMode = AiThinkingMode.normalize(qThinkingMode)
                             quotaTarget = null
                             scope.launch {
                                 val newM = if (isAudio) {
@@ -1074,7 +1093,8 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                         requestAttempts = attempts,
                                         validateRetries = validate,
                                         timeoutMs = timeoutMs,
-                                        disableThinking = disableThinking,
+                                        thinkingMode = thinkingMode,
+                                        disableThinking = thinkingMode != AiThinkingMode.NONE,
                                     )
                                 }
                                 repo.upsertModel(newM)
@@ -1515,7 +1535,7 @@ private fun AllocationPage(
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 28.dp, top = 2.dp, bottom = 2.dp),
+                            .padding(vertical = 2.dp),
                         cornerRadius = 12.dp,
                         containerColor = if (selected) {
                             LegadoTheme.colorScheme.secondaryContainer
@@ -1610,7 +1630,7 @@ private fun AllocationPage(
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 28.dp, top = 2.dp, bottom = 2.dp),
+                            .padding(vertical = 2.dp),
                         cornerRadius = 12.dp,
                         containerColor = if (selected) {
                             LegadoTheme.colorScheme.secondaryContainer

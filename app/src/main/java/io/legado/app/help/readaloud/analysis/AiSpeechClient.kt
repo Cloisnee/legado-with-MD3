@@ -4,6 +4,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelEntry
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiProvider
+import io.legado.app.data.repository.AiThinkingMode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -26,11 +28,10 @@ import java.util.concurrent.TimeUnit
  * B10.4 改造（A2/A3/A6）：
  *  - 流式：一律 `stream=true` 走 SSE 逐行读取（复刻原脚本 readChatStream）；
  *    服务端忽略 stream 返回普通 JSON 时原样回退解析；
- *  - 超时：统一取「AI 分析设置」timeoutSec（30..600，默认 120s），作为流式分片的
- *    间隔读取超时（每片到达即重置计时；不再使用整段 callTimeout），覆盖模型级 timeoutMs；
- *  - 关闭思考：模型开启「关闭思考」时按协议附加关闭字段
- *    （openai = enable_thinking:false + thinking{type:disabled}；claude = thinking{type:disabled}；
- *    google = generationConfig.thinkingConfig.thinkingBudget=0）。
+ *  - 超时：模型级 timeoutMs 与「AI 分析设置」timeoutSec 取更短者，既作分片读超时，
+ *    也作整次请求 callTimeout（防止 SSE keep-alive 让总时长无限拖长）；
+ *  - 关闭思考：按模型 thinkingMode 发送（auto / reasoning_effort / reasoning.effort /
+ *    enable_thinking / thinking / chat_template_kwargs / thinking_budget / 不发送）。
  *
  * B10.5（Q2）：日志统一携带调用来源 [logTag]（如「第1章·第2阶段」「第1章·情绪」），
  *  渲染为 `【AI调用·<logTag>】…`，便于按章节+阶段定位；同步移除无调用方的旧 `complete` 入口。
@@ -48,12 +49,12 @@ class AiSpeechClient(
             .getOrDefault(120)
             .coerceIn(30, 600) * 1000L
 
-    /** 流式客户端：read/write 按「每次读写」计（分片到达即重置计时），无整段 callTimeout */
+    /** 流式客户端：read/write 按「每次读写」计；callTimeout 按「整次请求」计（总超时） */
     private fun streamClient(timeoutMs: Long): OkHttpClient =
         aiModels.http().newBuilder()
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .callTimeout(0L, TimeUnit.MILLISECONDS)
+            .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .build()
 
     /**
@@ -70,19 +71,27 @@ class AiSpeechClient(
         logTag: String,
         validate: (String) -> ValidateOutcome<T>,
     ): T? = withContext(Dispatchers.IO) {
-        val timeoutMs = unifiedTimeoutMs()
+        val globalTimeoutMs = unifiedTimeoutMs()
         for (ref in refs) {
+            // 模型设置里的「超时」与全局「统一超时」取更短者：模型级真正生效，全局仍作硬上限。
+            val timeoutMs = minOf(
+                ref.model.timeoutMs.coerceIn(5_000L, 600_000L),
+                globalTimeoutMs,
+            )
             val respMax = ref.model.requestAttempts.coerceIn(1, 5)
             val validMax = ref.model.validateRetries.coerceIn(0, 5)
             var respFails = 0
             var validFails = 0
             var failHint = ""
             while (true) {
+                AppLog.putAnalysis(
+                    "【AI调用·$logTag】请求 ${ref.model.name}（超时 ${timeoutMs / 1000}s，响应 ${respFails + 1}/$respMax）",
+                )
                 val raw = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs, logTag)
                 if (raw == null) {
                     respFails++
                     AppLog.putAnalysis(
-                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax）",
+                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax，超时 ${timeoutMs / 1000}s）",
                     )
                     if (respFails >= respMax) break
                     delay(2000L * respFails)
@@ -142,7 +151,7 @@ class AiSpeechClient(
                                 JSONObject().apply {
                                     put("temperature", 0)
                                     put("maxOutputTokens", maxTokens)
-                                    if (ref.model.disableThinking) {
+                                    if (ref.model.effectiveThinkingMode != AiThinkingMode.NONE) {
                                         put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
                                     }
                                 },
@@ -162,7 +171,7 @@ class AiSpeechClient(
                             put("temperature", 0)
                             put("system", system)
                             put("stream", true)
-                            if (ref.model.disableThinking) {
+                            if (ref.model.effectiveThinkingMode != AiThinkingMode.NONE) {
                                 put("thinking", JSONObject().put("type", "disabled"))
                             }
                             put(
@@ -189,10 +198,7 @@ class AiSpeechClient(
                                     .put(JSONObject().put("role", "user").put("content", user)),
                             )
                             put("stream", true)
-                            if (ref.model.disableThinking) {
-                                put("enable_thinking", false)
-                                put("thinking", JSONObject().put("type", "disabled"))
-                            }
+                            applyOpenAiThinking(this, ref.model)
                             put("temperature", 0)
                             put("max_tokens", maxTokens)
                         }.toString().toRequestBody(jsonType),
@@ -204,15 +210,43 @@ class AiSpeechClient(
                     val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
                     error("HTTP ${resp.code}: ${errBody.take(160)}")
                 }
-                readStreamBody(protocol, resp)
+                readStreamBody(protocol, resp, timeoutMs)
             }
-        }.getOrElse {
-            AppLog.putAnalysis(
-                "【AI调用·$logTag】异常（${ref.model.name}）: ${it.localizedMessage ?: it.javaClass.simpleName}",
-            )
+        }.getOrElse { e ->
+            if (e is CancellationException) throw e
+            if (e.isTimeoutError()) {
+                AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 超时（${timeoutMs / 1000}s）")
+            } else {
+                AppLog.putAnalysis(
+                    "【AI调用·$logTag】异常（${ref.model.name}）: ${e.localizedMessage ?: e.javaClass.simpleName}",
+                )
+            }
             null
         }
     }
+
+    /** OpenAI 兼容协议的关闭思考字段：按模型设置发送，避免固定发 thinking 被新网关 400。 */
+    private fun applyOpenAiThinking(body: JSONObject, model: AiModelEntry) {
+        when (model.effectiveThinkingMode) {
+            AiThinkingMode.AUTO -> body.put("enable_thinking", false)
+            AiThinkingMode.REASONING_EFFORT_NONE -> body.put("reasoning_effort", "none")
+            AiThinkingMode.REASONING_EFFORT_MINIMAL -> body.put("reasoning_effort", "minimal")
+            AiThinkingMode.REASONING_OBJECT_NONE ->
+                body.put("reasoning", JSONObject().put("effort", "none"))
+            AiThinkingMode.ENABLE_THINKING_FALSE -> body.put("enable_thinking", false)
+            AiThinkingMode.THINKING_DISABLED ->
+                body.put("thinking", JSONObject().put("type", "disabled"))
+            AiThinkingMode.CHAT_TEMPLATE_KWARGS ->
+                body.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
+            AiThinkingMode.THINKING_BUDGET_ZERO -> body.put("thinking_budget", 0)
+            AiThinkingMode.NONE -> Unit
+        }
+    }
+
+    private fun Throwable.isTimeoutError(): Boolean =
+        this is java.io.InterruptedIOException ||
+            this is java.net.SocketTimeoutException ||
+            this is java.util.concurrent.TimeoutException
 
     /**
      * 逐行读取响应体（复刻原脚本 readChatStream）：
@@ -220,13 +254,18 @@ class AiSpeechClient(
      *    google=候选 parts 文本），分片持续到达即不断读（超时按片重置）；
      *  - 服务端忽略 stream 返回普通 JSON：整段文本走 [extractContent] 解析。
      */
-    private fun readStreamBody(protocol: String, resp: Response): String? {
+    private fun readStreamBody(protocol: String, resp: Response, timeoutMs: Long): String? {
         val source = resp.body?.source() ?: return null
+        val deadline = System.currentTimeMillis() + timeoutMs
         var mode = -1 // -1 未知 / 0 普通JSON / 1 SSE
         val plain = StringBuilder()
         val sse = StringBuilder()
         var errMsg: String? = null
         while (true) {
+            // callTimeout 之外的兜底：SSE keep-alive 持续来行时也要有总时限。
+            if (System.currentTimeMillis() > deadline) {
+                throw java.io.InterruptedIOException("timeout")
+            }
             val line = source.readUtf8Line() ?: break
             if (line.isBlank()) continue
             when {

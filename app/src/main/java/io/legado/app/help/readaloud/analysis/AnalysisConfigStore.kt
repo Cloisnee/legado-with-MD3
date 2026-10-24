@@ -10,7 +10,7 @@ import java.io.File
 /**
  * 分析配置（提示词/上下文参数）· 暴露给用户随时修改：`_store/analysis_config.json`。
  *  - stage1Prompt/stage2Prompt/stage4Prompt/emotionPrompt/audioDirectorPrompt：提示词（默认=内置提示词；留空 = 用内置默认，即朗读脚本同款）；
- *  - timeoutSec：AI 分析统一超时（B10.4·A3，30..600s，默认 120；覆盖模型级 timeoutMs）；
+ *  - timeoutSec：AI 分析全局超时上限（B10.4·A3，30..600s，默认 120；与模型级 timeoutMs 取更短者）；
  *  - waitAnalysisSec：等分析就绪最长等待（B10.4·A4，30..600s，默认 600）；
  *  - fallbackDefaultVoice：分析未就绪先用默认声线出声（B10.4·S1，默认 false；false=等待分析就绪后再出声）；
  *  - prevLimit/nextLimit：前情提要/后续剧情取文上限（0..3000 字；按完整段落取，不截断段落）；

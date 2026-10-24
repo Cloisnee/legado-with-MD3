@@ -18,11 +18,12 @@ import java.io.File
  *
  * 结构（_store/ai_models.json）：
  *  providers：[{id,name,baseUrl,apiKey,protocol,enabled}]
- *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs,disableThinking}]
+ *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs,disableThinking,thinkingMode}]
  *  stages   ：{stage1:[modelId...], stage2:[...], stage4:[...], emotion:[...]}
  *   - requestAttempts：响应尝试次数（超时/HTTP错/非JSON → 算一次），1=只试一次
  *   - validateRetries：内容校验重试次数（JSON合法但字段不符 → 算一次）
- *   - disableThinking：关闭思考（B10.4·A6，默认 true=按协议发送关闭字段；false=不干预）
+ *   - disableThinking：旧字段（兼容历史配置）；新逻辑见 thinkingMode
+ *   - thinkingMode：关闭思考发送方式（auto/reasoning_effort…/none；空=按 disableThinking 推导）
  */
 data class AiProvider(
     val id: String,
@@ -37,6 +38,43 @@ data class AiProvider(
     val platform: String = "",
 )
 
+/**
+ * 「关闭思考」发送方式。不同 OpenAI 兼容网关支持的字段不同，固定发某一种会 400：
+ *  - auto：按协议；OpenAI 兼容发 enable_thinking=false（不再附带 thinking，避免新版网关拒绝）
+ *  - reasoning_effort_none/minimal：OpenAI 新版 reasoning_effort 字段
+ *  - reasoning_object_none：部分网关的 reasoning:{effort:"none"}
+ *  - enable_thinking_false / thinking_disabled / chat_template_kwargs / thinking_budget_zero：各厂商兼容写法
+ *  - none：不发送任何关闭字段（不干预）
+ *
+ * 空值（旧配置）按 disableThinking 推导：true→auto，false→none。
+ */
+object AiThinkingMode {
+    const val AUTO = "auto"
+    const val NONE = "none"
+    const val REASONING_EFFORT_NONE = "reasoning_effort_none"
+    const val REASONING_EFFORT_MINIMAL = "reasoning_effort_minimal"
+    const val REASONING_OBJECT_NONE = "reasoning_object_none"
+    const val ENABLE_THINKING_FALSE = "enable_thinking_false"
+    const val THINKING_DISABLED = "thinking_disabled"
+    const val CHAT_TEMPLATE_KWARGS = "chat_template_kwargs"
+    const val THINKING_BUDGET_ZERO = "thinking_budget_zero"
+
+    val ALL = listOf(
+        AUTO,
+        REASONING_EFFORT_NONE,
+        REASONING_EFFORT_MINIMAL,
+        REASONING_OBJECT_NONE,
+        ENABLE_THINKING_FALSE,
+        THINKING_DISABLED,
+        CHAT_TEMPLATE_KWARGS,
+        THINKING_BUDGET_ZERO,
+        NONE,
+    )
+
+    fun normalize(value: String?): String =
+        value?.trim().orEmpty().takeIf { it in ALL } ?: AUTO
+}
+
 data class AiModelEntry(
     val id: String,
     val providerId: String,
@@ -46,12 +84,23 @@ data class AiModelEntry(
     val requestAttempts: Int = 2,
     val validateRetries: Int = 2,
     val timeoutMs: Long = 120_000L,
+    /** 旧字段：仅用于兼容历史配置；新逻辑看 [thinkingMode]（空则按此推导） */
     val disableThinking: Boolean = true,
+    /** 关闭思考发送方式；空 = 旧配置，按 disableThinking 推导 */
+    val thinkingMode: String = "",
     val testOk: Boolean? = null,
     val testLatencyMs: Long? = null,
     val testMessage: String? = null,
     val testAt: Long = 0L,
-)
+) {
+    /** 实际生效的关闭思考方式（兼容旧配置） */
+    val effectiveThinkingMode: String
+        get() = AiThinkingMode.normalize(
+            thinkingMode.ifBlank {
+                if (disableThinking) AiThinkingMode.AUTO else AiThinkingMode.NONE
+            }
+        )
+}
 
 data class AiStageAssignments(
     val stage1: List<String> = emptyList(),
@@ -190,6 +239,7 @@ class AiModelRepository(private val app: Application) {
                         validateRetries = m.optInt("validateRetries", 2).coerceIn(0, 5),
                         timeoutMs = m.optLong("timeoutMs", 120_000L).coerceIn(5_000L, 600_000L),
                         disableThinking = m.optBoolean("disableThinking", true),
+                        thinkingMode = m.optString("thinkingMode", "").trim(),
                         testOk = if (m.has("testOk") && !m.isNull("testOk")) {
                             m.optBoolean("testOk")
                         } else {
@@ -254,7 +304,8 @@ class AiModelRepository(private val app: Application) {
                     put("requestAttempts", m.requestAttempts)
                     put("validateRetries", m.validateRetries)
                     put("timeoutMs", m.timeoutMs)
-                    put("disableThinking", m.disableThinking)
+                    put("disableThinking", m.effectiveThinkingMode != AiThinkingMode.NONE)
+                    put("thinkingMode", m.effectiveThinkingMode)
                     put("testOk", m.testOk ?: JSONObject.NULL)
                     put("testLatencyMs", m.testLatencyMs ?: JSONObject.NULL)
                     put("testMessage", m.testMessage ?: JSONObject.NULL)

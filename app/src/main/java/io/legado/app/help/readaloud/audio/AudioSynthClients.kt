@@ -49,6 +49,15 @@ object AudioSynthClients {
             .build()
     }
 
+    /** 按模型设置生成单次请求客户端：模型「超时」用于每次 HTTP 请求（音乐轮询总时限仍是 MUSIC_TIMEOUT_MS）。 */
+    private fun clientFor(model: AiModelEntry): OkHttpClient {
+        val ms = model.timeoutMs.coerceIn(5_000L, 600_000L)
+        return http.newBuilder()
+            .callTimeout(ms, TimeUnit.MILLISECONDS)
+            .readTimeout(ms, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
     /** 按平台生成一条音频；成功返回 mp3 字节。desc=Ai 导演生成描述（提示词 desc 优先，见 [AudioPrompts]） */
     suspend fun generate(
         provider: AiProvider,
@@ -65,26 +74,27 @@ object AudioSynthClients {
             require(base.isNotBlank()) { "BaseUrl 为空" }
             require(provider.apiKey.isNotBlank()) { "未填写 API Key" }
             val prompt = AudioPrompts.of(lane, keyword, desc)
+            val client = clientFor(model)
             when (platform) {
                 AudioSynthPlatforms.PLATFORM_STEPFUN ->
                     if (isMusicModel(model.modelId)) {
-                        stepfunMusic(base, provider.apiKey, model, prompt)
+                        stepfunMusic(base, provider.apiKey, model, prompt, client)
                     } else {
-                        stepfunGen(base, provider.apiKey, model, prompt)
+                        stepfunGen(base, provider.apiKey, model, prompt, client)
                     }
 
                 AudioSynthPlatforms.PLATFORM_SENSEAUDIO -> when {
                     isMusicModel(model.modelId) ->
-                        senseMusic(base, provider.apiKey, model, prompt)
+                        senseMusic(base, provider.apiKey, model, prompt, client)
 
                     isAudioGenModel(model.modelId) ->
-                        senseAudioGenerate(base, provider.apiKey, model, prompt)
+                        senseAudioGenerate(base, provider.apiKey, model, prompt, client)
 
-                    else -> senseSfx(base, provider.apiKey, model, lane, keyword, desc)
+                    else -> senseSfx(base, provider.apiKey, model, lane, keyword, client, desc)
                 }
 
                 AudioSynthPlatforms.PLATFORM_ELEVENLABS ->
-                    elevenLabsSfx(base, provider.apiKey, model, prompt)
+                    elevenLabsSfx(base, provider.apiKey, model, prompt, client)
 
                 else -> error("自定义平台暂不支持自动生成")
             }
@@ -106,6 +116,7 @@ object AudioSynthClients {
         key: String,
         model: AiModelEntry,
         prompt: String,
+        client: OkHttpClient,
     ): GenResult {
         val body = JSONObject().apply {
             put("model", model.modelId)
@@ -119,7 +130,7 @@ object AudioSynthClients {
             .addHeader("Authorization", "Bearer $key")
             .post(body.toRequestBody(JSON_TYPE))
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         val ctype = resp.header("Content-Type").orEmpty()
         if (ctype.contains("json", ignoreCase = true)) {
             val text = resp.body?.string().orEmpty()
@@ -129,7 +140,7 @@ object AudioSynthClients {
                     .ifBlank { o.optString("url") }
             }
             require(url.isNotBlank()) { "返回 JSON 但无音频 URL：${text.take(160)}" }
-            return downloadAudio(url)
+            return downloadAudio(url, client)
         }
         if (!resp.isSuccessful) {
             val text = resp.body?.string().orEmpty()
@@ -145,6 +156,7 @@ object AudioSynthClients {
         key: String,
         model: AiModelEntry,
         prompt: String,
+        client: OkHttpClient,
     ): GenResult {
         val started = System.currentTimeMillis()
         val submitBody = JSONObject().apply {
@@ -159,7 +171,7 @@ object AudioSynthClients {
             .addHeader("Authorization", "Bearer $key")
             .post(submitBody.toRequestBody(JSON_TYPE))
             .build()
-        val submitResp = http.newCall(submitReq).await()
+        val submitResp = client.newCall(submitReq).await()
         val submitText = submitResp.body?.string().orEmpty()
         require(submitResp.isSuccessful) { "submit HTTP ${submitResp.code}: ${submitText.take(160)}" }
         val taskId = JSONObject(submitText).let { o ->
@@ -172,7 +184,7 @@ object AudioSynthClients {
         while (System.currentTimeMillis() < deadline) {
             delay(MUSIC_POLL_MS)
             val poll = try {
-                queryMusicOnce(base, key, taskId)
+                queryMusicOnce(base, key, taskId, client)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -194,14 +206,19 @@ object AudioSynthClients {
 
     private data class MusicPoll(val status: String, val audioB64: String, val raw: String)
 
-    private suspend fun queryMusicOnce(base: String, key: String, taskId: String): MusicPoll {
+    private suspend fun queryMusicOnce(
+        base: String,
+        key: String,
+        taskId: String,
+        client: OkHttpClient,
+    ): MusicPoll {
         val body = JSONObject().put("task_id", taskId).toString()
         val req = Request.Builder()
             .url(AudioSynthPlatforms.endpoint(base, "/v1/audio/music/query"))
             .addHeader("Authorization", "Bearer $key")
             .post(body.toRequestBody(JSON_TYPE))
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         val text = resp.body?.string().orEmpty()
         require(resp.isSuccessful) { "query HTTP ${resp.code}: ${text.take(160)}" }
         val o = JSONObject(text)
@@ -220,6 +237,7 @@ object AudioSynthClients {
         model: AiModelEntry,
         lane: SynthLane,
         keyword: String,
+        client: OkHttpClient,
         desc: String = "",
     ): GenResult {
         val body = JSONObject().apply {
@@ -236,7 +254,7 @@ object AudioSynthClients {
             .addHeader("Authorization", "Bearer $key")
             .post(body.toRequestBody(JSON_TYPE))
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         val ctype = resp.header("Content-Type").orEmpty()
         if (ctype.contains("audio", ignoreCase = true)) {
             require(resp.isSuccessful) { "HTTP ${resp.code}" }
@@ -246,7 +264,7 @@ object AudioSynthClients {
         }
         val text = resp.body?.string().orEmpty()
         require(resp.isSuccessful) { "HTTP ${resp.code}: ${text.take(160)}" }
-        return extractAudioFromJson(JSONObject(text), text)
+        return extractAudioFromJson(JSONObject(text), text, client)
     }
 
     /** SenseAudio A1（/v1/audio/generate）：prompt 全轨编排，强制 mp3 输出；计费 ≈0.017 元/秒 */
@@ -255,6 +273,7 @@ object AudioSynthClients {
         key: String,
         model: AiModelEntry,
         prompt: String,
+        client: OkHttpClient,
     ): GenResult {
         val body = JSONObject().apply {
             put("model", model.modelId)
@@ -267,10 +286,10 @@ object AudioSynthClients {
             .addHeader("Authorization", "Bearer $key")
             .post(body.toRequestBody(JSON_TYPE))
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         val text = resp.body?.string().orEmpty()
         require(resp.isSuccessful) { "HTTP ${resp.code}: ${text.take(160)}" }
-        return extractAudioFromJson(JSONObject(text), text)
+        return extractAudioFromJson(JSONObject(text), text, client)
     }
 
     /** SenseAudio Music 2.0（异步）：/v2/music/song/create → 轮询 /v1/music/song/pending；instrumental 纯器乐 */
@@ -279,6 +298,7 @@ object AudioSynthClients {
         key: String,
         model: AiModelEntry,
         prompt: String,
+        client: OkHttpClient,
     ): GenResult {
         val started = System.currentTimeMillis()
         val submitBody = JSONObject().apply {
@@ -292,7 +312,7 @@ object AudioSynthClients {
             .addHeader("Authorization", "Bearer $key")
             .post(submitBody.toRequestBody(JSON_TYPE))
             .build()
-        val submitResp = http.newCall(submitReq).await()
+        val submitResp = client.newCall(submitReq).await()
         val submitText = submitResp.body?.string().orEmpty()
         require(submitResp.isSuccessful) { "submit HTTP ${submitResp.code}: ${submitText.take(160)}" }
         val taskId = JSONObject(submitText).let { o ->
@@ -305,7 +325,7 @@ object AudioSynthClients {
         while (System.currentTimeMillis() < deadline) {
             delay(MUSIC_POLL_MS)
             val poll = try {
-                querySenseMusicOnce(base, key, taskId)
+                querySenseMusicOnce(base, key, taskId, client)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -315,7 +335,7 @@ object AudioSynthClients {
             }
             consecutiveFails = 0
             if (poll.url.isNotBlank()) {
-                val gen = downloadAudio(poll.url)
+                val gen = downloadAudio(poll.url, client)
                 return GenResult(gen.bytes, "异步 ${(System.currentTimeMillis() - started) / 1000}s · ${gen.detail}")
             }
             if (poll.status.equals("FAILED", true) || poll.status.equals("ERROR", true)) {
@@ -327,13 +347,18 @@ object AudioSynthClients {
 
     private data class SenseMusicPoll(val status: String, val url: String, val failReason: String, val raw: String)
 
-    private suspend fun querySenseMusicOnce(base: String, key: String, taskId: String): SenseMusicPoll {
+    private suspend fun querySenseMusicOnce(
+        base: String,
+        key: String,
+        taskId: String,
+        client: OkHttpClient,
+    ): SenseMusicPoll {
         val req = Request.Builder()
             .url(AudioSynthPlatforms.endpoint(base, "/v1/music/song/pending/$taskId"))
             .addHeader("Authorization", "Bearer $key")
             .get()
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         val text = resp.body?.string().orEmpty()
         require(resp.isSuccessful) { "query HTTP ${resp.code}: ${text.take(160)}" }
         val o = JSONObject(text)
@@ -354,6 +379,7 @@ object AudioSynthClients {
         key: String,
         model: AiModelEntry,
         prompt: String,
+        client: OkHttpClient,
     ): GenResult {
         val body = JSONObject().apply {
             put("text", prompt)
@@ -364,7 +390,7 @@ object AudioSynthClients {
             .addHeader("xi-api-key", key)
             .post(body.toRequestBody(JSON_TYPE))
             .build()
-        val resp = http.newCall(req).await()
+        val resp = client.newCall(req).await()
         if (!resp.isSuccessful) {
             error("HTTP ${resp.code}: ${resp.body?.string()?.take(160).orEmpty()}")
         }
@@ -376,7 +402,7 @@ object AudioSynthClients {
     // ------------------------------------------------------------ 工具
 
     /** 兜底解析：从 JSON 响应中尽量提取音频（base64 字段 / 下载 URL；兼容 items[]、response.data[] 等结构） */
-    private suspend fun extractAudioFromJson(root: JSONObject, raw: String): GenResult {
+    private suspend fun extractAudioFromJson(root: JSONObject, raw: String, client: OkHttpClient): GenResult {
         val data = root.optJSONObject("data")
         val candidates = listOfNotNull(
             root,
@@ -401,7 +427,7 @@ object AudioSynthClients {
             }
         }
         if (!url.isNullOrBlank()) {
-            return downloadAudio(url)
+            return downloadAudio(url, client)
         }
         error("无法解析音频响应：${raw.take(200)}")
     }
@@ -415,8 +441,8 @@ object AudioSynthClients {
         return optJSONObject(0)
     }
 
-    private suspend fun downloadAudio(url: String): GenResult {
-        val resp = http.newCall(Request.Builder().url(url).build()).await()
+    private suspend fun downloadAudio(url: String, client: OkHttpClient): GenResult {
+        val resp = client.newCall(Request.Builder().url(url).build()).await()
         require(resp.isSuccessful) { "音频下载失败 HTTP ${resp.code}" }
         val bytes = resp.body?.bytes() ?: ByteArray(0)
         require(bytes.isNotEmpty()) { "音频下载为空" }

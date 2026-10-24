@@ -136,7 +136,7 @@ fun AiAnalysisSettingsScreen(
                 SplicedColumnGroup(title = "请求") {
                     TinyClickableSettingItem(
                         title = "统一超时",
-                        description = "所有阶段 AI 分析请求统一使用（覆盖模型级超时）· ${cfg.timeoutSec} 秒",
+                        description = "全局超时上限；与模型设置里的超时取更短者 · ${cfg.timeoutSec} 秒",
                         onClick = { showTimeout = true },
                     )
                     TinyClickableSettingItem(
@@ -328,7 +328,7 @@ fun AiAnalysisSettingsScreen(
     ReadAloudNumberConfigSheet(
         show = showTimeout,
         title = "统一超时",
-        description = "所有阶段的 AI 分析请求统一使用（覆盖模型级超时）",
+        description = "全局超时上限；与模型设置里的超时取更短者",
         value = cfg.timeoutSec,
         defaultValue = 120,
         valueRange = 30f..600f,
