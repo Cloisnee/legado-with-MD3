@@ -22,7 +22,6 @@ import io.legado.app.data.entities.HighlightRule
 import io.legado.app.data.entities.HighlightTagRule
 import io.legado.app.data.entities.HomepageCustomSet
 import io.legado.app.data.entities.HomepageModule
-import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.KeyboardAssist
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.entities.RssSource
@@ -231,14 +230,7 @@ object Restore : KoinComponent {
                 }
             }
         }
-        if (BackupConfig.dbIsNotIgnored("httpTTS")) {
-            fileToListT<HttpTTS>(path, "httpTTS.json")?.let {
-                try {
-                    appDb.httpTTSDao.insert(*it.toTypedArray())
-                } catch (_: SQLiteConstraintException) {
-                }
-            }
-        }
+        // 在线朗读引擎已拔除：旧备份中对应的引擎 json 忽略不恢复（表数据留在库中不读不写）。
         if (BackupConfig.dbIsNotIgnored("dictRule")) {
             fileToListT<DictRule>(path, "dictRule.json")?.let {
                 try {

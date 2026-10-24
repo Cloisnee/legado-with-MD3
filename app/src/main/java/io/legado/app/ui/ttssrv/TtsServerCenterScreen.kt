@@ -1,12 +1,18 @@
 package io.legado.app.ui.ttssrv
 
+import android.app.Activity
 import android.app.Application
+import android.net.Uri
 import android.widget.LinearLayout
-import android.content.ClipData
-import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,17 +32,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -55,16 +60,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material3.Surface
 import io.legado.app.R
-import io.legado.app.data.entities.HttpTTS
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
 import io.legado.app.data.repository.AuditionOutcome
@@ -104,13 +107,13 @@ import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinyDropdownSettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySettingItem
 import io.legado.app.ui.widget.components.settingItem.TinySliderSettingItem
-import io.legado.app.ui.widget.components.settingItem.TinySwitchSettingItem
 import io.legado.app.ui.widget.components.tabRow.AppTabRow
 import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
-import io.legado.app.utils.GSON
+import io.legado.app.utils.sendToClip
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -199,13 +202,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var detailText by remember { mutableStateOf<String?>(null) }
 
     var showEngineSheet by remember { mutableStateOf(false) }
-    var engineList by remember { mutableStateOf<List<HttpTTS>>(emptyList()) }
-    var engineEditor by remember { mutableStateOf<HttpTTS?>(null) }
-    var isNewEngine by remember { mutableStateOf(false) }
-    var engineMenuOpen by remember { mutableStateOf(false) }
-    var showNetImport by remember { mutableStateOf(false) }
-    var netImportUrl by remember { mutableStateOf("") }
-    var showDeleteEngine by remember { mutableStateOf<HttpTTS?>(null) }
 
     var showDeleteEntry by remember { mutableStateOf<EntryRow?>(null) }
     var renameTarget by remember { mutableStateOf<EntryRow?>(null) }
@@ -247,6 +243,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var voicePickerSheet by remember { mutableStateOf(false) }
     var voiceQuery by remember { mutableStateOf("") }
     var voiceList by remember { mutableStateOf<List<VoiceOption>>(emptyList()) }
+    var voiceLoading by remember { mutableStateOf(false) }
+    var voiceLoadedKey by remember { mutableStateOf("") }
+    var nePreparing by remember { mutableStateOf(false) }
+    // 每次在插件选择器里选中插件都递增：同插件二次进入也能重跑加载 effect。
+    var nePluginSessionTick by remember { mutableStateOf(0) }
     var grpNameDlgTarget by remember { mutableStateOf<GroupNameDlgTarget?>(null) }
     var grpNameInput by remember { mutableStateOf("") }
     var neCat2 by remember { mutableStateOf("") }
@@ -279,14 +280,24 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     var edUiLayout by remember { mutableStateOf<LinearLayout?>(null) }
     var edUiEmpty by remember { mutableStateOf(true) }
     var edTempSource by remember { mutableStateOf<PluginTtsSource?>(null) }
+    var pendingLoginKey by remember { mutableStateOf<String?>(null) }
+    var pendingLoginPluginId by remember { mutableStateOf<String?>(null) }
+    var loginDebug by remember { mutableStateOf<String?>(null) }
     var varDlgKey by remember { mutableStateOf<String?>(null) }
     var varDlgInput by remember { mutableStateOf("") }
     var renameGroupTarget by remember { mutableStateOf<String?>(null) }
     var renameGroupText by remember { mutableStateOf("") }
 
-    val player = remember { MediaPlayer() }
-    DisposableEffect(player) {
-        onDispose { runCatching { player.release() } }
+    var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    var auditionJob by remember { mutableStateOf<Job?>(null) }
+    var auditionSeq by remember { mutableStateOf(0) }
+    var auditionVoiceId by remember { mutableStateOf<String?>(null) }
+    var auditionPluginId by remember { mutableStateOf("") }
+    DisposableEffect(Unit) {
+        onDispose {
+            player?.let { runCatching { it.release() } }
+            player = null
+        }
     }
 
     fun reload() {
@@ -294,7 +305,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
             plugins = repo.loadPlugins()
             groups = repo.loadGroups()
             engineValue = repo.currentEngineValue()
-            engineList = repo.loadHttpTtsList()
             engineLoaded = true
         }
     }
@@ -396,15 +406,38 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         if (selEntries.isEmpty()) selGroupContext = null
     }
 
-    fun play(path: String) {
-        runCatching {
-            player.reset()
-            player.setDataSource(path)
-            player.prepare()
-            player.start()
-        }.onFailure {
-            context.toastOnUi("播放失败：${it.message.orEmpty()}")
+    fun stopPlayer() {
+        player?.let { p ->
+            runCatching { p.stop() }
+            runCatching { p.release() }
         }
+        player = null
+    }
+
+    fun play(path: String) {
+        stopPlayer()
+        val p = ExoPlayer.Builder(context).build()
+        player = p
+        p.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                context.toastOnUi("播放失败：${error.message.orEmpty()}")
+                stopPlayer()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) stopPlayer()
+            }
+        })
+        p.setPlaybackParameters(
+            PlaybackParameters(
+                neSpeed.coerceIn(0.25f, 4f),
+                nePitch.coerceIn(0.25f, 4f),
+            )
+        )
+        p.volume = neVolume.coerceIn(0f, 1f)
+        p.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path))))
+        p.prepare()
+        p.play()
     }
 
     fun handleAuditionResult(r: AuditionOutcome) {
@@ -421,6 +454,44 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     fun effectiveDataParams(): Map<String, String> {
         val src = pluginTempSource
         return if (src != null && !pluginUiEmpty && src.data.isNotEmpty()) src.data else emptyMap()
+    }
+
+    fun stopAudition(pluginId: String? = null) {
+        auditionSeq++
+        auditionJob?.cancel()
+        auditionJob = null
+        auditionVoiceId = null
+        stopPlayer()
+        if (!pluginId.isNullOrBlank()) {
+            scope.launch { repo.cancelAudition(pluginId) }
+        }
+    }
+
+    fun startAudition(pluginId: String, locale: String, voice: String, text: String) {
+        val oldPlugin = auditionPluginId
+        auditionSeq++
+        auditionJob?.cancel()
+        auditionJob = null
+        auditionVoiceId = voice
+        auditionPluginId = pluginId
+        stopPlayer()
+        val seq = auditionSeq
+        auditionJob = scope.launch {
+            // 只在「换插件」时取消旧引擎：同插件连点时 cancelAudio 会换新 mMutex 并关流，
+            // 旧协程的清理可能晚到、把新请求的流一起关掉（症状：连点第二个声音无声/0B）。
+            // 同插件的并发已由 SynthProbe 的 synthesisLock 串行化。
+            if (oldPlugin.isNotBlank() && oldPlugin != pluginId) {
+                repo.cancelAudition(oldPlugin)
+            }
+            val r = repo.auditionDirect(
+                pluginId, locale, voice, text,
+                neSpeed, neVolume, nePitch, effectiveDataParams(),
+            )
+            if (seq == auditionSeq) {
+                auditionVoiceId = null
+                handleAuditionResult(r)
+            }
+        }
     }
 
     fun auditionEntry(e: EntryRow) {
@@ -518,8 +589,15 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 新建条目：插件变化 → 语言列表
-    LaunchedEffect(nePluginId) {
+    // 新建条目：插件变化 → 先清旧状态，再加载语言列表（只保留这一个 effect，避免两个 effect 互相清空）
+    LaunchedEffect(nePluginId, nePluginSessionTick) {
+        neLocales = emptyList()
+        neVoiceSel = emptyList()
+        voiceList = emptyList()
+        voiceLoadedKey = ""
+        voiceLoading = false
+        nePreparing = nePluginId.isNotBlank()
+        neLocale = ""
         if (nePluginId.isBlank()) return@LaunchedEffect
         neLocales = repo.loadLocales(nePluginId).ifEmpty {
             listOf(
@@ -535,7 +613,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     }
 
     // 新建条目：插件 UI 会话（补丁版添加插件TTS同款：onLoadData → onLoadUI 到真实容器）
-    LaunchedEffect(nePluginId) {
+    LaunchedEffect(nePluginId, nePluginSessionTick) {
         pluginUiEngine = null
         pluginUiLayout = null
         pluginUiEmpty = true
@@ -597,10 +675,26 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // 声音列表加载
-    LaunchedEffect(voicePickerSheet, nePluginId, neLocale) {
-        if (voicePickerSheet && nePluginId.isNotBlank()) {
-            voiceList = repo.loadVoices(nePluginId, neLocale)
+    // 新建条目后一次加载语言/声音；缓存起来，打开声音栏不再二次加载。
+    LaunchedEffect(nePluginId, neLocale, neLocales) {
+        if (nePluginId.isBlank() || neLocales.isEmpty()) return@LaunchedEffect
+        val key = "$nePluginId|$neLocale"
+        if (key == voiceLoadedKey) return@LaunchedEffect
+        val pid = nePluginId
+        val loc = neLocale
+        nePreparing = true
+        scope.launch {
+            voiceLoading = true
+            try {
+                val list = repo.loadVoices(pid, loc)
+                if (list.isNotEmpty()) {
+                    voiceList = list
+                    voiceLoadedKey = key
+                }
+            } finally {
+                voiceLoading = false
+                nePreparing = false
+            }
         }
     }
 
@@ -671,43 +765,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     context.toastOnUi(msg)
                     reload()
                 }
-            }
-        }
-    }
-
-    val engineImportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val text = runCatching {
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)
-                            ?.bufferedReader()?.use { it.readText() }
-                    }
-                }.getOrNull()
-                if (text.isNullOrBlank()) {
-                    context.toastOnUi("读取文件为空或失败")
-                } else {
-                    context.toastOnUi(repo.importHttpTts(text))
-                    reload()
-                }
-            }
-        }
-    }
-
-    val engineExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val json = repo.exportHttpTtsJson()
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(json.toByteArray())
-                    }
-                }
-                context.toastOnUi("导出成功")
             }
         }
     }
@@ -1471,7 +1528,10 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppModalBottomSheet(
         animateContentSize = false,
         show = neStep2,
-        onDismissRequest = { neStep2 = false },
+        onDismissRequest = {
+            stopAudition(nePluginId)
+            neStep2 = false
+        },
         title = "新建条目 · ${nePluginName}",
         endAction = {
             MediumTonalButton(
@@ -1668,36 +1728,71 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                     )
                 }
             }
-            SectionHint("— 音色基础信息 —")
+            SectionHint("— 试听文本 —")
             SplicedColumnGroup {
-                TinyDropdownSettingItem(
-                    title = "语言",
-                    selectedValue = neLocale,
-                    displayEntries = neLocales.map { it.name }.toTypedArray(),
-                    entryValues = neLocales.map { it.id }.toTypedArray(),
-                    onValueChange = {
-                        neLocale = it
-                        neVoiceSel = emptyList()
-                    },
-                )
-                TinyClickableSettingItem(
-                    title = "声音",
-                    description = if (neVoiceSel.isEmpty()) {
-                        "未选择（点按选择：可多选 + 试听）"
-                    } else {
-                        "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
-                    },
-                    onClick = {
-                        voiceQuery = ""
-                        voicePickerSheet = true
-                    },
-                )
                 TinyClickableSettingItem(
                     title = "试听文本",
                     description = neAuditionText,
                     onClick = {
                         neTextInput = neAuditionText
                         neTextDlg = true
+                    },
+                )
+            }
+            SectionHint("— 音色基础信息 —")
+            if (nePreparing) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    AppText(
+                        text = "正在加载语言和声音…",
+                        style = LegadoTheme.typography.bodySmall,
+                    )
+                }
+            }
+            SplicedColumnGroup {
+                if (nePreparing) {
+                    TinyClickableSettingItem(
+                        title = "语言",
+                        description = "加载中…",
+                        onClick = {},
+                    )
+                } else {
+                    TinyDropdownSettingItem(
+                        title = "语言",
+                        selectedValue = neLocale,
+                        displayEntries = neLocales.map { it.name }.toTypedArray(),
+                        entryValues = neLocales.map { it.id }.toTypedArray(),
+                        onValueChange = {
+                            neLocale = it
+                            neVoiceSel = emptyList()
+                        },
+                    )
+                }
+                TinyClickableSettingItem(
+                    title = "声音",
+                    description = when {
+                        nePreparing -> "加载中…"
+                        neVoiceSel.isEmpty() -> if (voiceList.isEmpty()) {
+                            "未选择（点按选择：可多选 + 试听）"
+                        } else {
+                            "已加载 ${voiceList.size} 个，点按选择"
+                        }
+                        else -> "已选 ${neVoiceSel.size} 个：" + neVoiceSel.joinToString("、") { it.name }
+                    },
+                    onClick = {
+                        if (!nePreparing) {
+                            voiceQuery = ""
+                            voicePickerSheet = true
+                        }
                     },
                 )
             }
@@ -1764,6 +1859,11 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                         nePluginId = p.pluginId
                         nePluginName = p.name
                         neVoiceSel = emptyList()
+                        neLocales = emptyList()
+                        voiceList = emptyList()
+                        voiceLoadedKey = ""
+                        nePreparing = true
+                        nePluginSessionTick++
                         // 默认从「对话」档开始；若目标分组已固定类型，下方同步效应会自动跟随并锁定
                         neAssign = VoiceBankRoleType.ASSIGN_DIALOG
                         neRole = VoiceBankRoleType.CORE
@@ -1782,11 +1882,17 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
     AppModalBottomSheet(
         animateContentSize = false,
         show = voicePickerSheet,
-        onDismissRequest = { voicePickerSheet = false },
+        onDismissRequest = {
+            stopAudition(nePluginId)
+            voicePickerSheet = false
+        },
         title = "选择声音 · 已选 ${neVoiceSel.size}",
         endAction = {
             MediumTonalButton(
-                onClick = { voicePickerSheet = false },
+                onClick = {
+                    stopAudition(nePluginId)
+                    voicePickerSheet = false
+                },
                 icon = Icons.Default.Check,
                 contentDescription = "完成",
             )
@@ -1804,7 +1910,29 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 autoFocus = false,
             )
             if (voiceList.isEmpty()) {
-                TinyClickableSettingItem(title = "加载中…（或该语言无声音）", onClick = {})
+                if (voiceLoading) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        AppText(
+                            text = "正在加载声音列表…",
+                            style = LegadoTheme.typography.bodySmall,
+                        )
+                    }
+                } else {
+                    TinyClickableSettingItem(
+                        title = "该语言暂无声音",
+                        onClick = {},
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -1854,20 +1982,22 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
-                            SmallPlainButton(
-                                onClick = {
-                                    scope.launch {
-                                        context.toastOnUi("正在合成…")
-                                        val r = repo.auditionDirect(
+                            if (auditionVoiceId == v.id) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                SmallPlainButton(
+                                    onClick = {
+                                        startAudition(
                                             nePluginId, neLocale, v.id, neAuditionText,
-                                            neSpeed, neVolume, nePitch, effectiveDataParams(),
                                         )
-                                        handleAuditionResult(r)
-                                    }
-                                },
-                                icon = Icons.Default.PlayArrow,
-                                contentDescription = "试听",
-                            )
+                                    },
+                                    icon = Icons.Default.PlayArrow,
+                                    contentDescription = "试听",
+                                )
+                            }
                         }
                     }
                 }
@@ -1993,6 +2123,45 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         },
         dismissText = "取消",
         onDismiss = { varDlgKey = null },
+    )
+
+    val pluginLoginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val key = pendingLoginKey
+        val pid = pendingLoginPluginId
+        pendingLoginKey = null
+        pendingLoginPluginId = null
+        if (result.resultCode != Activity.RESULT_OK || key == null) {
+            return@rememberLauncherForActivityResult
+        }
+        val data = result.data ?: return@rememberLauncherForActivityResult
+        val value = data.getStringExtra(PluginLoginActivity.RESULT_VALUE).orEmpty()
+        val listData = data.getStringExtra(PluginLoginActivity.RESULT_DATA)
+        val debug = data.getStringExtra(PluginLoginActivity.RESULT_DEBUG)
+        if (value.isNotBlank()) {
+            varValues[key] = value
+            if (!listData.isNullOrBlank()) varValues[key + "_data"] = listData
+            scope.launch {
+                val ok = pid != null && repo.savePluginUserVars(pid, varValues.toMap())
+                context.toastOnUi(
+                    if (ok) "已保存登录态并写入插件"
+                    else "已填入登录态，但写入插件失败，请点右上角“保存”重试"
+                )
+            }
+        }
+        if (!debug.isNullOrBlank()) loginDebug = debug
+    }
+
+    LogDetailSheet(
+        show = loginDebug != null,
+        title = "音色列表抓取诊断",
+        content = loginDebug.orEmpty(),
+        onDismissRequest = { loginDebug = null },
+        onCopy = {
+            loginDebug?.let { context.sendToClip(it) }
+            context.toastOnUi("诊断已复制")
+        },
     )
 
     // ---------------- 编辑条目（音色分组 → 音色基础信息 → 插件特色界面） ----------------
@@ -2396,7 +2565,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 SectionHint("— 插件变量 —")
                 TinyClickableSettingItem(
                     title = "来自插件 defVars",
-                    description = "补丁版同款：登录/凭据等全局变量；含 loginUrl 的登录类请填登录后取到的值",
+                    description = "补丁版同款：含 loginUrl 的变量点按即打开网页登录；binding 支持 cookies[.名] / locals[.名] / sessions[.名]；任意变量长按可手动填写",
                     onClick = {},
                 )
                 if (varFields.isEmpty()) {
@@ -2410,13 +2579,57 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                             TinyClickableSettingItem(
                                 title = f.label,
                                 description = buildString {
-                                    append(if (cur.isBlank()) "未设置" else cur)
-                                    if (f.description.isNotBlank()) {
-                                        append(" · ")
-                                        append(f.description)
+                                    if (f.canLogin) {
+                                        append(if (cur.isBlank()) "未登录" else "已登录（${cur.length} 字符）")
+                                        if (f.binding.isNotBlank()) {
+                                            append(" · ")
+                                            append(f.binding)
+                                        }
+                                        append(" · 点按网页登录（长按手动填写）")
+                                    } else {
+                                        if (f.key.endsWith("_data")) {
+                                            append(
+                                                if (cur.isBlank()) "未设置（点按/长按可粘贴列表）"
+                                                else "已缓存 ${cur.length} 字符（点按/长按编辑）"
+                                            )
+                                        } else {
+                                            append(if (cur.isBlank()) "未设置" else cur)
+                                        }
+                                        if (f.description.isNotBlank()) {
+                                            append(" · ")
+                                            append(f.description)
+                                        }
                                     }
                                 },
                                 onClick = {
+                                    if (f.canLogin) {
+                                        val p = varsEditorPlugin
+                                        if (p != null) {
+                                            pendingLoginKey = f.key
+                                            pendingLoginPluginId = p.pluginId
+                                            val capture = p.pluginId.contains("qwen", ignoreCase = true) ||
+                                                p.pluginId.contains("qianwen", ignoreCase = true) ||
+                                                p.name.contains("千问")
+                                            pluginLoginLauncher.launch(
+                                                PluginLoginActivity.startIntent(
+                                                    context = context,
+                                                    pluginId = p.pluginId,
+                                                    key = f.key,
+                                                    label = f.label,
+                                                    loginUrl = f.loginUrl,
+                                                    binding = f.binding,
+                                                    loginDesc = f.loginDesc,
+                                                    ua = f.ua,
+                                                    captureVoiceList = capture,
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        varDlgInput = cur
+                                        varDlgKey = f.key
+                                    }
+                                },
+                                onLongClick = {
                                     varDlgInput = cur
                                     varDlgKey = f.key
                                 },
@@ -2489,7 +2702,7 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         }
     }
 
-    // ---------------- 引擎切换（MD3：添加/编辑/删除/导入导出/全局直选） ----------------
+    // ---------------- 引擎切换（MD3：系统 / 内置两档全局直选） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
         show = showEngineSheet,
@@ -2497,60 +2710,6 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
         title = "切换朗读引擎",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                MediumTonalButton(
-                    onClick = {
-                        isNewEngine = true
-                        engineEditor = HttpTTS(name = "", url = "", speed = 5)
-                    },
-                    icon = Icons.Default.Add,
-                    contentDescription = "添加引擎",
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Box {
-                    MediumTonalButton(
-                        onClick = { engineMenuOpen = true },
-                        icon = Icons.Default.MoreVert,
-                        contentDescription = "更多",
-                    )
-                    RoundDropdownMenu(
-                        expanded = engineMenuOpen,
-                        onDismissRequest = { engineMenuOpen = false },
-                    ) {
-                        RoundDropdownMenuItem(
-                            text = "本地导入",
-                            onClick = {
-                                engineMenuOpen = false
-                                engineImportLauncher.launch(
-                                    arrayOf("application/json", "text/plain", "*/*")
-                                )
-                            },
-                        )
-                        RoundDropdownMenuItem(
-                            text = "网络导入",
-                            onClick = {
-                                engineMenuOpen = false
-                                netImportUrl = ""
-                                showNetImport = true
-                            },
-                        )
-                        RoundDropdownMenuItem(
-                            text = "导出",
-                            onClick = {
-                                engineMenuOpen = false
-                                engineExportLauncher.launch("httpTTS.json")
-                            },
-                        )
-                    }
-                }
-            }
-
             fun selectEngine(value: String?) {
                 showEngineSheet = false
                 scope.launch {
@@ -2574,92 +2733,9 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
                 editable = false,
                 onSelect = { selectEngine(TtsServerCenterRepository.BUILTIN_ENGINE_JSON) },
             )
-            engineList.forEach { h ->
-                EngineRow(
-                    label = "在线朗读 · ${h.name}",
-                    subtitle = h.url,
-                    current = engineValue == h.id.toString(),
-                    editable = true,
-                    onSelect = { selectEngine(h.id.toString()) },
-                    onEdit = {
-                        isNewEngine = false
-                        engineEditor = h
-                    },
-                    onDelete = { showDeleteEngine = h },
-                )
-            }
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
-
-    // ---------------- 引擎编辑器（复刻原版添加云 TTS 参数） ----------------
-    EngineEditorSheet(
-        value = engineEditor,
-        isNew = isNewEngine,
-        onDismiss = { engineEditor = null },
-        onSave = { saved ->
-            engineEditor = null
-            scope.launch {
-                repo.saveHttpTts(saved)
-                context.toastOnUi("已保存")
-                reload()
-            }
-        },
-    )
-
-    AppAlertDialog(
-        show = showNetImport,
-        onDismissRequest = { showNetImport = false },
-        title = "网络导入引擎",
-        content = {
-            AppTextField(
-                value = netImportUrl,
-                onValueChange = { netImportUrl = it },
-                label = "URL（httpTTS.json / 直链）",
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
-        confirmText = "导入",
-        onConfirm = {
-            val url = netImportUrl.trim()
-            showNetImport = false
-            if (url.isNotBlank()) {
-                scope.launch {
-                    context.toastOnUi("下载中…")
-                    context.toastOnUi(repo.importHttpTts(url))
-                    reload()
-                }
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { showNetImport = false },
-    )
-
-    AppAlertDialog(
-        show = showDeleteEngine != null,
-        onDismissRequest = { showDeleteEngine = null },
-        title = "删除引擎",
-        text = "确认删除「在线朗读 · ${showDeleteEngine?.name.orEmpty()}」？",
-        confirmText = "删除",
-        onConfirm = {
-            val h = showDeleteEngine ?: return@AppAlertDialog
-            showDeleteEngine = null
-            scope.launch {
-                repo.deleteHttpTts(h.id)
-                if (engineValue == h.id.toString()) {
-                    repo.applyEngine(
-                        TtsServerCenterRepository.BUILTIN_ENGINE_JSON,
-                        forBook = false,
-                    )
-                }
-                context.toastOnUi("已删除")
-                reload()
-            }
-        },
-        dismissText = "取消",
-        onDismiss = { showDeleteEngine = null },
-    )
 
     // ---------------- 删除确认（单条） ----------------
     AppAlertDialog(
@@ -2886,215 +2962,6 @@ private fun EngineRow(
         },
         modifier = Modifier.fillMaxWidth(),
     )
-}
-
-@Composable
-private fun EngineEditorSheet(
-    value: HttpTTS?,
-    isNew: Boolean,
-    onDismiss: () -> Unit,
-    onSave: (HttpTTS) -> Unit,
-) {
-    var cached by remember { mutableStateOf(value) }
-    if (value != null) cached = value
-    val source = cached ?: return
-    val context = LocalContext.current
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-
-    var name by remember(source) { mutableStateOf(source.name) }
-    var url by remember(source) { mutableStateOf(source.url) }
-    var contentType by remember(source) { mutableStateOf(source.contentType.orEmpty()) }
-    var concurrentRate by remember(source) { mutableStateOf(source.concurrentRate ?: "0") }
-    var header by remember(source) { mutableStateOf(source.header.orEmpty()) }
-    var loginUrl by remember(source) { mutableStateOf(source.loginUrl.orEmpty()) }
-    var loginUi by remember(source) { mutableStateOf(source.loginUi.orEmpty()) }
-    var loginCheckJs by remember(source) { mutableStateOf(source.loginCheckJs.orEmpty()) }
-    var jsLib by remember(source) { mutableStateOf(source.jsLib.orEmpty()) }
-    var speed by remember(source) { mutableStateOf((source.speed ?: 5).toFloat()) }
-
-    fun current() = source.copy(
-        name = name.trim(),
-        url = url.trim(),
-        contentType = contentType.ifBlank { null },
-        concurrentRate = concurrentRate,
-        header = header.ifBlank { null },
-        loginUrl = loginUrl.ifBlank { null },
-        loginUi = loginUi.ifBlank { null },
-        loginCheckJs = loginCheckJs.ifBlank { null },
-        jsLib = jsLib.ifBlank { null },
-        speed = speed.toInt(),
-        lastUpdateTime = System.currentTimeMillis(),
-    )
-
-    AppModalBottomSheet(
-        animateContentSize = false,
-        show = value != null,
-        onDismissRequest = onDismiss,
-        title = if (isNew) "添加引擎" else "编辑引擎",
-        startAction = {
-            var expanded by remember { mutableStateOf(false) }
-            Box {
-                MediumTonalButton(
-                    onClick = { expanded = true },
-                    icon = Icons.Default.MoreVert,
-                    contentDescription = "更多",
-                )
-                RoundDropdownMenu(expanded, { expanded = false }) {
-                    RoundDropdownMenuItem(
-                        text = "复制文本",
-                        onClick = {
-                            expanded = false
-                            scope.launch {
-                                clipboard.setClipEntry(
-                                    ClipEntry(
-                                        ClipData.newPlainText("httpTTS", GSON.toJson(current()))
-                                    )
-                                )
-                            }
-                        },
-                    )
-                    RoundDropdownMenuItem(
-                        text = "粘贴源",
-                        onClick = {
-                            expanded = false
-                            scope.launch {
-                                val text = clipboard.getClipEntry()?.clipData
-                                    ?.getItemAt(0)?.coerceToText(context)?.toString()
-                                    ?: return@launch
-                                HttpTTS.fromJson(text).getOrNull()?.let { imported ->
-                                    name = imported.name
-                                    url = imported.url
-                                    contentType = imported.contentType.orEmpty()
-                                    concurrentRate = imported.concurrentRate ?: "0"
-                                    header = imported.header.orEmpty()
-                                    loginUrl = imported.loginUrl.orEmpty()
-                                    loginUi = imported.loginUi.orEmpty()
-                                    loginCheckJs = imported.loginCheckJs.orEmpty()
-                                    jsLib = imported.jsLib.orEmpty()
-                                    speed = (imported.speed ?: 5).toFloat()
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-        },
-        endAction = {
-            MediumTonalButton(
-                onClick = {
-                    val c = current()
-                    if (c.name.isBlank() || c.url.isBlank()) {
-                        context.toastOnUi("名称 / URL 不能为空")
-                    } else {
-                        onSave(c)
-                    }
-                },
-                icon = Icons.Default.Check,
-                contentDescription = "保存",
-            )
-        },
-    ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                AppTextField(
-                    name,
-                    { name = it },
-                    label = stringResource(R.string.name),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    url,
-                    { url = it },
-                    label = "URL",
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                TinySliderSettingItem(
-                    title = stringResource(R.string.read_aloud_speed),
-                    description = stringResource(R.string.tts_source_speed_summary),
-                    value = speed,
-                    valueRange = 0f..80f,
-                    steps = 79,
-                    onValueChange = { speed = it },
-                )
-            }
-            item {
-                AppTextField(
-                    contentType,
-                    { contentType = it },
-                    label = "Content-Type",
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    concurrentRate,
-                    { concurrentRate = it },
-                    label = stringResource(R.string.concurrent_rate),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    header,
-                    { header = it },
-                    label = stringResource(R.string.source_http_header),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginUrl,
-                    { loginUrl = it },
-                    label = stringResource(R.string.login_url),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginUi,
-                    { loginUi = it },
-                    label = stringResource(R.string.login_ui),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    loginCheckJs,
-                    { loginCheckJs = it },
-                    label = stringResource(R.string.login_check_js),
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item {
-                AppTextField(
-                    jsLib,
-                    { jsLib = it },
-                    label = "jsLib",
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            item { Spacer(Modifier.height(16.dp)) }
-        }
-    }
 }
 
 @Composable

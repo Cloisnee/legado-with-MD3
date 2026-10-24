@@ -87,6 +87,11 @@ class LegacyConfigUpdateActionsTest {
             setOf(UCS, RC)
         ),
         Case("TipConfigDialog 标题字号 8,5", ConfigUpdate.TitleSize(24), setOf(UCS, RC)),
+        Case(
+            "标题字号相对正文(Compose 追加)",
+            ConfigUpdate.TitleSizeRelative(false),
+            setOf(UCS, RC)
+        ),
         Case("TipConfigDialog 标题上距 8,5", ConfigUpdate.TitleTopSpacing(1), setOf(UCS, RC)),
         Case("TipConfigDialog 标题下距 8,5", ConfigUpdate.TitleBottomSpacing(1), setOf(UCS, RC)),
         Case("TITLE_COLOR 8,5", ConfigUpdate.TitleColor(0x112233), setOf(UCS, RC)),
@@ -249,6 +254,18 @@ class LegacyConfigUpdateActionsTest {
                     RII in case.update.actions,
                 )
             }
+    }
+
+    /**
+     * 翻页动画速度是 Compose 时代新增项（旧 View 无对应事件码）：只缩放收尾动画时长，
+     * 不改变动画种类、页高或排版，因此不得驱动任何正文副作用。
+     */
+    @Test
+    fun `page turn speed never repaints the reading content`() {
+        assertEquals(
+            emptySet<ConfigUpdateAction>(),
+            ConfigUpdate.PageAnimSpeed(2).actions,
+        )
     }
 
     /**

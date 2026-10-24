@@ -12,6 +12,7 @@ import io.legado.app.feature.reader.core.source.ReaderChapterInlineSource
 import io.legado.app.feature.reader.core.source.ReaderChapterSource
 import io.legado.app.feature.reader.core.source.ReaderChapterSourceBlock
 import io.legado.app.feature.reader.core.style.ReaderCharacterStyle
+import io.legado.app.feature.reader.core.style.ReaderCharacterStyleResolver
 import io.legado.app.feature.reader.core.style.ReaderStyleRange
 import io.legado.app.feature.reader.core.style.ReaderStyleTarget
 import io.legado.app.feature.reader.platform.ReaderTextBackgroundLoader
@@ -22,6 +23,7 @@ import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.spToPx
 
 object LegacyReaderStyleRangeMapper {
+
     fun map(
         source: ReaderChapterSource,
         rules: List<HighlightRule>,
@@ -39,13 +41,11 @@ object LegacyReaderStyleRangeMapper {
             }
             targets.forEach { (text, target) ->
                 regex.findAll(text).forEach { match ->
-                    result += ReaderStyleRange(
-                        start = match.range.first,
-                        endExclusive = match.range.last + 1,
-                        target = target,
-                        style = rule.toReaderStyle(),
-                        priority = index,
-                    )
+                    val start = match.range.first
+                    val endExclusive = match.range.last + 1
+                    if (start < endExclusive) {
+                        result += rule.matchRanges(start, endExclusive, target, index)
+                    }
                 }
             }
         }
@@ -67,6 +67,23 @@ object LegacyReaderStyleRangeMapper {
             }
         return result
     }
+
+    /**
+     * 把一条规则的样式按**字面区间**挂上去，不走正则。
+     *
+     * 消费者：规则编辑弹层的预览——每一项改动都必须看得见，而用户填的正则很可能命中不了
+     * 示例句，那样整块预览是死的，所以样式直接钉在示例段上、不迁就正则。
+     * 样式换算与命中段拆分复用正文那一份 [matchRanges]，不另写一套。
+     */
+    fun rangesForLiteralRange(
+        rule: HighlightRule,
+        start: Int,
+        endExclusive: Int,
+        target: ReaderStyleTarget,
+        priority: Int,
+    ): List<ReaderStyleRange> =
+        if (start < endExclusive) rule.matchRanges(start, endExclusive, target, priority)
+        else emptyList()
 
     private fun semanticBodyText(source: ReaderChapterSource): String {
         val chars = CharArray(source.characterCount) { '\n' }
@@ -99,6 +116,68 @@ object LegacyReaderStyleRangeMapper {
         for (offset in 0 until count) this[start + offset] = text[offset]
     }
 
+    /**
+     * 一次命中拆成「首字 / 段内 / 末字」三段互不重叠的区间。
+     *
+     * 命中字距属于命中段与相邻字之间：只有首字那一段带 before、只有末字那一段带 after，
+     * 段内一个字都不加——段内也加的话，调的就不是间距而是整段的字号了。行距是行级属性，
+     * 三段都带上，由分页那边按整行取较大值（同一行里两条命中也只抬一次）。
+     */
+    private fun HighlightRule.matchRanges(
+        start: Int,
+        endExclusive: Int,
+        target: ReaderStyleTarget,
+        priority: Int,
+    ): List<ReaderStyleRange> {
+        val base = toReaderStyle()
+        val before = letterSpacingBefore.dpToPx().takeIf { it > 0f } ?: 0f
+        val after = letterSpacingAfter.dpToPx().takeIf { it > 0f } ?: 0f
+        if (endExclusive - start == 1) {
+            // 单字命中：它既是首字也是末字，两边都要让。
+            return listOf(
+                ReaderStyleRange(
+                    start = start,
+                    endExclusive = endExclusive,
+                    target = target,
+                    style = base.copy(
+                        matchSpacingBeforePx = before,
+                        matchSpacingAfterPx = after,
+                    ),
+                    priority = priority,
+                )
+            )
+        }
+        return buildList(3) {
+            add(
+                ReaderStyleRange(
+                    start = start,
+                    endExclusive = start + 1,
+                    target = target,
+                    style = base.copy(matchSpacingBeforePx = before),
+                    priority = priority,
+                )
+            )
+            add(
+                ReaderStyleRange(
+                    start = start + 1,
+                    endExclusive = endExclusive - 1,
+                    target = target,
+                    style = base,
+                    priority = priority,
+                )
+            )
+            add(
+                ReaderStyleRange(
+                    start = endExclusive - 1,
+                    endExclusive = endExclusive,
+                    target = target,
+                    style = base.copy(matchSpacingAfterPx = after),
+                    priority = priority,
+                )
+            )
+        }
+    }
+
     private fun HighlightRule.toReaderStyle() = ReaderCharacterStyle(
         colorArgb = textColor,
         backgroundArgb = bgColor,
@@ -127,6 +206,8 @@ object LegacyReaderStyleRangeMapper {
         fontWeight = fontWeight.takeIf { it != 400 },
         italic = isItalic,
         fontSizeOffsetPx = fontSizeOffset.toFloat().spToPx(),
+        linePadTopPx = lineSpacingTop.dpToPx().takeIf { it > 0f } ?: 0f,
+        linePadBottomPx = lineSpacingBottom.dpToPx().takeIf { it > 0f } ?: 0f,
         backgroundImage = bgImage?.takeIf(String::isNotBlank)?.let {
             val automatic = if (manualNineSlice) null else {
                 ReaderTextBackgroundLoader.nineSliceFractions(it)
@@ -139,6 +220,8 @@ object LegacyReaderStyleRangeMapper {
                 ninePatchRight = automatic?.right ?: npRight,
                 ninePatchTop = automatic?.top ?: npTop,
                 ninePatchBottom = automatic?.bottom ?: npBottom,
+                lengthOffsetLeftPx = bgLengthOffsetLeft.dpToPx(),
+                lengthOffsetRightPx = bgLengthOffsetRight.dpToPx(),
             ).let { image ->
                 val (width, height) = backgroundImageSize(it)
                 image.withBitmapSize(width, height)
@@ -172,6 +255,19 @@ object LegacyReaderStyleRangeMapper {
     private fun BookContentProcess.isUserMarking(): Boolean =
         kind == BookContentProcess.KIND_USER_UNDERLINE || kind == BookContentProcess.KIND_USER_HIGHLIGHT
 
-    private fun backgroundImageSize(path: String): Pair<Int, Int> =
-        ReaderTextBackgroundLoader.dimensions(path)
+    /**
+     * 量这张气泡图有多大，并顺手把它解进缓存。
+     *
+     * 只报尺寸不解图，绘制侧就要等 `produceState` 在 IO 上解完才拿到位图：翻到那一页的
+     * 头几帧气泡是空的，下一帧才补上，看上去就是「闪一下」。排版本来就在 IO 上跑，
+     * 在这里解一次，首帧就已经是热缓存，画出来的和量出来的还是同一张图。
+     */
+    private fun backgroundImageSize(path: String): Pair<Int, Int> {
+        val bitmap = ReaderTextBackgroundLoader.load(path)
+        return if (bitmap == null) {
+            ReaderTextBackgroundLoader.dimensions(path)
+        } else {
+            bitmap.width to bitmap.height
+        }
+    }
 }

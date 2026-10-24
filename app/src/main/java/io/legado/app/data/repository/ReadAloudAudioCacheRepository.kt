@@ -105,16 +105,16 @@ class ReadAloudAudioCacheRepository(private val app: Application) {
         book: String,
         keepChapterIndex: Int,
         keepMinutes: Int,
-    ): Int = withContext(Dispatchers.IO) {
-        if (keepMinutes <= 0) return@withContext 0
+    ): List<Int> = withContext(Dispatchers.IO) {
+        if (keepMinutes <= 0) return@withContext emptyList()
         val deadline = System.currentTimeMillis() - keepMinutes * 60_000L
-        var removed = 0
+        val removed = ArrayList<Int>()
         bookDir(book).listFiles()?.forEach { dir ->
             if (!dir.isDirectory) return@forEach
             val chapterIndex = dir.name.toIntOrNull()?.minus(1) ?: return@forEach
             if (chapterIndex == keepChapterIndex) return@forEach
             if (dir.lastModified() < deadline) {
-                if (dir.deleteRecursively()) removed++
+                if (dir.deleteRecursively()) removed += chapterIndex
             }
         }
         removed

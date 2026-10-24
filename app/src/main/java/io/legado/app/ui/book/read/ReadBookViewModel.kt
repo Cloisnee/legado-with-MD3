@@ -18,7 +18,6 @@ import io.legado.app.data.repository.BookRepository
 import io.legado.app.data.repository.BookSourceRepository
 import io.legado.app.data.repository.BookmarkRepository
 import io.legado.app.data.repository.HighlightRuleRepository
-import io.legado.app.data.repository.HttpTtsRepository
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadPreferences
 import io.legado.app.data.repository.ReadRecordRepository
@@ -131,7 +130,6 @@ class ReadBookViewModel(
     private val downloadCacheSettingsGateway: DownloadCacheSettingsGateway,
     private val backupSettingsGateway: BackupSettingsGateway,
     private val themeSettingsGateway: ThemeSettingsGateway,
-    private val httpTtsRepository: HttpTtsRepository,
     private val bookSourceRepository: BookSourceRepository,
     private val bookmarkRepository: BookmarkRepository,
     private val bookRepository: BookRepository,
@@ -163,7 +161,7 @@ class ReadBookViewModel(
     private var readBookSyncJob: Job? = null
     private val _readAloudProgress = MutableStateFlow(
         activeReadAloudProgress(
-            isPlaying = BaseReadAloudService.isPlay(),
+            isPlaying = ReadBook.isCurrentBookReadAloud && BaseReadAloudService.isPlay(),
             currentProgress = BaseReadAloudService.currentProgress,
         )
     )
@@ -489,7 +487,6 @@ class ReadBookViewModel(
         readSettingsRepository = readSettingsRepository,
         readAloudSettingsRepository = readAloudSettingsRepository,
         readAloudSessionStore = readAloudSessionStore,
-        httpTtsRepository = httpTtsRepository,
         syncReadAloudVoicesUseCase = syncReadAloudVoicesUseCase,
         readAloudDataRepository = readAloudDataRepository,
     ) }
@@ -595,22 +592,19 @@ class ReadBookViewModel(
     }
 
     /**
-     * 消费 [ReadStyleGateway.state]（Track E · E2）：排版配置的唯一变更通知。
+     * 消费 [ReadStyleGateway.state]：排版配置的唯一变更通知。
      *
-     * 排版底座 `ReadBookConfig.Config` 是可变全局、无 flow，此前 UiState 里的
-     * [ReadBookStyleConfig] / [ReadSheetConfigUiState] 只能靠各写入站点手工重建——
-     * 13 处重建 `styleConfig`、**只有 1 处**重建 `sheetConfig`（`syncFromReadBook`），
-     * 于是编辑排版后重开弹层显示的是旧值。
+     * 排版底座 `ReadBookConfig.Config` 是可变全局、无 flow，UiState 里的
+     * [ReadBookStyleConfig] / [ReadSheetConfigUiState] 两份快照由 gateway 的
+     * `publishState()` 统一驱动重建：写入必经 gateway，gateway 必发 state，这里必然重建两份快照；
+     * 新增写入路径若绕过 gateway，就必须自行触发重建，否则快照是旧值。
      *
-     * 改由 gateway 的 `publishState()` 统一驱动后，「新增写入路径忘了重建快照」这个
-     * 失效类别不再存在：写入必经 gateway，gateway 必发 state，这里必然重建两份快照。
-     *
-     * R1.1 收敛后全 VM 只允许三处重建触发，删任何一处前先确认其路径已被其余覆盖：
+     * 全 VM 只允许三处重建触发，删任何一处前先确认其路径已被其余覆盖：
      * 1. 本 collector——一切经 gateway 的排版写入（编辑/预设/删除/导入，repository 必 publishState）；
      * 2. [collectEventBus] 的 [ReadConfigUpdateBus] collector——不经 gateway 的全局变更
      *    （日夜切换等，revision 不递增，gateway flow 不会发射）；
      * 3. [handleConfigUpdate] 尾部 `styleMutation == null` 分支——只写 DataStore 的更新。
-     * `syncFromReadBook` 不再重建（曾经的每翻页兜底会掩盖漏发问题）。
+     * `syncFromReadBook` 不触发重建：每翻页兜底会掩盖上面漏发通知的路径。
      */
     private fun collectReadStyle() {
         viewModelScope.launch {
@@ -626,7 +620,7 @@ class ReadBookViewModel(
     }
 
     /**
-     * 消费 [ReaderSession.state]（Track A A5）：会话快照在任意受控 mutator 完成后发射，
+     * 消费 [ReaderSession.state]：会话快照在任意受控 mutator 完成后发射，
      * 据此驱动 UiState 刷新。与遗留 CallBack 刷新路径叠加、幂等（相同结果 StateFlow 不再发），
      * 收集在 mutator 返回之后异步触发，故 syncFromReadBook 读到的 ReadBook 字段已是最终态。
      */
@@ -649,10 +643,10 @@ class ReadBookViewModel(
     }
 
     /**
-     * 消费 [ReaderSession.events]（R2.3）：遗留 [ReadBook.CallBack] 的四个回调。
+     * 消费 [ReaderSession.events]：遗留 [ReadBook.CallBack] 的四个回调。
      *
-     * VM 不再实现 `ReadBook.CallBack`——`ReadBook.callBack` 现在指向本 VM 持有的
-     * [LegacyReaderSession]。回调体原样搬过来，只是从「在 ReadBook 的调用线程上同步执行」
+     * VM 不实现 `ReadBook.CallBack`——`ReadBook.callBack` 指向本 VM 持有的
+     * [LegacyReaderSession]。回调体在本 VM 原样执行，只是时机从「在 ReadBook 的调用线程上同步执行」
      * 变成「在主线程上晚一个派发执行」。
      */
     private fun collectReaderSessionEvents() {
@@ -830,7 +824,7 @@ class ReadBookViewModel(
             }
 
             is ReadBookIntent.ToggleReadAloud -> {
-                if (!BaseReadAloudService.isRun) {
+                if (!ReadBook.isCurrentBookReadAloud) {
                     readAloudDelegate.openDefaultInterface()
                 }
                 _effects.tryEmit(ReadBookEffect.ToggleReadAloud)
@@ -981,9 +975,12 @@ class ReadBookViewModel(
             is ReadBookIntent.OpenContentEdit -> contentEditDelegate.open()
             is ReadBookIntent.LoadContentEdit -> contentEditDelegate.load()
             is ReadBookIntent.SaveContentEdit ->
-                contentEditDelegate.save(intent.content, intent.saveToSource)
+                contentEditDelegate.save(intent.content, intent.saveToSource, intent.chapterTitle)
             is ReadBookIntent.ResetContentEdit -> contentEditDelegate.reset()
             is ReadBookIntent.SetContentEditText -> contentEditDelegate.setText(intent.text)
+            is ReadBookIntent.SetContentEditTitle -> contentEditDelegate.setTitle(intent.title)
+            is ReadBookIntent.SetContentEditBodyOnly ->
+                contentEditDelegate.setBodyOnly(intent.enabled)
             is ReadBookIntent.SetContentEditSaveToSource ->
                 contentEditDelegate.setSaveToSource(intent.value)
             is ReadBookIntent.RefreshImage -> refreshImage(intent.src)
@@ -1193,6 +1190,8 @@ class ReadBookViewModel(
                 buttonConfigDelegate.saveMenuButtons(intent.items)
             is ReadBookIntent.SaveTitleBarButtonConfig ->
                 buttonConfigDelegate.saveTitleBarButtons(intent.items)
+            is ReadBookIntent.SaveTitleBarActionConfig ->
+                buttonConfigDelegate.saveTitleBarActions(intent.items)
             is ReadBookIntent.SaveMoreActionsConfig ->
                 buttonConfigDelegate.saveMoreActions(intent.items)
 
@@ -1228,6 +1227,46 @@ class ReadBookViewModel(
             is ReadBookIntent.ConfirmAddCurrentBookToBookshelf -> addCurrentBookToBookshelfAndFinish()
             is ReadBookIntent.ExitWithoutAddingCurrentBookToBookshelf -> removeCurrentNotShelfBookAndFinish()
 
+            is ReadBookIntent.ShowReadAloudConfig -> readAloudDelegate.openConfigSheet()
+            is ReadBookIntent.OpenPreDownloadNumPicker ->
+                readAloudDelegate.openPreDownloadNumPicker()
+            is ReadBookIntent.OpenPreSynthesisConcurrencyPicker ->
+                readAloudDelegate.openPreSynthesisConcurrencyPicker()
+            is ReadBookIntent.OpenParagraphIntervalPicker ->
+                readAloudDelegate.openParagraphIntervalPicker()
+            is ReadBookIntent.OpenCacheCleanTimePicker ->
+                readAloudDelegate.openCacheCleanTimePicker()
+            is ReadBookIntent.ApplyPreDownloadNum ->
+                readAloudDelegate.applyPreDownloadNum(intent.value)
+            is ReadBookIntent.ApplyPreSynthesisConcurrency ->
+                readAloudDelegate.applyPreSynthesisConcurrency(intent.value)
+            is ReadBookIntent.ApplyAudioCacheCleanTime ->
+                readAloudDelegate.applyAudioCacheCleanTime(intent.value)
+            is ReadBookIntent.ApplyParagraphInterval ->
+                readAloudDelegate.applyParagraphInterval(intent.value)
+            is ReadBookIntent.SetReadAloudIgnoreAudioFocus ->
+                readAloudDelegate.setIgnoreAudioFocus(intent.value)
+            is ReadBookIntent.SetReadAloudPauseOnPhoneCall ->
+                readAloudDelegate.setPauseOnPhoneCall(intent.value)
+            is ReadBookIntent.SetReadAloudWakeLock -> readAloudDelegate.setWakeLock(intent.value)
+            is ReadBookIntent.SetReadAloudKeepOnExit ->
+                readAloudDelegate.setKeepOnExit(intent.value)
+            is ReadBookIntent.SetShowReadAloudCapsule ->
+                readAloudDelegate.setShowCapsule(intent.value)
+            is ReadBookIntent.SetCapsuleAutoCollapse ->
+                readAloudDelegate.setCapsuleAutoCollapse(intent.value)
+            ReadBookIntent.ResetReadAloudCapsulePosition ->
+                readAloudDelegate.resetCapsulePosition()
+            is ReadBookIntent.SetReadAloudCapsulePosition ->
+                readAloudDelegate.setCapsulePosition(intent.x, intent.y)
+            is ReadBookIntent.SetReadAloudMediaButtonPerNext ->
+                readAloudDelegate.setMediaButtonPerNext(intent.value)
+            is ReadBookIntent.SetReadAloudSystemMediaCompat ->
+                readAloudDelegate.setSystemMediaCompat(intent.value)
+            is ReadBookIntent.SetReadAloudAndroidMediaControl ->
+                readAloudDelegate.setAndroidMediaControl(intent.value)
+            is ReadBookIntent.SetReadAloudStreamAudio ->
+                readAloudDelegate.setStreamAudio(intent.value)
             is ReadBookIntent.ReadAloudPrevParagraph -> readAloudDelegate.prevParagraph()
             is ReadBookIntent.ReadAloudTogglePause -> _effects.tryEmit(ReadBookEffect.ToggleReadAloud)
             is ReadBookIntent.ReadAloudStop -> readAloudDelegate.stop()
@@ -1248,6 +1287,15 @@ class ReadBookViewModel(
                 readAloudDelegate.setTtsFollowSys(intent.value)
             is ReadBookIntent.SetReadAloudTtsSpeechRate ->
                 readAloudDelegate.setTtsSpeechRate(intent.value)
+            is ReadBookIntent.SetUseMultiSpeaker ->
+                readAloudDelegate.setUseMultiSpeaker(intent.value)
+            is ReadBookIntent.SetReadAloudConfigTab -> readAloudDelegate.setConfigTab(intent.tab)
+            is ReadBookIntent.SetDefaultReadAloudInterface ->
+                readAloudDelegate.setDefaultInterface(intent.value)
+            is ReadBookIntent.OpenSystemTtsSettings -> readAloudDelegate.openSystemTtsSettings()
+            is ReadBookIntent.ClearTtsCache -> readAloudDelegate.clearTtsCache()
+            ReadBookIntent.OpenTtsEnginesAndVoices -> readAloudDelegate.openTtsEnginesAndVoices()
+            ReadBookIntent.OpenTtsCache -> readAloudDelegate.openTtsCache()
             ReadBookIntent.OpenReadAloudPlayer -> readAloudDelegate.openPlayer()
             ReadBookIntent.OpenClassicReadAloudControls -> readAloudDelegate.openClassicControls()
 
@@ -1449,38 +1497,21 @@ class ReadBookViewModel(
             ReadBook.webBookProgress = null
         }
 
-        // View-layer operations via effects
-        _effects.tryEmit(ReadBookEffect.UpSystemUiVisibility)
-        _effects.tryEmit(ReadBookEffect.UpTime)
-        _effects.tryEmit(ReadBookEffect.UpScreenTimeOut)
-
-        // Activity-level operations
-        _effects.tryEmit(ReadBookEffect.RegisterTimeBatteryReceiver)
-        _effects.tryEmit(ReadBookEffect.RegisterNetworkListener)
+        // Reader window and listener lifecycle is handled synchronously by the route controller.
     }
 
     private var justInitData = false
 
     private fun handleOnPause() {
         backupJob?.cancel()
-        _effects.tryEmit(ReadBookEffect.StopAutoPage)
 
         // Read time tracking
         ReadBook.isUiActive = false
         // 进度在离开页面时落库；开书流程本身不落，口径见 ReadBookLoadDelegate.initData。
         ReadBook.saveRead()
-        if (!BaseReadAloudService.isPlay()) {
-            ReadBook.stopAutoSaveSession()
-            ReadBook.commitReadSession()
-        }
+        ReadBook.stopAutoSaveSession()
+        ReadBook.commitReadSession()
         ReadBook.cancelPreDownloadTask()
-
-        // View-layer
-        _effects.tryEmit(ReadBookEffect.UpSystemUiVisibility)
-
-        // Activity-level operations
-        _effects.tryEmit(ReadBookEffect.UnregisterTimeBatteryReceiver)
-        _effects.tryEmit(ReadBookEffect.UnregisterNetworkListener)
 
         if (!BuildConfig.DEBUG) {
             if (backupSettingsGateway.currentSettings.syncBookProgressPlus) {
@@ -1488,7 +1519,6 @@ class ReadBookViewModel(
             } else {
                 ReadBook.uploadProgress()
             }
-            _effects.tryEmit(ReadBookEffect.BackupNow)
         }
         justInitData = false
     }
@@ -1557,15 +1587,15 @@ class ReadBookViewModel(
         }
     }
 
-    // --- ReadBook 回调（已全部离开本 ViewModel）---
+    // --- ReadBook 回调（归属见下）---
     //
-    // Track B2：渲染子集（upContent/upContentAwait/pageChanged/contentLoadFinish/
-    // upPageAnim/cancelSelect/onLayoutPageCompleted）下沉到 UI 层渲染控制器
+    // 渲染子集（upContent/upContentAwait/pageChanged/contentLoadFinish/
+    // upPageAnim/cancelSelect/onLayoutPageCompleted）归 UI 层渲染控制器
     // （ReadBook.renderCallBack）。
-    // R2.3：状态子集（upMenuView/loadChapterList/notifyBookChanged/sureNewProgress）
-    // 迁入 LegacyReaderSession，本 VM 改为订阅 collectReaderSessionEvents()。
+    // 状态子集（upMenuView/loadChapterList/notifyBookChanged/sureNewProgress）
+    // 归 LegacyReaderSession，本 VM 通过 collectReaderSessionEvents() 订阅。
     // 业务状态刷新另有 collectReaderSession() 反应式收集 ReadBook.snapshot 驱动。
-    // 下面两个不再是 override——除了会话事件，VM 自己也在若干处直接调用。
+    // 下面两个是私有函数而非 override——除了会话事件，VM 自己也在若干处直接调用。
 
     private fun loadChapterList(book: Book) {
         ReadBook.upMsg(context.getString(R.string.toc_updateing))
@@ -1639,14 +1669,14 @@ class ReadBookViewModel(
         }
         viewModelScope.launch {
             var previousStatus: ReadAloudSessionStatus? = null
-            readAloudSessionStore.state.collect { session ->
+            readAloudDelegate.readerSessions.collect { (session, ownsReader) ->
                 val status = session.status
                 val info = session.playback
                 _uiState.update { state ->
                     state.copy(
-                        isReadAloudRunning = status != ReadAloudSessionStatus.Idle,
-                        isReadAloudPaused = status == ReadAloudSessionStatus.Paused,
-                        readAloudFollow = session.followReadAloudPosition,
+                        isReadAloudRunning = ownsReader && status != ReadAloudSessionStatus.Idle,
+                        isReadAloudPaused = ownsReader && status == ReadAloudSessionStatus.Paused,
+                        readAloudFollow = !ownsReader || session.followReadAloudPosition,
                         readAloudEngineName = info.engineName,
                         readAloudCharacterName = info.characterName,
                         readAloudRoleType = info.roleType,
@@ -1769,6 +1799,7 @@ class ReadBookViewModel(
             titleFont = config.titleFont,
             pageAnim = actualConfig.getPageAnim(),
             pageAnimEInk = actualConfig.getPageAnimEInk(),
+            pageAnimSpeed = actualConfig.getPageAnimSpeed(),
             shareLayout = config.shareLayout,
             menuBgColorDay = dur.menuBgColor(isNight = false),
             menuBgColorNight = dur.menuBgColor(isNight = true),
@@ -1799,6 +1830,7 @@ class ReadBookViewModel(
         titleLineSpacingExtra = ReadBookConfig.titleLineSpacingExtra,
         titleLineSpacingSub = ReadBookConfig.titleLineSpacingSub,
         titleSize = ReadBookConfig.titleSize,
+        titleSizeRelative = ReadBookConfig.resolvedTitleSizeRelative,
         titleTopSpacing = ReadBookConfig.titleTopSpacing,
         titleBottomSpacing = ReadBookConfig.titleBottomSpacing,
         titleColor = ReadBookConfig.titleColor,
@@ -1949,6 +1981,7 @@ class ReadBookViewModel(
                 readMenuCustomIcons = ReadBookConfig.readMenuCustomIcons.toImmutableMap(),
                 titleBarButtons = current.menuConfig.titleBarButtons,
                 bottomBarButtons = current.menuConfig.bottomBarButtons,
+                titleBarActions = current.menuConfig.titleBarActions,
                 moreActionItems = buttonConfigDelegate
                     .parseMoreActions(readSettingsRepository.currentSettings.moreActionsConfig)
                     .toImmutableList(),
@@ -1983,20 +2016,19 @@ class ReadBookViewModel(
         }
     }
 
-    // --- Business Logic (migrated from Activity / kept from old ViewModel) ---
+    // --- Business Logic ---
 
     /**
      * 当前会话书籍的当前章节。
      *
-     * R2.1：VM 不再直连 Room DAO，书籍/目录读写一律经 [BookRepository]。
-     * 原来散在十余处的 `getChapter(book.bookUrl, ReadBook.durChapterIndex)` 收敛到这里。
+     * VM 不直连 Room DAO，书籍/目录读写一律经 [BookRepository]；取当前章统一从这里走。
      */
     private suspend fun currentChapter(): BookChapter? {
         val book = ReadBook.book ?: return null
         return bookRepository.getChapter(book.bookUrl, ReadBook.durChapterIndex)
     }
 
-    // 开书 / 目录 / 换源 / 进度同步已迁入 [ReadBookLoadDelegate]，这里只留外部入口的转发。
+    // 开书 / 目录 / 换源 / 进度同步归 [ReadBookLoadDelegate]，这里只留外部入口的转发。
 
     suspend fun initReadBookConfig(request: ReadBookInitRequest) =
         loadDelegate.initReadBookConfig(request)
@@ -2056,7 +2088,12 @@ class ReadBookViewModel(
     }
 
     private fun stopReadAloudForClose() {
-        if (closeReadBookKeepReadAloud || !BaseReadAloudService.isRun) {
+        if (closeReadBookKeepReadAloud || !ReadBook.isCurrentBookReadAloud) {
+            return
+        }
+        // 「退出阅读时继续后台朗读」：读的是持久设置，不依赖本次退出来源
+        // （标题栏关闭、返回手势、后台按钮走的是同一个 closeReadBook）。
+        if (readAloudSettingsRepository.currentSettings.keepReadAloudOnExit) {
             return
         }
         // 「退出阅读时继续朗读」：读的是持久设置，不依赖本次退出来源
@@ -2235,11 +2272,7 @@ class ReadBookViewModel(
         buildSet {
             sources.forEach { source ->
                 val refreshed = runCatching {
-                    val vFile = BookHelp.getImage(book, source)
-                    ImageProvider.bitmapLruCache.remove(vFile.absolutePath)
-                    vFile.delete()
-                    ImageProvider.cacheImage(book, source, ReadBook.bookSource)
-                    vFile.isFile && vFile.length() > 0L
+                    ImageProvider.refreshImage(book, source, ReadBook.bookSource)
                 }.getOrDefault(false)
                 if (refreshed) add(source)
             }
@@ -2484,7 +2517,7 @@ class ReadBookViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        if (BaseReadAloudService.isRun && BaseReadAloudService.pause) {
+        if (ReadBook.isCurrentBookReadAloud && BaseReadAloudService.pause) {
             ReadAloud.stop(context)
         }
         readerSession.detach()
@@ -2519,11 +2552,4 @@ internal fun readStyleExportFileName(styleName: String): String {
 
 private fun Int.coerceSearchResultIndex(resultSize: Int): Int {
     return if (resultSize <= 0) 0 else coerceIn(0, resultSize - 1)
-}
-
-private fun String.isHttpTtsImportUri(): Boolean {
-    val uri = runCatching { Uri.parse(this) }.getOrNull() ?: return false
-    return uri.scheme in setOf("legado", "yuedu")
-            && uri.host == "import"
-            && uri.path.equals("/httpTTS", ignoreCase = true)
 }

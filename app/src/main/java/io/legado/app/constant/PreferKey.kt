@@ -127,6 +127,7 @@ object PreferKey {
     const val bitmapCacheSize = "bitmapCacheSize"
     const val imageRetainNum = "imageRetainNum"
     const val preDownloadNum = "preDownloadNum"
+    const val preDownloadNumPrev = "preDownloadNumPrev"
     const val mangaPreDownloadNum = "mangaPreDownloadNum"
     const val mangaChapterPrefetchCount = "mangaChapterPrefetchCount"
     const val mangaAutoOfflineCache = "mangaAutoOfflineCache"
@@ -173,7 +174,6 @@ object PreferKey {
     const val webServiceWakeLock = "webServiceWakeLock"
     const val audioPlayWakeLock = "audioPlayWakeLock"
     const val readAloudWakeLock = "readAloudWakeLock"
-    // 退出阅读时继续朗读（默认开；可在 我的→朗读设置 关闭）
     const val keepReadAloudOnExit = "keepReadAloudOnExit"
     const val showReadAloudCapsule = "showReadAloudCapsule"
     const val capsuleAutoCollapse = "capsuleAutoCollapse"
@@ -350,6 +350,7 @@ object PreferKey {
 
 
     const val tabletInterface = "tabletInterface"
+    const val multiPaneMode = "multiPaneMode"
     const val pureBlack = "pure_black"
     const val labelVisibilityMode = "labelVisibilityMode"
     const val menuAlpha = "menuAlpha"
@@ -423,6 +424,9 @@ object PreferKey {
     const val showBookIntro = "showBookIntro"
     const val bookshelfShowIntro = "bookshelfShowIntro"
     const val bookshelfShowTag = "bookshelfShowTag"
+    const val bookshelfShowCustomTags = "bookshelfShowCustomTags"
+    const val bookshelfShowSourceTags = "bookshelfShowSourceTags"
+    const val bookshelfShowWordCount = "bookshelfShowWordCount"
     const val bookshelfShowLatestChapter = "bookshelfShowLatestChapter"
     const val bookshelfIntroMaxLines = "bookshelfIntroMaxLines"
     const val sliderVibrator = "sliderVibrator"
@@ -433,29 +437,6 @@ object PreferKey {
     const val audioPreDownloadNum = "audioPreDownloadNum"
     const val ttsPreSynthesisConcurrency = "ttsPreSynthesisConcurrency"
     const val ttsParagraphInterval = "ttsParagraphInterval"
-    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
-    const val ttsMaxRetry = "ttsMaxRetry"
-    // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
-    const val readAloudStandbyStart = "readAloudStandbyStart"
-    // P1.4：云端词网（本地条目推送到 CNB 仓库，由流水线合并进词网）
-    const val cloudWordEnabled = "cloudWordEnabled"
-    const val cloudWordRepo = "cloudWordRepo"
-    const val cloudWordToken = "cloudWordToken"
-    // B33 四轨（音效/BGM/环境·小闭环）
-    const val alEnabled = "alEnabled"
-    const val alSfxVolume = "alSfxVolume"
-    const val alAmbVolume = "alAmbVolume"
-    const val alBgmVolume = "alBgmVolume"
-    // 音效/环境闸门（最小间隔、同素材冷却、BGM 冷却、环境驻留）
-    const val alSfxMinGapS = "alSfxMinGapS"
-    const val alSfxCooldownS = "alSfxCooldownS"
-    const val alBgmCooldownS = "alBgmCooldownS"
-    const val alAmbDwellS = "alAmbDwellS"
-    const val alChapterSynthCap = "alChapterSynthCap"
-    // B33.2c：18+ 内容开关（默认关闭；远程库与规则层同步生效）
-    const val audioAdultEnabled = "audioAdultEnabled"
-    // B33.2 · 音频库（排序模式持久化）
-    const val audioLibSortMode = "audioLibSortMode"
     const val customTagColors = "customTagColors"
     const val enableCustomTagColors = "enableCustomTagColors"
     const val navIconBookshelf = "navIconBookshelf"
@@ -483,6 +464,31 @@ object PreferKey {
     const val eyeProtectionSchedule = "eyeProtectionSchedule"
     const val eyeProtectionStartTime = "eyeProtectionStartTime"
     const val eyeProtectionEndTime = "eyeProtectionEndTime"
+
+    // ==== [ttsrv] 自建键（合并保留区 · 上游同步时以本区"我方为准"）====
+    const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
+    const val ttsMaxRetry = "ttsMaxRetry"
+    // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
+    const val readAloudStandbyStart = "readAloudStandbyStart"
+    // P1.4：云端词网（本地条目推送到 CNB 仓库，由流水线合并进词网）
+    const val cloudWordEnabled = "cloudWordEnabled"
+    const val cloudWordRepo = "cloudWordRepo"
+    const val cloudWordToken = "cloudWordToken"
+    // B33 四轨（音效/BGM/环境·小闭环）
+    const val alEnabled = "alEnabled"
+    const val alSfxVolume = "alSfxVolume"
+    const val alAmbVolume = "alAmbVolume"
+    const val alBgmVolume = "alBgmVolume"
+    // 音效/环境闸门（最小间隔、同素材冷却、BGM 冷却、环境驻留）
+    const val alSfxMinGapS = "alSfxMinGapS"
+    const val alSfxCooldownS = "alSfxCooldownS"
+    const val alBgmCooldownS = "alBgmCooldownS"
+    const val alAmbDwellS = "alAmbDwellS"
+    const val alChapterSynthCap = "alChapterSynthCap"
+    // B33.2c：18+ 内容开关（默认关闭；远程库与规则层同步生效）
+    const val audioAdultEnabled = "audioAdultEnabled"
+    // B33.2 · 音频库（排序模式持久化）
+    const val audioLibSortMode = "audioLibSortMode"
 }
 
 object ReadMenuBlurMode {
@@ -501,6 +507,7 @@ object ReadAloudBgMode {
     const val Blur = 1
     const val FlowingLight = 2
     const val Transparent = 3
+
 }
 
 object CoverRatio {

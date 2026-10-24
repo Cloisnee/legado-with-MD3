@@ -1,6 +1,5 @@
 package io.legado.app.help.readaloud.playback
 
-import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechRoleType
@@ -28,24 +27,15 @@ object ReadAloudAudioCacheKeys {
         emotion: String,
         performance: CharacterPerformanceProfile?,
         roleType: SpeechRoleType,
-        httpTts: HttpTTS?,
     ): String = when (voice.engineType) {
         ReadAloudVoice.ENGINE_SYSTEM ->
             "system:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}"
 
-        ReadAloudVoice.ENGINE_CLOUD ->
-            "cloud:${voice.id}:${voice.revision}:" +
-                    "${CloudTtsEmotionMapper.VERSION}:$emotion:" +
-                    "${CharacterPerformanceInstructionBuilder.VERSION}:" +
-                    "${performance?.characterId.orEmpty()}:" +
-                    "${performance?.updatedAt ?: 0L}:" +
-                    "${CloudTtsRoleInstructionMapper.VERSION}:" +
-                    roleType.storageValue
-
         ReadAloudVoice.ENGINE_TTS_SERVER ->
             "tts_server:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}:$emotion"
 
-        else -> httpTts?.url.orEmpty()
+        // 其它引擎（历史「在线朗读」行）不再参与路由；留稳定键避免空串哈希相撞
+        else -> "unknown:${voice.engineType}:${voice.id}:${voice.revision}"
     }
 
     /** 源级语速刻度（0..80，1 倍速 = 5）：与 HttpReadAloudService.speechRate 保持一致 */

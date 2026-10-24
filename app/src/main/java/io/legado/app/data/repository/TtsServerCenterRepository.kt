@@ -5,13 +5,13 @@ import android.content.Context
 import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.tts.debug.SynthProbe
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
 import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.data.appDb
-import io.legado.app.data.entities.HttpTTS
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
@@ -20,19 +20,20 @@ import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
-import io.legado.app.utils.isJsonArray
-import io.legado.app.utils.isJsonObject
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * TTS-Server 管理中心 · 数据层（UI-1）
@@ -78,7 +79,17 @@ data class VarField(
     val label: String,
     val description: String,
     val value: String,
-)
+    /** 非空表示这是登录类变量：点按打开内置 WebView 登录，保存时按 binding 取值写入变量 */
+    val loginUrl: String = "",
+    /** 补丁版约定：cookies[.name] / locals[.name] / sessions[.name]；空=cookies 整串 */
+    val binding: String = "",
+    /** 登录页说明（defVars.loginDesc） */
+    val loginDesc: String = "",
+    /** 登录 UA：空/pc=桌面；mobile/android=WebView 默认；其它按原样 */
+    val ua: String = "",
+) {
+    val canLogin: Boolean get() = loginUrl.isNotBlank()
+}
 
 data class AuditionOutcome(
     val ok: Boolean,
@@ -233,11 +244,6 @@ class TtsServerCenterRepository(private val app: Application) {
         buildList {
             add(EngineOption(null, "系统 TTS"))
             add(EngineOption(BUILTIN_ENGINE_JSON, "内置引擎（TTS Server）"))
-            runCatching {
-                appDb.httpTTSDao.all.forEach { h ->
-                    add(EngineOption(h.id.toString(), "在线朗读 · ${h.name}"))
-                }
-            }
         }
     }
 
@@ -246,74 +252,17 @@ class TtsServerCenterRepository(private val app: Application) {
 
     fun engineLabel(value: String?): String = when {
         value.isNullOrBlank() -> "系统 TTS"
-        value.all { it.isDigit() } -> runCatching {
-            appDb.httpTTSDao.get(value.toLong())?.name?.let { "在线朗读 · $it" }
-        }.getOrNull() ?: "在线朗读"
+        // 在线朗读已拔除：历史数值配置（旧 http 引擎 id）按系统档处理
+        value.all { it.isDigit() } -> "系统 TTS"
         value.contains("tts_server") -> "内置引擎"
         else -> GSON.fromJsonObject<ReadAloudEngineSelection>(value).getOrNull()
-            ?.displayName?.takeIf { it.isNotBlank() } ?: "在线朗读"
-    }
-
-    // ---------------- 引擎（在线朗读 HttpTTS）管理 ----------------
-
-    suspend fun loadHttpTtsList(): List<HttpTTS> = withContext(Dispatchers.IO) {
-        runCatching { appDb.httpTTSDao.all }.getOrDefault(emptyList())
-    }
-
-    suspend fun saveHttpTts(source: HttpTTS): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            appDb.httpTTSDao.insert(source)
-            true
-        }.getOrDefault(false)
-    }
-
-    suspend fun deleteHttpTts(id: Long): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            appDb.httpTTSDao.get(id)?.let { appDb.httpTTSDao.delete(it) }
-            true
-        }.getOrDefault(false)
-    }
-
-    suspend fun exportHttpTtsJson(): String = withContext(Dispatchers.IO) {
-        runCatching { GSON.toJson(appDb.httpTTSDao.all) }.getOrDefault("[]")
-    }
-
-    /** 导入在线朗读引擎（支持 URL / JSON 对象 / JSON 数组 / Base64；返回结果描述） */
-    suspend fun importHttpTts(text: String): String = withContext(Dispatchers.IO) {
-        runCatching {
-            val list = parseHttpTts(text.trim())
-            require(list.isNotEmpty()) { "未解析到任何引擎" }
-            list.forEach { appDb.httpTTSDao.insert(it) }
-            "导入成功：${list.size} 个引擎"
-        }.getOrElse { "导入失败：${it.localizedMessage ?: "格式错误"}" }
-    }
-
-    private fun parseHttpTts(text: String): List<HttpTTS> = when {
-        text.startsWith("http", ignoreCase = true) -> {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .build()
-            val request = Request.Builder().url(text).get().build()
-            val body = client.newCall(request).execute().use { it.body?.string().orEmpty() }
-            require(body.isNotBlank()) { "响应为空" }
-            parseHttpTts(body)
-        }
-
-        text.isJsonObject() -> listOf(HttpTTS.fromJson(text).getOrThrow())
-        text.isJsonArray() -> HttpTTS.fromJsonArray(text).getOrThrow()
-        else -> {
-            val decoded = runCatching {
-                String(android.util.Base64.decode(text, android.util.Base64.DEFAULT))
-            }.getOrNull() ?: throw IllegalArgumentException("无法识别的格式")
-            parseHttpTts(decoded)
-        }
+            ?.displayName?.takeIf { it.isNotBlank() } ?: "系统 TTS"
     }
 
     private fun gateway(): ReadAloudSettingsGateway =
         org.koin.core.context.GlobalContext.get().get()
 
-    /** 应用引擎选择（镜像云 TTS 的 applyDefaultEngine 语义：本书写 Book / 全局写设置） */
+    /** 应用引擎选择（applyDefaultEngine 语义：本书写 Book / 全局写设置） */
     suspend fun applyEngine(value: String?, forBook: Boolean): String {
         val book = ReadBook.book
         if (forBook && book != null) {
@@ -430,10 +379,13 @@ class TtsServerCenterRepository(private val app: Application) {
                 File(dir, "last_synth_result.txt")
                     .writeText("[${ts()}] ruleId=$ruleId tag=$tag\n${r.report}\n")
             }
-            val bytes = r.bytes
+            val rawBytes = r.bytes
                 ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                // 试听同样剥掉平台水印（契约门控：仅插件声明 watermark=true 时处理）
+                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                    .stripDeclared(ctx, r.pluginId, rawBytes, dir, keepRaw = true).bytes
                 val ext = when {
                     bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
                     bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
@@ -481,13 +433,38 @@ class TtsServerCenterRepository(private val app: Application) {
                         ).firstOrNull { it.isNotBlank() }.orEmpty()
                     } ?: "",
                     value = userVars.optString(k).orEmpty(),
+                    loginUrl = schema?.optString("loginUrl").orEmpty(),
+                    binding = schema?.optString("binding").orEmpty(),
+                    loginDesc = schema?.optString("loginDesc").orEmpty(),
+                    ua = schema?.optString("ua").orEmpty(),
                 )
             }
             val ukeys = userVars.keys()
             while (ukeys.hasNext()) {
                 val k = ukeys.next()
                 if (!fields.containsKey(k)) {
-                    fields[k] = VarField(k, k, "自定义", userVars.optString(k).orEmpty())
+                    val v = userVars.optString(k).orEmpty()
+                    // 登录变量自动抓取的附属数据（<key>_data）：不展示原文，避免刷屏
+                    val label = if (k.endsWith("_data")) k.removeSuffix("_data") + " · 音色列表" else k
+                    val desc = if (k.endsWith("_data")) "自动抓取（${v.length} 字符），无需手动编辑" else "自定义"
+                    fields[k] = VarField(k, label, desc, v)
+                }
+            }
+            // 千问系：即使自动抓取还没成功，也给一个可长按手填的 <key>_data 行
+            val qwenLike = o.optString("pluginId").contains("qwen", ignoreCase = true) ||
+                o.optString("pluginId").contains("qianwen", ignoreCase = true) ||
+                o.optString("name").contains("千问")
+            val loginKey = fields.values.firstOrNull { it.canLogin }?.key
+            if (qwenLike && loginKey != null) {
+                val dataKey = "${loginKey}_data"
+                if (!fields.containsKey(dataKey)) {
+                    val baseLabel = fields[loginKey]?.label ?: loginKey
+                    fields[dataKey] = VarField(
+                        key = dataKey,
+                        label = "$baseLabel · 音色列表",
+                        description = "手动粘贴：[{\"voice\":\"id\",\"name\":\"名称\"}]",
+                        value = userVars.optString(dataKey).orEmpty(),
+                    )
                 }
             }
             fields.values.toList()
@@ -650,20 +627,184 @@ class TtsServerCenterRepository(private val app: Application) {
             // B12：数据型插件（猫箱-v2/微软翻译 等）的语言/声线数据在 EditorJS.onLoadData 里加载，
             // 不先执行它 → 列表为空（「加载中…或该语言无声音」）。幂等，每个引擎实例只跑一次。
             engine.ensureOnLoadData()
-            engine.getLocales().map { (k, v) -> LocaleOption(k, v) }
+            var lastError: Throwable? = null
+            var result: List<LocaleOption> = emptyList()
+            for (attempt in 0 until 4) {
+                try {
+                    result = engine.getLocales().map { (k, v) -> LocaleOption(k, v) }
+                    if (result.isNotEmpty()) break
+                } catch (e: Throwable) {
+                    lastError = e
+                }
+                delay(350)
+            }
+            writePluginDebug(
+                "last_locales_debug.txt",
+                "plugin=$pluginId count=${result.size} first=${result.take(5).joinToString { it.id }}"
+            )
+            lastError?.let { if (result.isEmpty()) throw it }
+            result
+        }.onFailure { e ->
+            writePluginDebug("last_locales_debug.txt", "ERR plugin=$pluginId\n${e.stackTraceToString()}")
         }.getOrDefault(emptyList())
     }
 
     suspend fun loadVoices(pluginId: String, locale: String): List<VoiceOption> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching emptyList()
-                val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
-                // B12：同 loadLocales —— 数据型插件的声线表需先跑 onLoadData
-                engine.ensureOnLoadData()
+            val cached = loadVoiceCache(pluginId, locale)
+            // 大列表（>=200）才走缓存直出；小列表可能是插件被分页超时截断的残片，走一次修复。
+            if (cached != null && cached.size >= 200) {
+                PipelineProbe.log(
+                    ctx, "voices.load",
+                    "pluginId" to pluginId,
+                    "locale" to locale,
+                    "cacheHit" to true,
+                    "count" to cached.size
+                )
+                // 先返回缓存，后台静默刷新；下一次打开列表即可看到最新结果。
+                maybeRefreshVoices(pluginId, locale)
+                return@withContext cached
+            }
+
+            val t0 = System.currentTimeMillis()
+            val result = runCatching { fetchVoices(pluginId, locale) }
+                .onFailure { e ->
+                    writePluginDebug(
+                        "last_voices_debug.txt",
+                        "ERR plugin=$pluginId locale=$locale\n${e.stackTraceToString()}"
+                    )
+                }
+                .getOrDefault(emptyList())
+            PipelineProbe.log(
+                ctx, "voices.load",
+                "pluginId" to pluginId,
+                "locale" to locale,
+                "cacheHit" to false,
+                "count" to result.size,
+                "ms" to (System.currentTimeMillis() - t0)
+            )
+            result
+        }
+
+    private suspend fun fetchVoices(pluginId: String, locale: String): List<VoiceOption> {
+        val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return emptyList()
+        val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+        // B12：数据型插件的声线表需先跑 onLoadData
+        engine.ensureOnLoadData()
+        var lastError: Throwable? = null
+        var result: List<VoiceOption> = emptyList()
+        for (attempt in 0 until 2) {
+            try {
+                result = engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
+                if (result.isNotEmpty()) break
+            } catch (e: Throwable) {
+                lastError = e
+            }
+            delay(350)
+        }
+
+        if (result.isNotEmpty() && result.size < 200) {
+            // 插件自身缓存被分页超时截断：一次性 warmup 修复（只发生一次；warmup 与 getVoices 用 opLock 串行）。
+            engine.warmupOnce()
+            val refreshed = runCatching {
                 engine.getVoices(locale).map { VoiceOption(it.id, it.name, it.icon) }
             }.getOrDefault(emptyList())
+            if (refreshed.size > result.size) result = refreshed
         }
+
+        val cached = loadVoiceCache(pluginId, locale)
+        if (result.isNotEmpty() && cached != null && cached.size > 0 && result.size < cached.size * 0.8) {
+            // 分页超时/限流会返回一小段列表；不要用它覆盖完整缓存。
+            writePluginDebug(
+                "last_voices_debug.txt",
+                "PARTIAL plugin=$pluginId locale=$locale fresh=${result.size} cached=${cached.size}"
+            )
+            PipelineProbe.log(
+                ctx, "voices.partial",
+                "pluginId" to pluginId,
+                "locale" to locale,
+                "fresh" to result.size,
+                "cached" to cached.size
+            )
+            return cached
+        }
+
+        if (result.isNotEmpty()) saveVoiceCache(pluginId, locale, result)
+        writePluginDebug(
+            "last_voices_debug.txt",
+            "plugin=$pluginId locale=$locale count=${result.size} first=${result.take(5).joinToString { it.id }}"
+        )
+        lastError?.let { if (result.isEmpty()) throw it }
+        return result
+    }
+
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshingAt = ConcurrentHashMap<String, Long>()
+
+    private fun maybeRefreshVoices(pluginId: String, locale: String) {
+        val key = "$pluginId|$locale"
+        val now = System.currentTimeMillis()
+        val last = refreshingAt[key] ?: 0L
+        if (now - last < 120_000L) return
+        refreshingAt[key] = now
+        refreshScope.launch {
+            try {
+                fetchVoices(pluginId, locale)
+            } catch (_: Throwable) {
+            } finally {
+                refreshingAt.remove(key)
+            }
+        }
+    }
+
+    private fun voiceCacheDir(): File =
+        File(TtsDirProvider.baseDir(ctx), "_store/plugin_voices").apply { mkdirs() }
+
+    private fun safeCacheName(raw: String): String =
+        MessageDigest.getInstance("MD5")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+
+    private fun voiceCacheFile(pluginId: String, locale: String): File =
+        File(voiceCacheDir(), safeCacheName(pluginId) + "__" + safeCacheName(locale) + ".json")
+
+    private fun loadVoiceCache(pluginId: String, locale: String): List<VoiceOption>? = runCatching {
+        val file = voiceCacheFile(pluginId, locale)
+        if (!file.exists()) return@runCatching null
+        val arr = JSONArray(file.readText())
+        val out = mutableListOf<VoiceOption>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i)
+            if (obj == null) continue
+            val id = obj.optString("id").trim()
+            if (id.isEmpty()) continue
+            val name = obj.optString("name").trim().ifEmpty { id }
+            val icon = obj.optString("icon").trim().takeIf { it.isNotEmpty() }
+            out.add(VoiceOption(id, name, icon))
+        }
+        out
+    }.getOrNull()
+
+    private fun saveVoiceCache(pluginId: String, locale: String, voices: List<VoiceOption>) {
+        runCatching {
+            val arr = JSONArray()
+            voices.forEach { v ->
+                arr.put(JSONObject().apply {
+                    put("id", v.id)
+                    put("name", v.name)
+                    if (!v.icon.isNullOrBlank()) put("icon", v.icon)
+                })
+            }
+            voiceCacheFile(pluginId, locale).writeText(arr.toString())
+        }
+    }
+
+    private fun writePluginDebug(fileName: String, text: String) {
+        runCatching {
+            val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+            File(dir, fileName).writeText("[${ts()}] $text")
+        }
+    }
 
     /** 插件直连试听（不依赖配置条目） */
     suspend fun auditionDirect(
@@ -682,9 +823,11 @@ class TtsServerCenterRepository(private val app: Application) {
             File(dir, "last_synth_result.txt")
                 .writeText("[${ts()}] plugin=$pluginId locale=$locale voice=$voice data=$data\n${r.report}\n")
         }
-        val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
+        val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+            val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                .stripDeclared(ctx, pluginId, rawBytes, dir, keepRaw = true).bytes
             val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
             val f = File(dir, "audition_direct_${System.currentTimeMillis()}.$ext")
             f.writeBytes(bytes)
@@ -693,6 +836,15 @@ class TtsServerCenterRepository(private val app: Application) {
                 "合成成功：${f.absolutePath}\n大小=${bytes.size} bytes\n\n${r.report}"
             )
         }.getOrElse { AuditionOutcome(false, null, "写文件失败: ${it.stackTraceToString()}") }
+    }
+
+    /** 取消当前试听：关闭音频流并调用插件 onStop，避免旧请求排队/补播。 */
+    suspend fun cancelAudition(pluginId: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            val shell = TtsConfigStore.pluginById(ctx, pluginId) ?: return@runCatching
+            val engine = TtsPluginEngineManager.get(ctx, TtsConfigStore.toEnginePlugin(shell))
+            engine.cancelAudio()
+        }
     }
 
     // ---------------- 新建 / 编辑条目 ----------------
@@ -1193,9 +1345,11 @@ class TtsServerCenterRepository(private val app: Application) {
                 File(dir, "last_synth_result.txt")
                     .writeText("[${ts()}] entry=$entryId data=$data\n${r.report}\n")
             }
-            val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
+            val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                    .stripDeclared(ctx, src.optString("pluginId"), rawBytes, dir, keepRaw = true).bytes
                 val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
                 val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
                 f.writeBytes(bytes)

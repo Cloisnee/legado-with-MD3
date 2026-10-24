@@ -165,8 +165,9 @@ class BookshelfViewModel(
         }
         .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5000), replay = 1)
 
+    // 与 uiState 同理：常驻订阅，返回书架时首帧就是最新分组，避免补一次跳动
     val allGroupsFlow: StateFlow<List<BookGroup>> = bookGroupRepository.flowAll()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val hideEmptyGroupsFlow: StateFlow<Boolean> = bookshelfSettings
         .map { it.hideEmptyGroups }
@@ -332,7 +333,11 @@ class BookshelfViewModel(
         SelectedBooksState(
             groupId = selectedGroup.groupId,
             books = selectedGroup.books,
-            visibleBooks = filterBooks(selectedGroup.books, searchKey, isSearchMode),
+            visibleBooks = filterBooks(
+                books = selectedGroup.books,
+                searchKey = searchKey,
+                isSearchMode = isSearchMode,
+            ),
             searchKey = searchKey,
             isSearchMode = isSearchMode,
             sortConfig = selectedGroup.sortConfig
@@ -395,7 +400,11 @@ class BookshelfViewModel(
                 }
                 val previewFlow = bookRepository.flowGroupPreview(group.groupId)
                 combine(countFlow, previewFlow) { count, preview ->
-                    Triple(group.groupId, count, preview.map { it.toUiItem() })
+                    Triple(
+                        group.groupId,
+                        count,
+                        preview.map { it.toUiItem() }
+                    )
                 }
             }
             combine(groupFlows) { results ->
@@ -527,7 +536,11 @@ class BookshelfViewModel(
                 data.allGroupBooks
             } else {
                 data.allGroupBooks.mapValues { (_, books) ->
-                    filterBooks(books, selectedBooks.searchKey, true).toImmutableList()
+                    filterBooks(
+                        books = books,
+                        searchKey = selectedBooks.searchKey,
+                        isSearchMode = true
+                    ).toImmutableList()
                 }.toImmutableMap()
             }
         val books = data.allGroupBooks[internal.groupId]
@@ -538,8 +551,9 @@ class BookshelfViewModel(
             ?: emptyList()
         val selectedGroupIndex = groups.indexOfFirst { it.groupId == internal.groupId }
             .coerceAtLeast(0)
-        val currentGroupName = allGroups.firstOrNull { it.groupId == internal.groupId }?.groupName
-            ?: groups.getOrNull(selectedGroupIndex)?.groupName
+        val currentGroup = allGroups.firstOrNull { it.groupId == internal.groupId }
+            ?: groups.getOrNull(selectedGroupIndex)
+        val currentGroupName = currentGroup?.groupName
         val selectedIds = interaction.selectedBookUrls.mapTo(linkedSetOf<Any>()) { it }
         val title = buildTitle(
             bookGroupStyle = interaction.bookGroupStyle,
@@ -603,7 +617,7 @@ class BookshelfViewModel(
             currentGroupName = currentGroupName,
             draggingBooks = interaction.draggingBooks?.toImmutableList(),
             pendingSavedBooks = interaction.pendingSavedBooks?.toImmutableList(),
-            visibleGroupBooks = visibleGroupBooks
+            visibleGroupBooks = visibleGroupBooks,
         )
     }
 
@@ -622,9 +636,14 @@ class BookshelfViewModel(
             themeColor = themeSettings.themeColor,
             pendingUploadUrl = pendingUploadUrl,
         )
+        // 常驻订阅：进入阅读页后 UI 停止收集，若让上游在超时后停掉，返回书架的前几帧
+        // 读到的仍是「阅读前」那一版排序，等 Room 重新查询到达再跳一次，重排就发生在
+        // 书架已经可见之后。管道挂在 viewModelScope（ViewModel 随返回栈条目存活），
+        // 因此返回首帧即是最新排序。与 komikku 的 LibraryScreenModel 同思路：
+        // 状态管道由 ScreenModel/ViewModel 自己持有，不随 UI 订阅启停。
     }.stateIn(
         viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
+        SharingStarted.Eagerly,
         BookshelfUiState(
             settings = initialSettings,
             selectedGroupId = initialSettings.saveTabPosition,

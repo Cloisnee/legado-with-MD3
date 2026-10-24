@@ -1,0 +1,88 @@
+package com.github.jing332.tts.watermark
+
+/**
+ * 呱呱试听水印的内嵌模板（120 帧 × 40 维 log-mel，逐帧 z-score，int8 量化 scale=32）。
+ *
+ * 来源：平台试听接口实际返回的 1.22 s 水印录音（48 kHz 单声道）。
+ * 只用于"是否命中呱呱水印"的比对，不参与任何合成。
+ */
+object WatermarkTemplate {
+
+    val BASE64: String =
+        "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"
+
+    const val SCALE = 32f
+
+    /**
+     * 水印包络（10 ms 帧 × 120，**线性 RMS**去均值归一化后 int8 量化）。
+     * 用途：区分"干净拼接"与"与台词叠加" —— 叠加时包络被台词污染。
+     * 实测：干净拼接 0.82~1.00 / 叠加 0.26~0.42（dB 域只有 0.05 余量，故用线性域）。
+     */
+    val ENV: IntArray = intArrayOf(
+        -95, -93, -81, -8, 21, 44, 39, 45, 40, 31, 14, 19, 16, 13, 8, 8, 6, 6, 7, 11, 22, 26, 24, 6, -40, -46, 3, 16, -3, -6, -19, -15, -18, -18, -32, -50, -64, -42, -42, -37, -23, 23, 104, 127, 55, 44, 63, 54, 26, 13, 3, -4, -10, -16, -24, -42, -68, -90, -95, -66, -69, 7, 30, 39, 35, 44, 41, 25, -5, -63, -90, -93, -91, -37, 29, 52, 60, 63, 59, 56, 42, 38, 20, 23, 21, 19, 15, 12, 25, 6, 17, 16, 6, -7, -16, -19, -3, -27, -32, -48, -70, -45, -7, -8, -2, -7, -13, -4, -18, -56, -22, 48, 74, 28, 30, 42, 18, 15, 12, -7
+    )
+
+}

@@ -24,7 +24,10 @@ object CloudWordnetClient {
 
     private const val API = "https://api.cnb.cool"
     private const val EVENT = "api_trigger_cloudwords"
-    private const val MAX_BATCH = 20
+    private const val MAX_BATCH = 50
+
+    /** build/start 的 CW_PAYLOAD 环境变量体积上限（保守 48KB；超限让用户分批） */
+    private const val MAX_PAYLOAD_BYTES = 48L * 1024
     private val JSON_TYPE = "application/json; charset=utf-8".toMediaType()
     private val OCTET_TYPE = "application/octet-stream".toMediaType()
 
@@ -85,6 +88,22 @@ object CloudWordnetClient {
         if (token.isBlank()) return PushResult(0, 0, 0, null, null, "未配置访问令牌")
         if (items.isEmpty()) return PushResult(0, 0, 0, null, null, "没有可提交的条目")
         if (items.size > MAX_BATCH) return PushResult(0, 0, 0, null, null, "单批最多 $MAX_BATCH 条，请分批")
+        // 载荷体积守卫：先粗估，超限直接拒绝（避免附件上传完才发现载荷发不出去）
+        val estimateBytes = runCatching {
+            var bytes = 0L
+            items.forEach { item ->
+                bytes += item.name.toByteArray().size + item.lane.toByteArray().size + 96
+                item.words.forEach { bytes += it.toByteArray().size + 4 }
+                item.aliases.forEach { bytes += it.toByteArray().size + 4 }
+            }
+            bytes
+        }.getOrDefault(0L)
+        if (estimateBytes > MAX_PAYLOAD_BYTES) {
+            return PushResult(
+                0, 0, 0, null, null,
+                "本批词条体积过大（约 ${estimateBytes / 1024}KB），请分批提交",
+            )
+        }
         return try {
             val slug = encodeRepo(repo)
             val sha = fetchMasterHead(slug, token)

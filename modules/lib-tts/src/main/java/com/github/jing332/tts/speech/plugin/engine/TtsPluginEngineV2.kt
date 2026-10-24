@@ -1,10 +1,11 @@
 package com.github.jing332.tts.speech.plugin.engine
 
 import android.content.Context
-import com.github.jing332.compat.net.HostHttp
+import com.github.jing332.compat.net.PluginHttp
 import com.github.jing332.common.utils.limitLength
 import com.github.jing332.database.entities.plugin.Plugin
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.script.engine.RhinoScriptEngine
 import com.github.jing332.script.ensureArgumentsLength
 import com.github.jing332.script.runtime.NativeResponse
@@ -13,6 +14,7 @@ import com.github.jing332.script.simple.CompatScriptRuntime
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.script.withRhinoContext
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import okhttp3.Response
 import okhttp3.ResponseBody
@@ -65,6 +67,32 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
 
 
     protected var engine: RhinoScriptEngine = RhinoScriptEngine(runtime)
+
+    init {
+        // 给插件一个能安全跑后台 JS 的入口（ttsrv.runAsync）：
+        // 自行 new java.lang.Thread 调 JS 会缺 Rhino Context，异常被插件吞掉后预取静默失效。
+        ttsrv.asyncRunner = { fn ->
+            Thread {
+                val cx = org.mozilla.javascript.Context.enter()
+                try {
+                    cx.optimizationLevel = -1
+                    val scope = engine.scope ?: engine.globalScope
+                    fn.call(cx, scope, scope, emptyArray<Any?>())
+                } catch (t: Throwable) {
+                    PipelineProbe.log(
+                        context, "async.error",
+                        "pluginId" to plugin.pluginId,
+                        "err" to (t.message ?: t.javaClass.simpleName)
+                    )
+                } finally {
+                    org.mozilla.javascript.Context.exit()
+                }
+            }.apply {
+                isDaemon = true
+                name = "ttsrv-async-${plugin.pluginId}"
+            }.start()
+        }
+    }
 
     open protected fun execute(script: String): Any? =
         engine.execute(script.toScriptSource(sourceName = plugin.pluginId))
@@ -138,7 +166,7 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
             is CharSequence -> {
                 val str = result.toString()
                 if (str.startsWith("http://") || str.startsWith("https://")) {
-                    val resp: Response = HostHttp.get(str)
+                    val resp: Response = PluginHttp.get(str)
                     return resp.body?.check()?.byteStream()
                 } else
                     throw IllegalStateException(str)
@@ -150,7 +178,8 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         }
     }
 
-    private val mMutex by lazy { Mutex() } // stream lock
+    @Volatile
+    private var mMutex: Mutex = Mutex() // stream lock; cancelAudio 时整体换新，避免死回调永久占旧锁
 
     /**
      * 合成串行锁：同一插件引擎实例一次只允许一次合成。
@@ -158,6 +187,28 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
      * 「No data written」/空音频）；不同插件是不同实例，仍可并行。
      */
     val synthesisLock = ReentrantLock()
+
+    /** 0B 一次性重试标记：每个引擎实例只给一次机会，避免永久坏插件把每一句都拖成两次。 */
+    val emptyRetried = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 当前试听/合成的音频流；取消时关闭它，让阻塞的 readBytes 立刻返回。 */
+    @Volatile
+    private var currentAudioInputStream: InputStream? = null
+
+    fun cancelAudio() {
+        PipelineProbe.log(context, "audio.cancel", "pluginId" to plugin.pluginId)
+        val stream = currentAudioInputStream
+        currentAudioInputStream = null
+        // JsBridgeInputStream.close() 会顺带释放 callback mutex，避免插件不回调 close 时永久锁死。
+        runCatching { stream?.close() }
+        runCatching { onStop() }
+        // 关键：丢弃旧锁。插件即使永远不回调 close，也不会把下一次合成卡死。
+        mMutex = Mutex()
+    }
+
+    /** 只包“JS 调用 + 结果包装”；音频流读取由调用方的 idle/总时限控制，避免 30s 把长音频掐断。 */
+    private suspend fun <T> runWithTimeout(timeoutMs: Long, block: suspend () -> T): T =
+        if (timeoutMs > 0L) withTimeout(timeoutMs) { block() } else block()
     private suspend fun newCallback(ins: JsBridgeInputStream): Scriptable {
         val callback = ins.getCallback(mMutex)
         return withRhinoContext { cx ->
@@ -202,14 +253,25 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         }
     }
 
-    private suspend fun getAudioV2(request: Map<String, Any>): InputStream {
+    private suspend fun getAudioV2(request: Map<String, Any>, timeoutMs: Long): InputStream {
         val ins = JsBridgeInputStream()
-        val jsObj = newCallback(ins)
-        val result = runInterruptible {
-            engine.invokeMethod(pluginJsObj, FUNC_GET_AUDIO_V2, request, jsObj)
-                ?: throw NoSuchMethodException("getAudioV2() not found")
+        currentAudioInputStream = ins
+        try {
+            val result = runWithTimeout(timeoutMs) {
+                val jsObj = newCallback(ins)
+                runInterruptible {
+                    engine.invokeMethod(pluginJsObj, FUNC_GET_AUDIO_V2, request, jsObj)
+                        ?: throw NoSuchMethodException("getAudioV2() not found")
+                }
+            }
+            val stream = handleAudioResult(result) ?: ins
+            currentAudioInputStream = stream
+            return stream
+        } catch (t: Throwable) {
+            // 任何超时/异常都不能把 1KB 管道和 mMutex 留在半开状态。
+            runCatching { cancelAudio() }
+            throw t
         }
-        return handleAudioResult(result) ?: ins
     }
 
     suspend fun getAudio(
@@ -219,22 +281,25 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         rate: Float = 1f,
         volume: Float = 1f,
         pitch: Float = 1f,
+        timeoutMs: Long = 30_000L,
     ): InputStream {
         val r = (rate * 50f).toInt()
         val v = (volume * 50f).toInt()
         val p = (pitch * 50f).toInt()
         val result = try {
-            runInterruptible {
-                engine.invokeMethod(
-                    pluginJsObj,
-                    FUNC_GET_AUDIO,
-                    text,
-                    locale,
-                    voice,
-                    r,
-                    v,
-                    p
-                )
+            runWithTimeout(timeoutMs) {
+                runInterruptible {
+                    engine.invokeMethod(
+                        pluginJsObj,
+                        FUNC_GET_AUDIO,
+                        text,
+                        locale,
+                        voice,
+                        r,
+                        v,
+                        p
+                    )
+                }
             }
         } catch (_: NoSuchMethodException) {
             val request = mapOf(
@@ -246,11 +311,26 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
                 "volume" to v,
                 "pitch" to p
             )
-            getAudioV2(request)
+            getAudioV2(request, timeoutMs)
+        } catch (t: Throwable) {
+            runCatching { cancelAudio() }
+            throw t
         }
 
-        return handleAudioResult(result)
-            ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
+        val stream = try {
+            handleAudioResult(result)
+        } catch (t: Throwable) {
+            runCatching { cancelAudio() }
+            throw t
+        } ?: throw IllegalStateException("插件未返回音频(getAudio 返回 undefined/空)")
+        currentAudioInputStream = stream
+        PipelineProbe.log(
+            context, "audio.stream",
+            "pluginId" to plugin.pluginId,
+            "timeoutMs" to timeoutMs,
+            "type" to stream.javaClass.simpleName
+        )
+        return stream
     }
 
 }

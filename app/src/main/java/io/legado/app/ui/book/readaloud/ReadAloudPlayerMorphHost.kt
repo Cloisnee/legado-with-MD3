@@ -4,9 +4,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalContext
+import io.legado.app.R
 import io.legado.app.core.ui.player.PlayerMorphAppearance
 import io.legado.app.core.ui.player.PlayerMorphHost
 import io.legado.app.ui.book.readaloud.morph.ReadAloudMorphState
+import io.legado.app.utils.toastOnUi
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerEffect
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerScreenContent
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerUiState
@@ -28,6 +31,7 @@ fun ReadAloudPlayerMorphHost(
     onOpenScriptReview: (bookName: String, bookUrl: String, chapterIndex: Int) -> Unit =
         { _, _, _ -> },
 ) {
+    val context = LocalContext.current
     val currentDismiss by rememberUpdatedState(onDismiss)
     val currentSwitch by rememberUpdatedState(onSwitchToClassic)
     val currentOpenLogs by rememberUpdatedState(onOpenReadAloudLogs)
@@ -45,6 +49,9 @@ fun ReadAloudPlayerMorphHost(
                     currentDismiss()
                     currentOpenLogs()
                 }
+
+                ReadAloudPlayerEffect.TtsCacheCleared ->
+                    context.toastOnUi(R.string.clear_cache_success)
             }
         }
     }

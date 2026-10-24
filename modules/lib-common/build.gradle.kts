@@ -10,6 +10,7 @@ plugins {
 
 android {
     compileSdk = 37
+    compileSdkMinor = 1
     namespace = "com.github.jing332.common"
 
     defaultConfig {

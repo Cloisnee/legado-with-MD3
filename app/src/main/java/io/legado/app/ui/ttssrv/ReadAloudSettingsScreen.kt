@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +31,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
-import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.ReadAloudBgMode
 import io.legado.app.data.repository.ReadAloudSettingsRepository
@@ -58,7 +58,7 @@ import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.readaloud.audio.CloudWordnetClient
-import io.legado.app.utils.postEvent
+import io.legado.app.help.readaloud.audio.CloudWordnetPrefs
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
@@ -122,6 +122,10 @@ fun ReadAloudSettingsScreen(
     var showAlAmbDwell by remember { mutableStateOf(false) }
     var showAlChapCap by remember { mutableStateOf(false) }
     var showCloudWord by remember { mutableStateOf(false) }
+    // 云端词网：订阅配置变化，保存后小字即时刷新（默认值口径集中在 CloudWordnetPrefs）
+    val cloudEnabled by AppConfigStore.observeBoolean(PreferKey.cloudWordEnabled).collectAsState(null)
+    val cloudRepo by AppConfigStore.observeString(PreferKey.cloudWordRepo).collectAsState(null)
+    val cloudToken by AppConfigStore.observeString(PreferKey.cloudWordToken).collectAsState(null)
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -262,15 +266,6 @@ fun ReadAloudSettingsScreen(
                         },
                     )
                     TinySwitchSettingItem(
-                        title = stringResource(R.string.stream_read_aloud_audio),
-                        description = stringResource(R.string.stream_read_aloud_audio_summary),
-                        checked = st.streamReadAloudAudio,
-                        onCheckedChange = { v ->
-                            update { it.copy(streamReadAloudAudio = v) }
-                            if (v) postEvent(EventBus.MEDIA_BUTTON, false)
-                        },
-                    )
-                    TinySwitchSettingItem(
                         title = "响度均衡",
                         description = "自动学习各声线平均音量，播放时拉平不同插件声线的响度（±6dB 内）",
                         checked = loudness,
@@ -397,9 +392,13 @@ fun ReadAloudSettingsScreen(
                     TinyClickableSettingItem(
                         title = "云端词网",
                         description = run {
-                            val en = AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true
-                            val rp = AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty()
-                            if (en && rp.isNotBlank()) "已配置：$rp" else "未配置（点此填写仓库与令牌）"
+                            val en = cloudEnabled != false
+                            val rp = cloudRepo.orEmpty().ifBlank { CloudWordnetPrefs.DEFAULT_REPO }
+                            when {
+                                !en -> "未启用（点此启用并填写仓库与令牌）"
+                                cloudToken.isNullOrBlank() -> "已配置：$rp（待填令牌）"
+                                else -> "已配置：$rp"
+                            }
                         },
                         onClick = { showCloudWord = true },
                     )
@@ -572,15 +571,9 @@ private fun CloudWordnetConfigSheet(
     show: Boolean,
     onDismissRequest: () -> Unit,
 ) {
-    var enabled by remember(show) {
-        mutableStateOf(AppConfigStore.getBoolean(PreferKey.cloudWordEnabled) == true)
-    }
-    var repo by remember(show) {
-        mutableStateOf(AppConfigStore.getString(PreferKey.cloudWordRepo).orEmpty())
-    }
-    var token by remember(show) {
-        mutableStateOf(AppConfigStore.getString(PreferKey.cloudWordToken).orEmpty())
-    }
+    var enabled by remember(show) { mutableStateOf(CloudWordnetPrefs.enabled()) }
+    var repo by remember(show) { mutableStateOf(CloudWordnetPrefs.repo()) }
+    var token by remember(show) { mutableStateOf(CloudWordnetPrefs.token()) }
     var testing by remember(show) { mutableStateOf(false) }
     var testMsg by remember(show) { mutableStateOf<String?>(null) }
     var menuOpen by remember(show) { mutableStateOf(false) }
@@ -588,7 +581,10 @@ private fun CloudWordnetConfigSheet(
 
     fun save() {
         AppConfigStore.putBoolean(PreferKey.cloudWordEnabled, enabled)
-        AppConfigStore.putString(PreferKey.cloudWordRepo, repo.trim())
+        AppConfigStore.putString(
+            PreferKey.cloudWordRepo,
+            repo.trim().ifBlank { CloudWordnetPrefs.DEFAULT_REPO },
+        )
         AppConfigStore.putString(PreferKey.cloudWordToken, token.trim())
         onDismissRequest()
     }

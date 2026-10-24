@@ -9,6 +9,7 @@ import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
+import io.legado.app.domain.model.readaloud.ReadAloudEmotion
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.VoiceBankRoleType
@@ -21,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
+import java.io.File
 
 /**
  * 批量合成一章的朗读音频（音频管理页「缓存缺失条目」/「整本缓存」）。
@@ -29,7 +31,7 @@ import kotlin.random.Random
  * （`chapter_cache.<书>.json` / `all_clean_text_<书>.txt`），因此批量产出的文件播放时可直接命中。
  *
  * 声线解析与播放侧同源（旁白组首个 / 角色记录标签 / 默认对话 duihuaA·B 章内稳定随机）；
- * 目前只合成 `tts_server` 引擎声线（系统/云/HTTP 引擎需各自运行时环境，播放时会按需合成）。
+ * 目前只合成 `tts_server` 引擎声线（系统声线句先跳过，二期补文件合成；播放时会按需合成）。
  */
 class SynthesizeChapterAudioUseCase(
     private val app: Application,
@@ -41,12 +43,22 @@ class SynthesizeChapterAudioUseCase(
     private val loudness: LoudnessNormalizer,
 ) {
 
-    data class Result(val done: Int, val failed: Int, val skipped: Int)
+    data class Result(
+        val done: Int,
+        val failed: Int,
+        val skipped: Int,
+        /** 本章成功（含命中）的缓存文件（下载落区按文件名清单复制） */
+        val files: List<File> = emptyList(),
+        /** 因非内置引擎（系统声线）跳过的句数（一期不支持下载） */
+        val skippedOtherEngine: Int = 0,
+    )
 
     suspend operator fun invoke(
         book: String,
         chapterIndex: Int,
         onProgress: suspend (processed: Int, total: Int) -> Unit = { _, _ -> },
+        /** 缓存命名用的源级语速刻度；null = 按当前设置现算（应与播放侧同值） */
+        speechRateOverride: Int? = null,
     ): Result = withContext(Dispatchers.IO) {
         // B19 · M2：章节显示名（与分析侧一致——优先真实章名，回退第N章）
         val chLabel = dataRepository.chapterLabelOf(book, chapterIndex)
@@ -61,7 +73,7 @@ class SynthesizeChapterAudioUseCase(
             "【音频缓存·$chLabel】批量合成开始（剧本 ${lines.size} 条）"
         )
         val settings = settingsGateway.currentSettings
-        val speechRate = ReadAloudAudioCacheKeys.speechRateScale(
+        val speechRate = speechRateOverride ?: ReadAloudAudioCacheKeys.speechRateScale(
             followSys = settings.ttsFollowSys,
             ttsSpeechRate = settings.ttsSpeechRate,
         )
@@ -123,6 +135,7 @@ class SynthesizeChapterAudioUseCase(
         var skippedNoVoice = 0
         var skippedOtherEngine = 0
         val total = lines.size
+        val files = ArrayList<File>()
         lines.forEachIndexed { index, row ->
             currentCoroutineContext().ensureActive()
             val text = row.text
@@ -155,18 +168,19 @@ class SynthesizeChapterAudioUseCase(
                 emotion = row.emotion,
                 performance = null,
                 roleType = if (isNarrator) SpeechRoleType.Narrator else SpeechRoleType.Character,
-                httpTts = null,
             )
             val hash = ReadAloudAudioCacheKeys.contentHash(voiceKey, speechRate, text)
             val file = audioCache.cueFile(book, chapterIndex, index, hash)
             if (file.isUsableCacheFile()) {
                 done++
+                files.add(file)
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed
             }
             val t0 = System.currentTimeMillis()
             val timeoutMs = settings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
-            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs)
+            val emotion = ReadAloudEmotion.forPlugin(row.emotion)
+            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
             val maxRetry = settings.ttsMaxRetry.coerceIn(0, 10)
             var retried = 0
             while (!outcome.ok && retried < maxRetry) {
@@ -175,10 +189,11 @@ class SynthesizeChapterAudioUseCase(
                     "【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
                 )
                 delay(500)
-                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs)
+                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
             }
             if (outcome.ok) {
                 done++
+                files.add(file)
                 AppLog.putAudio(
                     "【音频缓存·$chLabel】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
                         " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}"
@@ -199,7 +214,7 @@ class SynthesizeChapterAudioUseCase(
             "【音频缓存·$chLabel】批量合成完成：新增/命中 $done，失败 $failed，" +
                 "跳过 $skipped（无声线 $skippedNoVoice / 非内置引擎 $skippedOtherEngine）"
         )
-        Result(done, failed, skipped)
+        Result(done, failed, skipped, files, skippedOtherEngine)
     }
 
     companion object {

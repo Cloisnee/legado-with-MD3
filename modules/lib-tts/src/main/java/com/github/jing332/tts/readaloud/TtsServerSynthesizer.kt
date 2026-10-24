@@ -1,8 +1,11 @@
 package com.github.jing332.tts.readaloud
 
 import android.content.Context
+import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
+import com.github.jing332.tts.watermark.AudioWatermarkStripper
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,6 +33,8 @@ class TtsServerSynthesizer(context: Context) {
         text: String,
         output: File,
         timeoutMs: Long = TtsEngineContext.AUDITION_TIMEOUT,
+        /** 阅读朗读情绪（空 = 无）；桥给插件 `ttsrv.tts.emotion` */
+        emotion: String = "",
     ): Outcome = withContext(Dispatchers.IO) {
         if (traitsJson.isBlank() || traitsJson.trim() == "[]") {
             return@withContext Outcome(false, "声线缺少条目配置（按条目合成，不回退全局查找）")
@@ -44,7 +49,7 @@ class TtsServerSynthesizer(context: Context) {
                 context = appContext,
                 engineId = "",
                 synthTimeoutMs = timeoutMs,
-            ).synthesizeByConfig(traitsJson, text)
+            ).synthesizeByConfig(traitsJson, text, emotion)
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
@@ -52,11 +57,22 @@ class TtsServerSynthesizer(context: Context) {
         }
         val bytes = outcome.bytes
             ?: return@withContext Outcome(false, outcome.reason ?: "未知原因")
+        // 平台试听水印剥离：只在插件声明了 watermark=true 时处理（见 TtsConfigStore.declaresWatermark）
+        val pluginId = runCatching {
+            JSONObject(traitsJson).optJSONObject("source")?.optString("pluginId").orEmpty()
+        }.getOrDefault("")
+        val cleaned = runCatching {
+            AudioWatermarkStripper.stripDeclared(
+                appContext, pluginId, bytes,
+                File(TtsDirProvider.baseDir(appContext), "_audition")
+            )
+        }.getOrElse { AudioWatermarkStripper.Outcome(bytes, false, "异常: ${it.message}") }
+        val finalBytes = cleaned.bytes
         val written = runCatching {
             output.parentFile?.mkdirs()
-            output.writeBytes(bytes)
+            output.writeBytes(finalBytes)
         }.isSuccess && output.length() > 0
         if (!written) return@withContext Outcome(false, "音频写入失败")
-        Outcome(true, null, bytes.size)
+        Outcome(true, null, finalBytes.size)
     }
 }

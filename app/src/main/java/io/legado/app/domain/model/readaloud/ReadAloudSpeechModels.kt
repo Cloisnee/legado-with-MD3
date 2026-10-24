@@ -11,14 +11,14 @@ data class ReadAloudVoice(
     val managedBy: String = MANAGED_BY_USER,
     val enabled: Boolean = true,
     val available: Boolean = true,
+    /** 用户主动排除：不进候选、不参与选音，但行要留着，见实体上的说明。 */
+    val excluded: Boolean = false,
     val revision: Long = 0L,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     companion object {
         const val ENGINE_SYSTEM = "system"
-        const val ENGINE_HTTP = "http"
-        const val ENGINE_CLOUD = "cloud_tts"
         const val ENGINE_TTS_SERVER = "tts_server"
         const val MANAGED_BY_USER = "user"
         const val MANAGED_BY_CONFIGURED_TTS = "configured_tts"
@@ -98,6 +98,13 @@ data class ChapterSpeechSegment(
     val characterId: String? = null,
     val characterName: String = "",
     val emotion: String = "",
+    /**
+     * 只作用于这一段的变声器预设名（正文胶囊那一栏设的），空 = 跟随角色全局。
+     *
+     * 由分析管线在生成播放单元时抄入：朗读侧只拿得到单元，
+     * 让它带着名字下来就不用再去猜「这句是章内第几个引号」。
+     */
+    val voiceEffect: String = "",
     val confidence: Float = 0f,
     val source: SpeechResolutionSource,
     val userLocked: Boolean = false,

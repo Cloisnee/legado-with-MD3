@@ -19,6 +19,8 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,12 +61,10 @@ import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -103,7 +103,6 @@ import coil3.compose.AsyncImage
 import coil3.size.Size
 import io.legado.app.R
 import io.legado.app.constant.BookType
-import io.legado.app.core.ui.morph.trackBookMorphCover
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
@@ -114,6 +113,7 @@ import io.legado.app.help.webView.WebJsExtensions
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.main.homepage.modules.BannerModule
 import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.animateColorSchemeAsState
 import io.legado.app.ui.theme.LocalHazeState
 import io.legado.app.ui.theme.LocalLegadoThemeColors
 import io.legado.app.ui.theme.ProvideColorSchemeOverride
@@ -247,6 +247,7 @@ fun BookInfoScreen(
             },
         )
     }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class,
@@ -275,14 +276,15 @@ private fun BookInfoScreenContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    // 资源串走 stringResource（配置感知），不要用 LocalContext.current.getString
+    // 资源串在 composable 作用域内解析：LocalContext.current.getString 不感知配置变化，
+    // 语言/字体缩放切换后可能拿到过期值（LocalContextGetResourceValueCall）。
     val jumpToAnotherAppMessage = stringResource(R.string.jump_to_another_app)
-    val confirmActionLabel = stringResource(R.string.confirm)
+    val confirmLabel = stringResource(R.string.confirm)
     val jumpToAnotherApp: (Uri) -> Unit = { uri ->
         scope.launch {
             val result = snackbarHostState.showSnackbar(
                 message = jumpToAnotherAppMessage,
-                actionLabel = confirmActionLabel,
+                actionLabel = confirmLabel,
             )
             if (result == SnackbarResult.ActionPerformed) {
                 context.openUrl(uri)
@@ -308,8 +310,8 @@ private fun BookInfoScreenContent(
                 onClick = { onIntent(BookInfoIntent.ReadClick) },
                 containerColor = LegadoTheme.colorScheme.primaryContainer,
                 contentColor = LegadoTheme.colorScheme.onPrimaryContainer,
-                icon = { Icon(Icons.Default.Book, null) },
-                text = { Text(stringResource(R.string.reading)) },
+                icon = { AppIcon(Icons.Default.Book, null) },
+                text = { AppText(stringResource(R.string.reading)) },
             )
         },
         alwaysDrawBehindBars = true,
@@ -388,7 +390,12 @@ private fun BookInfoScreenContent(
                                             onIntent(BookInfoIntent.RelatedBookClick(book))
                                         },
                                         onMoreClick = {
-                                            onIntent(BookInfoIntent.RelatedBooksMore(module.title, module.resolvedUrl))
+                                            onIntent(
+                                                BookInfoIntent.RelatedBooksMore(
+                                                    module.title,
+                                                    module.resolvedUrl
+                                                )
+                                            )
                                         },
                                     )
                                 }
@@ -399,7 +406,12 @@ private fun BookInfoScreenContent(
                                     bookSource = state.bookSource,
                                     onJumpToAnotherApp = jumpToAnotherApp,
                                     onIntroButtonClick = { name, click ->
-                                        onIntent(BookInfoIntent.IntroButtonClick(name, click))
+                                        onIntent(
+                                            BookInfoIntent.IntroButtonClick(
+                                                name,
+                                                click
+                                            )
+                                        )
                                     },
                                     onIntroImageClick = { click ->
                                         onIntent(BookInfoIntent.IntroImageClick(click))
@@ -540,10 +552,21 @@ private fun BookInfoColorTheme(
     val baseTheme = LocalLegadoThemeColors.current
     val targetColorScheme = theme?.colorScheme ?: baseTheme.colorScheme
     val targetSeedColor = theme?.seedColor ?: baseTheme.seedColor
-
-    // 封面取色必须是整色板一次性生效，不能逐帧插值：插值期间每帧都会产出新的
-    // ColorScheme/LegadoColorScheme/LocalLegadoThemeColors 并重建 Miuix ThemeController，
-    // 详情页整页会在转场中反复重组+强制布局。与 PlayerThemeOverride 保持同一口径。
+    // 「设备默认取色 → 封面取色」的渐变：整色板 400ms 插值。
+    //
+    // 代价是明确的：插值期间每帧都会产出新的 ColorScheme/LegadoColorScheme/LocalLegadoThemeColors
+    // 并重建 Miuix ThemeController，详情页会在转场期间反复重组 + 强制布局。这里仍然选它，
+    // 因为一次性切换会在过渡里闪出一帧平台底色（surface），观感上更差。
+    val animationSpec = tween<Color>(
+        durationMillis = 400,
+        easing = FastOutSlowInEasing,
+    )
+    val animatedColorScheme = targetColorScheme.animateColorSchemeAsState(animationSpec)
+    val animatedSeedColor by animateColorAsState(
+        targetValue = targetSeedColor,
+        animationSpec = animationSpec,
+        label = "book_info_theme_seed",
+    )
     ProvideColorSchemeOverride(
         colorScheme = targetColorScheme,
         seedColor = targetSeedColor,
@@ -602,7 +625,7 @@ private fun BookInfoTransparentTopAppBar(
     } else {
         MediumFlexibleTopAppBar(
             modifier = hazeState?.let { Modifier.responsiveHazeEffectFixedStyle(it) } ?: Modifier,
-            title = { Text(text = "", maxLines = 1) },
+            title = { AppText(text = "", maxLines = 1) },
             navigationIcon = {
                 TopBarNavigationButton(onClick = onBackPressed)
             },
@@ -876,6 +899,13 @@ private fun BookInfoOverflowMenu(
             text = stringResource(R.string.read_record),
             onClick = { onMenuAction(BookInfoMenuAction.ReadRecord) }
         )
+        if (state.inBookshelf && book != null) {
+            RoundDropdownMenuItem(
+                text = stringResource(R.string.book_disable_read_record),
+                onClick = { onMenuAction(BookInfoMenuAction.ToggleReadRecordDisabled) },
+                isSelected = book.disableReadRecord,
+            )
+        }
         if (book?.isLocal == true) {
             RoundDropdownMenuItem(
                 text = stringResource(R.string.re_sync_webdav),
@@ -995,13 +1025,15 @@ private fun BookInfoHeader(
                 Box(
                     modifier = Modifier
                         .width(112.dp)
-                        .combinedClickable(onClick = onCoverClick, onLongClick = onCoverLongClick)
+                        .combinedClickable(
+                            onClick = onCoverClick,
+                            onLongClick = onCoverLongClick
+                        )
                         .semantics {
                             role = Role.Button
                             contentDescription = coverDescription
                         }
                 ) {
-                    
                         CoilBookCover(
                             name = book.name,
                             author = book.author,
@@ -1014,8 +1046,7 @@ private fun BookInfoHeader(
                             onError = onNetworkCoverLoadError,
                             modifier = Modifier
                                 .width(112.dp)
-                                .aspectRatio(5f / 7f)
-                                .trackBookMorphCover(4.dp),
+                                .aspectRatio(5f / 7f),
                             showLoadingPlaceholder = sharedCoverKey == null,
                             sharedTransitionScope = sharedTransitionScope,
                             animatedVisibilityScope = animatedVisibilityScope,
@@ -1029,54 +1060,54 @@ private fun BookInfoHeader(
                         .padding(top = 8.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    var showTitleMenu by remember { mutableStateOf(false) }
-                    var isTitleExpanded by rememberSaveable { mutableStateOf(false) }
-                    Box {
-                        AnimatedTextLine(
-                            text = book.name,
-                            style = LegadoTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = if (isTitleExpanded) Int.MAX_VALUE else 2,
-                            modifier = Modifier.combinedClickable(
-                                onClick = { onBookNameClick(false) },
-                                onLongClick = { showTitleMenu = true }
+                        var showTitleMenu by remember { mutableStateOf(false) }
+                        var isTitleExpanded by rememberSaveable { mutableStateOf(false) }
+                        Box {
+                            AnimatedTextLine(
+                                text = book.name,
+                                style = LegadoTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = if (isTitleExpanded) Int.MAX_VALUE else 2,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { onBookNameClick(false) },
+                                    onLongClick = { showTitleMenu = true }
+                                )
                             )
-                        )
-                        RoundDropdownMenu(
-                            expanded = showTitleMenu,
-                            onDismissRequest = { showTitleMenu = false }
-                        ) {
-                            RoundDropdownMenuItem(
-                                text = stringResource(R.string.search),
-                                onClick = {
-                                    showTitleMenu = false
-                                    onBookNameClick(true)
-                                }
-                            )
-                            RoundDropdownMenuItem(
-                                text = stringResource(if (isTitleExpanded) R.string.collapse else R.string.expand),
-                                onClick = {
-                                    showTitleMenu = false
-                                    isTitleExpanded = !isTitleExpanded
-                                }
-                            )
+                            RoundDropdownMenu(
+                                expanded = showTitleMenu,
+                                onDismissRequest = { showTitleMenu = false }
+                            ) {
+                                RoundDropdownMenuItem(
+                                    text = stringResource(R.string.search),
+                                    onClick = {
+                                        showTitleMenu = false
+                                        onBookNameClick(true)
+                                    }
+                                )
+                                RoundDropdownMenuItem(
+                                    text = stringResource(if (isTitleExpanded) R.string.collapse else R.string.expand),
+                                    onClick = {
+                                        showTitleMenu = false
+                                        isTitleExpanded = !isTitleExpanded
+                                    }
+                                )
+                            }
                         }
-                    }
-                    AnimatedTextLine(
-                        text = stringResource(R.string.author_show, book.realAuthor),
-                        style = LegadoTheme.typography.bodyLarge,
-                        color = LegadoTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.combinedClickable(
-                            onClick = { onAuthorClick(false) },
-                            onLongClick = { onAuthorClick(true) }
+                        AnimatedTextLine(
+                            text = stringResource(R.string.author_show, book.realAuthor),
+                            style = LegadoTheme.typography.bodyLarge,
+                            color = LegadoTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.combinedClickable(
+                                onClick = { onAuthorClick(false) },
+                                onLongClick = { onAuthorClick(true) }
+                            )
                         )
-                    )
-                    AnimatedTextLine(
-                        text = stringResource(R.string.origin_show, book.originName),
-                        style = LegadoTheme.typography.labelMedium,
-                        color = LegadoTheme.colorScheme.primary,
-                        modifier = Modifier.clickable(onClick = onOriginClick)
-                    )
+                        AnimatedTextLine(
+                            text = stringResource(R.string.origin_show, book.originName),
+                            style = LegadoTheme.typography.labelMedium,
+                            color = LegadoTheme.colorScheme.primary,
+                            modifier = Modifier.clickable(onClick = onOriginClick)
+                        )
                 }
             }
             if (highlightedTags.isNotEmpty()) {

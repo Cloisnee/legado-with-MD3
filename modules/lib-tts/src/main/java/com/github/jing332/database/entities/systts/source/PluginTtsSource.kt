@@ -22,6 +22,14 @@ data class PluginTtsSource(
     @Transient
     @IgnoredOnParcel
     val plugin: Plugin? = null,
+
+    /**
+     * 阅读朗读情绪（阅读侧注入；插件经 `ttsrv.tts.emotion` 读取）。
+     * 空串 = 无情绪（旁白/中性不下发）；不参与序列化与配置持久化。
+     */
+    @Transient
+    @IgnoredOnParcel
+    val emotion: String = "",
 ) : TextToSpeechSource() {
     companion object{
         const val SPEED_FOLLOW = 0f

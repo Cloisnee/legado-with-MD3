@@ -960,6 +960,7 @@ private fun SearchSuggestionPanel(
     onClearHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val visibleHints = state.bookshelfHints
     LazyColumn(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -968,7 +969,7 @@ private fun SearchSuggestionPanel(
             bottom = 8.dp
         )
     ) {
-        if (state.bookshelfHints.isNotEmpty()) {
+        if (visibleHints.isNotEmpty()) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AppIcon(Icons.Default.Book, contentDescription = null)
@@ -980,7 +981,7 @@ private fun SearchSuggestionPanel(
                 }
             }
 
-            items(state.bookshelfHints, key = { it.bookUrl }) { book ->
+            items(visibleHints, key = { it.bookUrl }) { book ->
                 SelectionItemCard(
                     modifier = Modifier.animateItem(),
                     title = book.name,

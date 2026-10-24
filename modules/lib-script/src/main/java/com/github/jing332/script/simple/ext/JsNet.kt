@@ -1,6 +1,6 @@
 package com.github.jing332.script.simple.ext
 
-import com.github.jing332.compat.net.HostHttp
+import com.github.jing332.compat.net.PluginHttp
 import com.github.jing332.script.annotation.ScriptInterface
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -10,20 +10,24 @@ import okhttp3.Response
 import java.io.File
 
 /**
- * 移植版：原实现基于 com.drake.net，这里替换为宿主 OkHttp（[HostHttp]）。
+ * 移植版：原实现基于 com.drake.net，这里替换为宿主 OkHttp（[PluginHttp]）。
  * 对外 API 与调用契约保持与原版一致（httpGet/httpGetString/httpGetBytes/httpPost/httpPostMultipart/cancelNetwork）。
  */
 open class JsNet(private val engineId: String) {
     private val groupId by lazy { engineId + hashCode() }
 
     fun cancelNetwork() {
-        HostHttp.cancelGroup(groupId)
+        PluginHttp.cancelGroup(groupId)
     }
 
     @JvmOverloads
     @ScriptInterface
-    fun httpGet(url: CharSequence, headers: Map<CharSequence, CharSequence>? = null): Response {
-        return HostHttp.get(url.toString(), headers, groupId)
+    fun httpGet(
+        url: CharSequence,
+        headers: Map<CharSequence, CharSequence>? = null,
+        timeoutMs: Long? = null,
+    ): Response {
+        return PluginHttp.get(url.toString(), headers, groupId, timeoutMs)
     }
 
     /**
@@ -67,9 +71,16 @@ open class JsNet(private val engineId: String) {
     fun httpPost(
         url: CharSequence,
         body: CharSequence? = null,
-        headers: Map<CharSequence, CharSequence>? = null
+        headers: Map<CharSequence, CharSequence>? = null,
+        timeoutMs: Long? = null,
     ): Response {
-        return HostHttp.post(url.toString(), body?.toString()?.toRequestBody(), headers, groupId)
+        return PluginHttp.post(
+            url.toString(),
+            body?.toString()?.toRequestBody(),
+            headers,
+            groupId,
+            timeoutMs
+        )
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -114,8 +125,8 @@ open class JsNet(private val engineId: String) {
         type: String = "multipart/form-data",
         headers: Map<CharSequence, CharSequence>? = null
     ): Response {
-        return HostHttp.postMultipart(
-            url.toString(), postMultipart(type, form).build(), headers, groupId
+        return PluginHttp.postMultipart(
+            url.toString(), postMultipart(type, form).build(), headers, groupId, null
         )
     }
 }

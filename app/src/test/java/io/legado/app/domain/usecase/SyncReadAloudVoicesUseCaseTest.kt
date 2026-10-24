@@ -20,9 +20,9 @@ class SyncReadAloudVoicesUseCaseTest {
         val gateway = MutableVoiceGateway()
         val useCase = SyncReadAloudVoicesUseCase(gateway)
         val entry = VoiceCatalogEntry(
-            engineType = ReadAloudVoice.ENGINE_HTTP,
+            engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
             engineId = "7",
-            displayName = "HTTP voice",
+            displayName = "Server voice",
             sourceRevision = 10,
         )
 
@@ -38,7 +38,7 @@ class SyncReadAloudVoicesUseCaseTest {
         )
 
         assertEquals(1, first.inserted)
-        assertEquals(SpeechIdentity.voiceId("http", "7", ""), gateway.voices.single().id)
+        assertEquals(SpeechIdentity.voiceId("tts_server", "7", ""), gateway.voices.single().id)
         assertEquals(SyncReadAloudVoicesResult(0, 0, 0), second)
         assertEquals(100, gateway.voices.single().updatedAt)
     }
@@ -46,8 +46,8 @@ class SyncReadAloudVoicesUseCaseTest {
     @Test
     fun `missing managed voice becomes unavailable without changing preference`() = runBlocking {
         val old = ReadAloudVoice(
-            id = SpeechIdentity.voiceId("http", "7", ""),
-            engineType = "http",
+            id = SpeechIdentity.voiceId("tts_server", "7", ""),
+            engineType = "tts_server",
             engineId = "7",
             speakerId = "",
             displayName = "old",
@@ -68,10 +68,10 @@ class SyncReadAloudVoicesUseCaseTest {
     }
 
     @Test
-    fun `missing configured HTTP voice is removed with deleted TTS`() = runBlocking {
+    fun `missing configured server voice is removed with deleted entry`() = runBlocking {
         val old = ReadAloudVoice(
-            id = SpeechIdentity.voiceId("http", "7", ""),
-            engineType = ReadAloudVoice.ENGINE_HTTP,
+            id = SpeechIdentity.voiceId("tts_server", "7", ""),
+            engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
             engineId = "7",
             speakerId = "",
             displayName = "deleted TTS",
@@ -83,7 +83,7 @@ class SyncReadAloudVoicesUseCaseTest {
         val result = SyncReadAloudVoicesUseCase(gateway)(
             entries = emptyList(),
             managedSources = setOf(ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS),
-            removeMissingEngineTypes = setOf(ReadAloudVoice.ENGINE_HTTP),
+            removeMissingEngineTypes = setOf(ReadAloudVoice.ENGINE_TTS_SERVER),
             now = 200,
         )
 

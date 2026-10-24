@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import coil3.ImageLoader
 import coil3.request.SuccessResult
 import coil3.toBitmap
+import com.google.gson.annotations.SerializedName
 import io.legado.app.R
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
@@ -93,6 +94,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -179,6 +181,10 @@ class BookInfoViewModel(
             field = value
             observeReadRecordIfNeeded(value)
         }
+
+    override fun onCleared() {
+        super.onCleared()
+    }
     private var currentChapterList: List<BookChapter> = emptyList()
     private var tocLoadFailed = false
     private var currentWebFiles: List<BookInfoWebFile> = emptyList()
@@ -239,36 +245,41 @@ class BookInfoViewModel(
     ) {
         val current = currentBook
         if (current != null) return
-        currentBook = if (!name.isNullOrBlank() && !author.isNullOrBlank()) {
-            Book(
-                bookUrl = bookUrl,
-                name = name,
-                author = author,
-                origin = origin ?: BookType.localTag,
-                coverUrl = coverPath
-            ).apply {
-                addType(BookType.notShelf)
-            }
-        } else {
-            null
-        }
         clearReadRecordObserve()
         relatedBooksLoadJob?.cancel()
         syncUiState()
         execute {
-            val dbBook = bookRepository.getBook(bookUrl)
-            if (dbBook != null) {
-                inBookshelf = !dbBook.isNotShelf
-                dbBook
+            val fallback = if (!name.isNullOrBlank() && !author.isNullOrBlank()) {
+                Book(
+                    bookUrl = bookUrl,
+                    name = name,
+                    author = author,
+                    origin = origin ?: BookType.localTag,
+                    coverUrl = coverPath
+                ).apply {
+                    addType(BookType.notShelf)
+                }
             } else {
-                val searchBook = searchRepository.getSearchBook(bookUrl)?.toBook()
-                if (searchBook != null) {
-                    inBookshelf = false
-                    searchBook
-                } else {
-                    currentBook ?: throw NoStackTraceException("未找到书籍")
+                null
+            }
+            val dbBook = bookRepository.getBook(bookUrl)
+            val book = when {
+                dbBook != null -> {
+                    inBookshelf = !dbBook.isNotShelf
+                    dbBook
+                }
+
+                else -> {
+                    val searchBook = searchRepository.getSearchBook(bookUrl)?.toBook()
+                    if (searchBook != null) {
+                        inBookshelf = false
+                        searchBook
+                    } else {
+                        fallback ?: throw NoStackTraceException("未找到书籍")
+                    }
                 }
             }
+            book
         }.onSuccess { book ->
             // 如果从数据库/搜索中拿到的书没有封面，但我们有传入的封面，则保留传入的封面
             if (book.coverUrl.isNullOrBlank() && !coverPath.isNullOrBlank()) {
@@ -530,6 +541,26 @@ class BookInfoViewModel(
                 saveBook(book)
             }
             syncUiState()
+        }
+    }
+
+    private fun toggleReadRecordDisabled() {
+        val book = currentBook?.takeIf { inBookshelf } ?: return
+        val disabled = !book.disableReadRecord
+        execute {
+            bookRepository.setReadRecordDisabled(book.bookUrl, disabled)
+        }.onSuccess { updated ->
+            if (updated != null) {
+                ReadBook.setReadRecordDisabled(updated.bookUrl, updated.disableReadRecord)
+                AudioPlay.book?.takeIf { it.bookUrl == updated.bookUrl }
+                    ?.disableReadRecord = updated.disableReadRecord
+                currentBook?.takeIf { it.bookUrl == updated.bookUrl }?.let {
+                    it.disableReadRecord = updated.disableReadRecord
+                    syncUiState()
+                }
+            }
+        }.onError {
+            showMessage(it.localizedMessage ?: context.getString(R.string.error))
         }
     }
 
@@ -1454,6 +1485,7 @@ class BookInfoViewModel(
             )
 
             BookInfoMenuAction.ToggleCanUpdate -> toggleCanUpdate()
+            BookInfoMenuAction.ToggleReadRecordDisabled -> toggleReadRecordDisabled()
             BookInfoMenuAction.ToggleSplitLongChapter -> toggleSplitLongChapter()
             BookInfoMenuAction.ToggleDeleteAlert -> toggleDeleteAlert()
             BookInfoMenuAction.ClearCache -> emitEffect(
@@ -1804,6 +1836,7 @@ class BookInfoViewModel(
             isLocal = isLocal,
             type = type,
             canUpdate = canUpdate,
+            disableReadRecord = disableReadRecord,
             splitLongChapter = getSplitLongChapter(),
             durChapterTitle = durChapterTitle,
             latestChapterTitle = latestChapterTitle,
@@ -1859,8 +1892,12 @@ private val BookInfoWebFile.isSupported: Boolean
 private val BookInfoWebFile.isSupportDecompress: Boolean
     get() = AppPattern.archiveFileRegex.matches(name)
 
+/**
+ * 书源 `ruleBookInfo.relatedBooks` 的 JSON 结构。键名由书源约定、代码外生成，
+ * 必须写死在 [SerializedName]：否则 R8 改名后三个字段全反序列化为 null，关联书籍整组消失。
+ */
 private data class RelatedBooksDef(
-    val key: String? = null,
-    val title: String? = null,
-    val url: String? = null,
+    @SerializedName("key") val key: String? = null,
+    @SerializedName("title") val title: String? = null,
+    @SerializedName("url") val url: String? = null,
 )

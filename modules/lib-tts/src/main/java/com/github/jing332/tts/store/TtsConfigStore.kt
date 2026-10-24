@@ -104,7 +104,12 @@ object TtsConfigStore {
             if (id.isBlank()) {
                 skip++; continue
             }
-            if (ordered.containsKey(id)) replace++ else add++
+            val old = ordered[id]
+            if (old != null) replace++ else add++
+            // 覆盖导入时保留旧 userVars（Bearer/Token 等），避免用户重填凭据
+            if (old != null && !o.has("userVars")) {
+                old.optJSONObject("userVars")?.let { runCatching { o.put("userVars", it) } }
+            }
             ordered[id] = o
         }
         val out = JSONArray()
@@ -121,6 +126,16 @@ object TtsConfigStore {
         }
         return null
     }
+
+    /**
+     * 插件声明契约：该音源的合成结果尾部可能带平台水印。
+     *
+     * 声明方式 = 插件 JSON 顶层字段 `"watermark": true`（导入时整对象保存，不会被丢弃）。
+     * 未声明 → 宿主不做任何音频处理，保证老插件行为不变。
+     */
+    fun declaresWatermark(context: Context, pluginId: String): Boolean =
+        runCatching { pluginById(context, pluginId)?.optBoolean("watermark", false) == true }
+            .getOrDefault(false)
 
     fun referencedPluginIds(context: Context): List<String> {
         val set = linkedSetOf<String>()

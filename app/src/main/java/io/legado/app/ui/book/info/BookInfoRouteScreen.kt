@@ -25,16 +25,13 @@ import androidx.lifecycle.lifecycleScope
 import com.script.rhino.runScriptWithContext
 import io.legado.app.R
 import io.legado.app.constant.AppLog
-import io.legado.app.core.ui.morph.BookMorphHost
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.help.book.isAudio
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.login.SourceLoginJsExtensions
-import io.legado.app.ui.main.bookCoverSharedElementKey
 import io.legado.app.ui.main.bookInfoCoverSharedElementKey
-import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.widget.components.filePicker.FilePickerSheet
 import io.legado.app.utils.RealPathUtil
 import io.legado.app.utils.externalFiles
@@ -58,8 +55,8 @@ fun BookInfoRouteScreen(
     origin: String? = null,
     coverPath: String? = null,
     viewModel: BookInfoViewModel,
-    onBack: () -> Unit,
-    onFinish: (resultCode: Int?, afterTransition: Boolean) -> Unit,
+    onBack: () -> Boolean = { true },
+    onFinish: (resultCode: Int?, afterTransition: Boolean) -> Boolean = { _, _ -> true },
     onOpenSearch: (String) -> Unit,
     onOpenBookSourceEdit: (String) -> Unit,
     onOpenSourceLogin: (String) -> Unit,
@@ -73,6 +70,7 @@ fun BookInfoRouteScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     sharedCoverKey: String? = null,
+    /** 旧调用契约（封面形变开关/详情封面 key/返回策略）：形变细节随共享元素舞台，W6 复核。 */
     useCoverMorph: Boolean = true,
     detailCoverKey: String = bookInfoCoverSharedElementKey(bookUrl),
     predictiveBackEnabled: Boolean = true,
@@ -83,36 +81,8 @@ fun BookInfoRouteScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val showMangaUi by rememberUpdatedState(uiState.showMangaUi)
+    // 资源串在 composable 作用域内解析，避免 LocalContext.current.getString 拿到过期值
     var showSelectBooksDirSheet by remember { mutableStateOf(false) }
-
-    val canMorphBack = isTopRoute &&
-            uiState.dialog == null &&
-            uiState.sheet == BookInfoSheet.None &&
-            !showSelectBooksDirSheet &&
-            !uiState.showAppLogSheet
-    val effectiveCoverKey = if (useCoverMorph) {
-        sharedCoverKey ?: bookCoverSharedElementKey(bookUrl)
-    } else null
-    var isDismissed by remember { mutableStateOf(false) }
-    var finishResultCode by remember { mutableStateOf<Int?>(null) }
-    var finishAfterTransition by remember { mutableStateOf(false) }
-    var collapseRequested by remember { mutableStateOf<(() -> Unit)?>(null) }
-
-    val dismissBookInfo: () -> Unit = {
-        if (!isDismissed) {
-            isDismissed = true
-            onFinish(finishResultCode, finishAfterTransition)
-        }
-    }
-
-    val handleBack: () -> Unit = {
-        val collapse = collapseRequested
-        if (collapse != null && canMorphBack) {
-            collapse()
-        } else {
-            dismissBookInfo()
-        }
-    }
 
     val localBookTreeSelect =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -154,14 +124,7 @@ fun BookInfoRouteScreen(
             when (effect) {
                 is BookInfoEffect.ShowMessage -> context.toastOnUi(effect.message)
                 is BookInfoEffect.Finish -> {
-                    finishResultCode = effect.resultCode
-                    finishAfterTransition = effect.afterTransition
-                    val collapse = collapseRequested
-                    if (collapse != null && canMorphBack) {
-                        collapse()
-                    } else {
-                        dismissBookInfo()
-                    }
+                    onFinish(effect.resultCode, effect.afterTransition)
                 }
 
                 is BookInfoEffect.OpenBookInfoEdit -> {
@@ -222,42 +185,33 @@ fun BookInfoRouteScreen(
                 is BookInfoEffect.NavigateToExploreShow -> {
                     onNavigateToExploreShow(effect.title, effect.sourceUrl, effect.exploreUrl)
                 }
-
             }
         }
     }
 
-    BookMorphHost(
-        anchorKey = effectiveCoverKey,
-        backgroundColor = LegadoTheme.colorScheme.background,
-        backEnabled = canMorphBack,
-        predictiveBackEnabled = predictiveBackEnabled,
-        hasTargetCover = true,
-        onDismiss = dismissBookInfo,
-    ) { onCollapse ->
-        LaunchedEffect(onCollapse) {
-            collapseRequested = onCollapse
-        }
-        FilePickerSheet(
-            show = showSelectBooksDirSheet,
-            onDismissRequest = { showSelectBooksDirSheet = false },
-            title = stringResource(R.string.select_book_folder),
-            onSelectSysDir = {
-                showSelectBooksDirSheet = false
-                localBookTreeSelect.launch(null)
-            },
-        )
-        BookInfoScreen(
-            state = uiState,
-            groups = viewModel.allGroups
-                .collectAsStateWithLifecycle(persistentListOf<BookGroup>()).value,
-            onIntent = viewModel::onIntent,
-            onBack = handleBack,
-            sharedTransitionScope = null,
-            animatedVisibilityScope = null,
-            sharedCoverKey = detailCoverKey,
-        )
-    }
+    FilePickerSheet(
+        show = showSelectBooksDirSheet,
+        onDismissRequest = { showSelectBooksDirSheet = false },
+        title = stringResource(R.string.select_book_folder),
+        onSelectSysDir = {
+            showSelectBooksDirSheet = false
+            localBookTreeSelect.launch(null)
+        },
+    )
+    // 详情页是普通 nav3 目的地（覆盖层 + 零转场）：封面飞行由形变舞台负责，
+    // 页面里的封面只上报终点位置，并在形变期间让位给飞行封面。
+    // 详情页是普通 nav3 目的地：封面飞行交给共享元素，两端 key 由路由统一携带
+    // （`route.sharedCoverKey` 就是源卡片登记的那一个），页面自身不再接管返回。
+    BookInfoScreen(
+        state = uiState,
+        groups = viewModel.allGroups
+            .collectAsStateWithLifecycle(persistentListOf<BookGroup>()).value,
+        onIntent = viewModel::onIntent,
+        onBack = { onBack() },
+        sharedTransitionScope = sharedTransitionScope,
+        animatedVisibilityScope = animatedVisibilityScope,
+        sharedCoverKey = if (useCoverMorph) sharedCoverKey else null,
+    )
 }
 
 private fun runSourceCallback(

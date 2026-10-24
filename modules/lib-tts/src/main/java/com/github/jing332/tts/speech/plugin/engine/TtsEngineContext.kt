@@ -7,6 +7,7 @@ import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.compat.log.KLog
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.script.simple.SimpleScriptEngine
+import com.github.jing332.tts.debug.PipelineProbe
 import com.github.jing332.script.simple.ext.JsExtensions
 import com.github.jing332.script.source.toScriptSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
@@ -14,11 +15,11 @@ import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
-import kotlin.concurrent.withLock
-import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.jvm.Transient
 
 /**
  * 插件运行时上下文（JS 中通过 `ttsrv` 访问）。
@@ -38,13 +39,35 @@ data class TtsEngineContext(
     val synthTimeoutMs: Long = AUDITION_TIMEOUT
 ) : JsExtensions(context, engineId) {
 
+    /**
+     * 宿主注入的后台执行器：在带 Rhino Context 的线程里执行 JS 函数。
+     * 插件侧 `ttsrv.runAsync(fn)` 用它做「票据预取」这类不阻塞当前合成的后台任务。
+     * 直接在插件里 `new java.lang.Thread(...)` 调 JS 函数会缺 Context（Rhino 抛
+     * "no Context associated with current thread"），异常又被插件吞掉 → 预取静默失效。
+     */
+    @Transient
+    var asyncRunner: ((org.mozilla.javascript.Function) -> Unit)? = null
+
+    /** 插件侧异步执行入口：`ttsrv.runAsync(function(){ ... })` */
+    fun runAsync(fn: Any?) {
+        val f = fn as? org.mozilla.javascript.Function
+            ?: throw IllegalArgumentException("runAsync 需要传入函数")
+        val runner = asyncRunner ?: throw IllegalStateException("runAsync 未初始化")
+        runner(f)
+    }
+
     companion object {
         private const val TAG = "TtsEngineContext"
-        const val AUDITION_TIMEOUT = 30_000L
+        const val AUDITION_TIMEOUT = 120_000L
     }
 
     /** 合成结果：成功给音频字节，失败给可读原因（供朗读日志「音频缓存」分区展示） */
-    data class SynthOutcome(val bytes: ByteArray?, val reason: String? = null) {
+    data class SynthOutcome(
+        val bytes: ByteArray? = null,
+        val reason: String? = null,
+        /** 这次失败是「流读完但 0 字节」——冷启动认证窗口的特征，值得重试一次 */
+        val emptyBytes: Boolean = false,
+    ) {
         val ok: Boolean get() = bytes != null
     }
 
@@ -131,8 +154,31 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
-        // 同一插件引擎串行合成：并发会互相覆盖 engine.source / 抢占异步流（实测 duihuaA01 偶发 No data written）
-        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+        // 同一插件引擎串行合成；tryLock 防止一次卡死把整条朗读链永久占锁。
+        return try {
+            if (!engine.synthesisLock.tryLock(5, TimeUnit.SECONDS)) {
+                SynthOutcome(null, "合成忙（等待引擎锁超时）")
+            } else {
+                try {
+                    var outcome = synthesizeLocked(engine, found, text)
+                    if (outcome.emptyBytes && engine.emptyRetried.compareAndSet(false, true)) {
+                        PipelineProbe.log(
+                            context, "synth.empty.retry",
+                            "pluginId" to found.pluginId, "voice" to found.voice
+                        )
+                        runCatching { engine.cancelAudio() }
+                        Thread.sleep(400)
+                        outcome = synthesizeLocked(engine, found, text)
+                    }
+                    outcome
+                } finally {
+                    engine.synthesisLock.unlock()
+                }
+            }
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
+            SynthOutcome(null, "合成被中断")
+        }
     }
 
     /**
@@ -141,7 +187,12 @@ data class TtsEngineContext(
      * 本入口直接使用条目自身的 config（source/audioParams/audioFormat），从根上杜绝二义。
      * configJson 来自声线目录条目的 traitsJson（= `_store/voices.json` 条目的 config）。
      */
-    internal fun synthesizeByConfig(configJson: String, text: String): SynthOutcome {
+    internal fun synthesizeByConfig(
+        configJson: String,
+        text: String,
+        /** 阅读朗读情绪（空 = 无）；桥给插件 `ttsrv.tts.emotion` */
+        emotion: String = "",
+    ): SynthOutcome {
         val found = runCatching {
             val cfg = JSONObject(configJson)
             val src = cfg.optJSONObject("source")
@@ -176,15 +227,39 @@ data class TtsEngineContext(
         val pluginJson = TtsConfigStore.pluginById(context, found.pluginId)
             ?: return SynthOutcome(null, "插件不存在(${found.pluginId})")
         val engine = TtsPluginEngineManager.get(context, TtsConfigStore.toEnginePlugin(pluginJson))
-        return engine.synthesisLock.withLock { synthesizeLocked(engine, found, text) }
+        return try {
+            if (!engine.synthesisLock.tryLock(5, TimeUnit.SECONDS)) {
+                SynthOutcome(null, "合成忙（等待引擎锁超时）")
+            } else {
+                try {
+                    var outcome = synthesizeLocked(engine, found, text, emotion)
+                    if (outcome.emptyBytes && engine.emptyRetried.compareAndSet(false, true)) {
+                        PipelineProbe.log(
+                            context, "synth.empty.retry",
+                            "pluginId" to found.pluginId, "voice" to found.voice
+                        )
+                        runCatching { engine.cancelAudio() }
+                        Thread.sleep(400)
+                        outcome = synthesizeLocked(engine, found, text, emotion)
+                    }
+                    outcome
+                } finally {
+                    engine.synthesisLock.unlock()
+                }
+            }
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
+            SynthOutcome(null, "合成被中断")
+        }
     }
 
     private fun synthesizeLocked(
         engine: TtsPluginEngineV2,
         found: TtsConfigStore.FoundConfig,
         text: String,
+        emotion: String = "",
     ): SynthOutcome {
-        // 注入插件特殊参数（source.data）与音频参数，插件侧经 ttsrv.tts.data / .speed 等读取
+        // 注入插件特殊参数（source.data）、音频参数与情绪，插件侧经 ttsrv.tts.data / .speed / .emotion 读取
         engine.source = PluginTtsSource(
             locale = found.locale,
             voice = found.voice,
@@ -193,24 +268,77 @@ data class TtsEngineContext(
             volume = found.volume,
             pitch = found.pitch,
             data = found.sourceData,
+            emotion = emotion,
         )
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
-        val bytes = try {
+        // 启动超时只包 JS 调用；读流用独立 watchdog（close 触发 readBytes 返回），避免 30s 把长音频拦腰截断。
+        val t0 = System.currentTimeMillis()
+        PipelineProbe.log(
+            context, "synth.start",
+            "pluginId" to found.pluginId,
+            "voice" to found.voice,
+            "textLen" to text.length,
+            "timeoutMs" to synthTimeoutMs
+        )
+        val stream = try {
             runBlocking {
-                withTimeout(synthTimeoutMs) {
-                    engine.getAudio(text, found.locale, found.voice, rate, volume, pitch).readBytes()
-                }
+                engine.getAudio(
+                    text, found.locale, found.voice, rate, volume, pitch,
+                    timeoutMs = synthTimeoutMs.coerceAtMost(90_000L)
+                )
             }
-        } catch (t: TimeoutCancellationException) {
-            return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
-            return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.error",
+                "pluginId" to found.pluginId,
+                "stage" to "startup",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            return SynthOutcome(null, "合成启动异常: ${t.message ?: t.javaClass.simpleName}")
         }
-        if (bytes.isEmpty()) return SynthOutcome(null, "合成返回空音频")
+        val (bytes, timedOut) = try {
+            readAllWithTimeout(stream, synthTimeoutMs)
+        } catch (t: CancellationException) {
+            runCatching { engine.cancelAudio() }
+            throw t
+        } catch (t: Throwable) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.error",
+                "pluginId" to found.pluginId,
+                "stage" to "read",
+                "ms" to (System.currentTimeMillis() - t0),
+                "err" to (t.message ?: t.javaClass.simpleName)
+            )
+            return SynthOutcome(null, "合成异常: ${t.message ?: t.javaClass.simpleName}")
+        } finally {
+            runCatching { stream.close() }
+        }
+        if (timedOut) {
+            runCatching { engine.cancelAudio() }
+            PipelineProbe.log(
+                context, "synth.timeout",
+                "pluginId" to found.pluginId,
+                "ms" to (System.currentTimeMillis() - t0),
+                "timeoutMs" to synthTimeoutMs
+            )
+            return SynthOutcome(null, "合成超时(${synthTimeoutMs}ms)")
+        }
+        val data = bytes ?: return SynthOutcome(null, "合成返回空音频", emptyBytes = true)
+        if (data.isEmpty()) return SynthOutcome(null, "合成返回空音频", emptyBytes = true)
+        PipelineProbe.log(
+            context, "synth.end",
+            "pluginId" to found.pluginId,
+            "voice" to found.voice,
+            "ms" to (System.currentTimeMillis() - t0),
+            "bytes" to data.size
+        )
         // 音频格式归一化（白噪音修复）：webm/ogg/amr 等容器直通播放器解码；仅未识别格式按裸 PCM 包 WAV 头
         val sniffed = AudioSniffer.normalizeForPlayback(bytes, found.sampleRate)
         if (sniffed.wrappedPcm) {

@@ -66,7 +66,7 @@ fun LabelColorManageSheet(
                     onColorsChange(tagColors.toList())
                 },
                 icon = Icons.Default.AutoAwesome,
-                contentDescription = stringResource(R.string.ai_generate)
+                contentDescription = stringResource(R.string.auto_generate)
             )
         },
         endAction = {

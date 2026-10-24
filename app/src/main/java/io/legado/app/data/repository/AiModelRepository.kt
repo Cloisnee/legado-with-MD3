@@ -217,7 +217,9 @@ class AiModelRepository(private val app: Application) {
             }
         }
         return AiModelsConfig(
-            providers = providers,
+            // 历史配置里 chat/audio 可能交错存放（旧版只做追加），读取时统一归位，
+            // 使分组标题稳定且不重复；下次写入会持久化为有序形态。
+            providers = normalizeProviderOrder(providers),
             models = models,
             stages = AiStageAssignments(
                 stage1 = ids("stage1"),
@@ -278,6 +280,16 @@ class AiModelRepository(private val app: Application) {
         }.getOrDefault(false)
     }
 
+    /**
+     * 服务商按栏目归一排序：分析模型（chat）在前，音频合成平台（audio）在后。
+     *
+     * 模型管理页按 providers 的物理顺序渲染分组标题，而 [upsertProvider] 只做追加，
+     * 新增的 chat 服务商会落到 audio 之后，导致同一栏目被拆成两段、标题重复出现。
+     * 这里用稳定排序保持同栏目内的相对顺序（用户调整过的次序不被破坏）。
+     */
+    private fun normalizeProviderOrder(list: List<AiProvider>): List<AiProvider> =
+        list.sortedBy { if (it.kind == "audio") 1 else 0 }
+
     // ---------------- provider / model 增删改 ----------------
 
     suspend fun upsertProvider(p: AiProvider): String? {
@@ -287,7 +299,7 @@ class AiModelRepository(private val app: Application) {
         val list = cfg.providers.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx >= 0) list[idx] = newP else list.add(newP)
-        return if (save(cfg.copy(providers = list))) id else null
+        return if (save(cfg.copy(providers = normalizeProviderOrder(list)))) id else null
     }
 
     suspend fun deleteProvider(id: String): Boolean {

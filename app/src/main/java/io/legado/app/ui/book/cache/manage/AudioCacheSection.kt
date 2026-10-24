@@ -132,6 +132,10 @@ private fun AudioCacheBookCard(
     val expandedState = stringResource(
         if (expanded) R.string.a11y_expanded else R.string.a11y_collapsed
     )
+    val downloadedLabel = if (item.downloadedChapters > 0) {
+        stringResource(R.string.read_aloud_audio_download_badge_book, item.downloadedChapters)
+    } else ""
+
     val bookDescription = stringResource(
         R.string.a11y_cache_book_item,
         item.book,
@@ -176,7 +180,10 @@ private fun AudioCacheBookCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                     AppText(
-                        text = item.author.ifBlank { TtsCacheViewModel.formatSize(item.sizeBytes) },
+                        text = listOf(
+                            item.author.ifBlank { TtsCacheViewModel.formatSize(item.sizeBytes) },
+                            downloadedLabel,
+                        ).filter { it.isNotBlank() }.joinToString(" · "),
                         style = LegadoTheme.typography.labelSmallEmphasized,
                         color = LegadoTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -273,6 +280,14 @@ private fun AudioCacheChapterRow(
                     else -> LegadoTheme.colorScheme.onSurfaceVariant
                 },
             )
+            if (item.downloaded) {
+                AppText(
+                    text = stringResource(R.string.read_aloud_audio_download_state),
+                    maxLines = 1,
+                    style = LegadoTheme.typography.labelSmall,
+                    color = LegadoTheme.colorScheme.primary,
+                )
+            }
             if (item.isDownloading) {
                 AppLinearProgressIndicator(
                     progress = item.progress,

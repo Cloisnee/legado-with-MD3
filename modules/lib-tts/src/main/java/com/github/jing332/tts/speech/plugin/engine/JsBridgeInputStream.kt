@@ -12,6 +12,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 class JsBridgeInputStream : InputStream() {
     companion object {
@@ -26,6 +27,18 @@ class JsBridgeInputStream : InputStream() {
     private val hasError: Boolean
         get() = errorCause != null
 
+    /** 宿主侧 close/cancel 兜底解锁：插件不一定走到 callback.close()。 */
+    @Volatile
+    private var callbackMutex: Mutex? = null
+    private val lockReleased = AtomicBoolean(false)
+
+    private fun releaseLock() {
+        val mutex = callbackMutex ?: return
+        if (lockReleased.compareAndSet(false, true)) {
+            runCatching { if (mutex.isLocked) mutex.unlock() }
+        }
+    }
+
     private fun checkError() {
         errorCause?.let {
             throw it
@@ -34,8 +47,9 @@ class JsBridgeInputStream : InputStream() {
 
     override fun read(): Int {
         checkError()
-        if (isClosed && pis.available() == 0) {
-            return -1 // Signal end of stream
+        if (isClosed) {
+            val available = runCatching { pis.available() }.getOrDefault(0)
+            if (available == 0) return -1 // Signal end of stream
         }
 
         try {
@@ -43,6 +57,7 @@ class JsBridgeInputStream : InputStream() {
             checkError()
             return byte
         } catch (e: IOException) {
+            if (isClosed) return -1
             errorCause = e
             throw e
         }
@@ -50,8 +65,9 @@ class JsBridgeInputStream : InputStream() {
 
     override fun read(b: ByteArray, off: Int, len: Int): Int {
         checkError()
-        if (isClosed && pis.available() == 0) {  // Check for EOF *before* blocking read.  Crucial!
-            return -1
+        if (isClosed) {
+            val available = runCatching { pis.available() }.getOrDefault(0)
+            if (available == 0) return -1 // Check for EOF *before* blocking read. Crucial!
         }
         if (off < 0 || len < 0 || len > b.size - off) {
             throw IndexOutOfBoundsException()
@@ -64,6 +80,7 @@ class JsBridgeInputStream : InputStream() {
             checkError()
             return byte
         } catch (e: IOException) {
+            if (isClosed) return -1
             errorCause = e
             throw e
         }
@@ -71,9 +88,7 @@ class JsBridgeInputStream : InputStream() {
 
     override fun available(): Int {
         checkError()
-        return pis.available().apply {
-            checkError()
-        }
+        return runCatching { pis.available() }.getOrDefault(0)
     }
 
     @Synchronized
@@ -82,15 +97,21 @@ class JsBridgeInputStream : InputStream() {
             isClosed = true
             try {
                 pos.close() // Close output end first!  Very important.
+            } catch (_: IOException) {
             } finally {
-                pis.close() // Then close the input end.
+                try {
+                    pis.close() // Then close the input end.
+                } catch (_: IOException) {
+                }
             }
         }
+        // 宿主主动关闭/取消时，必须释放流锁；否则下一次 getCallback 永远卡在 lock()。
+        releaseLock()
     }
 
     /**
-     *  Interface for JavaScript to interact with the OutputStream.  The names
-     *  and signatures MUST match your Kotlin definitions.
+     * 接口 for JavaScript to interact with the OutputStream.  The names
+     * and signatures MUST match your Kotlin definitions.
      */
     @Keep
     interface Callback {
@@ -100,6 +121,7 @@ class JsBridgeInputStream : InputStream() {
     }
 
     suspend fun getCallback(mutex: Mutex): Callback {
+        callbackMutex = mutex
         mutex.lock()
         return object : Callback {
             private var length = 0
@@ -141,12 +163,9 @@ class JsBridgeInputStream : InputStream() {
 
                 try {
                     if (length <= 0) errorCause = IOException("No data written")
-
                     this@JsBridgeInputStream.close()
                 } catch (e: IOException) {
                     errorCause = e
-                } finally {
-                    if (mutex.isLocked) mutex.unlock()
                 }
             }
 
