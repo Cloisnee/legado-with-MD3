@@ -385,7 +385,7 @@ class TtsServerCenterRepository(private val app: Application) {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
                 // 试听同样剥掉平台水印（契约门控：仅插件声明 watermark=true 时处理）
                 val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                    .stripDeclared(ctx, r.pluginId, rawBytes, dir).bytes
+                    .stripDeclared(ctx, r.pluginId, rawBytes, dir, keepRaw = true).bytes
                 val ext = when {
                     bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
                     bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
@@ -827,7 +827,7 @@ class TtsServerCenterRepository(private val app: Application) {
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
             val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                .stripDeclared(ctx, pluginId, rawBytes, dir).bytes
+                .stripDeclared(ctx, pluginId, rawBytes, dir, keepRaw = true).bytes
             val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
             val f = File(dir, "audition_direct_${System.currentTimeMillis()}.$ext")
             f.writeBytes(bytes)
@@ -1349,7 +1349,7 @@ class TtsServerCenterRepository(private val app: Application) {
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
                 val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                    .stripDeclared(ctx, src.optString("pluginId"), rawBytes, dir).bytes
+                    .stripDeclared(ctx, src.optString("pluginId"), rawBytes, dir, keepRaw = true).bytes
                 val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
                 val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
                 f.writeBytes(bytes)

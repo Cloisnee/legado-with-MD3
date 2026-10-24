@@ -45,15 +45,17 @@ object AudioWatermarkStripper {
         pluginId: String,
         bytes: ByteArray,
         logDir: File? = null,
+        /** 试听链路传 true：切之前把原始字节另存一份，便于事后取样分析 */
+        keepRaw: Boolean = false,
     ): Outcome {
         if (pluginId.isBlank()) return Outcome(bytes, false, "无插件标识，跳过")
         if (!com.github.jing332.tts.store.TtsConfigStore.declaresWatermark(context, pluginId)) {
             return Outcome(bytes, false, "插件未声明水印，跳过")
         }
-        return strip(bytes, logDir)
+        return strip(bytes, logDir, keepRaw)
     }
 
-    fun strip(bytes: ByteArray, logDir: File? = null): Outcome {
+    fun strip(bytes: ByteArray, logDir: File? = null, keepRaw: Boolean = false): Outcome {
         val head = Mp3Truncator.head(bytes) ?: return Outcome(bytes, false, "非 MP3，跳过")
         if (bytes.size !in MIN_BYTES..MAX_BYTES) return Outcome(bytes, false, "体积超范围，跳过")
 
@@ -74,6 +76,11 @@ object AudioWatermarkStripper {
         if (matches.isEmpty()) return Outcome(bytes, false, "未命中水印")
 
         val best = matches[0]
+        // 第二道确认：水印素材频带只到 ~13.5 kHz。窗口不够窄带 → 说明命中的是普通台词，宁可不切
+        val bl = WatermarkDsp.bandLimitDelta(decoded.pcm, best.startSample)
+        if (bl < 12f) {
+            return Outcome(bytes, false, "命中 %.3f 但窗口非窄带(Δ%.1f)，跳过".format(best.score, bl))
+        }
         val sr = WatermarkDsp.SAMPLE_RATE
         val durSec = decoded.pcm.size.toDouble() / sr
         val wmEnd = best.startSample + WatermarkDsp.watermarkSamples()
@@ -104,7 +111,13 @@ object AudioWatermarkStripper {
             note = "中段抽帧 %.2f-%.2fs（命中 %.3f）".format(fromSec, toSec, best.score)
         }
         val cost = android.os.SystemClock.elapsedRealtime() - t0
-        writeLog(logDir, "$note | 共 %d 处候选 | %dms".format(matches.size, cost))
+        val rawName = if (keepRaw) saveRaw(logDir, bytes) else null
+        writeLog(
+            logDir,
+            "$note | Δ%%.1f | 候选 %d | %dms%s".format(
+                bl, matches.size, cost, if (rawName != null) " | raw=$rawName" else ""
+            )
+        )
         return Outcome(outBytes, true, note)
     }
 
@@ -231,6 +244,17 @@ object AudioWatermarkStripper {
     }
 
     // ---------------- 日志 ----------------
+
+    /** 切之前留档原文件（仅试听链路），返回文件名 */
+    private fun saveRaw(dir: File?, bytes: ByteArray): String? {
+        if (dir == null) return null
+        return runCatching {
+            if (!dir.exists()) dir.mkdirs()
+            val name = "raw_${System.currentTimeMillis()}.mp3"
+            File(dir, name).writeBytes(bytes)
+            name
+        }.getOrNull()
+    }
 
     private fun writeLog(dir: File?, msg: String) {
         if (dir == null) return

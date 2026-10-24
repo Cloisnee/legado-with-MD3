@@ -18,7 +18,8 @@ import kotlin.math.sqrt
  *
  *   有水印：0.772 ~ 0.987      无水印：0.143 ~ 0.569
  *
- * 阈值 [MATCH_THRESHOLD]=0.65，两侧各留 0.08 余量；再叠加"仅 48 kHz MP3"的前置条件，
+ * 阈值 [MATCH_THRESHOLD]=0.80（0.65~0.79 这段实测出现过误切，宁可不动）；
+ * 再叠加"仅 48 kHz MP3"与"窗口必须窄带"两道确认，
  * 其他插件既不会有这个采样率特征、也匹配不上这段录音，误伤面收敛到零。
  *
  * 特征 = 40 维 log-mel（25 ms 窗 / 10 ms 帧移 / 60–7600 Hz），**逐帧 z-score**，
@@ -39,7 +40,7 @@ object WatermarkDsp {
     private const val WATERMARK_FRAMES = 120
 
     /** 命中阈值 */
-    const val MATCH_THRESHOLD = 0.65f
+    const val MATCH_THRESHOLD = 0.80f
 
     /** 只在最后 2.6 s 内搜索（水印固定贴尾） */
     const val SEARCH_FRAMES = 260
@@ -239,4 +240,74 @@ object WatermarkDsp {
     }
 
     fun hop() = HOP
+
+    /** 逐帧高频比：10log10(≥14.5k / 0.2–4k)，帧移 10 ms */
+    fun hfRatios(pcm: FloatArray): FloatArray {
+        val n = pcm.size / HOP
+        if (n < 8) return FloatArray(0)
+        val out = FloatArray(n)
+        val re = DoubleArray(NFFT)
+        val im = DoubleArray(NFFT)
+        val hfB = (14500.0 / (SAMPLE_RATE.toDouble() / NFFT)).toInt()
+        val loB = max(1, (200.0 / (SAMPLE_RATE.toDouble() / NFFT)).toInt())
+        val hiB = min(NFFT / 2, (4000.0 / (SAMPLE_RATE.toDouble() / NFFT)).toInt())
+        for (f in 0 until n) {
+            val base = f * HOP
+            if (base + WIN > pcm.size) break
+            java.util.Arrays.fill(re, 0.0)
+            java.util.Arrays.fill(im, 0.0)
+            for (i in 0 until WIN) re[i] = pcm[base + i].toDouble() * hann[i]
+            fft(re, im)
+            var lf = 0.0
+            var hf = 0.0
+            for (b in loB..hiB) lf += re[b] * re[b] + im[b] * im[b]
+            for (b in hfB..NFFT / 2) hf += re[b] * re[b] + im[b] * im[b]
+            out[f] = if (lf <= 1e-12) -120f else (10.0 * log10(hf / lf + 1e-20)).toFloat()
+        }
+        return out
+    }
+
+    /**
+     * 确认命中窗口是否"窄带"：水印素材频带只到 ~13.5 kHz。
+     * @return 正文高频比 − 窗口高频比（dB）；≥12 基本可判定为水印
+     */
+    fun bandLimitDelta(pcm: FloatArray, startSample: Int): Float {
+        val r = hfRatios(pcm)
+        if (r.isEmpty()) return -999f
+        val loud = ArrayList<Float>()
+        val level = hfLevels(pcm)
+        for (i in r.indices) if (i < level.size && level[i] > -50f) loud.add(r[i])
+        if (loud.size < 20) return -999f
+        loud.sort()
+        val body = loud[loud.size / 2]
+        val from = (startSample / HOP).coerceAtLeast(0)
+        val to = min(r.size - 1, from + TEMPLATE_FRAMES - 1)
+        if (to - from < 40) return -999f
+        val win = ArrayList<Float>()
+        for (i in from..to) if (i < level.size && level[i] > -50f) win.add(r[i])
+        if (win.size < 30) return -999f
+        win.sort()
+        return body - win[win.size / 2]
+    }
+
+    private fun hfLevels(pcm: FloatArray): FloatArray {
+        val n = pcm.size / HOP
+        val out = FloatArray(n)
+        val re = DoubleArray(NFFT)
+        val im = DoubleArray(NFFT)
+        val loB = max(1, (200.0 / (SAMPLE_RATE.toDouble() / NFFT)).toInt())
+        val hiB = min(NFFT / 2, (4000.0 / (SAMPLE_RATE.toDouble() / NFFT)).toInt())
+        for (f in 0 until n) {
+            val base = f * HOP
+            if (base + WIN > pcm.size) break
+            java.util.Arrays.fill(re, 0.0)
+            java.util.Arrays.fill(im, 0.0)
+            for (i in 0 until WIN) re[i] = pcm[base + i].toDouble() * hann[i]
+            fft(re, im)
+            var lf = 0.0
+            for (b in loB..hiB) lf += re[b] * re[b] + im[b] * im[b]
+            out[f] = if (lf <= 1e-12) -120f else (10.0 * log10(lf / NFFT + 1e-20)).toFloat()
+        }
+        return out
+    }
 }
