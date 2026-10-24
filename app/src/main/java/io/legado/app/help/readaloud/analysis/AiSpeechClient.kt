@@ -43,6 +43,9 @@ class AiSpeechClient(
 
     data class ModelRef(val model: AiModelEntry, val provider: AiProvider)
 
+    /** 单次调用结果：raw=null 时 failReason 为可读失败原因（供阶段日志一行输出） */
+    private data class CallOutcome(val raw: String?, val failReason: String = "")
+
     /** 统一分析超时（毫秒）：AI 分析设置 timeoutSec（30..600，默认 120） */
     private suspend fun unifiedTimeoutMs(): Long =
         runCatching { analysisConfig.load().timeoutSec }
@@ -84,14 +87,12 @@ class AiSpeechClient(
             var validFails = 0
             var failHint = ""
             while (true) {
-                AppLog.putAnalysis(
-                    "【AI调用·$logTag】请求 ${ref.model.name}（超时 ${timeoutMs / 1000}s，响应 ${respFails + 1}/$respMax）",
-                )
-                val raw = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs, logTag)
+                val call = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs)
+                val raw = call.raw
                 if (raw == null) {
                     respFails++
                     AppLog.putAnalysis(
-                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax，超时 ${timeoutMs / 1000}s）",
+                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax，${call.failReason.ifBlank { "未知原因" }}）",
                     )
                     if (respFails >= respMax) break
                     delay(2000L * respFails)
@@ -125,8 +126,7 @@ class AiSpeechClient(
         user: String,
         maxTokens: Int,
         timeoutMs: Long,
-        logTag: String,
-    ): String? {
+    ): CallOutcome {
         return runCatching {
             val base = ref.provider.baseUrl.trim().trimEnd('/')
             require(base.isNotBlank()) { "BaseUrl 为空" }
@@ -210,19 +210,19 @@ class AiSpeechClient(
                     val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
                     error("HTTP ${resp.code}: ${errBody.take(160)}")
                 }
-                readStreamBody(protocol, resp, timeoutMs)
+                val text = readStreamBody(protocol, resp, timeoutMs)
+                if (text.isNullOrBlank()) error("空响应")
+                text
             }
-        }.getOrElse { e ->
-            if (e is CancellationException) throw e
-            if (e.isTimeoutError()) {
-                AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 超时（${timeoutMs / 1000}s）")
-            } else {
-                AppLog.putAnalysis(
-                    "【AI调用·$logTag】异常（${ref.model.name}）: ${e.localizedMessage ?: e.javaClass.simpleName}",
-                )
+        }.fold(
+            onSuccess = { CallOutcome(it) },
+            onFailure = { e ->
+                if (e is CancellationException) throw e
+                val reason = if (e.isTimeoutError()) "超时 ${timeoutMs / 1000}s"
+                else (e.localizedMessage ?: e.javaClass.simpleName)
+                CallOutcome(null, reason)
             }
-            null
-        }
+        )
     }
 
     /** OpenAI 兼容协议的关闭思考字段：按模型设置发送，避免固定发 thinking 被新网关 400。 */
@@ -304,11 +304,9 @@ class AiSpeechClient(
         }
         return if (mode == 1) {
             if (errMsg != null) {
-                AppLog.putAnalysis("分析AI流式错误（$protocol）：${errMsg.take(160)}")
-                null
-            } else {
-                sse.toString().takeIf { it.isNotBlank() }
+                error("流式错误: ${errMsg.take(120)}")
             }
+            sse.toString().takeIf { it.isNotBlank() }
         } else {
             extractContent(protocol, plain.toString())
         }

@@ -44,15 +44,11 @@ fun <T, ID> DraggableSelectionHandler(
         val itemsInfo = layoutInfo.visibleItemsInfo
         if (itemsInfo.isEmpty()) return null
 
-        // 核心修复：校准坐标系。
-        // offsetY 是相对于此 Box 顶部的。
-        // item.offset 是相对于视口起始位置（通常包含 contentPadding）的。
-        // 当开启模糊时，LazyColumn 占据全屏但有 topContentPadding。
-        // item.offset 在 Compose 的 LazyListLayoutInfo 中是相对于“内容区域”开始计算的。
-        val adjustedY = offsetY - layoutInfo.beforeContentPadding
-
+        // Compose 的 LazyListItemInfo.offset 已经包含 beforeContentPadding（第一项 offset
+        // 就是从 contentPadding 起点算的），不能再减一次；否则手指要往下多拖一个 padding
+        // 的距离才会命中，表现为“滑动选取没反应/选错行”。
         val itemInfo = itemsInfo.fastFirstOrNull { item ->
-            adjustedY >= item.offset && adjustedY <= (item.offset + item.size)
+            offsetY >= item.offset && offsetY <= (item.offset + item.size)
         } ?: return null
 
         val ids: Set<ID> = if (resolveIds != null) {

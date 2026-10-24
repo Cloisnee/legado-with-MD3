@@ -1094,7 +1094,6 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                                         validateRetries = validate,
                                         timeoutMs = timeoutMs,
                                         thinkingMode = thinkingMode,
-                                        disableThinking = thinkingMode != AiThinkingMode.NONE,
                                     )
                                 }
                                 repo.upsertModel(newM)

@@ -75,6 +75,11 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
         // 书源引擎 com.script 的全局工厂，其 RhinoContext.allowScriptRun 默认 false，
         // Function.call 会在 doTopCall 直接抛 "Not allow run script in unauthorized way."。
         ttsrv.asyncRunner = { fn ->
+            PipelineProbe.log(
+                context, "async.start",
+                "pluginId" to plugin.pluginId,
+                "thread" to "ttsrv-async-${plugin.pluginId}"
+            )
             Thread {
                 val t0 = System.currentTimeMillis()
                 try {
