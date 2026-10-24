@@ -17,8 +17,9 @@ import java.io.File
  * 水印素材频带只到 ~13.5 kHz，与 48 kHz 全带正文有 40 dB 以上的高频差 ——
  * 据此定位后**按 MP3 帧边界截断**，不重编码、无二次压缩损失。
  *
- * 分工：[WatermarkDsp] 纯算法判定；本类负责解码（MediaCodec，优先 float PCM）、
- * MP3 帧索引、截断与日志。**失败一律 fail-open**：返回原始字节，绝不影响合成。
+ * 判据：与内嵌水印模板的 log-mel 相关度（阈值 0.65），且**只对 48 kHz MP3 生效**。
+ * 分工：[WatermarkDsp] 纯算法；本类负责解码（MediaCodec）、MP3 帧索引、截断与日志。
+ * **失败一律 fail-open**：返回原始字节，绝不影响合成。
  */
 object AudioWatermarkStripper {
 
@@ -29,7 +30,11 @@ object AudioWatermarkStripper {
 
     class Outcome(val bytes: ByteArray, val removed: Boolean, val note: String)
 
-    class Decoded(val pcm: FloatArray, val sampleRate: Int, val isFloat: Boolean)
+    class Decoded(val pcm: FloatArray, val sampleRate: Int)
+
+    private val template: FloatArray by lazy {
+        WatermarkDsp.decodeTemplate(WatermarkTemplate.BASE64, WatermarkTemplate.SCALE)
+    }
 
     fun strip(bytes: ByteArray, logDir: File? = null): Outcome {
         val head = Mp3Truncator.head(bytes) ?: return Outcome(bytes, false, "非 MP3，跳过")
@@ -42,24 +47,28 @@ object AudioWatermarkStripper {
             return Outcome(bytes, false, "解码失败: ${t.message}")
         } ?: return Outcome(bytes, false, "解码为空")
 
-        val env = WatermarkDsp.envelope(decoded.pcm, decoded.sampleRate)
-            ?: return Outcome(bytes, false, "采样率 ${decoded.sampleRate} 无法判定")
+        // 只在 48 kHz 上判定：呱呱固定 48k；别的采样率直接放行，杜绝误伤
+        if (decoded.sampleRate != WatermarkDsp.SAMPLE_RATE) {
+            return Outcome(bytes, false, "采样率 ${decoded.sampleRate}，跳过")
+        }
 
-        val a = WatermarkDsp.judge(env, decoded.isFloat)
-        val v = a.verdict
-        val pcmSec = decoded.pcm.size.toDouble() / decoded.sampleRate
-        val base = "正文 %.1f / 尾巴 %.1f / Δ%.1f / %s".format(
-            a.bodyDb, a.tailDb, a.deltaDb, if (decoded.isFloat) "float" else "int16"
-        )
-        if (v == null) return Outcome(bytes, false, "${a.reason}（$base）")
+        val m = WatermarkDsp.locate(decoded.pcm, template)
+            ?: return Outcome(bytes, false, "未命中水印")
 
-        val cutOffset = Mp3Truncator.offsetAt(bytes, head, v.cutSec)
-            ?: return Outcome(bytes, false, "帧索引失败（$base）")
-        if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（$base）")
+        // 命中后才算切点：水印起点回退 20 ms，再吸附到 ±60 ms 内最安静的帧
+        val center = m.startSample - (0.02 * WatermarkDsp.SAMPLE_RATE).toInt()
+        val cutSample = WatermarkDsp.snapToQuietest(decoded.pcm, maxOf(0, center), 6)
+        val cutSec = cutSample.toDouble() / WatermarkDsp.SAMPLE_RATE
+        if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(m.score))
+
+        val cutOffset = Mp3Truncator.offsetAt(bytes, head, cutSec)
+            ?: return Outcome(bytes, false, "帧索引失败（命中 %.3f）".format(m.score))
+        if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（命中 %.3f）".format(m.score))
 
         val out = bytes.copyOfRange(0, cutOffset)
-        val note = "切掉 %.2fs（%.2fs→%.2fs, %s）".format(
-            pcmSec - v.cutSec, pcmSec, v.cutSec, base
+        val durSec = decoded.pcm.size.toDouble() / WatermarkDsp.SAMPLE_RATE
+        val note = "切掉 %.2fs（%.2fs→%.2fs, 命中 %.3f）".format(
+            durSec - cutSec, durSec, cutSec, m.score
         )
         writeLog(logDir, note)
         return Outcome(out, true, note)
@@ -168,7 +177,7 @@ object AudioWatermarkStripper {
                 if (ch == 1) all else downmix(all, ch)
             }
             if (pcm.isEmpty()) return null
-            return Decoded(pcm, sr, isFloat)
+            return Decoded(pcm, sr)
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
