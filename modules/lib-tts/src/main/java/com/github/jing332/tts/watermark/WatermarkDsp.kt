@@ -34,8 +34,9 @@ object WatermarkDsp {
     private const val MEL_LO = 60f
     private const val MEL_HI = 7600f
 
-    /** 模板长度（帧） */
+    /** 模板长度（帧）= 水印录音时长 1.2 s */
     const val TEMPLATE_FRAMES = 120
+    private const val WATERMARK_FRAMES = 120
 
     /** 命中阈值 */
     const val MATCH_THRESHOLD = 0.65f
@@ -178,7 +179,7 @@ object WatermarkDsp {
         return out
     }
 
-    /** 在 PCM 中定位水印起点（样本下标）；未命中返回 null */
+    /** 在 PCM 尾部定位水印起点；未命中返回 null（保留给"只看尾巴"的旧调用） */
     fun locate(pcm: FloatArray, template: FloatArray): Match? {
         if (pcm.size < SEARCH_FRAMES * HOP) return null
         val start = pcm.size - SEARCH_FRAMES * HOP
@@ -187,6 +188,35 @@ object WatermarkDsp {
         if (mt.score < MATCH_THRESHOLD) return null
         return Match(mt.score, start + mt.frame * HOP)
     }
+
+    /**
+     * 全片扫描：水印可能被插在**句子中间**（前后都还有台词），只看尾巴会漏。
+     * @return 所有 ≥[MATCH_THRESHOLD] 的命中，按得分降序
+     */
+    fun locateAll(pcm: FloatArray, template: FloatArray): List<Match> {
+        val frames = pcm.size / HOP
+        if (frames < TEMPLATE_FRAMES + 8) return emptyList()
+        val m = mel(pcm, 0, frames)
+        val out = ArrayList<Match>()
+        val last = frames - TEMPLATE_FRAMES
+        for (i in 0..last) {
+            var s = 0f
+            var a = i * NMEL
+            var b = 0
+            for (f in 0 until TEMPLATE_FRAMES) {
+                for (k in 0 until NMEL) s += m[a + k] * template[b + k]
+                a += NMEL
+                b += NMEL
+            }
+            s /= (TEMPLATE_FRAMES * NMEL)
+            if (s >= MATCH_THRESHOLD) out.add(Match(s, i * HOP))
+        }
+        out.sortByDescending { it.score }
+        return out
+    }
+
+    /** 水印时长（样本数） */
+    fun watermarkSamples(): Int = WATERMARK_FRAMES * HOP
 
     /** 在 [centerSample] 附近 ±range 帧内取能量最低的 10 ms 帧起点（避免切在字尾） */
     fun snapToQuietest(pcm: FloatArray, centerSample: Int, range: Int): Int {

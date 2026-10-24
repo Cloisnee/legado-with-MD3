@@ -79,6 +79,20 @@ object Mp3Truncator {
         return Mp3Head(start, count, dur)
     }
 
+    /**
+     * 抽掉 [fromSec, toSec) 之间的帧，前后字节直接拼接（水印插在句子中间时用）。
+     * 帧边界拼接可能有一帧的比特池不连续，落在水印前后的静音里通常听不出来。
+     */
+    fun splice(bytes: ByteArray, head: Mp3Head, fromSec: Double, toSec: Double): ByteArray? {
+        val a = offsetAt(bytes, head, fromSec) ?: return null
+        val b = offsetAt(bytes, head, toSec) ?: return null
+        if (a <= 0 || b <= a || b > bytes.size) return null
+        val out = ByteArray(a + (bytes.size - b))
+        System.arraycopy(bytes, 0, out, 0, a)
+        System.arraycopy(bytes, b, out, a, bytes.size - b)
+        return out
+    }
+
     /** 返回第一个"时间 ≥ cutSec"的帧起始偏移 */
     fun offsetAt(bytes: ByteArray, head: Mp3Head, cutSec: Double): Int? {
         var i = head.dataStart

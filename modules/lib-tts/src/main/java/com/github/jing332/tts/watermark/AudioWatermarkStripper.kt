@@ -69,26 +69,43 @@ object AudioWatermarkStripper {
             return Outcome(bytes, false, "采样率 ${decoded.sampleRate}，跳过")
         }
 
-        val m = WatermarkDsp.locate(decoded.pcm, template)
-            ?: return Outcome(bytes, false, "未命中水印")
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val matches = WatermarkDsp.locateAll(decoded.pcm, template)
+        if (matches.isEmpty()) return Outcome(bytes, false, "未命中水印")
 
-        // 命中后才算切点：水印起点回退 20 ms，再吸附到 ±60 ms 内最安静的帧
-        val center = m.startSample - (0.02 * WatermarkDsp.SAMPLE_RATE).toInt()
-        val cutSample = WatermarkDsp.snapToQuietest(decoded.pcm, maxOf(0, center), 6)
-        val cutSec = cutSample.toDouble() / WatermarkDsp.SAMPLE_RATE
-        if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(m.score))
+        val best = matches[0]
+        val sr = WatermarkDsp.SAMPLE_RATE
+        val durSec = decoded.pcm.size.toDouble() / sr
+        val wmEnd = best.startSample + WatermarkDsp.watermarkSamples()
+        // 水印是否贴着结尾（后面只剩 ~0.25 s 静音）→ 直接截断；否则是插在句子中间 → 抽帧拼接
+        val nearTail = wmEnd + (0.30 * sr).toInt() >= decoded.pcm.size
 
-        val cutOffset = Mp3Truncator.offsetAt(bytes, head, cutSec)
-            ?: return Outcome(bytes, false, "帧索引失败（命中 %.3f）".format(m.score))
-        if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（命中 %.3f）".format(m.score))
-
-        val out = bytes.copyOfRange(0, cutOffset)
-        val durSec = decoded.pcm.size.toDouble() / WatermarkDsp.SAMPLE_RATE
-        val note = "切掉 %.2fs（%.2fs→%.2fs, 命中 %.3f）".format(
-            durSec - cutSec, durSec, cutSec, m.score
-        )
-        writeLog(logDir, note)
-        return Outcome(out, true, note)
+        val note: String
+        val outBytes: ByteArray
+        if (nearTail) {
+            val center = best.startSample - (0.02 * sr).toInt()
+            val cutSample = WatermarkDsp.snapToQuietest(decoded.pcm, maxOf(0, center), 6)
+            val cutSec = cutSample.toDouble() / sr
+            if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(best.score))
+            val cutOffset = Mp3Truncator.offsetAt(bytes, head, cutSec)
+                ?: return Outcome(bytes, false, "帧索引失败（命中 %.3f）".format(best.score))
+            if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（命中 %.3f）".format(best.score))
+            outBytes = bytes.copyOfRange(0, cutOffset)
+            note = "尾部截断 %.2fs（%.2fs→%.2fs, 命中 %.3f）".format(
+                durSec - cutSec, durSec, cutSec, best.score
+            )
+        } else {
+            val fromSec = (best.startSample - (0.02 * sr).toInt()).coerceAtLeast(0).toDouble() / sr
+            val toSec = (wmEnd + (0.03 * sr).toInt()).toDouble() / sr
+            val spliced = Mp3Truncator.splice(bytes, head, fromSec, toSec)
+                ?: return Outcome(bytes, false, "中段抽帧失败（命中 %.3f）".format(best.score))
+            if (spliced.size < MIN_BYTES) return Outcome(bytes, false, "抽帧后过短（命中 %.3f）".format(best.score))
+            outBytes = spliced
+            note = "中段抽帧 %.2f-%.2fs（命中 %.3f）".format(fromSec, toSec, best.score)
+        }
+        val cost = android.os.SystemClock.elapsedRealtime() - t0
+        writeLog(logDir, "$note | 共 %d 处候选 | %dms".format(matches.size, cost))
+        return Outcome(outBytes, true, note)
     }
 
     // ---------------- 解码 ----------------
