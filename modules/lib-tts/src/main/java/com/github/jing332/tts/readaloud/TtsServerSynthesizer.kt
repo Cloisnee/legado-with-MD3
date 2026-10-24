@@ -1,8 +1,10 @@
 package com.github.jing332.tts.readaloud
 
 import android.content.Context
+import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
+import com.github.jing332.tts.watermark.AudioWatermarkStripper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -54,11 +56,16 @@ class TtsServerSynthesizer(context: Context) {
         }
         val bytes = outcome.bytes
             ?: return@withContext Outcome(false, outcome.reason ?: "未知原因")
+        // 平台试听水印剥离（呱呱等）：按 MP3 帧边界截断，不重编码；识别不到即原样返回
+        val cleaned = runCatching {
+            AudioWatermarkStripper.strip(bytes, File(TtsDirProvider.baseDir(appContext), "_audition"))
+        }.getOrElse { AudioWatermarkStripper.Outcome(bytes, false, "异常: ${it.message}") }
+        val finalBytes = cleaned.bytes
         val written = runCatching {
             output.parentFile?.mkdirs()
-            output.writeBytes(bytes)
+            output.writeBytes(finalBytes)
         }.isSuccess && output.length() > 0
         if (!written) return@withContext Outcome(false, "音频写入失败")
-        Outcome(true, null, bytes.size)
+        Outcome(true, null, finalBytes.size)
     }
 }

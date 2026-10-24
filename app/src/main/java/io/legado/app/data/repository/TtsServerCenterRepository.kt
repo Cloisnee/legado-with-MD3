@@ -379,10 +379,13 @@ class TtsServerCenterRepository(private val app: Application) {
                 File(dir, "last_synth_result.txt")
                     .writeText("[${ts()}] ruleId=$ruleId tag=$tag\n${r.report}\n")
             }
-            val bytes = r.bytes
+            val rawBytes = r.bytes
                 ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                // 试听同样剥掉平台水印（与朗读缓存同款处理，保证试听即所得）
+                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                    .strip(rawBytes, dir).bytes
                 val ext = when {
                     bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
                     bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
