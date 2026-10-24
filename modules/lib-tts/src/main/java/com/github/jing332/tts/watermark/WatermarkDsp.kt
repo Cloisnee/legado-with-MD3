@@ -42,11 +42,6 @@ object WatermarkDsp {
     /** 命中阈值 */
     const val MATCH_THRESHOLD = 0.80f
 
-    /** 只在最后 2.6 s 内搜索（水印固定贴尾） */
-    const val SEARCH_FRAMES = 260
-
-    class FrameMatch(val score: Float, val frame: Int)
-
     class Match(val score: Float, val startSample: Int)
 
     private val cosT = DoubleArray(NFFT / 2) { cos(-2.0 * PI * it / NFFT) }
@@ -148,46 +143,12 @@ object WatermarkDsp {
         return out
     }
 
-    /** 在 mel[0..frames) 上滑动模板，返回最佳位置与得分 */
-    fun matchTemplate(mel: FloatArray, frames: Int, template: FloatArray): FrameMatch? {
-        if (frames < TEMPLATE_FRAMES) return null
-        var best = -9f
-        var bestI = 0
-        val last = frames - TEMPLATE_FRAMES
-        for (i in 0..last) {
-            var s = 0f
-            var a = i * NMEL
-            var b = 0
-            for (f in 0 until TEMPLATE_FRAMES) {
-                for (m in 0 until NMEL) s += mel[a + m] * template[b + m]
-                a += NMEL
-                b += NMEL
-            }
-            s /= (TEMPLATE_FRAMES * NMEL)
-            if (s > best) {
-                best = s
-                bestI = i
-            }
-        }
-        return FrameMatch(best, bestI)
-    }
-
     /** Base64 → float 模板（int8 量化） */
     fun decodeTemplate(b64: String, scale: Float): FloatArray {
         val bytes = java.util.Base64.getDecoder().decode(b64)
         val out = FloatArray(bytes.size)
         for (i in bytes.indices) out[i] = bytes[i] / scale
         return out
-    }
-
-    /** 在 PCM 尾部定位水印起点；未命中返回 null（保留给"只看尾巴"的旧调用） */
-    fun locate(pcm: FloatArray, template: FloatArray): Match? {
-        if (pcm.size < SEARCH_FRAMES * HOP) return null
-        val start = pcm.size - SEARCH_FRAMES * HOP
-        val m = mel(pcm, start, SEARCH_FRAMES)
-        val mt = matchTemplate(m, SEARCH_FRAMES, template) ?: return null
-        if (mt.score < MATCH_THRESHOLD) return null
-        return Match(mt.score, start + mt.frame * HOP)
     }
 
     /**
@@ -315,8 +276,6 @@ object WatermarkDsp {
         }
         return best
     }
-
-    fun hop() = HOP
 
     /** 逐帧高频比：10log10(≥14.5k / 0.2–4k)，帧移 10 ms */
     fun hfRatios(pcm: FloatArray): FloatArray {

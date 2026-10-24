@@ -211,23 +211,6 @@ object WatermarkSubtractor {
         return best
     }
 
-    /** 整窗归一化相关（对齐用） */
-    private fun fullNcc(x: FloatArray, y: FloatArray, from: Int): Float {
-        val n = y.size
-        var num = 0.0
-        var dx = 0.0
-        var dy = 0.0
-        for (i in 0 until n) {
-            val a = x[from + i].toDouble()
-            val b = y[i].toDouble()
-            num += a * b
-            dx += a * a
-            dy += b * b
-        }
-        val d = sqrt(dx * dy)
-        return if (d < 1e-12) 0f else (num / d).toFloat()
-    }
-
     private fun ncc(x: FloatArray, y: FloatArray, from: Int, n: Int): Float {
         var mx = 0.0; var my = 0.0
         for (i in 0 until n) { mx += x[from + i]; my += y[i] }
