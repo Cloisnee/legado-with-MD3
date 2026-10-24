@@ -122,6 +122,16 @@ object TtsConfigStore {
         return null
     }
 
+    /**
+     * 插件声明契约：该音源的合成结果尾部可能带平台水印。
+     *
+     * 声明方式 = 插件 JSON 顶层字段 `"watermark": true`（导入时整对象保存，不会被丢弃）。
+     * 未声明 → 宿主不做任何音频处理，保证老插件行为不变。
+     */
+    fun declaresWatermark(context: Context, pluginId: String): Boolean =
+        runCatching { pluginById(context, pluginId)?.optBoolean("watermark", false) == true }
+            .getOrDefault(false)
+
     fun referencedPluginIds(context: Context): List<String> {
         val set = linkedSetOf<String>()
         val arr = loadVoices(context)

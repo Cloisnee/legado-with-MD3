@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 object SynthProbe {
 
-    data class Result(val bytes: ByteArray?, val report: String)
+    data class Result(val bytes: ByteArray?, val report: String, val pluginId: String = "")
 
     /** 等引擎锁的上限：超时给可读报告，而不是无声卡死。 */
     private const val LOCK_WAIT_SECONDS = 30L
@@ -105,7 +105,7 @@ object SynthProbe {
                 "→ 容器格式直通(${sniffed.kind.name}) total=${sniffed.bytes.size}"
             }
         )
-        return Result(sniffed.bytes, sb.toString())
+        return Result(sniffed.bytes, sb.toString(), found.pluginId)
     }
 
     /** 直连试听（不依赖配置列表条目）：按 插件 + locale + voice 合成 */
@@ -188,7 +188,7 @@ object SynthProbe {
                 "→ 容器格式直通(${sniffed.kind.name}) total=${sniffed.bytes.size}"
             }
         )
-        return Result(sniffed.bytes, sb.toString())
+        return Result(sniffed.bytes, sb.toString(), pluginId)
     }
 
     // ==================== 内部 ====================

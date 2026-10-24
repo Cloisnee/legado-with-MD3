@@ -36,6 +36,23 @@ object AudioWatermarkStripper {
         WatermarkDsp.decodeTemplate(WatermarkTemplate.BASE64, WatermarkTemplate.SCALE)
     }
 
+    /**
+     * 契约门控入口：只有插件**声明**了 `watermark=true` 才处理，否则原样返回。
+     * 所有落盘点（朗读缓存 / 三种试听）都应走这里，而不是直接调 [strip]。
+     */
+    fun stripDeclared(
+        context: android.content.Context,
+        pluginId: String,
+        bytes: ByteArray,
+        logDir: File? = null,
+    ): Outcome {
+        if (pluginId.isBlank()) return Outcome(bytes, false, "无插件标识，跳过")
+        if (!com.github.jing332.tts.store.TtsConfigStore.declaresWatermark(context, pluginId)) {
+            return Outcome(bytes, false, "插件未声明水印，跳过")
+        }
+        return strip(bytes, logDir)
+    }
+
     fun strip(bytes: ByteArray, logDir: File? = null): Outcome {
         val head = Mp3Truncator.head(bytes) ?: return Outcome(bytes, false, "非 MP3，跳过")
         if (bytes.size !in MIN_BYTES..MAX_BYTES) return Outcome(bytes, false, "体积超范围，跳过")

@@ -5,6 +5,7 @@ import com.github.jing332.compat.fs.TtsDirProvider
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.engine.TtsEngineContext
 import com.github.jing332.tts.watermark.AudioWatermarkStripper
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -56,9 +57,15 @@ class TtsServerSynthesizer(context: Context) {
         }
         val bytes = outcome.bytes
             ?: return@withContext Outcome(false, outcome.reason ?: "未知原因")
-        // 平台试听水印剥离（呱呱等）：按 MP3 帧边界截断，不重编码；识别不到即原样返回
+        // 平台试听水印剥离：只在插件声明了 watermark=true 时处理（见 TtsConfigStore.declaresWatermark）
+        val pluginId = runCatching {
+            JSONObject(traitsJson).optJSONObject("source")?.optString("pluginId").orEmpty()
+        }.getOrDefault("")
         val cleaned = runCatching {
-            AudioWatermarkStripper.strip(bytes, File(TtsDirProvider.baseDir(appContext), "_audition"))
+            AudioWatermarkStripper.stripDeclared(
+                appContext, pluginId, bytes,
+                File(TtsDirProvider.baseDir(appContext), "_audition")
+            )
         }.getOrElse { AudioWatermarkStripper.Outcome(bytes, false, "异常: ${it.message}") }
         val finalBytes = cleaned.bytes
         val written = runCatching {

@@ -383,9 +383,9 @@ class TtsServerCenterRepository(private val app: Application) {
                 ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
-                // 试听同样剥掉平台水印（与朗读缓存同款处理，保证试听即所得）
+                // 试听同样剥掉平台水印（契约门控：仅插件声明 watermark=true 时处理）
                 val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                    .strip(rawBytes, dir).bytes
+                    .stripDeclared(ctx, r.pluginId, rawBytes, dir).bytes
                 val ext = when {
                     bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
                     bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
@@ -823,9 +823,11 @@ class TtsServerCenterRepository(private val app: Application) {
             File(dir, "last_synth_result.txt")
                 .writeText("[${ts()}] plugin=$pluginId locale=$locale voice=$voice data=$data\n${r.report}\n")
         }
-        val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
+        val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+            val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                .stripDeclared(ctx, pluginId, rawBytes, dir).bytes
             val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
             val f = File(dir, "audition_direct_${System.currentTimeMillis()}.$ext")
             f.writeBytes(bytes)
@@ -1343,9 +1345,11 @@ class TtsServerCenterRepository(private val app: Application) {
                 File(dir, "last_synth_result.txt")
                     .writeText("[${ts()}] entry=$entryId data=$data\n${r.report}\n")
             }
-            val bytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
+            val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
+                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
+                    .stripDeclared(ctx, src.optString("pluginId"), rawBytes, dir).bytes
                 val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
                 val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
                 f.writeBytes(bytes)
