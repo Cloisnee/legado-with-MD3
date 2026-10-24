@@ -112,12 +112,13 @@ object AudioWatermarkStripper {
         }
         val cost = android.os.SystemClock.elapsedRealtime() - t0
         val rawName = if (keepRaw) saveRaw(logDir, bytes) else null
-        writeLog(
-            logDir,
-            "$note | Δ%%.1f | 候选 %d | %dms%s".format(
-                bl, matches.size, cost, if (rawName != null) " | raw=$rawName" else ""
-            )
-        )
+        // 注意：这里不能用 "%.1f...".format() —— note 里含动态内容，任何占位符错配都会抛异常，
+        // 而异常在"已经切完"之后抛出会被外层判成失败，等于白切。一律用拼接。
+        val rawTag = if (rawName != null) " | raw=$rawName" else ""
+        val blStr = "%.1f".format(bl)
+        runCatching {
+            writeLog(logDir, "$note | Δ$blStr | 候选 ${matches.size} | ${cost}ms$rawTag")
+        }
         return Outcome(outBytes, true, note)
     }
 
