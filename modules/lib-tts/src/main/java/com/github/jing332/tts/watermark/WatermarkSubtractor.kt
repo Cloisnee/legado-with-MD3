@@ -21,7 +21,7 @@ object WatermarkSubtractor {
     private const val N = 1024
     private const val H = 256
     private const val FADE_MS = 30
-    private const val CLEAN_THRESHOLD = 0.98f
+    private const val CLEAN_THRESHOLD = 0.90f
     private const val SPEC_FLOOR = 0.15
 
     class Result(
@@ -64,7 +64,7 @@ object WatermarkSubtractor {
             }
             start = startSampleHint + bestLag
             // 对齐后若连一块都到不了 0.90，说明不是我们这段录音 → 不做
-            if (bestScore < 0.90f) return null
+            if (bestScore < 0.85f) return null
         }
         if (start < 0 || start + len > pcm.size) return null
         val seg = FloatArray(len) { pcm[start + it] }
@@ -80,12 +80,22 @@ object WatermarkSubtractor {
             }
             i += h100
         }
-        if (cleanFrom < 0 || cleanFrom > len * 0.6) return null   // 纯净段太短/没有 → 不做
+        // 没有纯净段（水印被台词全覆盖）→ 用实测先验增益 0.62 兜底，仍然尝试相减
+        var priorGain = -1f
+        if (cleanFrom < 0 || cleanFrom > len * 0.6) {
+            cleanFrom = len
+            priorGain = 0.62f
+        }
 
         // 2) 纯净段上逐 20 ms 估增益，中值平滑后线性拟合
         val hp = 960
         val ts = ArrayList<Float>()
         val gs = ArrayList<Float>()
+        if (priorGain > 0f) {
+            // 直接用先验增益，跳过拟合
+            ts.add(0f); gs.add(priorGain)
+            ts.add(len.toFloat() / WatermarkDsp.SAMPLE_RATE); gs.add(priorGain)
+        }
         var p = cleanFrom
         while (p + hp <= len) {
             var num = 0.0
@@ -102,7 +112,7 @@ object WatermarkSubtractor {
             }
             p += hp
         }
-        if (gs.size < 8) return null
+        if (gs.size < 2) return null
         val smooth = FloatArray(gs.size) { idx ->
             val a = maxOf(0, idx - 3)
             val b = minOf(gs.size - 1, idx + 3)
@@ -158,6 +168,21 @@ object WatermarkSubtractor {
         return Result(out, cleanFrom.toFloat() / WatermarkDsp.SAMPLE_RATE, (k * ts.first() + b0).toFloat(), (k * ts.last() + b0).toFloat(), resDb)
     }
 
+    /** 任意偏移相关：x 从 xFrom 起、y 从 yFrom 起，各取 n 点 */
+    private fun nccAt(x: FloatArray, y: FloatArray, xFrom: Int, yFrom: Int, n: Int): Float {
+        var mx = 0.0; var my = 0.0
+        for (i in 0 until n) { mx += x[xFrom + i]; my += y[yFrom + i] }
+        mx /= n; my /= n
+        var num = 0.0; var dx = 0.0; var dy = 0.0
+        for (i in 0 until n) {
+            val a = x[xFrom + i] - mx
+            val b = y[yFrom + i] - my
+            num += a * b; dx += a * a; dy += b * b
+        }
+        val d = sqrt(dx * dy)
+        return if (d < 1e-12) 0f else (num / d).toFloat()
+    }
+
     /** 同偏移相关：以 from 为起点、两者同偏移比较（纯净段判定用） */
     private fun nccSame(x: FloatArray, y: FloatArray, from: Int, n: Int): Float {
         var mx = 0.0; var my = 0.0
@@ -179,7 +204,7 @@ object WatermarkSubtractor {
         var best = -9f
         var i = 0
         while (i + block <= y.size) {
-            val v = ncc(x, y, from + i, block)
+            val v = nccAt(x, y, from + i, i, block)
             if (v > best) best = v
             i += block
         }
