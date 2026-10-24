@@ -216,6 +216,50 @@ object WatermarkDsp {
         return out
     }
 
+    /**
+     * 与模板包络的相关系数。干净拼接 ≈0.95+；与台词叠加时被污染，掉到 0.4 以下。
+     * 用途：叠加态下**不要切**（切了会连台词一起切掉）。
+     */
+    fun envelopeCorr(pcm: FloatArray, startSample: Int, env: IntArray): Float {
+        var best = -1f
+        for (shift in -5..5) {
+            val v = envelopeCorrAt(pcm, startSample + shift * HOP, env)
+            if (v > best) best = v
+        }
+        return best
+    }
+
+    private fun envelopeCorrAt(pcm: FloatArray, startSample: Int, env: IntArray): Float {
+        val n = min(env.size, TEMPLATE_FRAMES)
+        if (n < 40 || startSample < 0) return -1f
+        if (startSample + n * HOP > pcm.size) return -1f
+        val a = FloatArray(n)
+        var mean = 0.0
+        for (i in 0 until n) {
+            val b = startSample + i * HOP
+            var e = 0.0
+            for (k in 0 until HOP) {
+                val v = pcm[b + k].toDouble()
+                e += v * v
+            }
+            a[i] = sqrt(e / HOP).toFloat()
+            mean += a[i]
+        }
+        mean /= n
+        var dot = 0.0
+        var na = 0.0
+        var nb = 0.0
+        for (i in 0 until n) {
+            val x = a[i] - mean.toFloat()
+            val y = env[i].toFloat()
+            dot += x * y
+            na += x * x
+            nb += y * y
+        }
+        if (na <= 1e-12 || nb <= 1e-12) return -1f
+        return (dot / sqrt(na * nb)).toFloat()
+    }
+
     /** 水印时长（样本数） */
     fun watermarkSamples(): Int = WATERMARK_FRAMES * HOP
 

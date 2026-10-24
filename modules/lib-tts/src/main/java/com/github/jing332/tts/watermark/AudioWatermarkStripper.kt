@@ -81,6 +81,12 @@ object AudioWatermarkStripper {
         if (bl < 12f) {
             return Outcome(bytes, false, "命中 %.3f 但窗口非窄带(Δ%.1f)，跳过".format(best.score, bl))
         }
+        // 第三道确认：包络。干净拼接 ≈0.95+；水印与台词叠加时被污染，<0.45。
+        // 叠加态下切会把台词一起切掉，宁可不动。
+        val ec = WatermarkDsp.envelopeCorr(decoded.pcm, best.startSample, WatermarkTemplate.ENV)
+        if (ec < 0.65f) {
+            return Outcome(bytes, false, "命中 %.3f 但包络相关 %.2f（疑似叠加），跳过".format(best.score, ec))
+        }
         val sr = WatermarkDsp.SAMPLE_RATE
         val durSec = decoded.pcm.size.toDouble() / sr
         val wmEnd = best.startSample + WatermarkDsp.watermarkSamples()
@@ -116,8 +122,9 @@ object AudioWatermarkStripper {
         // 而异常在"已经切完"之后抛出会被外层判成失败，等于白切。一律用拼接。
         val rawTag = if (rawName != null) " | raw=$rawName" else ""
         val blStr = "%.1f".format(bl)
+        val ecStr = "%.2f".format(ec)
         runCatching {
-            writeLog(logDir, "$note | Δ$blStr | 候选 ${matches.size} | ${cost}ms$rawTag")
+            writeLog(logDir, "$note | Δ$blStr | 包络$ecStr | 候选 ${matches.size} | ${cost}ms$rawTag")
         }
         return Outcome(outBytes, true, note)
     }
