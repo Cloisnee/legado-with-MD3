@@ -194,7 +194,7 @@ object WatermarkDsp {
      * 全片扫描：水印可能被插在**句子中间**（前后都还有台词），只看尾巴会漏。
      * @return 所有 ≥[MATCH_THRESHOLD] 的命中，按得分降序
      */
-    fun locateAll(pcm: FloatArray, template: FloatArray): List<Match> {
+    fun locateAll(pcm: FloatArray, template: FloatArray, minScore: Float = MATCH_THRESHOLD): List<Match> {
         val frames = pcm.size / HOP
         if (frames < TEMPLATE_FRAMES + 8) return emptyList()
         val m = mel(pcm, 0, frames)
@@ -210,7 +210,7 @@ object WatermarkDsp {
                 b += NMEL
             }
             s /= (TEMPLATE_FRAMES * NMEL)
-            if (s >= MATCH_THRESHOLD) out.add(Match(s, i * HOP))
+            if (s >= minScore) out.add(Match(s, i * HOP))
         }
         out.sortByDescending { it.score }
         return out

@@ -72,22 +72,21 @@ object AudioWatermarkStripper {
         }
 
         val t0 = android.os.SystemClock.elapsedRealtime()
-        val matches = WatermarkDsp.locateAll(decoded.pcm, template)
+        // 低阈值先取候选：减法分支需要它（叠加态 mel 只有 0.67~0.78）
+        val matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
         if (matches.isEmpty()) return Outcome(bytes, false, "未命中水印")
 
         val best = matches[0]
-        // 第二道确认：水印素材频带只到 ~13.5 kHz。窗口不够窄带 → 说明命中的是普通台词，宁可不切
-        val bl = WatermarkDsp.bandLimitDelta(decoded.pcm, best.startSample)
-        if (bl < 12f) {
-            return Outcome(bytes, false, "命中 %.3f 但窗口非窄带(Δ%.1f)，跳过".format(best.score, bl))
-        }
-        // 第三道确认：包络。干净拼接 ≈0.95+；水印与台词叠加时被污染，<0.45。
-        // 叠加态下切会把台词一起切掉，宁可不动。
         val ec = WatermarkDsp.envelopeCorr(decoded.pcm, best.startSample, WatermarkTemplate.ENV)
-        if (ec < 0.65f) {
-            // 叠加态：走"相减 + 谱减"，产出 WAV
+        val bl = WatermarkDsp.bandLimitDelta(decoded.pcm, best.startSample)
+
+        // A. 干净拼接（三道闸门全过）→ 切除：无损、不重编码
+        val canCut = best.score >= WatermarkDsp.MATCH_THRESHOLD && bl >= 12f && ec >= 0.65f
+        if (!canCut) {
+            // B. 叠加态 / 边界情况 → 相减（自带纯净段校验，判错会返回 null，不误伤）
             return subtractPath(context, bytes, decoded, best, ec, bl, logDir, keepRaw)
         }
+
         val sr = WatermarkDsp.SAMPLE_RATE
         val durSec = decoded.pcm.size.toDouble() / sr
         val wmEnd = best.startSample + WatermarkDsp.watermarkSamples()
@@ -149,11 +148,18 @@ object AudioWatermarkStripper {
                     ((((b[i * 2 + 1].toInt() shl 8) or (b[i * 2].toInt() and 0xFF)).toShort())).toFloat() / 32768f
                 }
             }
-        }.getOrNull() ?: return Outcome(bytes, false, "模板资源缺失")
+        }.getOrNull() ?: run {
+            runCatching { writeLog(logDir, "叠加相减失败：模板资源缺失") }
+            return Outcome(bytes, false, "模板资源缺失")
+        }
 
         val t0 = android.os.SystemClock.elapsedRealtime()
         val r = WatermarkSubtractor.subtract(decoded.pcm, best.startSample, wm)
-            ?: return Outcome(bytes, false, "叠加态：未找到纯净段（命中 %.3f/包络 %.2f），跳过".format(best.score, ec))
+        if (r == null) {
+            val why = "叠加相减失败：未找到纯净段（命中 %.3f/包络 %.2f）".format(best.score, ec)
+            runCatching { writeLog(logDir, why) }
+            return Outcome(bytes, false, why)
+        }
 
         // 截到水印末尾，补 250ms 静音（时长与原始一致）
         val end = best.startSample + wm.size

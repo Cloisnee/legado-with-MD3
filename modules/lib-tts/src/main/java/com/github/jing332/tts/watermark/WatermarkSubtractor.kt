@@ -36,10 +36,36 @@ object WatermarkSubtractor {
         val residualDb: Float,
     )
 
-    fun subtract(pcm: FloatArray, startSample: Int, wm: FloatArray): Result? {
+    fun subtract(pcm: FloatArray, startSampleHint: Int, wm: FloatArray): Result? {
         val len = wm.size
-        if (startSample < 0 || startSample + len > pcm.size) return null
-        val seg = FloatArray(len) { pcm[startSample + it] }
+        // 0) 波形级精细对齐：mel 定位只有 ±50ms 精度，差一个采样就减不干净。
+        //    先 ±150ms 粗搜（步长 1ms），再 ±1ms 细搜到 1 个采样。
+        var start: Int
+        run {
+            var bestLag = 0
+            var bestScore = -9f
+            var lag = -7200
+            while (lag <= 7200) {
+                val s = startSampleHint + lag
+                if (s >= 0 && s + len <= pcm.size) {
+                    val sc = fullNcc(pcm, wm, s)
+                    if (sc > bestScore) { bestScore = sc; bestLag = lag }
+                }
+                lag += 48
+            }
+            var l = bestLag - 48
+            while (l <= bestLag + 48) {
+                val s = startSampleHint + l
+                if (s >= 0 && s + len <= pcm.size) {
+                    val sc = fullNcc(pcm, wm, s)
+                    if (sc > bestScore) { bestScore = sc; bestLag = l }
+                }
+                l++
+            }
+            start = startSampleHint + bestLag
+        }
+        if (start < 0 || start + len > pcm.size) return null
+        val seg = FloatArray(len) { pcm[start + it] }
 
         // 1) 找"纯净段"：逐 100 ms 与模板的归一化相关 ≥0.98 的第一处
         val h100 = 4800
@@ -126,8 +152,25 @@ object WatermarkSubtractor {
 
         // 6) 写回
         val out = pcm.copyOf()
-        for (idx in 0 until len) out[startSample + idx] = res[idx]
+        for (idx in 0 until len) out[start + idx] = res[idx]
         return Result(out, cleanFrom.toFloat() / WatermarkDsp.SAMPLE_RATE, (k * ts.first() + b0).toFloat(), (k * ts.last() + b0).toFloat(), resDb)
+    }
+
+    /** 整窗归一化相关（对齐用） */
+    private fun fullNcc(x: FloatArray, y: FloatArray, from: Int): Float {
+        val n = y.size
+        var num = 0.0
+        var dx = 0.0
+        var dy = 0.0
+        for (i in 0 until n) {
+            val a = x[from + i].toDouble()
+            val b = y[i].toDouble()
+            num += a * b
+            dx += a * a
+            dy += b * b
+        }
+        val d = sqrt(dx * dy)
+        return if (d < 1e-12) 0f else (num / d).toFloat()
     }
 
     private fun ncc(x: FloatArray, y: FloatArray, from: Int, n: Int): Float {
