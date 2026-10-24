@@ -469,6 +469,12 @@ fun TtsServerCenterScreen(app: Application, onBack: () -> Unit) {
 
     fun startAudition(pluginId: String, locale: String, voice: String, text: String) {
         val oldPlugin = auditionPluginId
+        // 同插件已有合成在跑：旧请求会持 synthesisLock 到读完，新请求只会等 30s 后报「引擎忙」，
+        // 且旧结果会被 seq 丢弃。直接忽略并提示，避免无意义的 30s 等待（换插件不受影响）。
+        if (oldPlugin == pluginId && auditionVoiceId != null) {
+            context.toastOnUi("正在合成，请稍候…")
+            return
+        }
         auditionSeq++
         auditionJob?.cancel()
         auditionJob = null

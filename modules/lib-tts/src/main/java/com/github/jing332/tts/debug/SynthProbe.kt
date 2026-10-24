@@ -4,7 +4,9 @@ import android.content.Context
 import com.github.jing332.common.audio.AudioSniffer
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.speech.plugin.TtsPluginEngineManager
+import com.github.jing332.tts.speech.plugin.engine.EMPTY_RETRY_DELAY_MS
 import com.github.jing332.tts.speech.plugin.engine.TtsPluginEngineV2
+import com.github.jing332.tts.speech.plugin.engine.isNoDataWrittenError
 import com.github.jing332.tts.speech.plugin.engine.readAllWithTimeout
 import com.github.jing332.tts.store.TtsConfigStore
 import kotlinx.coroutines.runBlocking
@@ -29,9 +31,6 @@ object SynthProbe {
 
     /** 等引擎锁的上限：超时给可读报告，而不是无声卡死。 */
     private const val LOCK_WAIT_SECONDS = 30L
-
-    /** 0B 重试前的短暂冷却，给插件的认证/票据落盘一点时间。 */
-    private const val RETRY_DELAY_MS = 450L
 
     fun run(
         context: Context,
@@ -69,13 +68,14 @@ object SynthProbe {
         } catch (t: Throwable) {
             sb.appendLine("✗ 引擎加载(eval) 失败: ${t.javaClass.name}: ${t.message}")
             sb.appendLine(t.stackTraceToString().take(6000))
-            return Result(null, sb.toString())
+            return Result(null, sb.toString(), found.pluginId)
         }
         sb.appendLine("✓ 引擎加载完成")
 
         val rate = found.speed.takeIf { it > 0f } ?: 1f
         val volume = found.volume.takeIf { it > 0f } ?: 1f
         val pitch = found.pitch.takeIf { it > 0f } ?: 1f
+        val sr = found.sampleRate.takeIf { it > 0 } ?: 24000
 
         val data = withEngineLock(context, sb, engine, found.pluginId) {
             // 必须在锁内写 source：试听与朗读/并列试听共用同一引擎实例，source 是可变字段。
@@ -95,12 +95,12 @@ object SynthProbe {
                     timeoutMs = startupTimeoutMs
                 )
             }
-        } ?: return Result(null, sb.toString())
+        } ?: return Result(null, sb.toString(), found.pluginId)
 
-        val sniffed = AudioSniffer.normalizeForPlayback(data, found.sampleRate)
+        val sniffed = AudioSniffer.normalizeForPlayback(data, sr)
         sb.appendLine(
             if (sniffed.wrappedPcm) {
-                "→ 未识别格式：按裸 PCM 包 WAV 头(${found.sampleRate} Hz) total=${sniffed.bytes.size}"
+                "→ 未识别格式：按裸 PCM 包 WAV 头(${sr} Hz) total=${sniffed.bytes.size}"
             } else {
                 "→ 容器格式直通(${sniffed.kind.name}) total=${sniffed.bytes.size}"
             }
@@ -235,6 +235,7 @@ object SynthProbe {
         while (true) {
             attempt++
             val t0 = System.currentTimeMillis()
+            val cancelSeq = engine.currentCancelSeq
             val stream = try {
                 runBlocking { start() }
             } catch (t: Throwable) {
@@ -259,23 +260,31 @@ object SynthProbe {
                         if (attempt > 1) "（第 $attempt 次）" else ""
             )
 
-            val (bytes, timedOut) = try {
-                readAllWithTimeout(stream, timeoutMs)
+            var bytes: ByteArray? = null
+            var timedOut = false
+            var readError: Throwable? = null
+            try {
+                val r = readAllWithTimeout(stream, timeoutMs)
+                bytes = r.first
+                timedOut = r.second
             } catch (t: Throwable) {
-                runCatching { engine.cancelAudio() }
-                sb.appendLine("✗ 合成异常: ${t.javaClass.name}: ${t.message}")
-                sb.appendLine(t.stackTraceToString().take(6000))
-                PipelineProbe.log(
-                    context, "audition.error",
-                    "pluginId" to pluginId,
-                    "stage" to "read",
-                    "attempt" to attempt,
-                    "ms" to (System.currentTimeMillis() - t0),
-                    "err" to (t.message ?: t.javaClass.simpleName)
-                )
-                return null
+                readError = t
             } finally {
                 runCatching { stream.close() }
+            }
+
+            // 外部 cancelAudio 关闭流时 readBytes 返回空数组而不是异常，不能当冷启动 0B 去重试。
+            val cancelled = engine.currentCancelSeq != cancelSeq
+            if (cancelled) {
+                sb.appendLine("✗ 已取消（音频流被外部关闭），不再重试")
+                PipelineProbe.log(
+                    context, "audition.cancelled",
+                    "pluginId" to pluginId,
+                    "attempt" to attempt,
+                    "ms" to (System.currentTimeMillis() - t0)
+                )
+                runCatching { engine.cancelAudio() }
+                return null
             }
 
             if (timedOut) {
@@ -290,32 +299,58 @@ object SynthProbe {
                 )
                 return null
             }
-            if (bytes != null && bytes.isNotEmpty()) {
+
+            val err = readError
+            val noData = err?.isNoDataWrittenError() == true
+            if (err != null && !noData) {
+                runCatching { engine.cancelAudio() }
+                sb.appendLine("✗ 合成异常: ${err.javaClass.name}: ${err.message}")
+                sb.appendLine(err.stackTraceToString().take(6000))
+                PipelineProbe.log(
+                    context, "audition.error",
+                    "pluginId" to pluginId,
+                    "stage" to "read",
+                    "attempt" to attempt,
+                    "emptyBytes" to noData,
+                    "ms" to (System.currentTimeMillis() - t0),
+                    "err" to (err.message ?: err.javaClass.simpleName)
+                )
+                return null
+            }
+            val audio = bytes
+            if (err == null && audio != null && audio.isNotEmpty()) {
                 if (attempt > 1) sb.appendLine("✓ 第 $attempt 次拿到音频")
-                return bytes
+                return audio
             }
 
-            // 0 字节：冷启动首次请求（票据/ident/ws 刚重建）最常见，清一次再试。
+            // 0 字节 / 插件 callback.close() 未写任何数据：冷启动首次请求最常见，清一次再试。
             if (attempt >= 2) {
-                sb.appendLine("✗ 合成结果为空(0B)（已重试 $attempt 次）")
+                sb.appendLine("✗ 合成结果为空(0B)（已重试 ${attempt - 1} 次）")
                 PipelineProbe.log(
                     context, "audition.empty",
                     "pluginId" to pluginId,
                     "attempt" to attempt,
+                    "noData" to noData,
                     "ms" to (System.currentTimeMillis() - t0)
                 )
                 runCatching { engine.cancelAudio() }
                 return null
             }
-            sb.appendLine("→ 第 $attempt 次返回 0B，清理后重试一次（冷启动认证窗口）")
+            sb.appendLine(
+                if (noData)
+                    "→ 第 $attempt 次返回空流(No data written)，清理后重试一次（冷启动认证窗口）"
+                else
+                    "→ 第 $attempt 次返回 0B，清理后重试一次（冷启动认证窗口）"
+            )
             PipelineProbe.log(
                 context, "audition.retry",
                 "pluginId" to pluginId,
                 "attempt" to attempt,
+                "noData" to noData,
                 "ms" to (System.currentTimeMillis() - t0)
             )
             runCatching { engine.cancelAudio() }
-            Thread.sleep(RETRY_DELAY_MS)
+            Thread.sleep(EMPTY_RETRY_DELAY_MS)
         }
     }
 }

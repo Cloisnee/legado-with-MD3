@@ -71,21 +71,30 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
     init {
         // 给插件一个能安全跑后台 JS 的入口（ttsrv.runAsync）：
         // 自行 new java.lang.Thread 调 JS 会缺 Rhino Context，异常被插件吞掉后预取静默失效。
+        // 注意：必须走 lib-script 的实例级工厂（withRhinoContext）。裸 Context.enter() 取的是
+        // 书源引擎 com.script 的全局工厂，其 RhinoContext.allowScriptRun 默认 false，
+        // Function.call 会在 doTopCall 直接抛 "Not allow run script in unauthorized way."。
         ttsrv.asyncRunner = { fn ->
             Thread {
-                val cx = org.mozilla.javascript.Context.enter()
+                val t0 = System.currentTimeMillis()
                 try {
-                    cx.optimizationLevel = -1
-                    val scope = engine.scope ?: engine.globalScope
-                    fn.call(cx, scope, scope, emptyArray<Any?>())
+                    withRhinoContext { cx ->
+                        val scope = engine.scope ?: engine.globalScope
+                        fn.call(cx, scope, scope, emptyArray<Any?>())
+                    }
+                    PipelineProbe.log(
+                        context, "async.end",
+                        "pluginId" to plugin.pluginId,
+                        "ms" to (System.currentTimeMillis() - t0)
+                    )
                 } catch (t: Throwable) {
                     PipelineProbe.log(
                         context, "async.error",
                         "pluginId" to plugin.pluginId,
+                        "thread" to Thread.currentThread().name,
+                        "ms" to (System.currentTimeMillis() - t0),
                         "err" to (t.message ?: t.javaClass.simpleName)
                     )
-                } finally {
-                    org.mozilla.javascript.Context.exit()
                 }
             }.apply {
                 isDaemon = true
@@ -191,11 +200,21 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
     /** 0B 一次性重试标记：每个引擎实例只给一次机会，避免永久坏插件把每一句都拖成两次。 */
     val emptyRetried = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * 取消代次：每次 [cancelAudio] 自增。
+     * 调用方在发起 getAudio 前记下代次，读流结束后发现变化 → 说明流是被 cancelAudio
+     * 关闭的（readBytes 会返回空数组而不是异常），不能当作冷启动 0B 去重试。
+     */
+    private val cancelSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    val currentCancelSeq: Int get() = cancelSeq.get()
+
     /** 当前试听/合成的音频流；取消时关闭它，让阻塞的 readBytes 立刻返回。 */
     @Volatile
     private var currentAudioInputStream: InputStream? = null
 
     fun cancelAudio() {
+        cancelSeq.incrementAndGet()
         PipelineProbe.log(context, "audio.cancel", "pluginId" to plugin.pluginId)
         val stream = currentAudioInputStream
         currentAudioInputStream = null

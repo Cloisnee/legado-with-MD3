@@ -17,6 +17,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class JsBridgeInputStream : InputStream() {
     companion object {
         private const val TAG = "JsBridgeInputStream"
+
+        /** 插件 callback.close() 结束但一个字节都没写时的兜底错误；调用方按「空流」处理。 */
+        internal const val ERROR_NO_DATA_WRITTEN = "No data written"
+
         private val logger = KLog.logger(TAG)
     }
 
@@ -162,7 +166,7 @@ class JsBridgeInputStream : InputStream() {
                 logger.debug { "close" }
 
                 try {
-                    if (length <= 0) errorCause = IOException("No data written")
+                    if (length <= 0) errorCause = IOException(ERROR_NO_DATA_WRITTEN)
                     this@JsBridgeInputStream.close()
                 } catch (e: IOException) {
                     errorCause = e
