@@ -96,6 +96,22 @@ object WatermarkSubtractor {
      */
     private fun align(pcm: FloatArray, wm: FloatArray, hint: Int): Int {
         val hintScore = maxBlockNcc(pcm, wm, hint)
+
+        // 没有干净块（完全被台词盖住）：maxBlockNcc 的分辨力不够，
+        // 改用全窗 NCC 在 ±5ms 内做 1 采样精修（实测 miss2 的探针位置偏 9ms，靠这一步拉回）
+        if (hintScore < 0.9f) {
+            var bestLag = hint
+            var best = nccFull(pcm, wm, hint)
+            val span = (0.005 * WatermarkDsp.SAMPLE_RATE).toInt()
+            for (d in -span..span) {
+                val lag = hint + d
+                if (lag < 0 || lag + wm.size > pcm.size) continue
+                val v = nccFull(pcm, wm, lag)
+                if (v > best) { best = v; bestLag = lag }
+            }
+            return bestLag
+        }
+
         var bestLag = hint
         var best = hintScore
         val span = (SEARCH_SEC * WatermarkDsp.SAMPLE_RATE).toInt()
@@ -116,6 +132,11 @@ object WatermarkSubtractor {
             lag++
         }
         return if (best >= hintScore + 0.03f) bestLag else hint
+    }
+
+    private fun nccFull(pcm: FloatArray, wm: FloatArray, start: Int): Float {
+        if (start < 0 || start + wm.size > pcm.size) return -1f
+        return WatermarkDsp.nccAt(pcm, wm, start, 0, wm.size)
     }
 
     private fun maxBlockNcc(pcm: FloatArray, wm: FloatArray, start: Int): Float {

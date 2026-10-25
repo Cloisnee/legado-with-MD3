@@ -38,6 +38,8 @@ object AudioWatermarkStripper {
     private const val TAIL_MIN = 0.25f
     /** 中分档：0.25~0.45 之间要求至少 2 个干净块，挡掉“只剩尾字巧合”（e3/e6 那种单块 0.93） */
     private const val TAIL_HI = 0.45f
+    /** 中分档的第二判据：mel 全片最高分（实测真水印 0.345~0.53，干净巧合 0.185~0.243） */
+    private const val MEL_HI = 0.30f
     /** 低于这个分但高于 0.10：写一行“接近未命中”日志，便于事后定位 */
     private const val TAIL_NEAR = 0.10f
 
@@ -126,21 +128,33 @@ object AudioWatermarkStripper {
             if (tail != null && tail.score >= TAIL_MIN) {
                 val stats = WatermarkDsp.blockStats(decoded.pcm, wm, tail.startSample)
                 val clean = stats.count { it.ncc >= 0.9f }
-                // 两层判据：高分直接认；0.25~0.45 要求至少 2 个干净块（挡掉单块巧合）
-                val accept = tail.score >= TAIL_HI || clean >= 2
+                // 两层判据：高分直接认；0.25~0.45 先看干净块，不够再看 mel 全片最高分
+                var accept = tail.score >= TAIL_HI || clean >= 2
+                var startHint = tail.startSample
+                var via = ""
+                if (!accept) {
+                    val mb = WatermarkDsp.bestMatch(decoded.pcm, template)
+                    val melStr = if (mb != null) "%.3f".format(mb.score) else "-"
+                    if (mb != null && mb.score >= MEL_HI) {
+                        accept = true
+                        // mel 位置是 10ms 网格，但实测比被掩蔽时的探针峰更准（miss2 探针偏 9ms）
+                        startHint = mb.startSample
+                        via = " | mel补判 $melStr"
+                    } else {
+                        runCatching { writeLog(logDir, "尾部中分未采用（%.3f, 块 %d/%d, mel %s）".format(tail.score, clean, stats.size, melStr)) }
+                    }
+                }
                 if (accept) {
                     if (clean == stats.size) {
                         // 整窗干净 → 截尾 / 抽帧（原 MP3 字节，无重编码）
                         return cutPath(head, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
                     }
-                    val r = WatermarkSubtractor.subtract(decoded.pcm, wm, tail.startSample)
+                    val r = WatermarkSubtractor.subtract(decoded.pcm, wm, startHint)
                     if (r != null) {
-                        return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                        return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0, via)
                     }
                     // 相减失败（极少）→ 继续走 mel 回退，不要静默
                     runCatching { writeLog(logDir, "尾部命中 %.3f 但相减失败（块 %d/%d）".format(tail.score, clean, stats.size)) }
-                } else {
-                    runCatching { writeLog(logDir, "尾部中分未采用（%.3f, 块 %d/%d）".format(tail.score, clean, stats.size)) }
                 }
             }
         }
@@ -238,6 +252,7 @@ object AudioWatermarkStripper {
         logDir: File?,
         keepRaw: Boolean,
         t0: Long,
+        via: String = "",
     ): Outcome {
         val sr = WatermarkDsp.SAMPLE_RATE
         val end = r.startSample + wmSize
@@ -257,7 +272,7 @@ object AudioWatermarkStripper {
         val cost = android.os.SystemClock.elapsedRealtime() - t0
         val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f, 残差 %.0fdB）".format(
             score, clean, total, r.slope, r.intercept, r.residualDb
-        ) + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
+        ) + via + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
         runCatching { writeLog(logDir, "$note | ${cost}ms" + (if (keepRaw) " | raw=" + (saveRaw(logDir, bytes) ?: "-") else "")) }
         return Outcome(wav, true, note)
     }

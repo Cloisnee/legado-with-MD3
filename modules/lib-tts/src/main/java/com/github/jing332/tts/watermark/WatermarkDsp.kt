@@ -177,6 +177,28 @@ object WatermarkDsp {
         return out
     }
 
+    /** 全片 mel 扫描的最大匹配（只记最大值，不建列表）；用于“中分档”补判 */
+    fun bestMatch(pcm: FloatArray, template: FloatArray): Match? {
+        val frames = pcm.size / HOP
+        if (frames < TEMPLATE_FRAMES + 8) return null
+        val m = mel(pcm, 0, frames)
+        var best = -9f
+        var bestStart = 0
+        for (i in 0..frames - TEMPLATE_FRAMES) {
+            var s = 0f
+            var a = i * NMEL
+            var b = 0
+            for (f in 0 until TEMPLATE_FRAMES) {
+                for (k in 0 until NMEL) s += m[a + k] * template[b + k]
+                a += NMEL
+                b += NMEL
+            }
+            s /= (TEMPLATE_FRAMES * NMEL)
+            if (s > best) { best = s; bestStart = i * HOP }
+        }
+        return Match(best, bestStart)
+    }
+
     /**
      * 与模板包络的相关系数。干净拼接 ≈0.95+；与台词叠加时被污染，掉到 0.4 以下。
      * 用途：叠加态下**不要切**（切了会连台词一起切掉）。
