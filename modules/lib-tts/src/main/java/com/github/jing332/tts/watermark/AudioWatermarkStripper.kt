@@ -12,13 +12,19 @@ import java.io.File
 /**
  * 试听水印剥离器（缓存落盘前调用）。
  *
- * 背景：呱呱有声的试听接口 `/story_v2/api/record/tts/trail` 在音频尾部**叠加**一段固定水印录音
- * （“欢迎使用呱呱有声”，1.22 s，电平比正文低 3~19 dB，位置固定在结尾前 0.25 s）。
- * 水印素材频带只到 ~13.5 kHz，与 48 kHz 全带正文有 40 dB 以上的高频差 ——
- * 据此定位后**按 MP3 帧边界截断**，不重编码、无二次压缩损失。
+ * 背景：呱呱有声的接口会在音频里插入一段固定水印录音（“欢迎使用呱呱有声”，1.22 s），
+ * 有两种物理形态：
+ *  - **干净拼接**：水印整段落在台词后的静音里 → 可以按 MP3 帧边界截断/抽帧（无损、不重编码）
+ *  - **叠加态**：水印和台词线性相加（甚至同时结束）→ 只能时域相减（必须转 WAV）
  *
- * 判据：与内嵌水印模板的 log-mel 相关度（阈值 0.65），且**只对 48 kHz MP3 生效**。
- * 分工：[WatermarkDsp] 纯算法；本类负责解码（MediaCodec）、MP3 帧索引、截断与日志。
+ * 分流（2026-10-26 v6）：
+ *  1. **尾部位置先验探针**：模板末 0.3s 与混音（双方 800Hz 高通）做时域 NCC，
+ *     只在 EOF-0.25s-1.22s 附近 ±90ms 搜。干净语音 ≤0.07，叠加态 0.25~1.0。
+ *     —— mel 探针在叠加态只能到 0.44，这是完全重叠态一直“未命中”的根因。
+ *  2. 命中后看 12 个 100ms 块的 NCC：**全 12 块都 ≥0.9 且贴尾** → 截尾（无损）；
+ *     否则 → 相减（[WatermarkSubtractor] 逐样本线性增益 + 1 采样对齐，不做谱减）。
+ *  3. 尾部没命中 → 回退 mel 全片扫描（句中插入），原有 ec/窄带闸门保留。
+ *
  * **失败一律 fail-open**：返回原始字节，绝不影响合成。
  */
 object AudioWatermarkStripper {
@@ -28,12 +34,40 @@ object AudioWatermarkStripper {
     private const val MIN_BYTES = 8 * 1024
     private const val LOG_MAX = 256 * 1024L
 
+    /** 尾部探针命中阈值：干净语音实测 max 0.07，叠加态实测 0.25~1.0 */
+    private const val TAIL_MIN = 0.25f
+    /** 低于这个分但高于 0.10：写一行“接近未命中”日志，便于事后定位 */
+    private const val TAIL_NEAR = 0.10f
+
     class Outcome(val bytes: ByteArray, val removed: Boolean, val note: String)
 
     class Decoded(val pcm: FloatArray, val sampleRate: Int)
 
     private val template: FloatArray by lazy {
         WatermarkDsp.decodeTemplate(WatermarkTemplate.BASE64, WatermarkTemplate.SCALE)
+    }
+
+    @Volatile
+    private var wmPcm: FloatArray? = null
+
+    @Volatile
+    private var wmHp: FloatArray? = null
+
+    private fun wmPcm(context: android.content.Context): FloatArray {
+        wmPcm?.let { return it }
+        val b = context.assets.open("watermark_wm.pcm").use { it.readBytes() }
+        val p = FloatArray(b.size / 2) { i ->
+            ((((b[i * 2 + 1].toInt() shl 8) or (b[i * 2].toInt() and 0xFF)).toShort())).toFloat() / 32768f
+        }
+        wmPcm = p
+        return p
+    }
+
+    private fun wmHp(context: android.content.Context): FloatArray {
+        wmHp?.let { return it }
+        val h = WatermarkDsp.highPass(wmPcm(context), 800f, WatermarkDsp.SAMPLE_RATE)
+        wmHp = h
+        return h
     }
 
     /**
@@ -45,7 +79,7 @@ object AudioWatermarkStripper {
         pluginId: String,
         bytes: ByteArray,
         logDir: File? = null,
-        /** 试听链路传 true：切之前把原始字节另存一份，便于事后取样分析 */
+        /** 试听链路传 true：处理之前把原始字节另存一份，便于事后取样分析 */
         keepRaw: Boolean = false,
     ): Outcome {
         if (pluginId.isBlank()) return Outcome(bytes, false, "无插件标识，跳过")
@@ -72,112 +106,142 @@ object AudioWatermarkStripper {
         }
 
         val t0 = android.os.SystemClock.elapsedRealtime()
-        // 低阈值先取候选：减法分支需要它（叠加态 mel 只有 0.67~0.78）
-        // 先用"模板最后 0.3s"做探针（叠加态下正文通常已说完，末段最干净），再退回整模板
+        val wm = context?.let { runCatching { wmPcm(it) }.getOrNull() }
+        val wh = context?.let { runCatching { wmHp(it) }.getOrNull() }
+
+        // ---------- 1. 尾部位置先验探针 ----------
+        var tailScore = -1f
+        if (wm != null && wh != null) {
+            val tail = WatermarkDsp.tailProbe(decoded.pcm, wh, decoded.sampleRate)
+            tailScore = tail?.score ?: -1f
+            if (tail != null && tail.score >= TAIL_MIN) {
+                val stats = WatermarkDsp.blockStats(decoded.pcm, wm, tail.startSample)
+                val clean = stats.count { it.ncc >= 0.9f }
+                val wmEnd = tail.startSample + wm.size
+                val nearTail = wmEnd + (0.30 * decoded.sampleRate).toInt() >= decoded.pcm.size
+                if (clean == stats.size && nearTail) {
+                    // 干净拼接 → 截尾（原 MP3 字节，无重编码）
+                    return cutPath(head, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                }
+                val r = WatermarkSubtractor.subtract(decoded.pcm, wm, tail.startSample)
+                if (r != null) {
+                    return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                }
+                // 相减失败（极少）→ 继续走 mel 回退，不要静默
+                runCatching { writeLog(logDir, "尾部命中 %.3f 但相减失败（块 %d/%d）".format(tail.score, clean, stats.size)) }
+            }
+        }
+
+        // ---------- 2. 回退：mel 全片扫描（句中插入） ----------
         var matches = WatermarkDsp.locateByProbe(decoded.pcm, template, 90, 30, 0.90f)
         if (matches.isEmpty()) matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
-        if (matches.isEmpty()) return Outcome(bytes, false, "未命中水印")
+        if (matches.isEmpty()) {
+            if (tailScore >= TAIL_NEAR) {
+                runCatching { writeLog(logDir, "未命中（尾部探针 %.3f，未到 %.2f）".format(tailScore, TAIL_MIN)) }
+            }
+            return Outcome(bytes, false, "未命中水印")
+        }
 
         val best = matches[0]
         val ec = WatermarkDsp.envelopeCorr(decoded.pcm, best.startSample, WatermarkTemplate.ENV)
         val bl = WatermarkDsp.bandLimitDelta(decoded.pcm, best.startSample)
 
-        // A. 干净拼接（三道闸门全过）→ 切除：无损、不重编码
-        // 包络 ≥0.90 = 这一窗几乎就是水印本身（台词没压住），此时无需再看窄带 Δ
-        // —— 之前死抠 Δ≥12，把"干净拼接"误送进减法（真机已复现）
+        // 干净拼接（三道闸门全过）→ 切除：无损、不重编码
         val canCut = best.score >= WatermarkDsp.MATCH_THRESHOLD &&
             (ec >= 0.90f || (ec >= 0.65f && bl >= 12f))
-        if (!canCut) {
-            // B. 叠加态 / 边界情况 → 相减（自带纯净段校验，判错会返回 null，不误伤）
-            return subtractPath(context, bytes, decoded, best, ec, bl, logDir, keepRaw)
+        if (canCut) {
+            val clean = if (wm != null)
+                WatermarkDsp.blockStats(decoded.pcm, wm, best.startSample).count { it.ncc >= 0.9f }
+            else 0
+            return cutPath(head, bytes, decoded, best.startSample, best.score, clean, 12, logDir, keepRaw, t0)
         }
+        if (wm == null) return Outcome(bytes, false, "无 Context，无法加载模板")
+        val r = WatermarkSubtractor.subtract(decoded.pcm, wm, best.startSample, 0.80f)
+            ?: return Outcome(bytes, false, "相减失败（命中 %.3f）".format(best.score))
+        return subtractPath(bytes, decoded, r, wm.size, best.score, 0, 12, logDir, keepRaw, t0)
+    }
 
+    // ---------------- 截尾 / 抽帧 ----------------
+
+    private fun cutPath(
+        head: Mp3Truncator.Mp3Head,
+        bytes: ByteArray,
+        decoded: Decoded,
+        startSample: Int,
+        score: Float,
+        clean: Int,
+        total: Int,
+        logDir: File?,
+        keepRaw: Boolean,
+        t0: Long,
+    ): Outcome {
         val sr = WatermarkDsp.SAMPLE_RATE
         val durSec = decoded.pcm.size.toDouble() / sr
-        val wmEnd = best.startSample + WatermarkDsp.watermarkSamples()
-        // 水印是否贴着结尾（后面只剩 ~0.25 s 静音）→ 直接截断；否则是插在句子中间 → 抽帧拼接
+        val wmEnd = startSample + WatermarkDsp.watermarkSamples()
         val nearTail = wmEnd + (0.30 * sr).toInt() >= decoded.pcm.size
-
         val note: String
         val outBytes: ByteArray
         if (nearTail) {
-            val center = best.startSample - (0.02 * sr).toInt()
+            val center = startSample - (0.02 * sr).toInt()
             val cutSample = WatermarkDsp.snapToQuietest(decoded.pcm, maxOf(0, center), 6)
             val cutSec = cutSample.toDouble() / sr
-            if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(best.score))
+            if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(score))
             val cutOffset = Mp3Truncator.offsetAt(bytes, head, cutSec)
-                ?: return Outcome(bytes, false, "帧索引失败（命中 %.3f）".format(best.score))
-            if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（命中 %.3f）".format(best.score))
+                ?: return Outcome(bytes, false, "帧索引失败（命中 %.3f）".format(score))
+            if (cutOffset < MIN_BYTES) return Outcome(bytes, false, "裁剪点过前（命中 %.3f）".format(score))
             outBytes = bytes.copyOfRange(0, cutOffset)
-            note = "尾部截断 %.2fs（%.2fs→%.2fs, 命中 %.3f）".format(
-                durSec - cutSec, durSec, cutSec, best.score
+            note = "尾部截断 %.2fs（%.2fs→%.2fs, 命中 %.3f, 块 %d/%d）".format(
+                durSec - cutSec, durSec, cutSec, score, clean, total
             )
         } else {
-            val fromSec = (best.startSample - (0.02 * sr).toInt()).coerceAtLeast(0).toDouble() / sr
+            val fromSec = (startSample - (0.02 * sr).toInt()).coerceAtLeast(0).toDouble() / sr
             val toSec = (wmEnd + (0.03 * sr).toInt()).toDouble() / sr
             val spliced = Mp3Truncator.splice(bytes, head, fromSec, toSec)
-                ?: return Outcome(bytes, false, "中段抽帧失败（命中 %.3f）".format(best.score))
-            if (spliced.size < MIN_BYTES) return Outcome(bytes, false, "抽帧后过短（命中 %.3f）".format(best.score))
+                ?: return Outcome(bytes, false, "中段抽帧失败（命中 %.3f）".format(score))
+            if (spliced.size < MIN_BYTES) return Outcome(bytes, false, "抽帧后过短（命中 %.3f）".format(score))
             outBytes = spliced
-            note = "中段抽帧 %.2f-%.2fs（命中 %.3f）".format(fromSec, toSec, best.score)
+            note = "中段抽帧 %.2f-%.2fs（命中 %.3f, 块 %d/%d）".format(fromSec, toSec, score, clean, total)
         }
         val cost = android.os.SystemClock.elapsedRealtime() - t0
-        val rawName = if (keepRaw) saveRaw(logDir, bytes) else null
-        // 注意：这里不能用 "%.1f...".format() —— note 里含动态内容，任何占位符错配都会抛异常，
-        // 而异常在"已经切完"之后抛出会被外层判成失败，等于白切。一律用拼接。
-        val rawTag = if (rawName != null) " | raw=$rawName" else ""
-        val blStr = "%.1f".format(bl)
-        val ecStr = "%.2f".format(ec)
-        runCatching {
-            writeLog(logDir, "$note | Δ$blStr | 包络$ecStr | 候选 ${matches.size} | ${cost}ms$rawTag")
-        }
+        val rawTag = if (keepRaw) {
+            val n = saveRaw(logDir, bytes)
+            if (n != null) " | raw=$n" else ""
+        } else ""
+        runCatching { writeLog(logDir, "$note | ${cost}ms$rawTag") }
         return Outcome(outBytes, true, note)
     }
 
-    /** 叠加态：按纯净段拟合增益 → 相减 → 重叠段谱减 → 写 WAV */
+    // ---------------- 叠加态相减 ----------------
+
     private fun subtractPath(
-        context: android.content.Context?,
         bytes: ByteArray,
         decoded: Decoded,
-        best: WatermarkDsp.Match,
-        ec: Float,
-        bl: Float,
+        r: WatermarkSubtractor.Result,
+        wmSize: Int,
+        score: Float,
+        clean: Int,
+        total: Int,
         logDir: File?,
         keepRaw: Boolean,
+        t0: Long,
     ): Outcome {
-        if (context == null) return Outcome(bytes, false, "无 Context，无法加载模板")
-        val wm = runCatching {
-            context.assets.open("watermark_wm.pcm").use { ins ->
-                val b = ins.readBytes()
-                FloatArray(b.size / 2) { i ->
-                    ((((b[i * 2 + 1].toInt() shl 8) or (b[i * 2].toInt() and 0xFF)).toShort())).toFloat() / 32768f
-                }
-            }
-        }.getOrNull() ?: run {
-            runCatching { writeLog(logDir, "叠加相减失败：模板资源缺失") }
-            return Outcome(bytes, false, "模板资源缺失")
+        val sr = WatermarkDsp.SAMPLE_RATE
+        val end = r.startSample + wmSize
+        val nearTail = end + (0.30 * sr).toInt() >= decoded.pcm.size
+        val outPcm: FloatArray
+        if (nearTail) {
+            val tail = sr / 4
+            outPcm = FloatArray(end + tail)
+            System.arraycopy(r.pcm, 0, outPcm, 0, minOf(end, r.pcm.size))
+        } else {
+            outPcm = r.pcm
         }
-
-        val t0 = android.os.SystemClock.elapsedRealtime()
-        val r = WatermarkSubtractor.subtract(decoded.pcm, best.startSample, wm)
-        if (r == null) {
-            val why = "叠加相减失败：未找到纯净段（命中 %.3f/包络 %.2f）".format(best.score, ec)
-            runCatching { writeLog(logDir, why) }
-            return Outcome(bytes, false, why)
-        }
-
-        // 截到水印末尾，补 250ms 静音（时长与原始一致）
-        val end = best.startSample + wm.size
-        val tail = WatermarkDsp.SAMPLE_RATE / 4
-        val outPcm = FloatArray(end + tail)
-        System.arraycopy(r.pcm, 0, outPcm, 0, minOf(end, r.pcm.size))
-        val wav = toWav(outPcm, WatermarkDsp.SAMPLE_RATE)
+        val wav = toWav(outPcm, sr)
         val cost = android.os.SystemClock.elapsedRealtime() - t0
-        val note = "叠加相减（增益 %.2f→%.2f, 纯净段 %.2fs, 残余 %.1f dB, %dms）".format(
-            r.gainFrom, r.gainTo, r.cleanFromSec, r.residualDb, cost
+        val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f, 残差 %.0fdB）".format(
+            score, clean, total, r.slope, r.intercept, r.residualDb
         )
-        runCatching { writeLog(logDir, "$note | 命中 ${"%.3f".format(best.score)} | 包络 $ec | Δ$bl") }
-        if (keepRaw) saveRaw(logDir, bytes)
+        runCatching { writeLog(logDir, "$note | ${cost}ms" + (if (keepRaw) " | raw=" + (saveRaw(logDir, bytes) ?: "-") else "")) }
         return Outcome(wav, true, note)
     }
 
@@ -231,7 +295,6 @@ object AudioWatermarkStripper {
             extractor.selectTrack(track)
 
             val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
-            // 请求 float 输出：16 bit 量化底噪是判决余量的唯一瓶颈
             runCatching {
                 format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_FLOAT)
             }
@@ -335,7 +398,6 @@ object AudioWatermarkStripper {
 
     // ---------------- 日志 ----------------
 
-    /** 切之前留档原文件（仅试听链路），返回文件名 */
     private fun saveRaw(dir: File?, bytes: ByteArray): String? {
         if (dir == null) return null
         return runCatching {

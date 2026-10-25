@@ -231,7 +231,7 @@ object WatermarkDsp {
         template: FloatArray,
         probeFrom: Int,
         probeFrames: Int,
-        minScore: Float,
+        minScore: Float
     ): List<Match> {
         val frames = pcm.size / HOP
         if (frames < probeFrames + 8) return emptyList()
@@ -346,4 +346,116 @@ object WatermarkDsp {
         }
         return out
     }
+
+    // ================= v6 追加：尾部时域探针 =================
+
+    /** 一阶高通（前向+后向，零相位）；去掉语音的低频包络，保留相位相干性 */
+    fun highPass(x: FloatArray, fc: Float, sr: Int): FloatArray {
+        val a = exp(-2.0 * PI * fc / sr).toFloat()
+        val y = FloatArray(x.size)
+        var px = 0f
+        var py = 0f
+        for (i in x.indices) {
+            val v = x[i]
+            y[i] = a * (py + v - px)
+            px = v
+            py = y[i]
+        }
+        val z = FloatArray(x.size)
+        px = 0f
+        py = 0f
+        for (i in x.indices.reversed()) {
+            val v = y[i]
+            z[i] = a * (py + v - px)
+            px = v
+            py = z[i]
+        }
+        return z
+    }
+
+    /** 任意偏移的归一化互相关 */
+    fun nccAt(x: FloatArray, y: FloatArray, xFrom: Int, yFrom: Int, n: Int): Float {
+        if (xFrom < 0 || xFrom + n > x.size || yFrom < 0 || yFrom + n > y.size) return -1f
+        var mx = 0.0
+        var my = 0.0
+        for (i in 0 until n) { mx += x[xFrom + i]; my += y[yFrom + i] }
+        mx /= n
+        my /= n
+        var num = 0.0
+        var dx = 0.0
+        var dy = 0.0
+        for (i in 0 until n) {
+            val a = x[xFrom + i] - mx
+            val b = y[yFrom + i] - my
+            num += a * b
+            dx += a * a
+            dy += b * b
+        }
+        val d = sqrt(dx * dy)
+        return if (d < 1e-12) 0f else (num / d).toFloat()
+    }
+
+    class TailMatch(val score: Float, val startSample: Int)
+
+    /**
+     * 尾部位置先验探针：模板末 0.3s 与混音（双方都 800Hz 高通）的时域 NCC。
+     * 只在 EOF-0.25s-1.22s 附近 ±90ms 搜。
+     * 实测：干净语音 ≤0.07；被台词完全盖住的叠加态 0.25~0.45；干净拼接 ≈1.0。
+     */
+    fun tailProbe(
+        pcm: FloatArray,
+        templateHp: FloatArray,
+        sr: Int,
+        searchSec: Double = 0.09,
+        minScore: Float = 0f
+    ): TailMatch? {
+        val m = templateHp.size
+        val l = 30 * HOP
+        if (l >= m || pcm.size < m + (0.4 * sr).toInt()) return null
+        val margin = (0.25 * sr).toInt() + (0.09 * sr).toInt() + (0.10 * sr).toInt()
+        val segStart = maxOf(0, pcm.size - m - margin)
+        val seg = highPass(pcm.copyOfRange(segStart, pcm.size), 800f, sr)
+        val exp = pcm.size - (0.25 * sr).toInt() - m - segStart
+        val half = (searchSec * sr).toInt()
+        val lo = maxOf(0, exp - half)
+        val hi = minOf(seg.size - l, exp + half)
+        if (hi <= lo) return null
+        var best = -9f
+        var bestLag = lo
+        var lag = lo
+        while (lag <= hi) {
+            val v = nccAt(seg, templateHp, lag + m - l, m - l, l)
+            if (v > best) { best = v; bestLag = lag }
+            lag += 48
+        }
+        val from = maxOf(lo, bestLag - 48)
+        val to = minOf(hi, bestLag + 48)
+        lag = from
+        while (lag <= to) {
+            val v = nccAt(seg, templateHp, lag + m - l, m - l, l)
+            if (v > best) { best = v; bestLag = lag }
+            lag++
+        }
+        if (best < minScore) return null
+        return TailMatch(best, segStart + bestLag)
+    }
+
+    class BlockStat(val gain: Float, val ncc: Float)
+
+    /** 逐 100ms 块的最小二乘增益与相关（用于分流/增益拟合） */
+    fun blockStats(pcm: FloatArray, wm: FloatArray, start: Int, block: Int = HOP * 10): Array<BlockStat> {
+        val nb = wm.size / block
+        return Array(nb) { i ->
+            val from = start + i * block
+            var num = 0.0
+            var den = 0.0
+            for (k in 0 until block) {
+                num += pcm[from + k].toDouble() * wm[i * block + k]
+                den += wm[i * block + k].toDouble() * wm[i * block + k]
+            }
+            val g = if (den > 1e-12) (num / den).toFloat() else 0f
+            BlockStat(g, nccAt(pcm, wm, from, i * block, block))
+        }
+    }
+
 }
