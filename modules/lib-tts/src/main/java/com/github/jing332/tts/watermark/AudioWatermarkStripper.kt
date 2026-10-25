@@ -41,6 +41,13 @@ object AudioWatermarkStripper {
     /** 低于这个分但高于 0.10：写一行“接近未命中”日志，便于事后定位 */
     private const val TAIL_NEAR = 0.10f
 
+    /** 相减后：结尾近静音收到「最后有声帧 + 100ms」（试听拍板），末尾 10ms 淡出 */
+    private const val TAIL_KEEP_MS = 100
+    /** 10ms 帧 @48k */
+    private const val SILENCE_FRAME = 480
+    /** 静音判定阈值（实测残留广告 -50~-60dBFS，台词 -25~-35dBFS） */
+    private const val SILENCE_DB = -45.0
+
     class Outcome(val bytes: ByteArray, val removed: Boolean, val note: String)
 
     class Decoded(val pcm: FloatArray, val sampleRate: Int)
@@ -235,10 +242,13 @@ object AudioWatermarkStripper {
         val end = r.startSample + wmSize
         val nearTail = end + (0.30 * sr).toInt() >= decoded.pcm.size
         val outPcm: FloatArray
+        var trimmedMs = 0
         if (nearTail) {
             val tail = sr / 4
-            outPcm = FloatArray(end + tail)
-            System.arraycopy(r.pcm, 0, outPcm, 0, minOf(end, r.pcm.size))
+            val buf = FloatArray(end + tail)
+            System.arraycopy(r.pcm, 0, buf, 0, minOf(end, r.pcm.size))
+            outPcm = trimSilentTail(buf, sr)
+            trimmedMs = (buf.size - outPcm.size) * 1000 / sr
         } else {
             outPcm = r.pcm
         }
@@ -246,9 +256,36 @@ object AudioWatermarkStripper {
         val cost = android.os.SystemClock.elapsedRealtime() - t0
         val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f, 残差 %.0fdB）".format(
             score, clean, total, r.slope, r.intercept, r.residualDb
-        )
+        ) + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
         runCatching { writeLog(logDir, "$note | ${cost}ms" + (if (keepRaw) " | raw=" + (saveRaw(logDir, bytes) ?: "-") else "")) }
         return Outcome(wav, true, note)
+    }
+
+    /**
+     * 相减后的结尾收口：从后往前找最后一个高于 [SILENCE_DB] 的 10ms 帧，
+     * 保留 [TAIL_KEEP_MS]，末尾 10ms 淡出。
+     * 目的是把“广告被减掉后留下的那一大段近静音”收短，让句子之间连贯；
+     * 残留广告若仍高于阈值，会被当成有声，这里就不切（宁可不切，不切出空洞）。
+     */
+    private fun trimSilentTail(pcm: FloatArray, sr: Int): FloatArray {
+        var last = 0
+        var i = 0
+        while (i + SILENCE_FRAME <= pcm.size) {
+            var e = 0.0
+            for (k in 0 until SILENCE_FRAME) e += pcm[i + k].toDouble() * pcm[i + k]
+            if (10 * kotlin.math.log10(e / SILENCE_FRAME + 1e-12) > SILENCE_DB) last = i + SILENCE_FRAME
+            i += SILENCE_FRAME
+        }
+        if (last <= 0) return pcm
+        val keep = sr * TAIL_KEEP_MS / 1000
+        val end = minOf(pcm.size, last + keep)
+        if (pcm.size - end < sr * 30 / 1000) return pcm
+        val out = pcm.copyOf(end)
+        val fade = sr / 100
+        if (fade in 1 until out.size) {
+            for (k in 0 until fade) out[out.size - fade + k] *= (fade - k - 1).toFloat() / fade
+        }
+        return out
     }
 
     /** PCM(float) → WAV(16bit) 字节 */
