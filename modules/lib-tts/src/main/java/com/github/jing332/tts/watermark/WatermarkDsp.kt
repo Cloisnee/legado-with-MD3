@@ -398,46 +398,80 @@ object WatermarkDsp {
     class TailMatch(val score: Float, val startSample: Int)
 
     /**
-     * 尾部位置先验探针：模板末 0.3s 与混音（双方都 800Hz 高通）的时域 NCC。
-     * 只在 EOF-0.25s-1.22s 附近 ±90ms 搜。
-     * 实测：干净语音 ≤0.07；被台词完全盖住的叠加态 0.25~0.45；干净拼接 ≈1.0。
+     * 尾部位置先验探针：模板末 0.3s 与混音（双方 800Hz 高通）的时域 NCC。
+     * 搜索范围 = 末尾 2.2s 内所有可能起点（平台落点实测在 EOF−0.25s ~ −0.63s 之间浮动）。
+     * 1ms 粗扫 + 1 采样精修；前缀和把每帧的均值/方差降到 O(1)，单次只算点积。
+     * 实测：干净语音 ≤0.11；被台词完全盖住的叠加态 0.25~0.45；干净拼接 ≈1.0。
      */
     fun tailProbe(
         pcm: FloatArray,
         templateHp: FloatArray,
         sr: Int,
-        searchSec: Double = 0.09,
         minScore: Float = 0f
     ): TailMatch? {
         val m = templateHp.size
         val l = 30 * HOP
         if (l >= m || pcm.size < m + (0.4 * sr).toInt()) return null
-        val margin = (0.25 * sr).toInt() + (0.09 * sr).toInt() + (0.10 * sr).toInt()
-        val segStart = maxOf(0, pcm.size - m - margin)
+        val hi = pcm.size - m
+        val lo = maxOf(0, hi - (2.2 * sr).toInt())
+        val segStart = maxOf(0, lo - (0.10 * sr).toInt())
         val seg = highPass(pcm.copyOfRange(segStart, pcm.size), 800f, sr)
-        val exp = pcm.size - (0.25 * sr).toInt() - m - segStart
-        val half = (searchSec * sr).toInt()
-        val lo = maxOf(0, exp - half)
-        val hi = minOf(seg.size - l, exp + half)
-        if (hi <= lo) return null
-        var best = -9f
-        var bestLag = lo
-        var lag = lo
-        while (lag <= hi) {
-            val v = nccAt(seg, templateHp, lag + m - l, m - l, l)
-            if (v > best) { best = v; bestLag = lag }
-            lag += 48
+        val yOff = m - l
+
+        var ym = 0.0
+        for (i in 0 until l) ym += templateHp[yOff + i]
+        ym /= l
+        var yv = 0.0
+        for (i in 0 until l) {
+            val d = templateHp[yOff + i] - ym
+            yv += d * d
         }
-        val from = maxOf(lo, bestLag - 48)
-        val to = minOf(hi, bestLag + 48)
-        lag = from
-        while (lag <= to) {
-            val v = nccAt(seg, templateHp, lag + m - l, m - l, l)
-            if (v > best) { best = v; bestLag = lag }
-            lag++
+        if (yv < 1e-12) return null
+
+        val n = seg.size
+        val cs = DoubleArray(n + 1)
+        val cq = DoubleArray(n + 1)
+        var s = 0.0
+        var q = 0.0
+        for (i in 0 until n) {
+            s += seg[i]
+            q += seg[i].toDouble() * seg[i]
+            cs[i + 1] = s
+            cq[i + 1] = q
+        }
+
+        fun scoreAt(p: Int): Float {
+            if (p < 0 || p + l > n) return -1f
+            var dot = 0.0
+            for (i in 0 until l) dot += seg[p + i].toDouble() * templateHp[yOff + i]
+            val mx = (cs[p + l] - cs[p]) / l
+            val vx = (cq[p + l] - cq[p]) / l - mx * mx
+            if (vx < 1e-12) return 0f
+            return ((dot - l * mx * ym) / sqrt(vx * l * yv)).toFloat()
+        }
+
+        val pLo = lo - segStart + yOff
+        val pHi = hi - segStart + yOff
+        if (pHi <= pLo) return null
+
+        var best = -9f
+        var bestP = pLo
+        var p = pLo
+        while (p <= pHi) {
+            val v = scoreAt(p)
+            if (v > best) { best = v; bestP = p }
+            p += 48
+        }
+        val from = maxOf(pLo, bestP - 48)
+        val to = minOf(pHi, bestP + 48)
+        p = from
+        while (p <= to) {
+            val v = scoreAt(p)
+            if (v > best) { best = v; bestP = p }
+            p++
         }
         if (best < minScore) return null
-        return TailMatch(best, segStart + bestLag)
+        return TailMatch(best, segStart + bestP - yOff)
     }
 
     class BlockStat(val gain: Float, val ncc: Float)

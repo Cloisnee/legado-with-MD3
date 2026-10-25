@@ -3,22 +3,24 @@ package com.github.jing332.tts.watermark
 import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
-import kotlin.math.sqrt
 
 /**
- * 叠加态水印的时域相减（v6，2026-10-26 重写）。
+ * 叠加态水印的时域相减（v6.1，2026-10-25 修对齐）。
  *
- * 与 v5 的差别：
- *  1. 增益不再依赖"纯净段必须在窗口前 60%"：逐 100ms 块做最小二乘，
- *     干净块 ≥3 时拟合线性 `g(t)=a*t+b`（平台叠加时真的有淡出，斜率逐条不同）；
- *     1~2 块时用全局斜率 -0.22/s + 中值截距；一块都没有时用逐块增益中值。
- *  2. ±2 采样内按"干净块增益的线性拟合残差"选对齐（1 个采样误差就够毁掉高频）。
- *  3. 不做谱减：模型准了以后谱减只会二次削台词。
+ * 与 v6 的差别只有一处，但是关键：**对齐不再用"增益拟合误差"做判据**。
+ * 那个值在 1e-5~5e-4 之间、几乎不随 lag 变化，等于没有判据，会随机挑到偏 1~2 采样的 lag，
+ * 实测同一段音频在广告窗内相差 15~20dB（真机上就是"听得见残留"）。
+ * 现在改用 `maxBlockNcc`（干净块相关最大值）做粗搜 ±60ms / 细搜 1 采样，
+ * 只有明显优于 hint（+0.03）才移动，否则保留检测给的位置。
+ *
+ * 增益模型不变：逐 100ms 块最小二乘，干净块 ≥3 拟合线性淡出，1~2 块用全局斜率 -0.22/s，
+ * 一块都没有时用逐块增益中值。不做谱减。
  */
 object WatermarkSubtractor {
 
     private const val BLOCK = 4800
     private const val GLOBAL_SLOPE = -0.22f
+    private const val SEARCH_SEC = 0.06
 
     class Result(
         val pcm: FloatArray,
@@ -36,8 +38,7 @@ object WatermarkSubtractor {
         val slope: Float,
         val intercept: Float,
         val clean: Int,
-        val nb: Int,
-        val err: Double
+        val nb: Int
     ) {
         fun gainAt(i: Int): Float {
             val t = i.toFloat() / WatermarkDsp.SAMPLE_RATE
@@ -49,15 +50,15 @@ object WatermarkSubtractor {
         val n = wm.size
         if (startHint < 0 || startHint + n > pcm.size) return null
 
-        // 1) 对齐：±2 采样，按干净块增益的线性拟合残差选
-        var best: Fit? = null
-        for (d in -2..2) {
-            val s = startHint + d
-            if (s < 0 || s + n > pcm.size) continue
-            val f = fit(pcm, wm, s) ?: continue
-            if (best == null || f.err < best.err) best = f
-        }
-        val f = best ?: return null
+        val start = align(pcm, wm, startHint)
+        val f = fit(pcm, wm, start) ?: return null
+
+        // 增益合理性闸门：没有干净块时增益只能靠中值猜（例如 4134 会猜出 0.09），
+        // 这种"减了等于没减"甚至减错方向的，宁可不做。
+        var sumG = 0.0
+        for (i in 0 until n) sumG += f.gainAt(i)
+        val meanGain = (sumG / n).toFloat()
+        if (meanGain < 0.25f || meanGain > 1.5f) return null
 
         val stats = WatermarkDsp.blockStats(pcm, wm, f.start)
         var maxNcc = -1f
@@ -69,7 +70,7 @@ object WatermarkSubtractor {
             out[f.start + i] -= f.gainAt(i) * wm[i]
         }
 
-        // 2) 剩余水印（投影）在干净块上的中值，dB
+        // 干净块上"剩余水印"的投影，dB（相对原水印）
         val res = ArrayList<Float>()
         for (i in 0 until f.nb) {
             if (stats[i].ncc < 0.9f) continue
@@ -86,6 +87,47 @@ object WatermarkSubtractor {
         res.sort()
         val rdb = if (res.isEmpty()) -999f else res[res.size / 2]
         return Result(out, f.start, f.slope, f.intercept, f.clean, f.nb, rdb)
+    }
+
+    /**
+     * 对齐：以 hint 为基准，用 maxBlockNcc 粗搜 ±60ms（1ms 步）+ 细搜 ±1ms（1 采样步）。
+     * 只有比 hint 高 0.03 才改用新的 lag —— 尾部探针给的 hint 本身就是 1 采样精度，
+     * 不能被噪声带着乱跑。
+     */
+    private fun align(pcm: FloatArray, wm: FloatArray, hint: Int): Int {
+        val hintScore = maxBlockNcc(pcm, wm, hint)
+        var bestLag = hint
+        var best = hintScore
+        val span = (SEARCH_SEC * WatermarkDsp.SAMPLE_RATE).toInt()
+        val lo = maxOf(0, hint - span)
+        val hi = minOf(pcm.size - wm.size, hint + span)
+        var lag = lo
+        while (lag <= hi) {
+            val v = maxBlockNcc(pcm, wm, lag)
+            if (v > best) { best = v; bestLag = lag }
+            lag += 48
+        }
+        val from = maxOf(0, bestLag - 48)
+        val to = minOf(pcm.size - wm.size, bestLag + 48)
+        lag = from
+        while (lag <= to) {
+            val v = maxBlockNcc(pcm, wm, lag)
+            if (v > best) { best = v; bestLag = lag }
+            lag++
+        }
+        return if (best >= hintScore + 0.03f) bestLag else hint
+    }
+
+    private fun maxBlockNcc(pcm: FloatArray, wm: FloatArray, start: Int): Float {
+        if (start < 0 || start + wm.size > pcm.size) return -1f
+        var best = -1f
+        var i = 0
+        while (i + BLOCK <= wm.size) {
+            val v = WatermarkDsp.nccAt(pcm, wm, start + i, i, BLOCK)
+            if (v > best) best = v
+            i += BLOCK
+        }
+        return best
     }
 
     private fun fit(pcm: FloatArray, wm: FloatArray, start: Int): Fit? {
@@ -116,7 +158,7 @@ object WatermarkSubtractor {
                 dy += b * b
             }
             gains[i] = if (den > 1e-12) (num / den).toFloat() else 0f
-            nccs[i] = if (dx * dy > 1e-24) (cc / sqrt(dx * dy)).toFloat() else 0f
+            nccs[i] = if (dx * dy > 1e-24) (cc / kotlin.math.sqrt(dx * dy)).toFloat() else 0f
         }
         val clean = ArrayList<Int>()
         for (i in 0 until nb) if (nccs[i] >= 0.9f) clean.add(i)
@@ -157,17 +199,6 @@ object WatermarkSubtractor {
             v.sort()
             intercept = v[v.size / 2]
         }
-
-        // 干净块上的增益拟合残差（相对）
-        var err = 0.0
-        var ref = 0.0
-        for (i in clean) {
-            val t = ((i * BLOCK + BLOCK / 2.0) / WatermarkDsp.SAMPLE_RATE).toFloat()
-            val g = max(abs(slope * t + intercept), 1e-6f)
-            err += (g - gains[i]).toDouble() * (g - gains[i])
-            ref += g.toDouble() * g
-        }
-        if (clean.isEmpty()) err = 1e9
-        return Fit(start, slope, intercept, clean.size, nb, if (ref > 1e-12) err / ref else 1e9)
+        return Fit(start, slope, intercept, clean.size, nb)
     }
 }

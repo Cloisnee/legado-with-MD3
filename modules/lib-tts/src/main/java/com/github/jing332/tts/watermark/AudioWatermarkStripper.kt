@@ -19,10 +19,10 @@ import java.io.File
  *
  * 分流（2026-10-26 v6）：
  *  1. **尾部位置先验探针**：模板末 0.3s 与混音（双方 800Hz 高通）做时域 NCC，
- *     只在 EOF-0.25s-1.22s 附近 ±90ms 搜。干净语音 ≤0.07，叠加态 0.25~1.0。
- *     —— mel 探针在叠加态只能到 0.44，这是完全重叠态一直“未命中”的根因。
- *  2. 命中后看 12 个 100ms 块的 NCC：**全 12 块都 ≥0.9 且贴尾** → 截尾（无损）；
- *     否则 → 相减（[WatermarkSubtractor] 逐样本线性增益 + 1 采样对齐，不做谱减）。
+ *     在末尾 2.2s 内 1ms 粗扫 + 1 采样精修（平台落点实测 EOF−0.25s ~ −0.63s 浮动）。
+ *     干净语音 ≤0.13，叠加态 0.25~1.0；mel 探针在叠加态只能到 0.44，这是老版“未命中”的根因。
+ *  2. 命中后看 12 个 100ms 块的 NCC：**全 12 块都 ≥0.9** → 截尾 / 抽帧（无损、不重编码）；
+ *     否则 → 相减（[WatermarkSubtractor] 逐样本线性增益 + maxBlockNcc 对齐，不做谱减）。
  *  3. 尾部没命中 → 回退 mel 全片扫描（句中插入），原有 ec/窄带闸门保留。
  *
  * **失败一律 fail-open**：返回原始字节，绝不影响合成。
@@ -34,8 +34,10 @@ object AudioWatermarkStripper {
     private const val MIN_BYTES = 8 * 1024
     private const val LOG_MAX = 256 * 1024L
 
-    /** 尾部探针命中阈值：干净语音实测 max 0.07，叠加态实测 0.25~1.0 */
+    /** 尾部探针下限：干净语音实测 max 0.11，叠加态实测 0.25~1.0 */
     private const val TAIL_MIN = 0.25f
+    /** 中分档：0.25~0.45 之间要求至少 2 个干净块，挡掉“只剩尾字巧合”（e3/e6 那种单块 0.93） */
+    private const val TAIL_HI = 0.45f
     /** 低于这个分但高于 0.10：写一行“接近未命中”日志，便于事后定位 */
     private const val TAIL_NEAR = 0.10f
 
@@ -117,18 +119,22 @@ object AudioWatermarkStripper {
             if (tail != null && tail.score >= TAIL_MIN) {
                 val stats = WatermarkDsp.blockStats(decoded.pcm, wm, tail.startSample)
                 val clean = stats.count { it.ncc >= 0.9f }
-                val wmEnd = tail.startSample + wm.size
-                val nearTail = wmEnd + (0.30 * decoded.sampleRate).toInt() >= decoded.pcm.size
-                if (clean == stats.size && nearTail) {
-                    // 干净拼接 → 截尾（原 MP3 字节，无重编码）
-                    return cutPath(head, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                // 两层判据：高分直接认；0.25~0.45 要求至少 2 个干净块（挡掉单块巧合）
+                val accept = tail.score >= TAIL_HI || clean >= 2
+                if (accept) {
+                    if (clean == stats.size) {
+                        // 整窗干净 → 截尾 / 抽帧（原 MP3 字节，无重编码）
+                        return cutPath(head, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                    }
+                    val r = WatermarkSubtractor.subtract(decoded.pcm, wm, tail.startSample)
+                    if (r != null) {
+                        return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                    }
+                    // 相减失败（极少）→ 继续走 mel 回退，不要静默
+                    runCatching { writeLog(logDir, "尾部命中 %.3f 但相减失败（块 %d/%d）".format(tail.score, clean, stats.size)) }
+                } else {
+                    runCatching { writeLog(logDir, "尾部中分未采用（%.3f, 块 %d/%d）".format(tail.score, clean, stats.size)) }
                 }
-                val r = WatermarkSubtractor.subtract(decoded.pcm, wm, tail.startSample)
-                if (r != null) {
-                    return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0)
-                }
-                // 相减失败（极少）→ 继续走 mel 回退，不要静默
-                runCatching { writeLog(logDir, "尾部命中 %.3f 但相减失败（块 %d/%d）".format(tail.score, clean, stats.size)) }
             }
         }
 
