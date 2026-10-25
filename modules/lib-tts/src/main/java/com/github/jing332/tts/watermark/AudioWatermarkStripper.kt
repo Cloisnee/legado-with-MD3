@@ -149,8 +149,9 @@ object AudioWatermarkStripper {
         var matches = WatermarkDsp.locateByProbe(decoded.pcm, template, 90, 30, 0.90f)
         if (matches.isEmpty()) matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
         if (matches.isEmpty()) {
-            if (tailScore >= TAIL_NEAR) {
-                runCatching { writeLog(logDir, "未命中（尾部探针 %.3f，未到 %.2f）".format(tailScore, TAIL_MIN)) }
+            // 高于下限的样本已在上面写过拒绝原因（中分未采用 / 相减失败），这里只报"低于下限"的
+            if (tailScore >= TAIL_NEAR && tailScore < TAIL_MIN) {
+                runCatching { writeLog(logDir, "未命中（尾部探针 %.3f，低于 %.2f）".format(tailScore, TAIL_MIN)) }
             }
             return Outcome(bytes, false, "未命中水印")
         }
