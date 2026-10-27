@@ -497,6 +497,112 @@ object WatermarkDsp {
     }
 
     class BlockStat(val gain: Float, val ncc: Float)
+    // ================= 2026-10-27：位置先验 + 四段一致性（深埋兜底） =================
+
+    class BandHit(
+        val score: Float,
+        val startSample: Int,
+        val minQuarterNcc: Float,
+        val minQuarterGain: Float
+    )
+
+    /**
+     * 平台落点先验：水印起点实测在 EOF−1.60 ~ EOF−1.78 s，取 [1.45, 1.88] 作为位置带。
+     * 带内按 1 ms 扫 1.22 s 全窗 NCC（前缀和归一化），再把窗口四等分：
+     * 只有四段都正相关、且四段增益都 ≥0.35，才认定为同一段录音被台词压住。
+     *
+     * 2026-10-27 实测：45 条干净语音 × 不同句尾（768 个样本）四段 NCC 最小值最大 0.042、
+     * 四段增益最小值最大 0.221；6 条真实水印（含 −15.7 dB 深埋）最小 0.145 / 0.48。
+     */
+    fun bandProbe(pcm: FloatArray, templateHp: FloatArray, sr: Int): BandHit? {
+        val m = templateHp.size
+        if (pcm.size < m + (1.45 * sr).toInt()) return null
+        val segStart = maxOf(0, pcm.size - (3.2 * sr).toInt())
+        val seg = highPass(pcm.copyOfRange(segStart, pcm.size), 800f, sr)
+        val lo = maxOf(0, pcm.size - (1.88 * sr).toInt() - segStart)
+        val hi = minOf(seg.size - m, pcm.size - (1.45 * sr).toInt() - segStart)
+        if (hi <= lo) return null
+        val n = seg.size
+
+        var ym = 0.0
+        for (i in 0 until m) ym += templateHp[i]
+        ym /= m
+        var yv = 0.0
+        for (i in 0 until m) {
+            val d = templateHp[i] - ym
+            yv += d * d
+        }
+        if (yv < 1e-12) return null
+
+        val cs = DoubleArray(n + 1)
+        val cq = DoubleArray(n + 1)
+        var s = 0.0
+        var q = 0.0
+        for (i in 0 until n) {
+            s += seg[i]
+            q += seg[i].toDouble() * seg[i]
+            cs[i + 1] = s
+            cq[i + 1] = q
+        }
+
+        fun scoreAt(p: Int): Float {
+            if (p < 0 || p + m > n) return -1f
+            var dot = 0.0
+            for (i in 0 until m) dot += seg[p + i].toDouble() * templateHp[i]
+            val mx = (cs[p + m] - cs[p]) / m
+            val vx = (cq[p + m] - cq[p]) / m - mx * mx
+            if (vx < 1e-12) return 0f
+            return ((dot - m * mx * ym) / sqrt(vx * m * yv)).toFloat()
+        }
+
+        var best = -9f
+        var bestLag = lo
+        var p = lo
+        while (p <= hi) {
+            val v = scoreAt(p)
+            if (v > best) { best = v; bestLag = p }
+            p += 48
+        }
+        val from = maxOf(lo, bestLag - 48)
+        val to = minOf(hi, bestLag + 48)
+        p = from
+        while (p <= to) {
+            val v = scoreAt(p)
+            if (v > best) { best = v; bestLag = p }
+            p++
+        }
+
+        val q4 = m / 4
+        var minNcc = 9f
+        var minGain = 9f
+        for (k in 0 until 4) {
+            val a0 = bestLag + k * q4
+            var ma = 0.0
+            var mb = 0.0
+            for (i in 0 until q4) { ma += seg[a0 + i]; mb += templateHp[k * q4 + i] }
+            ma /= q4
+            mb /= q4
+            var aa = 0.0
+            var bb = 0.0
+            var ab = 0.0
+            var num = 0.0
+            var den = 0.0
+            for (i in 0 until q4) {
+                val x = seg[a0 + i] - ma
+                val y = templateHp[k * q4 + i] - mb
+                aa += x * x
+                bb += y * y
+                ab += x * y
+                num += seg[a0 + i].toDouble() * templateHp[k * q4 + i]
+                den += templateHp[k * q4 + i].toDouble() * templateHp[k * q4 + i]
+            }
+            val ncc = if (aa * bb > 1e-24) (ab / sqrt(aa * bb)).toFloat() else 0f
+            val gain = if (den > 1e-12) (num / den).toFloat() else 0f
+            if (ncc < minNcc) minNcc = ncc
+            if (gain < minGain) minGain = gain
+        }
+        return BandHit(best, segStart + bestLag, minNcc, minGain)
+    }
 
     /** 逐 100ms 块的最小二乘增益与相关（用于分流/增益拟合） */
     fun blockStats(pcm: FloatArray, wm: FloatArray, start: Int, block: Int = HOP * 10): Array<BlockStat> {

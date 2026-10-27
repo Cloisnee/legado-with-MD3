@@ -163,6 +163,23 @@ object AudioWatermarkStripper {
         var matches = WatermarkDsp.locateByProbe(decoded.pcm, template, 90, 30, 0.90f)
         if (matches.isEmpty()) matches = WatermarkDsp.locateAll(decoded.pcm, template, 0.55f)
         if (matches.isEmpty()) {
+            // ---------- 3. 兜底：位置先验 + 四段一致性（深埋 / 完全重叠） ----------
+            // 只在前面所有路径都失败时执行；四段必须都正相关且增益合理，否则一律放行。
+            if (tailScore >= TAIL_NEAR && wm != null && wh != null) {
+                val band = WatermarkDsp.bandProbe(decoded.pcm, wh, decoded.sampleRate)
+                if (band != null && band.minQuarterNcc >= 0.08f && band.minQuarterGain >= 0.35f) {
+                    val r = WatermarkSubtractor.subtract(
+                        decoded.pcm, wm, band.startSample, 0f, fadeWhenNoClean = true
+                    )
+                    if (r != null) {
+                        return subtractPath(
+                            bytes, decoded, r, wm.size, band.score, 0, 12,
+                            logDir, keepRaw, t0,
+                            " | 深埋 minQ %.2f/%.2f".format(band.minQuarterNcc, band.minQuarterGain)
+                        )
+                    }
+                }
+            }
             // 高于下限的样本已在上面写过拒绝原因（中分未采用 / 相减失败），这里只报"低于下限"的
             if (tailScore >= TAIL_NEAR && tailScore < TAIL_MIN) {
                 runCatching { writeLog(logDir, "未命中（尾部探针 %.3f，低于 %.2f）".format(tailScore, TAIL_MIN)) }
@@ -270,8 +287,9 @@ object AudioWatermarkStripper {
         }
         val wav = toWav(outPcm, sr)
         val cost = android.os.SystemClock.elapsedRealtime() - t0
-        val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f, 残差 %.0fdB）".format(
-            score, clean, total, r.slope, r.intercept, r.residualDb
+        val resPart = if (clean > 0) ", 残差 %.0fdB".format(r.residualDb) else ""
+        val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f%s）".format(
+            score, clean, total, r.slope, r.intercept, resPart
         ) + via + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
         runCatching { writeLog(logDir, "$note | ${cost}ms" + (if (keepRaw) " | raw=" + (saveRaw(logDir, bytes) ?: "-") else "")) }
         return Outcome(wav, true, note)

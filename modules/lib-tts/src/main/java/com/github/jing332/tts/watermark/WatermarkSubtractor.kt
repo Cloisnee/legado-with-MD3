@@ -46,12 +46,18 @@ object WatermarkSubtractor {
         }
     }
 
-    fun subtract(pcm: FloatArray, wm: FloatArray, startHint: Int, minBlockNcc: Float = 0f): Result? {
+    fun subtract(
+        pcm: FloatArray,
+        wm: FloatArray,
+        startHint: Int,
+        minBlockNcc: Float = 0f,
+        fadeWhenNoClean: Boolean = false
+    ): Result? {
         val n = wm.size
         if (startHint < 0 || startHint + n > pcm.size) return null
 
         val start = align(pcm, wm, startHint)
-        val f = fit(pcm, wm, start) ?: return null
+        val f = fit(pcm, wm, start, fadeWhenNoClean) ?: return null
 
         // 增益合理性闸门：没有干净块时增益只能靠中值猜（例如 4134 会猜出 0.09），
         // 这种"减了等于没减"甚至减错方向的，宁可不做。
@@ -151,7 +157,7 @@ object WatermarkSubtractor {
         return best
     }
 
-    private fun fit(pcm: FloatArray, wm: FloatArray, start: Int): Fit? {
+    private fun fit(pcm: FloatArray, wm: FloatArray, start: Int, fadeWhenNoClean: Boolean): Fit? {
         val n = wm.size
         val nb = n / BLOCK
         if (nb < 2) return null
@@ -215,10 +221,12 @@ object WatermarkSubtractor {
             v.sort()
             intercept = v[v.size / 2]
         } else {
-            slope = 0f
+            // 没有任何干净块：默认用中值常数；深埋路径已知水印是线性淡出，
+            // 用全局斜率 + 中位时间处的截距（实测两条干净对：0.76→0.51 / 0.85→0.58）。
+            slope = if (fadeWhenNoClean) GLOBAL_SLOPE else 0f
             val v = gains.toMutableList()
             v.sort()
-            intercept = v[v.size / 2]
+            intercept = v[v.size / 2] - slope * 0.6f
         }
         return Fit(start, slope, intercept, clean.size, nb)
     }
