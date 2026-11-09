@@ -56,9 +56,22 @@ object AudioWatermarkStripper {
     /** 静音判定阈值（实测残留广告 -50~-60dBFS，台词 -25~-35dBFS） */
     private const val SILENCE_DB = -45.0
 
-    class Outcome(val bytes: ByteArray, val removed: Boolean, val note: String)
+    /** 质量分档：NA=没走水印处理（不算硬样本）；GOOD/WEAK/HARD 用于决定要不要重抽 */
+    const val Q_NA = -1
+    const val Q_GOOD = 0
+    const val Q_WEAK = 1
+    const val Q_HARD = 2
 
-    class Decoded(val pcm: FloatArray, val sampleRate: Int)
+    class Outcome(
+        val bytes: ByteArray,
+        val removed: Boolean,
+        val note: String,
+        val quality: Int = Q_NA,
+        /** 前 2s 语音指纹（8k 降采样）：重抽时比对台词是否同一条 */
+        val speechPrint: FloatArray? = null
+    )
+
+    class Decoded(val pcm: FloatArray, val sampleRate: Int, val print: FloatArray)
 
     private val template: FloatArray by lazy {
         WatermarkDsp.decodeTemplate(WatermarkTemplate.BASE64, WatermarkTemplate.SCALE)
@@ -213,7 +226,7 @@ object AudioWatermarkStripper {
             if (tailScore >= TAIL_NEAR && tailScore < TAIL_MIN) {
                 runCatching { writeLog(logDir, "未命中（尾部探针 %.3f，低于 %.2f）".format(tailScore, TAIL_MIN)) }
             }
-            return Outcome(bytes, false, "未命中水印")
+            return Outcome(bytes, false, "未命中水印", Q_HARD, decoded.print)
         }
 
         val best = matches[0]
@@ -287,7 +300,8 @@ object AudioWatermarkStripper {
             (((bytes[dataOff + k * 2 + 1].toInt() shl 8) or
                 (bytes[dataOff + k * 2].toInt() and 0xFF)).toShort()).toFloat() / 32768f
         }
-        return Decoded(if (ch == 1) all else downmix(all, ch), sr)
+        val pcm = if (ch == 1) all else downmix(all, ch)
+        return Decoded(pcm, sr, fingerprint(pcm))
     }
 
     /** WAV 输入的截尾：直接截 PCM 再包回 WAV（WAV 没有 MP3 帧边界问题） */
@@ -331,6 +345,116 @@ object AudioWatermarkStripper {
         if (last != null && now - last < 10 * 60_000L) return
         skipLogTimes[key] = now
         runCatching { writeLog(dir, "跳过：$msg") }
+    }
+
+    // ---------------- 语音指纹 / 重抽（v8） ----------------
+
+    /** 前 2s 降采样到 8k（48k÷6），用于比对两次合成是不是同一句台词 */
+    private fun fingerprint(pcm: FloatArray): FloatArray {
+        val n = minOf(pcm.size, 2 * WatermarkDsp.SAMPLE_RATE)
+        val step = 6
+        val out = FloatArray(n / step + 1)
+        var oi = 0
+        var i = 0
+        while (i < n) {
+            var sum = 0.0
+            var k = 0
+            while (k < step && i + k < n) { sum += pcm[i + k]; k++ }
+            out[oi++] = if (k > 0) (sum / k).toFloat() else 0f
+            i += step
+        }
+        return out
+    }
+
+    private fun sameSpeech(a: FloatArray?, b: FloatArray?): Boolean {
+        if (a == null || b == null) return false
+        val n = minOf(a.size, b.size)
+        if (n < 100) return false
+        var ma = 0.0
+        var mb = 0.0
+        for (i in 0 until n) { ma += a[i]; mb += b[i] }
+        ma /= n; mb /= n
+        var num = 0.0
+        var da = 0.0
+        var db = 0.0
+        for (i in 0 until n) {
+            val x = a[i] - ma
+            val y = b[i] - mb
+            num += x * y
+            da += x * x
+            db += y * y
+        }
+        if (da * db < 1e-12) return false
+        return (num / kotlin.math.sqrt(da * db)) >= 0.95
+    }
+
+    private val breakerFails = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val breakerUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private const val BREAKER_LIMIT = 3
+    private const val BREAKER_MS = 10 * 60_000L
+
+    private fun breakerBlocked(key: String): Boolean =
+        (breakerUntil[key] ?: 0L) > System.currentTimeMillis()
+
+    private fun breakerReport(key: String, improved: Boolean) {
+        if (improved) { breakerFails.remove(key); return }
+        val n = (breakerFails[key] ?: 0) + 1
+        if (n >= BREAKER_LIMIT) {
+            breakerFails.remove(key)
+            breakerUntil[key] = System.currentTimeMillis() + BREAKER_MS
+        } else {
+            breakerFails[key] = n
+        }
+    }
+
+    /**
+     * 硬样本重抽：合成一次 → 剥离 → 还是硬就再来，最多 [maxRetry] 次。
+     * 守卫：语音指纹 NCC < 0.95 丢弃；只有 quality 更小才替换；
+     * 同声线连续 3 次无改善 → 10 分钟熔断（触发时回落 v7 相减，用户无感）。
+     */
+    fun stripWithRetry(
+        context: android.content.Context,
+        pluginId: String,
+        logDir: File?,
+        maxRetry: Int,
+        breakerKey: String,
+        keepRaw: Boolean = false,
+        synthOnce: () -> ByteArray?
+    ): Outcome? {
+        val retries = maxRetry.coerceIn(0, 5)
+        var best: Outcome? = null
+        var tries = 0
+        var improved = false
+        while (true) {
+            val bytes = synthOnce() ?: return best
+            val cleaned = stripDeclared(context, pluginId, bytes, logDir, keepRaw)
+            val cur = best
+            if (cur == null) {
+                best = cleaned
+            } else if (!sameSpeech(cur.speechPrint, cleaned.speechPrint)) {
+                runCatching { writeLog(logDir, "重抽 $tries/$retries：语音变了，丢弃") }
+            } else if (cleaned.quality < cur.quality) {
+                val prevQ = cur.quality
+                runCatching { writeLog(logDir, "重抽 $tries/$retries：q $prevQ→${cleaned.quality}（收）") }
+                best = cleaned
+                improved = true
+            } else {
+                runCatching { writeLog(logDir, "重抽 $tries/$retries：q ${cleaned.quality}（不收）") }
+            }
+            val b = best ?: return null
+            if (b.quality <= Q_GOOD) break
+            if (tries >= retries) break
+            if (breakerBlocked(breakerKey)) {
+                runCatching { writeLog(logDir, "重抽熔断中（$breakerKey），跳过") }
+                break
+            }
+            tries++
+            val curQ = b.quality
+            runCatching { writeLog(logDir, "重抽 $tries/$retries：开始（当前 q=$curQ）") }
+        }
+        val out = best ?: return null
+        breakerReport(breakerKey, out.quality <= Q_GOOD || improved)
+        return out
     }
 
     // ---------------- 截尾 / 抽帧 ----------------
@@ -380,7 +504,7 @@ object AudioWatermarkStripper {
             if (n != null) " | raw=$n" else ""
         } else ""
         runCatching { writeLog(logDir, "$note | ${cost}ms$rawTag") }
-        return Outcome(outBytes, true, note)
+        return Outcome(outBytes, true, note, Q_GOOD, decoded.print)
     }
 
     // ---------------- 叠加态相减 ----------------
@@ -419,7 +543,12 @@ object AudioWatermarkStripper {
             score, clean, total, r.slope, r.intercept, resPart
         ) + via + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
         runCatching { writeLog(logDir, "$note | ${cost}ms" + (if (keepRaw) " | raw=" + (saveRaw(logDir, bytes) ?: "-") else "")) }
-        return Outcome(wav, true, note)
+        val q = when {
+            clean >= 2 -> Q_GOOD
+            clean == 1 -> Q_WEAK
+            else -> Q_HARD
+        }
+        return Outcome(wav, true, note, q, decoded.print)
     }
 
     /**
@@ -581,7 +710,7 @@ object AudioWatermarkStripper {
                 if (ch == 1) all else downmix(all, ch)
             }
             if (pcm.isEmpty()) return null
-            return Decoded(pcm, sr)
+            return Decoded(pcm, sr, fingerprint(pcm))
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
