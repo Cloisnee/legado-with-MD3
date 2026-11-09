@@ -42,6 +42,12 @@ object AudioWatermarkStripper {
     private const val MEL_HI = 0.30f
     /** 低于这个分但高于 0.10：写一行“接近未命中”日志，便于事后定位 */
     private const val TAIL_NEAR = 0.10f
+    /** 深埋兜底入口：低于此值连位置带都不看（原 0.10；0010/0012/0013 实测 0.07~0.10） */
+    private const val BAND_ENTER = 0.04f
+    /** 深埋全窗 NCC 下限（干净语音最大 0.085，真水印 0.09~0.20） */
+    private const val BAND_MIN_SCORE = 0.08f
+    /** 深埋四段最小 NCC 下限（原 0.08；0012 是 0.086、0084 是 0.078，差一点点就漏） */
+    private const val BAND_MIN_Q = 0.035f
 
     /** 相减后：结尾近静音收到「最后有声帧 + 100ms」（试听拍板），末尾 10ms 淡出 */
     private const val TAIL_KEEP_MS = 100
@@ -93,26 +99,43 @@ object AudioWatermarkStripper {
         /** 试听链路传 true：处理之前把原始字节另存一份，便于事后取样分析 */
         keepRaw: Boolean = false,
     ): Outcome {
-        if (pluginId.isBlank()) return Outcome(bytes, false, "无插件标识，跳过")
+        if (pluginId.isBlank()) {
+            skipLog(logDir, "无插件标识")
+            return Outcome(bytes, false, "无插件标识，跳过")
+        }
         if (!com.github.jing332.tts.store.TtsConfigStore.declaresWatermark(context, pluginId)) {
+            skipLog(logDir, "插件未声明水印($pluginId)")
             return Outcome(bytes, false, "插件未声明水印，跳过")
         }
         return strip(context, bytes, logDir, keepRaw)
     }
 
     fun strip(context: android.content.Context?, bytes: ByteArray, logDir: File? = null, keepRaw: Boolean = false): Outcome {
-        val head = Mp3Truncator.head(bytes) ?: return Outcome(bytes, false, "非 MP3，跳过")
-        if (bytes.size !in MIN_BYTES..MAX_BYTES) return Outcome(bytes, false, "体积超范围，跳过")
+        if (bytes.size !in MIN_BYTES..MAX_BYTES) {
+            skipLog(logDir, "体积超范围(${bytes.size})")
+            return Outcome(bytes, false, "体积超范围，跳过")
+        }
+        val isWav = isRiffWav(bytes)
+        val head = if (isWav) null else Mp3Truncator.head(bytes)
+        if (!isWav && head == null) {
+            skipLog(logDir, "非 MP3/WAV")
+            return Outcome(bytes, false, "非 MP3/WAV，跳过")
+        }
 
         val decoded = try {
-            decode(bytes)
+            if (isWav) decodeWav(bytes) else decode(bytes)
         } catch (t: Throwable) {
             Log.w(TAG, "decode failed: ${t.message}")
+            skipLog(logDir, "解码失败(${t.message})")
             return Outcome(bytes, false, "解码失败: ${t.message}")
-        } ?: return Outcome(bytes, false, "解码为空")
+        } ?: run {
+            skipLog(logDir, "解码为空")
+            return Outcome(bytes, false, "解码为空")
+        }
 
         // 只在 48 kHz 上判定：呱呱固定 48k；别的采样率直接放行，杜绝误伤
         if (decoded.sampleRate != WatermarkDsp.SAMPLE_RATE) {
+            skipLog(logDir, "采样率 ${decoded.sampleRate}")
             return Outcome(bytes, false, "采样率 ${decoded.sampleRate}，跳过")
         }
 
@@ -146,10 +169,16 @@ object AudioWatermarkStripper {
                 }
                 if (accept) {
                     if (clean == stats.size) {
-                        // 整窗干净 → 截尾 / 抽帧（原 MP3 字节，无重编码）
-                        return cutPath(head, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
+                        // 整窗干净 → 截尾 / 抽帧（MP3 原字节无重编码；WAV 直接截 PCM）
+                        if (isWav) {
+                            return cutWav(decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, bytes, t0)
+                        }
+                        return cutPath(head!!, bytes, decoded, tail.startSample, tail.score, clean, stats.size, logDir, keepRaw, t0)
                     }
-                    val r = WatermarkSubtractor.subtract(decoded.pcm, wm, startHint)
+                    // 干净块 <3（含 0 块）→ 用模型自选：平台给的广告增益在 100ms 内就在变，
+                    // 常数/单一直线会整段欠减（0108 就是被 0.00·t+0.73 减了一半）
+                    val r = if (clean >= 3) WatermarkSubtractor.subtract(decoded.pcm, wm, startHint)
+                            else WatermarkSubtractor.subtractDeep(decoded.pcm, wm, startHint)
                     if (r != null) {
                         return subtractPath(bytes, decoded, r, wm.size, tail.score, clean, stats.size, logDir, keepRaw, t0, via)
                     }
@@ -165,12 +194,12 @@ object AudioWatermarkStripper {
         if (matches.isEmpty()) {
             // ---------- 3. 兜底：位置先验 + 四段一致性（深埋 / 完全重叠） ----------
             // 只在前面所有路径都失败时执行；四段必须都正相关且增益合理，否则一律放行。
-            if (tailScore >= TAIL_NEAR && wm != null && wh != null) {
+            if (tailScore >= BAND_ENTER && wm != null && wh != null) {
                 val band = WatermarkDsp.bandProbe(decoded.pcm, wh, decoded.sampleRate)
-                if (band != null && band.minQuarterNcc >= 0.08f && band.minQuarterGain >= 0.35f) {
-                    val r = WatermarkSubtractor.subtract(
-                        decoded.pcm, wm, band.startSample, 0f, fadeWhenNoClean = true
-                    )
+                // 2026-11-09 重标：minQ 0.08→0.035（0012 差 0.001、0084 差 0.002），
+                // 增益不再用「四段最小值」单闸，改由 subtractDeep 的模型自选 + 20ms 残差兜底
+                if (band != null && band.minQuarterNcc >= BAND_MIN_Q && band.score >= BAND_MIN_SCORE) {
+                    val r = WatermarkSubtractor.subtractDeep(decoded.pcm, wm, band.startSample)
                     if (r != null) {
                         return subtractPath(
                             bytes, decoded, r, wm.size, band.score, 0, 12,
@@ -198,12 +227,110 @@ object AudioWatermarkStripper {
             val clean = if (wm != null)
                 WatermarkDsp.blockStats(decoded.pcm, wm, best.startSample).count { it.ncc >= 0.9f }
             else 0
-            return cutPath(head, bytes, decoded, best.startSample, best.score, clean, 12, logDir, keepRaw, t0)
+            if (isWav) return cutWav(decoded, best.startSample, best.score, clean, 12, logDir, keepRaw, bytes, t0)
+            return cutPath(head!!, bytes, decoded, best.startSample, best.score, clean, 12, logDir, keepRaw, t0)
         }
         if (wm == null) return Outcome(bytes, false, "无 Context，无法加载模板")
         val r = WatermarkSubtractor.subtract(decoded.pcm, wm, best.startSample, 0.80f)
             ?: return Outcome(bytes, false, "相减失败（命中 %.3f）".format(best.score))
         return subtractPath(bytes, decoded, r, wm.size, best.score, 0, 12, logDir, keepRaw, t0)
+    }
+
+    // ---------------- WAV（mk4 / 已处理产物） ----------------
+
+    private fun isRiffWav(b: ByteArray): Boolean =
+        b.size >= 44 &&
+            b[0] == 0x52.toByte() && b[1] == 0x49.toByte() &&
+            b[2] == 0x46.toByte() && b[3] == 0x46.toByte() &&
+            b[8] == 0x57.toByte() && b[9] == 0x41.toByte() &&
+            b[10] == 0x56.toByte() && b[11] == 0x45.toByte()
+
+    private fun le16(b: ByteArray, o: Int): Int =
+        (b[o].toInt() and 0xFF) or ((b[o + 1].toInt() and 0xFF) shl 8)
+
+    private fun le32(b: ByteArray, o: Int): Int =
+        (b[o].toInt() and 0xFF) or ((b[o + 1].toInt() and 0xFF) shl 8) or
+            ((b[o + 2].toInt() and 0xFF) shl 16) or ((b[o + 3].toInt() and 0xFF) shl 24)
+
+    /** RIFF/WAVE 的 PCM16 解码；非 PCM16 返回 null */
+    private fun decodeWav(bytes: ByteArray): Decoded? {
+        if (!isRiffWav(bytes)) return null
+        var p = 12
+        var fmtOk = false
+        var channels = 1
+        var sr = 0
+        var bits = 16
+        var dataOff = -1
+        var dataLen = 0
+        while (p + 8 <= bytes.size) {
+            val id = String(bytes, p, 4, Charsets.US_ASCII)
+            val size = le32(bytes, p + 4)
+            if (size < 0) return null
+            val body = p + 8
+            if (id == "fmt " && body + 16 <= bytes.size) {
+                val af = le16(bytes, body)
+                channels = le16(bytes, body + 2)
+                sr = le32(bytes, body + 4)
+                bits = le16(bytes, body + 14)
+                fmtOk = af == 1
+            } else if (id == "data") {
+                dataOff = body
+                dataLen = minOf(size, bytes.size - body)
+            }
+            p = body + size + (size and 1)
+        }
+        if (!fmtOk || dataOff < 0 || sr <= 0 || bits != 16) return null
+        val ch = if (channels > 0) channels else 1
+        val n = dataLen / 2
+        if (n <= 0) return null
+        val all = FloatArray(n) { k ->
+            (((bytes[dataOff + k * 2 + 1].toInt() shl 8) or
+                (bytes[dataOff + k * 2].toInt() and 0xFF)).toShort()).toFloat() / 32768f
+        }
+        return Decoded(if (ch == 1) all else downmix(all, ch), sr)
+    }
+
+    /** WAV 输入的截尾：直接截 PCM 再包回 WAV（WAV 没有 MP3 帧边界问题） */
+    private fun cutWav(
+        decoded: Decoded,
+        startSample: Int,
+        score: Float,
+        clean: Int,
+        total: Int,
+        logDir: File?,
+        keepRaw: Boolean,
+        bytes: ByteArray,
+        t0: Long,
+    ): Outcome {
+        val sr = WatermarkDsp.SAMPLE_RATE
+        val cut = maxOf(0, startSample - (0.02 * sr).toInt())
+        val cutSec = cut.toDouble() / sr
+        if (cutSec < 0.5) return Outcome(bytes, false, "剩余正文过短（命中 %.3f）".format(score))
+        val body = FloatArray(cut) { decoded.pcm[it] }
+        val note = "尾部截断 %.2fs（%.2fs→%.2fs, 命中 %.3f, 块 %d/%d, WAV）".format(
+            (decoded.pcm.size - cut).toDouble() / sr,
+            decoded.pcm.size.toDouble() / sr,
+            cutSec, score, clean, total
+        )
+        val cost = android.os.SystemClock.elapsedRealtime() - t0
+        val rawTag = if (keepRaw) saveRaw(logDir, bytes)?.let { " | raw=$it" } ?: "" else ""
+        runCatching { writeLog(logDir, "$note | ${cost}ms$rawTag") }
+        return Outcome(toWav(body, sr), true, note)
+    }
+
+    // ---------------- 跳过原因日志 ----------------
+
+    private val skipLogTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 跳过原因写日志；同一原因 10 分钟内只记一次，避免刷屏（0004/0103 那种“查无此人”就是没日志） */
+    private fun skipLog(dir: File?, msg: String) {
+        if (dir == null) return
+        val key = msg.take(64)
+        val now = System.currentTimeMillis()
+        val last = skipLogTimes[key]
+        if (last != null && now - last < 10 * 60_000L) return
+        skipLogTimes[key] = now
+        runCatching { writeLog(dir, "跳过：$msg") }
     }
 
     // ---------------- 截尾 / 抽帧 ----------------
@@ -287,7 +414,7 @@ object AudioWatermarkStripper {
         }
         val wav = toWav(outPcm, sr)
         val cost = android.os.SystemClock.elapsedRealtime() - t0
-        val resPart = if (clean > 0) ", 残差 %.0fdB".format(r.residualDb) else ""
+        val resPart = if (clean > 0 && r.residualDb > -900f) ", 残差 %.0fdB".format(r.residualDb) else ""
         val note = "尾部相减（命中 %.3f, 块 %d/%d, 增益 %.2f·t%+.2f%s）".format(
             score, clean, total, r.slope, r.intercept, resPart
         ) + via + if (trimmedMs > 0) " | 静音收口 ${trimmedMs}ms" else ""
