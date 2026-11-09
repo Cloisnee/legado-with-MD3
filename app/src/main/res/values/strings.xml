@@ -2800,6 +2800,8 @@
     <string name="tts_synth_timeout_summary">Requests exceeding this duration are treated as failed; current %1$d s</string>
     <string name="tts_max_retry">Max Retries</string>
     <string name="tts_max_retry_summary">Retries after a failed request; current %1$d (0 = no retry)</string>
+    <string name="tts_watermark_retry">Watermark Re-renders</string>
+    <string name="tts_watermark_retry_summary">Re-synthesis attempts when the watermark is hard to strip; current %1$d (0 = off)</string>
     <string name="tts_cache_unknown_text">Unknown text</string>
     <string name="capsule_auto_collapse">Auto-collapse capsule</string>
     <string name="capsule_auto_collapse_summary">Collapse to mini capsule after 3 seconds of inactivity</string>

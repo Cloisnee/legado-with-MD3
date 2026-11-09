@@ -95,6 +95,216 @@ object WatermarkSubtractor {
         return Result(out, f.start, f.slope, f.intercept, f.clean, f.nb, rdb)
     }
 
+    // ================= 2026-11-09：深埋 / 中分（0~2 干净块）的模型自选 =================
+
+    /**
+     * 深埋 / 中分（干净块 <3）专用相减。
+     *
+     * 为什么不能沿用 [subtract] 的「中值 / 单一直线」：
+     *  - 平台给广告的增益在 100ms 尺度上就在变，单一中值会整段欠减或过减；
+     *  - 「相减后残差与模板的投影」在最小二乘下恒为零，不能用它判断减没减干净。
+     *
+     * 这里改为：生成若干候选增益包络，各自减一遍，用 **20ms 窗**（与 100ms 估计尺度不同）
+     * 的残差相关挑最优 —— 这个指标不会被最小二乘「自己证明自己」。
+     */
+    fun subtractDeep(
+        pcm: FloatArray,
+        wm: FloatArray,
+        startHint: Int,
+        minMeanGain: Float = 0.25f
+    ): Result? {
+        val n = wm.size
+        if (startHint < 0 || startHint + n > pcm.size) return null
+        val start = align(pcm, wm, startHint)
+        val stats = WatermarkDsp.blockStats(pcm, wm, start)
+        val nb = stats.size
+        if (nb < 2) return null
+        val gains = FloatArray(nb) { stats[it].gain }
+        val nccs = FloatArray(nb) { stats[it].ncc }
+        val clean = ArrayList<Int>()
+        for (i in 0 until nb) if (nccs[i] >= 0.9f) clean.add(i)
+
+        // 四段一致性闸门：12 块按 3 块一段，至少 3 段的中值增益 ≥0.30。
+        // 184 条干净语料实测最多只有 2 段达标（0 命中）；本批真水印全部 3~4 段。
+        // 这是「减错方向 / 减空气」的最后一道保险，比单看 minQ 稳。
+        var goodQuarters = 0
+        for (q in 0 until 4) {
+            val from = q * 3
+            val to = minOf(from + 3, nb)
+            if (to <= from) continue
+            val vals = FloatArray(to - from) { gains[from + it] }
+            if (median(vals) >= 0.30f) goodQuarters++
+        }
+        if (goodQuarters < 3) return null
+
+        val cands = ArrayList<FloatArray>()
+        val med = median(gains)
+        cands.add(FloatArray(nb) { med })
+        cands.add(FloatArray(nb) { gains.average().toFloat() })
+        cands.add(weightedLine(gains, nccs))
+        cands.add(robustLine(gains, nccs))
+        cands.add(weightedQuad(gains, nccs))
+        if (clean.size >= 2) cands.add(anchorLine(gains, clean))
+        if (clean.size == 1) cands.add(FloatArray(nb) { gains[clean[0]] })
+
+        var bestScore = Float.MAX_VALUE
+        var bestEnv: FloatArray? = null
+        var bestMean = 0f
+        for (env in cands) {
+            var sg = 0.0
+            for (i in 0 until n) sg += env[minOf(i / BLOCK, nb - 1)].toDouble().coerceIn(0.0, 1.5)
+            val meanGain = (sg / n).toFloat()
+            if (meanGain < minMeanGain || meanGain > 1.5f) continue
+            val s = fineScore(pcm, wm, start, env)
+            if (s < bestScore) { bestScore = s; bestEnv = env; bestMean = meanGain }
+        }
+        val env = bestEnv ?: return null
+
+        val out = pcm.copyOf()
+        for (i in 0 until n) {
+            out[start + i] -= env[minOf(i / BLOCK, nb - 1)].coerceIn(0f, 1.5f) * wm[i]
+        }
+        return Result(out, start, 0f, bestMean, clean.size, nb, -999f)
+    }
+
+    /** 残差在 20ms 窗上与模板的归一化相关（模板能量过低的窗跳过），越小越干净 */
+    private fun fineScore(pcm: FloatArray, wm: FloatArray, start: Int, env: FloatArray): Float {
+        val w = 960 // 20ms @48k
+        val nb = env.size
+        var sum = 0.0
+        var cnt = 0
+        var i = 0
+        while (i + w <= wm.size) {
+            var ew = 0.0
+            for (k in 0 until w) { val v = wm[i + k]; ew += v * v }
+            if (ew / w < 1e-4) { i += w; continue }   // 模板该窗 RMS < 0.01，跳过
+            var mx = 0.0
+            var my = 0.0
+            for (k in 0 until w) {
+                val r = pcm[start + i + k] - env[minOf((i + k) / BLOCK, nb - 1)].coerceIn(0f, 1.5f) * wm[i + k]
+                mx += r
+                my += wm[i + k]
+            }
+            mx /= w; my /= w
+            var num = 0.0
+            var dx = 0.0
+            var dy = 0.0
+            for (k in 0 until w) {
+                val r = pcm[start + i + k] - env[minOf((i + k) / BLOCK, nb - 1)].coerceIn(0f, 1.5f) * wm[i + k]
+                val a = r - mx
+                val b = wm[i + k] - my
+                num += a * b
+                dx += a * a
+                dy += b * b
+            }
+            if (dx * dy > 1e-24) {
+                val v = num / kotlin.math.sqrt(dx * dy)
+                sum += v * v
+                cnt++
+            }
+            i += w
+        }
+        return if (cnt == 0) 9f else (sum / cnt).toFloat()
+    }
+
+    private fun median(v: FloatArray): Float {
+        val a = v.clone()
+        a.sort()
+        return a[a.size / 2]
+    }
+
+    /** 加权最小二乘直线（权重 = |NCC|，至少 0.02） */
+    private fun weightedLine(g: FloatArray, c: FloatArray): FloatArray {
+        val n = g.size
+        var sw = 0.0; var stw = 0.0; var stt = 0.0; var sg = 0.0; var stg = 0.0
+        for (i in 0 until n) {
+            val w = max(abs(c[i]), 0.02f).toDouble()
+            val t = i.toDouble()
+            sw += w; stw += t * w; stt += t * t * w
+            sg += w * g[i]; stg += t * w * g[i]
+        }
+        return lineFromSums(sw, stw, stt, sg, stg, n)
+    }
+
+    /** 迭代重加权：压掉被台词带偏的离群块（如 9064 的 -1.48） */
+    private fun robustLine(g: FloatArray, c: FloatArray): FloatArray {
+        val n = g.size
+        var env = weightedLine(g, c)
+        repeat(3) {
+            val res = FloatArray(n) { g[it] - env[it] }
+            val medR = median(res)
+            val dev = FloatArray(n) { abs(res[it] - medR) }
+            val mad = max(median(dev), 1e-3f)
+            var sw = 0.0; var stw = 0.0; var stt = 0.0; var sg = 0.0; var stg = 0.0
+            for (i in 0 until n) {
+                var w = max(abs(c[i]), 0.02f).toDouble()
+                if (abs(res[i] - medR) > 2.5f * mad) w = 0.0
+                val t = i.toDouble()
+                sw += w; stw += t * w; stt += t * t * w
+                sg += w * g[i]; stg += t * w * g[i]
+            }
+            if (sw > 1e-9) env = lineFromSums(sw, stw, stt, sg, stg, n)
+        }
+        return env
+    }
+
+    private fun lineFromSums(
+        sw: Double, stw: Double, stt: Double, sg: Double, stg: Double, n: Int
+    ): FloatArray {
+        val den = sw * stt - stw * stw
+        if (abs(den) < 1e-12) return FloatArray(n) { (sg / sw).toFloat() }
+        val b = (sw * stg - stw * sg) / den
+        val a = (sg - b * stw) / sw
+        return FloatArray(n) { (a + b * it).toFloat() }
+    }
+
+    /** 加权二次（贴平台的缓变包络） */
+    private fun weightedQuad(g: FloatArray, c: FloatArray): FloatArray {
+        val n = g.size
+        val m = Array(3) { DoubleArray(4) }
+        for (i in 0 until n) {
+            val w = max(abs(c[i]), 0.05f).toDouble()
+            val t = i.toDouble()
+            val p = doubleArrayOf(1.0, t, t * t)
+            for (r in 0 until 3) {
+                for (q in 0 until 3) m[r][q] += w * p[r] * p[q]
+                m[r][3] += w * p[r] * g[i]
+            }
+        }
+        // 3x3 高斯消元
+        for (col in 0 until 3) {
+            var piv = col
+            for (r in col + 1 until 3) if (abs(m[r][col]) > abs(m[piv][col])) piv = r
+            if (abs(m[piv][col]) < 1e-12) return FloatArray(n) { g.average().toFloat() }
+            val tmp = m[col]; m[col] = m[piv]; m[piv] = tmp
+            for (r in 0 until 3) {
+                if (r == col) continue
+                val f = m[r][col] / m[col][col]
+                for (k in col until 4) m[r][k] -= f * m[col][k]
+            }
+        }
+        val coef = DoubleArray(3) { m[it][3] / m[it][it] }
+        return FloatArray(n) { i ->
+            val t = i.toDouble()
+            (coef[0] + coef[1] * t + coef[2] * t * t).toFloat()
+        }
+    }
+
+    /** 用 NCC=1.0 的干净块锚定直线（它们的增益是精确值） */
+    private fun anchorLine(g: FloatArray, clean: List<Int>): FloatArray {
+        val n = g.size
+        var sx = 0.0; var sy = 0.0; var sxx = 0.0; var sxy = 0.0
+        for (i in clean) {
+            sx += i; sy += g[i]; sxx += i.toDouble() * i; sxy += i.toDouble() * g[i]
+        }
+        val cnt = clean.size.toDouble()
+        val den = cnt * sxx - sx * sx
+        if (abs(den) < 1e-12) return FloatArray(n) { (sy / cnt).toFloat() }
+        val b = (cnt * sxy - sx * sy) / den
+        val a = (sy - b * sx) / cnt
+        return FloatArray(n) { (a + b * it).toFloat() }
+    }
+
     /**
      * 对齐：以 hint 为基准，用 maxBlockNcc 粗搜 ±60ms（1ms 步）+ 细搜 ±1ms（1 采样步）。
      * 只有比 hint 高 0.03 才改用新的 lag —— 尾部探针给的 hint 本身就是 1 采样精度，
@@ -104,11 +314,12 @@ object WatermarkSubtractor {
         val hintScore = maxBlockNcc(pcm, wm, hint)
 
         // 没有干净块（完全被台词盖住）：maxBlockNcc 的分辨力不够，
-        // 改用全窗 NCC 在 ±5ms 内做 1 采样精修（实测 miss2 的探针位置偏 9ms，靠这一步拉回）
+        // 改用全窗 NCC 在 ±15ms 内做 1 采样精修（mel 探针是 10ms 网格，实测会偏 9~10ms；
+        // 0024 那种「减了一半」就是偏了半个字）
         if (hintScore < 0.9f) {
             var bestLag = hint
             var best = nccFull(pcm, wm, hint)
-            val span = (0.005 * WatermarkDsp.SAMPLE_RATE).toInt()
+            val span = (0.015 * WatermarkDsp.SAMPLE_RATE).toInt()
             for (d in -span..span) {
                 val lag = hint + d
                 if (lag < 0 || lag + wm.size > pcm.size) continue

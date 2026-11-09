@@ -35,6 +35,8 @@ class TtsServerSynthesizer(context: Context) {
         timeoutMs: Long = TtsEngineContext.AUDITION_TIMEOUT,
         /** 阅读朗读情绪（空 = 无）；桥给插件 `ttsrv.tts.emotion` */
         emotion: String = "",
+        /** v8：水印硬样本重抽次数（0=关闭）；试听/听书同一条 */
+        maxWatermarkRetry: Int = 0,
     ): Outcome = withContext(Dispatchers.IO) {
         if (traitsJson.isBlank() || traitsJson.trim() == "[]") {
             return@withContext Outcome(false, "声线缺少条目配置（按条目合成，不回退全局查找）")
@@ -42,31 +44,37 @@ class TtsServerSynthesizer(context: Context) {
         if (text.isBlank()) {
             return@withContext Outcome(false, "参数为空(text)")
         }
-        val outcome = try {
-            TtsEngineContext(
-                tts = PluginTtsSource(),
-                userVars = emptyMap(),
-                context = appContext,
-                engineId = "",
-                synthTimeoutMs = timeoutMs,
-            ).synthesizeByConfig(traitsJson, text, emotion)
+        // 平台试听水印剥离：只在插件声明了 watermark=true 时处理（见 TtsConfigStore.declaresWatermark）
+        val src = runCatching {
+            JSONObject(traitsJson).optJSONObject("source")
+        }.getOrNull()
+        val pluginId = src?.optString("pluginId").orEmpty()
+        val voiceId = src?.optString("voice").orEmpty()
+        val audDir = File(TtsDirProvider.baseDir(appContext), "_audition")
+
+        var lastReason: String? = null
+        val stripResult = try {
+            // v8：硬样本重抽（试听/听书同一条逻辑）；非水印插件第一次就会以 Q_NA 直接收
+            AudioWatermarkStripper.stripWithRetry(
+                appContext, pluginId, audDir, maxWatermarkRetry, "$pluginId|$voiceId"
+            ) {
+                val r = TtsEngineContext(
+                    tts = PluginTtsSource(),
+                    userVars = emptyMap(),
+                    context = appContext,
+                    engineId = "",
+                    synthTimeoutMs = timeoutMs,
+                ).synthesizeByConfig(traitsJson, text, emotion)
+                if (r.bytes == null) lastReason = r.reason ?: "未知原因"
+                r.bytes
+            }
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
             return@withContext Outcome(false, "合成异常: ${t.message ?: t.javaClass.simpleName}")
         }
-        val bytes = outcome.bytes
-            ?: return@withContext Outcome(false, outcome.reason ?: "未知原因")
-        // 平台试听水印剥离：只在插件声明了 watermark=true 时处理（见 TtsConfigStore.declaresWatermark）
-        val pluginId = runCatching {
-            JSONObject(traitsJson).optJSONObject("source")?.optString("pluginId").orEmpty()
-        }.getOrDefault("")
-        val cleaned = runCatching {
-            AudioWatermarkStripper.stripDeclared(
-                appContext, pluginId, bytes,
-                File(TtsDirProvider.baseDir(appContext), "_audition")
-            )
-        }.getOrElse { AudioWatermarkStripper.Outcome(bytes, false, "异常: ${it.message}") }
+        val cleaned = stripResult
+            ?: return@withContext Outcome(false, lastReason ?: "合成失败（空音频）")
         val finalBytes = cleaned.bytes
         val written = runCatching {
             output.parentFile?.mkdirs()
