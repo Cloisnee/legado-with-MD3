@@ -44,8 +44,8 @@ object AudioWatermarkStripper {
     private const val TAIL_NEAR = 0.10f
     /** 深埋兜底入口：低于此值连位置带都不看（原 0.10；0010/0012/0013 实测 0.07~0.10） */
     private const val BAND_ENTER = 0.04f
-    /** 深埋全窗 NCC 下限（干净语音最大 0.085，真水印 0.09~0.20） */
-    private const val BAND_MIN_SCORE = 0.08f
+    /** 深埋全窗 NCC 下限（0.08→0.06：0025/0044 实测 0.079/0.072；真正兜底靠四段增益闸门） */
+    private const val BAND_MIN_SCORE = 0.06f
     /** 深埋四段最小 NCC 下限（原 0.08；0012 是 0.086、0084 是 0.078，差一点点就漏） */
     private const val BAND_MIN_Q = 0.035f
 
@@ -135,15 +135,25 @@ object AudioWatermarkStripper {
             return Outcome(bytes, false, "非 MP3/WAV，跳过")
         }
 
-        val decoded = try {
-            if (isWav) decodeWav(bytes) else decode(bytes)
-        } catch (t: Throwable) {
-            Log.w(TAG, "decode failed: ${t.message}")
-            skipLog(logDir, "解码失败(${t.message})")
-            return Outcome(bytes, false, "解码失败: ${t.message}")
-        } ?: run {
-            skipLog(logDir, "解码为空")
-            return Outcome(bytes, false, "解码为空")
+        // MediaCodec 偶发瞬时失败（实测 12:42/14:03 各一次，文件结构本身完好）→ 重试 2 次
+        var decoded: Decoded? = null
+        var lastErr: Throwable? = null
+        for (attempt in 0 until 3) {
+            try {
+                decoded = if (isWav) decodeWav(bytes) else decode(bytes)
+                if (decoded != null) break
+            } catch (t: Throwable) {
+                if (t is OutOfMemoryError) break   // 重试也救不回来，别再压内存
+                lastErr = t
+                if (attempt < 2) Thread.sleep(60)
+            }
+        }
+        if (decoded == null) {
+            val why = lastErr?.let { "${it.javaClass.simpleName}:${it.message.orEmpty()}" } ?: "解码为空"
+            Log.w(TAG, "decode failed after 3 tries: $why")
+            // 解码失败不参与 10 分钟限流：这条直接写，避免像 0012 那样被吞
+            runCatching { writeLog(logDir, "跳过：解码失败（${bytes.size}B，3 次）$why") }
+            return Outcome(bytes, false, "解码失败")
         }
 
         // 只在 48 kHz 上判定：呱呱固定 48k；别的采样率直接放行，杜绝误伤
@@ -409,8 +419,11 @@ object AudioWatermarkStripper {
 
     /**
      * 硬样本重抽：合成一次 → 剥离 → 还是硬就再来，最多 [maxRetry] 次。
-     * 守卫：语音指纹 NCC < 0.95 丢弃；只有 quality 更小才替换；
-     * 同声线连续 3 次无改善 → 10 分钟熔断（触发时回落 v7 相减，用户无感）。
+     * 收不收的分级：
+     *  - 同语音 + quality 更好 → 收
+     *  - 不同 take + quality=GOOD（能干净截断）→ 收（宁可换语气也不要广告）
+     *  - 不同 take + 不干净 → 不收；Q_NA（解码失败/未处理）永远不收
+     * 同声线连续 3 次无改善 → 10 分钟熔断（触发时回落相减，用户无感）。
      */
     fun stripWithRetry(
         context: android.content.Context,
@@ -431,15 +444,24 @@ object AudioWatermarkStripper {
             val cur = best
             if (cur == null) {
                 best = cleaned
-            } else if (!sameSpeech(cur.speechPrint, cleaned.speechPrint)) {
-                runCatching { writeLog(logDir, "重抽 $tries/$retries：语音变了，丢弃") }
-            } else if (cleaned.quality < cur.quality) {
-                val prevQ = cur.quality
-                runCatching { writeLog(logDir, "重抽 $tries/$retries：q $prevQ→${cleaned.quality}（收）") }
-                best = cleaned
-                improved = true
             } else {
-                runCatching { writeLog(logDir, "重抽 $tries/$retries：q ${cleaned.quality}（不收）") }
+                val same = sameSpeech(cur.speechPrint, cleaned.speechPrint)
+                // 分级：同语音更好 → 收；不同 take 但能干净截断 → 收（宁可换语气也不要广告）；
+                // 不同 take 且仍不干净 → 不收（不值得为半干净换台词）。
+                // Q_NA（解码失败/未处理）永远不收，否则会把原始带水印字节当成"更好"。
+                val accept = cleaned.quality >= Q_GOOD && (
+                    if (same) cleaned.quality < cur.quality
+                    else cleaned.quality == Q_GOOD
+                )
+                if (accept) {
+                    val tag = if (same) "q ${cur.quality}→${cleaned.quality}" else "换 take(q=${cleaned.quality})"
+                    runCatching { writeLog(logDir, "重抽 $tries/$retries：$tag（收）") }
+                    best = cleaned
+                    improved = true
+                } else {
+                    val tag = if (same) "q ${cleaned.quality}" else "语音变了(q=${cleaned.quality})"
+                    runCatching { writeLog(logDir, "重抽 $tries/$retries：$tag（不收）") }
+                }
             }
             val b = best ?: return null
             if (b.quality <= Q_GOOD) break
@@ -449,8 +471,6 @@ object AudioWatermarkStripper {
                 break
             }
             tries++
-            val curQ = b.quality
-            runCatching { writeLog(logDir, "重抽 $tries/$retries：开始（当前 q=$curQ）") }
         }
         val out = best ?: return null
         breakerReport(breakerKey, out.quality <= Q_GOOD || improved)
