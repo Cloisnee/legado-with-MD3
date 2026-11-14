@@ -113,6 +113,7 @@ fun ReadAloudSettingsScreen(
     var showCleanTime by remember { mutableStateOf(false) }
     var showSynthTimeout by remember { mutableStateOf(false) }
     var showMaxRetry by remember { mutableStateOf(false) }
+    var showWatermarkRetry by remember { mutableStateOf(false) }
     var showAlSfx by remember { mutableStateOf(false) }
     var showAlAmb by remember { mutableStateOf(false) }
     var showAlBgm by remember { mutableStateOf(false) }
@@ -374,6 +375,14 @@ fun ReadAloudSettingsScreen(
                         onClick = { showMaxRetry = true },
                     )
                     TinyClickableSettingItem(
+                        title = stringResource(R.string.tts_watermark_retry),
+                        description = stringResource(
+                            R.string.tts_watermark_retry_summary,
+                            st.watermarkRetry,
+                        ),
+                        onClick = { showWatermarkRetry = true },
+                    )
+                    TinyClickableSettingItem(
                         title = stringResource(R.string.tts_paragraph_interval),
                         description = stringResource(
                             R.string.tts_paragraph_interval_summary,
@@ -474,6 +483,16 @@ fun ReadAloudSettingsScreen(
         valueRange = 0f..10f,
         onValueChange = { v -> update { it.copy(ttsMaxRetry = v.coerceIn(0, 10)) } },
         onDismissRequest = { showMaxRetry = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showWatermarkRetry,
+        title = stringResource(R.string.tts_watermark_retry),
+        description = stringResource(R.string.tts_watermark_retry_summary, st.watermarkRetry),
+        value = st.watermarkRetry,
+        defaultValue = 3,
+        valueRange = 0f..5f,
+        onValueChange = { v -> update { it.copy(watermarkRetry = v.coerceIn(0, 5)) } },
+        onDismissRequest = { showWatermarkRetry = false },
     )
     ReadAloudNumberConfigSheet(
         show = showAlSfx,

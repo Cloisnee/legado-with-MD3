@@ -67,7 +67,7 @@ object WatermarkDsp {
         }
     }
 
-    fun fft(re: DoubleArray, im: DoubleArray) {
+    private fun fft(re: DoubleArray, im: DoubleArray) {
         val n = re.size
         var j = 0
         for (i in 1 until n) {
@@ -300,7 +300,7 @@ object WatermarkDsp {
     }
 
     /** 逐帧高频比：10log10(≥14.5k / 0.2–4k)，帧移 10 ms */
-    fun hfRatios(pcm: FloatArray): FloatArray {
+    private fun hfRatios(pcm: FloatArray): FloatArray {
         val n = pcm.size / HOP
         if (n < 8) return FloatArray(0)
         val out = FloatArray(n)

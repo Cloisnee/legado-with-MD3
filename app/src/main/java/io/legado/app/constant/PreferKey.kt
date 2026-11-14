@@ -468,6 +468,8 @@ object PreferKey {
     // ==== [ttsrv] 自建键（合并保留区 · 上游同步时以本区"我方为准"）====
     const val ttsSynthTimeoutSec = "ttsSynthTimeoutSec"
     const val ttsMaxRetry = "ttsMaxRetry"
+    /** 水印重抽次数（0=关闭；只对硬样本生效） */
+    const val watermarkRetry = "watermarkRetry"
     // M4：待命启动（首次「开始朗读」先进入待命；再点一次走全套）
     const val readAloudStandbyStart = "readAloudStandbyStart"
     // P1.4：云端词网（本地条目推送到 CNB 仓库，由流水线合并进词网）

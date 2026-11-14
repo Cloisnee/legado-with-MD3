@@ -2796,6 +2796,8 @@
     <string name="tts_synth_timeout_summary">请求音频超过该时长按失败处理；当前 %1$d 秒</string>
     <string name="tts_max_retry">最大重试次数</string>
     <string name="tts_max_retry_summary">请求失败后的重试次数；当前 %1$d 次（0=不重试）</string>
+    <string name="tts_watermark_retry">水印重抽次数</string>
+    <string name="tts_watermark_retry_summary">检测到水印难剥离时重新合成的次数；当前 %1$d 次（0=关闭）</string>
     <string name="tts_cache_unknown_text">未知文本</string>
     <string name="capsule_auto_collapse">自动收缩胶囊</string>
     <string name="capsule_auto_collapse_summary">3秒无操作后收缩为迷你胶囊</string>

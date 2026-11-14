@@ -384,8 +384,17 @@ class TtsServerCenterRepository(private val app: Application) {
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
                 // 试听同样剥掉平台水印（契约门控：仅插件声明 watermark=true 时处理）
-                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                    .stripDeclared(ctx, r.pluginId, rawBytes, dir, keepRaw = true).bytes
+                // v8：硬样本重抽，与听书同一条逻辑
+                val retryCount = io.legado.app.data.repository.ReadAloudSettingsRepository()
+                    .currentSettings.watermarkRetry
+                var firstTry = true
+                val cleaned = com.github.jing332.tts.watermark.AudioWatermarkStripper.stripWithRetry(
+                    ctx, r.pluginId, dir, retryCount, r.pluginId + "|" + tag, keepRaw = true
+                ) {
+                    if (firstTry) { firstTry = false; rawBytes }
+                    else SynthProbe.run(ctx, ruleId, tag, text).bytes
+                }
+                val bytes = cleaned?.bytes ?: rawBytes
                 val ext = when {
                     bytes.size >= 4 && bytes[0] == 'R'.code.toByte() -> "wav"
                     bytes.size >= 2 && bytes[0] == 0xFF.toByte() -> "mp3"
@@ -826,8 +835,16 @@ class TtsServerCenterRepository(private val app: Application) {
         val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
         runCatching {
             val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
-            val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                .stripDeclared(ctx, pluginId, rawBytes, dir, keepRaw = true).bytes
+            val retryCount = io.legado.app.data.repository.ReadAloudSettingsRepository()
+                .currentSettings.watermarkRetry
+            var firstTry = true
+            val cleaned = com.github.jing332.tts.watermark.AudioWatermarkStripper.stripWithRetry(
+                ctx, pluginId, dir, retryCount, pluginId + "|" + voice, keepRaw = true
+            ) {
+                if (firstTry) { firstTry = false; rawBytes }
+                else SynthProbe.runDirect(ctx, pluginId, locale, voice, text, speed, volume, pitch, data).bytes
+            }
+            val bytes = cleaned?.bytes ?: rawBytes
             val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
             val f = File(dir, "audition_direct_${System.currentTimeMillis()}.$ext")
             f.writeBytes(bytes)
@@ -1348,8 +1365,28 @@ class TtsServerCenterRepository(private val app: Application) {
             val rawBytes = r.bytes ?: return@withContext AuditionOutcome(false, null, r.report)
             runCatching {
                 val dir = File(TtsDirProvider.baseDir(ctx), "_audition").apply { mkdirs() }
-                val bytes = com.github.jing332.tts.watermark.AudioWatermarkStripper
-                    .stripDeclared(ctx, src.optString("pluginId"), rawBytes, dir, keepRaw = true).bytes
+                val retryCount = io.legado.app.data.repository.ReadAloudSettingsRepository()
+                    .currentSettings.watermarkRetry
+                var firstTry = true
+                val cleaned = com.github.jing332.tts.watermark.AudioWatermarkStripper.stripWithRetry(
+                    ctx, src.optString("pluginId"), dir, retryCount,
+                    src.optString("pluginId") + "|" + src.optString("voice"), keepRaw = true
+                ) {
+                    if (firstTry) { firstTry = false; rawBytes }
+                    else SynthProbe.runDirect(
+                        ctx,
+                        src.optString("pluginId"),
+                        src.optString("locale"),
+                        src.optString("voice"),
+                        text,
+                        speed,
+                        volume,
+                        pitch,
+                        data,
+                        sr,
+                    ).bytes
+                }
+                val bytes = cleaned?.bytes ?: rawBytes
                 val ext = AudioSniffer.extName(AudioSniffer.sniff(bytes))
                 val f = File(dir, "audition_entry_${entryId}_${System.currentTimeMillis()}.$ext")
                 f.writeBytes(bytes)

@@ -702,6 +702,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                                         cacheFile,
                                         ttsSynthTimeoutMs,
                                         emotion = ReadAloudEmotion.forPlugin(cueEmotion),
+                                        maxWatermarkRetry = readAloudSettings.watermarkRetry,
                                     )
                                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                                 }
@@ -1073,6 +1074,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         cacheFile,
                         ttsSynthTimeoutMs,
                         emotion = ReadAloudEmotion.forPlugin(cue?.emotion),
+                        maxWatermarkRetry = readAloudSettings.watermarkRetry,
                     )
                     if (outcome.ok) null else (outcome.reason ?: "未知原因")
                 }

@@ -180,7 +180,7 @@ class SynthesizeChapterAudioUseCase(
             val t0 = System.currentTimeMillis()
             val timeoutMs = settings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
             val emotion = ReadAloudEmotion.forPlugin(row.emotion)
-            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
+            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion, settings.watermarkRetry)
             val maxRetry = settings.ttsMaxRetry.coerceIn(0, 10)
             var retried = 0
             while (!outcome.ok && retried < maxRetry) {
@@ -189,7 +189,7 @@ class SynthesizeChapterAudioUseCase(
                     "【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
                 )
                 delay(500)
-                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion)
+                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion, settings.watermarkRetry)
             }
             if (outcome.ok) {
                 done++

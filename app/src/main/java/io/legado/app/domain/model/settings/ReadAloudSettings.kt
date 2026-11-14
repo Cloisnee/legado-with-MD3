@@ -59,6 +59,8 @@ data class ReadAloudSettings(
     val ttsSynthTimeoutSec: Int = 75,
     /** 请求失败后的最大重试次数（B8.6 可调，默认 5；0=不重试） */
     val ttsMaxRetry: Int = 5,
+    /** 水印重抽次数（默认 3；0=关闭；只对检测到水印难剥离的句子生效） */
+    val watermarkRetry: Int = 3,
     /** M4：待命启动（防误触，默认开）——点「开始朗读」先进入待命（不合成/不分析/不播放），再点一次才开始 */
     val standbyStart: Boolean = true,
     // ---- B33 音效/BGM/环境·四轨（2026-09-30 立项；音频小闭环）----
