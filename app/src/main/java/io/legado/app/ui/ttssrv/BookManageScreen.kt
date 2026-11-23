@@ -63,9 +63,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.CharacterRecord
-import io.legado.app.data.repository.ReadAloudDataRepository
-import io.legado.app.data.repository.ScriptLineRow
+import io.legado.app.data.repository.RaBookMaintenanceRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.gateway.RaDirectionGateway
+import io.legado.app.domain.model.readaloud.v4.RaBookSummary
+import io.legado.app.domain.model.readaloud.v4.RaCharacterView
+import io.legado.app.domain.model.readaloud.v4.RaScriptLineRow
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.ui.theme.LegadoTheme
@@ -120,15 +126,23 @@ fun BookManageScreen(
     bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
-    val repo = remember(app) { ReadAloudDataRepository(app) }
+    val catalog = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    val raBuild = remember { org.koin.core.context.GlobalContext.get().get<RaBuildGateway>() }
+    val raDirection = remember { org.koin.core.context.GlobalContext.get().get<RaDirectionGateway>() }
+    val characterRepo = remember { org.koin.core.context.GlobalContext.get().get<RaCharacterGateway>() }
+    val maintenance = remember { org.koin.core.context.GlobalContext.get().get<RaBookMaintenanceRepository>() }
+    val voicePool = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     val scope = rememberCoroutineScope()
 
-    var bookList by remember { mutableStateOf<List<String>>(emptyList()) }
-    var currentBook by remember { mutableStateOf("默认") }
-    var records by remember { mutableStateOf<List<CharacterRecord>>(emptyList()) }
+    var books by remember { mutableStateOf<List<RaBookSummary>>(emptyList()) }
+    var currentBookKey by remember { mutableStateOf("") }
+    var currentBookUrl by remember { mutableStateOf("") }
+    var currentSourceKey by remember { mutableStateOf("") }
+    var records by remember { mutableStateOf<List<RaCharacterView>>(emptyList()) }
     var chapters by remember { mutableStateOf<List<Int>>(emptyList()) }
     var selectedChapter by remember { mutableStateOf<Int?>(null) }
-    var lines by remember { mutableStateOf<List<ScriptLineRow>>(emptyList()) }
+    var lines by remember { mutableStateOf<List<RaScriptLineRow>>(emptyList()) }
+    val currentBookName = books.firstOrNull { it.bookKey == currentBookKey }?.name ?: "默认"
 
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -164,7 +178,30 @@ fun BookManageScreen(
     fun reloadLines() {
         scope.launch {
             val ch = selectedChapter
-            lines = if (ch == null) emptyList() else repo.loadChapterScript(currentBook, ch)
+            if (ch == null || currentBookKey.isBlank()) {
+                lines = emptyList()
+            } else {
+                val segments = raBuild.segmentsOfChapter(currentBookKey, ch)
+                val analysis = raBuild.latestAnalysis(currentBookKey, ch)
+                val directionLines = analysis?.let { item ->
+                    raDirection.plan(item.id, "PLAYBACK_BASE")?.let { plan -> raDirection.lines(plan.id) }
+                }.orEmpty().associateBy { it.segmentId }
+                lines = segments.mapIndexed { index, segment ->
+                    RaScriptLineRow(
+                        segmentId = segment.id,
+                        absIndex = index,
+                        paragraphIndex = segment.paragraphIndex,
+                        speaker = if (segment.roleType == io.legado.app.domain.model.readaloud.SpeechRoleType.Narrator) {
+                            "旁白"
+                        } else {
+                            segment.surfaceName
+                        },
+                        characterId = segment.characterId,
+                        text = segment.text,
+                        emotion = directionLines[segment.id]?.emotionTag.orEmpty(),
+                    )
+                }
+            }
             pending.clear()
             selLines = emptySet()
         }
@@ -172,12 +209,28 @@ fun BookManageScreen(
 
     fun reload() {
         scope.launch {
-            val st = repo.loadState()
-            bookList = st.bookList
-            currentBook = st.currentBook
-            records = st.records
-            chapters = repo.loadChapters(currentBook)
-            chapterTitles = repo.loadChapterTitles(currentBook)
+            val list = catalog.booksWithData()
+            books = list
+            var key = if (externalBookUrl != null) {
+                catalog.bookKeyByBookUrl(externalBookUrl)
+            } else {
+                catalog.currentBookKey()
+            }
+            if (key.isNullOrBlank()) key = list.firstOrNull()?.bookKey
+            currentBookKey = key.orEmpty()
+            if (currentBookKey.isNotBlank() && catalog.currentBookKey() != currentBookKey &&
+                externalBookUrl == null
+            ) {
+                catalog.setCurrentBookKey(currentBookKey)
+            }
+            val summary = list.firstOrNull { it.bookKey == currentBookKey }
+            currentBookUrl = externalBookUrl ?: summary?.bookUrl.orEmpty()
+            currentSourceKey = summary?.sourceKey
+                ?: catalog.sourceKeyByBookUrl(currentBookUrl).orEmpty()
+            records = if (currentBookKey.isBlank()) emptyList() else characterRepo.characters(currentBookKey)
+            val lineCounts = if (currentBookKey.isBlank()) emptyMap() else raBuild.lineCounts(currentBookKey)
+            chapters = lineCounts.keys.sorted()
+            chapterTitles = catalog.chapterTitles(currentBookUrl)
             if (embedded && initialChapter != null) {
                 selectedChapter = initialChapter
             } else if (selectedChapter == null || selectedChapter !in chapters) {
@@ -189,7 +242,7 @@ fun BookManageScreen(
 
     fun reloadRecordsOnly() {
         scope.launch {
-            records = repo.loadState().records
+            records = if (currentBookKey.isBlank()) emptyList() else characterRepo.characters(currentBookKey)
         }
     }
 
@@ -197,7 +250,7 @@ fun BookManageScreen(
     fun enqueueReanalyze() {
         val ch = selectedChapter ?: return
         scope.launch {
-            val url = externalBookUrl ?: repo.loadBookUrl(currentBook)
+            val url = externalBookUrl ?: currentBookUrl
             if (url.isBlank()) {
                 context.toastOnUi("无法定位该书数据（先朗读一次以建立章节缓存）")
                 return@launch
@@ -220,14 +273,66 @@ fun BookManageScreen(
 
     fun savePending() {
         val ch = selectedChapter ?: return
-        if (pending.isEmpty()) return
+        if (pending.isEmpty() || currentBookKey.isBlank()) return
         val changes = pending.toMap()
         scope.launch {
-            val ok = repo.rewriteChapterSpeakers(currentBook, ch, changes)
-            context.toastOnUi(
-                if (ok) "已保存：标记改动生效（角色记录未变动；本章合并凭据已清除）"
-                else "保存失败：剧本不存在或改动无效"
-            )
+            var saved = 0
+            changes.forEach { (lineIndex, speakerName) ->
+                val line = lines.getOrNull(lineIndex) ?: return@forEach
+                val name = speakerName.trim()
+                if (name.isBlank()) return@forEach
+                if (name == "旁白") {
+                    raBuild.markSegmentNarrator(line.segmentId)
+                    raBuild.saveOverride(
+                        bookKey = currentBookKey,
+                        chapterIndex = ch,
+                        paragraphIndex = line.paragraphIndex,
+                        textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
+                        characterId = null,
+                        voiceProfileId = null,
+                        narrator = true,
+                    )
+                    saved++
+                    return@forEach
+                }
+                val character = records.firstOrNull { view ->
+                    view.name == name || view.aliasList().any { it == name }
+                } ?: characterRepo.ensureCharacter(
+                    bookKey = currentBookKey,
+                    displayName = name,
+                    roleType = "核心",
+                    gender = "男",
+                    ageBand = "男青年",
+                    chapterIndex = ch,
+                    aliases = emptyList(),
+                    status = "ACTIVE",
+                    aliasSource = "user",
+                    attributeSource = "user",
+                ).let { created ->
+                    records = records + RaCharacterView(
+                        id = created.id,
+                        name = created.displayName,
+                        roletype = created.roleType,
+                        gender = created.gender,
+                        age = created.ageBand,
+                        appearanceChapters = listOf(ch),
+                    )
+                    records.last()
+                }
+                raBuild.updateSegmentSpeaker(line.segmentId, character.id, name)
+                raBuild.saveOverride(
+                    bookKey = currentBookKey,
+                    chapterIndex = ch,
+                    paragraphIndex = line.paragraphIndex,
+                    textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
+                    characterId = character.id,
+                    voiceProfileId = null,
+                    narrator = name == "旁白",
+                )
+                saved++
+            }
+            raBuild.latestAnalysis(currentBookKey, ch)?.let { raDirection.markPlaybackStale(it.id) }
+            context.toastOnUi(if (saved > 0) "已保存：$saved 句说话人" else "保存失败：改动无效")
             reloadLines()
         }
     }
@@ -254,7 +359,7 @@ fun BookManageScreen(
 
     // B10.4.2·U10：书籍资产导出 / 导入（zip · SAF）
     val exportZipLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip")
+        ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
             scope.launch {
@@ -262,7 +367,7 @@ fun BookManageScreen(
                 val n = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { out ->
-                            repo.exportBooksZip(books, out)
+                            maintenance.exportBooksZip(books, out)
                         } ?: -1
                     }
                 }.getOrDefault(-1)
@@ -283,7 +388,7 @@ fun BookManageScreen(
             scope.launch {
                 val (ok, msg) = runCatching {
                     withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)?.use { repo.importBooksZip(it) }
+                        context.contentResolver.openInputStream(uri)?.use { maintenance.importBooksZip(it) }
                             ?: (false to "读取文件失败")
                     }
                 }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
@@ -304,9 +409,9 @@ fun BookManageScreen(
                 },
                 useCharMode = selLines.isNotEmpty(),
                 subtitle = if (embedded) {
-                    "当前书：$currentBook · ${selectedChapter?.let { chLabel(it) } ?: "-"}"
+                    "当前书：$currentBookName · ${selectedChapter?.let { chLabel(it) } ?: "-"}"
                 } else {
-                    "当前书：$currentBook · ${chapters.size} 章剧本"
+                    "当前书：$currentBookName · ${chapters.size} 章剧本"
                 },
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
@@ -423,7 +528,7 @@ fun BookManageScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             AppText(
-                                                text = currentBook,
+                                                text = currentBookName,
                                                 style = LegadoTheme.typography.titleSmall,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
@@ -441,21 +546,18 @@ fun BookManageScreen(
                                     expanded = showBookMenu,
                                     onDismissRequest = { showBookMenu = false },
                                 ) { dismiss ->
-                                    bookList.forEach { b ->
+                                    books.forEach { b ->
                                         RoundDropdownMenuItem(
-                                            text = b,
+                                            text = b.name,
                                             onClick = {
                                                 dismiss()
-                                                if (b != currentBook) {
-                                                    scope.launch {
-                                                        val (_, msg) = repo.switchBook(b)
-                                                        context.toastOnUi(msg)
-                                                        selectedChapter = null
-                                                        reload()
-                                                    }
+                                                if (b.bookKey != currentBookKey) {
+                                                    catalog.setCurrentBookKey(b.bookKey)
+                                                    selectedChapter = null
+                                                    reload()
                                                 }
                                             },
-                                            trailingIcon = if (b == currentBook) {
+                                            trailingIcon = if (b.bookKey == currentBookKey) {
                                                 {
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
@@ -543,7 +645,7 @@ fun BookManageScreen(
                     item(key = "empty") {
                         TinyClickableSettingItem(
                             title = "暂无剧本",
-                            description = "朗读分析产出后自动出现（当前书：$currentBook）",
+                            description = "朗读分析产出后自动出现（当前书：$currentBookName）",
                             onClick = {},
                         )
                     }
@@ -805,7 +907,7 @@ fun BookManageScreen(
                     onClick = {
                         deleteChapterTarget = null
                         scope.launch {
-                            repo.deleteChapterScripts(currentBook, setOf(target), false)
+                            maintenance.deleteChapters(currentBookKey, currentSourceKey, currentBookName, setOf(target), false)
                             context.toastOnUi("已删除${chLabel(target)}剧本（轻量）")
                             selectedChapter = null
                             reload()
@@ -820,7 +922,7 @@ fun BookManageScreen(
                             val set = chapters.filter { it >= target }.toSet()
                             deleteChapterTarget = null
                             scope.launch {
-                                repo.deleteChapterScripts(currentBook, set, true)
+                                maintenance.deleteChapters(currentBookKey, currentSourceKey, currentBookName, set, true)
                                 context.toastOnUi("已回滚：${chLabel(target)}起全部撤销")
                                 selectedChapter = null
                                 reload()
@@ -840,15 +942,15 @@ fun BookManageScreen(
         title = "删除书籍",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            val deletable = bookList.filter { it != ReadAloudDataRepository.DEFAULT_BOOK }
+            val deletable = books
             if (deletable.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无可删除的书籍）", onClick = {})
             }
             deletable.forEach { b ->
                 TinyClickableSettingItem(
-                    title = b,
-                    description = if (b == currentBook) "点按删除（当前书将回退「默认」）" else "点按删除该书全部数据",
-                    onClick = { pendingDeleteBook = b },
+                    title = b.name,
+                    description = if (b.bookKey == currentBookKey) "点按删除（当前书将回退）" else "点按删除该书全部数据",
+                    onClick = { pendingDeleteBook = b.bookKey },
                 )
             }
         }
@@ -857,14 +959,18 @@ fun BookManageScreen(
         show = pendingDeleteBook != null,
         onDismissRequest = { pendingDeleteBook = null },
         title = "删除书籍",
-        text = "将删除「${pendingDeleteBook ?: ""}」的剧本、音频缓存、分析/绑定数据与书籍索引（不动书架）；此操作不可恢复。",
+        text = "将删除「${books.firstOrNull { it.bookKey == pendingDeleteBook }?.name ?: ""}」的分析数据与音频缓存（不动书架）；此操作不可恢复。",
         confirmText = "删除",
         onConfirm = {
             val b = pendingDeleteBook
             pendingDeleteBook = null
             showDeleteBookSheet = false
             if (b != null) scope.launch {
-                val (ok, msg) = repo.deleteBookAssets(b)
+                val targetName = books.firstOrNull { it.bookKey == b }?.name.orEmpty()
+                maintenance.deleteBook(b, targetName)
+                val ok = true
+                val msg = "已删除书籍分析数据"
+                if (ok) catalog.setCurrentBookKey("")
                 context.toastOnUi(msg)
                 if (ok) {
                     selectedChapter = null
@@ -884,32 +990,32 @@ fun BookManageScreen(
         title = "导出书籍资产",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            val exportable = bookList.filter { it != ReadAloudDataRepository.DEFAULT_BOOK }
+            val exportable = books
             if (exportable.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无可导出的书籍）", onClick = {})
             } else {
                 TinyClickableSettingItem(
                     title = "导出全部书籍（${exportable.size} 本）",
-                    description = "含角色记录 / 剧本 / 章节缓存 / 合并账本（不含音频）",
+                    description = "含人物身份 / 台词分析 / 发声方案（JSON，不含音频）",
                     onClick = {
                         showExportAssetSheet = false
-                        pendingExportBooks = exportable
-                        exportZipLauncher.launch("legado-book-assets.zip")
+                        pendingExportBooks = exportable.map { it.name }
+                        exportZipLauncher.launch("legado-book-analysis.json")
                     },
                 )
             }
             exportable.forEach { b ->
                 TinyClickableSettingItem(
-                    title = b,
+                    title = b.name,
                     trailingContent = {
                         AppCheckbox(
-                            checked = b in exportSel,
+                            checked = b.name in exportSel,
                             onCheckedChange = null,
                             includeStateSemantics = false,
                         )
                     },
                     onClick = {
-                        exportSel = if (b in exportSel) exportSel - b else exportSel + b
+                        exportSel = if (b.name in exportSel) exportSel - b.name else exportSel + b.name
                     },
                 )
             }
@@ -919,7 +1025,7 @@ fun BookManageScreen(
                     onClick = {
                         showExportAssetSheet = false
                         pendingExportBooks = exportSel.toList()
-                        exportZipLauncher.launch("legado-book-assets.zip")
+                        exportZipLauncher.launch("legado-book-analysis.json")
                     },
                 )
             }
@@ -931,11 +1037,11 @@ fun BookManageScreen(
         show = confirmImportAssets,
         onDismissRequest = { confirmImportAssets = false },
         title = "导入书籍资产",
-        text = "将把压缩包内的书籍数据写入本地（覆盖同名文件），确认？",
+        text = "将把 JSON 内的书籍分析数据写入本地（bookKey 冲突时覆盖），确认？",
         confirmText = "选择文件",
         onConfirm = {
             confirmImportAssets = false
-            importZipLauncher.launch(arrayOf("application/zip", "*/*"))
+            importZipLauncher.launch(arrayOf("application/json", "*/*"))
         },
         dismissText = "取消",
         onDismiss = { confirmImportAssets = false },
@@ -1023,7 +1129,7 @@ fun BookManageScreen(
     VoiceTagPickerSheet(
         show = bmPicker != null,
         request = bmPicker,
-        repo = repo,
+        repo = voicePool,
         onDismiss = { bmPicker = null },
     )
 
@@ -1100,21 +1206,28 @@ fun BookManageScreen(
                     val targets = (tagPanelFor ?: emptyList()).toList()
                     newCharDialog = false
                     scope.launch {
-                        val rec = CharacterRecord(
-                            name = finalName,
-                            roletype = ncRole,
+                        val created = characterRepo.ensureCharacter(
+                            bookKey = currentBookKey,
+                            displayName = finalName,
+                            roleType = ncRole,
                             gender = ncGender,
-                            age = when {
+                            ageBand = when {
                                 ncRole == "特殊" -> "系统"
                                 ncGender == "女" -> "女青年"
                                 else -> "男青年"
                             },
-                            voice = ncVoice,
-                            appearanceChapters = mutableListOf(ch),
-                            lastAppearanceChapter = ch,
-                            appearanceCount = 1,
+                            chapterIndex = ch,
+                            aliases = emptyList(),
+                            status = "ACTIVE",
+                            aliasSource = "user",
+                            attributeSource = "user",
                         )
-                        repo.saveRecords(currentBook, records + rec)
+                        if (ncVoice.isNotBlank()) {
+                            val entryId = runCatching {
+                                voicePool.loadActivePoolTagEntries()[ncVoice]?.first.orEmpty()
+                            }.getOrDefault("")
+                            characterRepo.setDefaultVoice(created.id, ncVoice, entryId)
+                        }
                         context.toastOnUi("已新增人物：$finalName")
                         reloadRecordsOnly()
                         applySpeakerTo(targets, finalName)

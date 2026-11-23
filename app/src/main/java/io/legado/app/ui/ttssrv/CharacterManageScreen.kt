@@ -63,8 +63,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.legado.app.R
-import io.legado.app.data.repository.CharacterRecord
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
+import io.legado.app.data.repository.WordLibraryRepository
+import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.model.readaloud.v4.RaBookSummary
+import io.legado.app.domain.model.readaloud.v4.RaCharacterView
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -92,6 +96,7 @@ import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.launch
+import org.koin.core.context.GlobalContext
 
 private data class JoinLibRequest(
     val words: List<String>,
@@ -123,14 +128,18 @@ fun CharacterManageScreen(
     bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
-    val repo = remember(app) { ReadAloudDataRepository(app) }
+    val catalog = remember { GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    val characterRepo = remember { GlobalContext.get().get<RaCharacterGateway>() }
+    val wordLibrary = remember { GlobalContext.get().get<WordLibraryRepository>() }
+    val voicePool = remember { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     val centerRepo = remember(app) { TtsServerCenterRepository(app) }
     val scope = rememberCoroutineScope()
     val player = remember { MediaPlayer() }
 
-    var bookList by remember { mutableStateOf<List<String>>(emptyList()) }
-    var currentBook by remember { mutableStateOf("默认") }
-    var records by remember { mutableStateOf<List<CharacterRecord>>(emptyList()) }
+    var books by remember { mutableStateOf<List<RaBookSummary>>(emptyList()) }
+    var currentBookKey by remember { mutableStateOf("") }
+    var records by remember { mutableStateOf<List<RaCharacterView>>(emptyList()) }
+    val currentBookName = books.firstOrNull { it.bookKey == currentBookKey }?.name ?: "默认"
 
     var roleFilter by remember { mutableStateOf("全部") }
     var searchMode by remember { mutableStateOf(false) }
@@ -173,17 +182,22 @@ fun CharacterManageScreen(
 
     fun reload() {
         scope.launch {
-            val st = repo.loadState()
-            bookList = st.bookList
-            currentBook = st.currentBook
-            records = st.records
+            val list = catalog.booksWithData()
+            books = list
+            var key = catalog.currentBookKey()
+            if (key.isBlank() || list.none { it.bookKey == key }) {
+                key = list.firstOrNull()?.bookKey.orEmpty()
+            }
+            currentBookKey = key
+            if (key.isNotBlank() && catalog.currentBookKey() != key) catalog.setCurrentBookKey(key)
+            records = if (key.isBlank()) emptyList() else characterRepo.characters(key)
             sel = emptySet()
         }
     }
 
     LaunchedEffect(refreshKey) {
         reload()
-        roleFilter = repo.loadCharacterFilter()
+        roleFilter = catalog.characterFilter()
     }
     DisposableEffect(Unit) {
         onDispose {
@@ -226,7 +240,6 @@ fun CharacterManageScreen(
             context.toastOnUi("主名不能为空")
             return
         }
-        // 入库联动：保存时统一落「转池 / 加【第N章】后缀（n=首次出场章节）/ 剧本同步」
         val joinKind = pendingJoinKind
         val actualAge = draftFinalAge()
         var finalName = newName
@@ -235,34 +248,28 @@ fun CharacterManageScreen(
             "特殊" -> "特殊"
             else -> edRole
         }
-        if (joinKind == "裸属") {
+        if (joinKind == "裸属" && !newName.contains("【第")) {
             val first = target.appearanceChapters.minOrNull()
-            if (first != null && !newName.contains("【第")) {
-                finalName = newName + "【第${first + 1}章】"
-            }
+            if (first != null) finalName = newName + "【第${first + 1}章】"
         }
         scope.launch {
-            // 「复制元素 + 换新列表」：原地修改 + 结构等价会让 Compose 判无变化、不重组
-            val updated = target.copy(
-                name = finalName,
-                aliases = edAliases,
-                roletype = finalRole,
-                gender = edGender,
-                age = actualAge,
-                voice = edVoice,
+            if (oldName != finalName) characterRepo.updateDisplayName(target.id, finalName)
+            characterRepo.updateAttributes(target.id, finalRole, edGender, actualAge)
+            val aliasNames = AliasTokens.of(edAliases).filter { it != finalName }
+            characterRepo.replaceAliases(
+                bookKey = currentBookKey,
+                characterId = target.id,
+                names = aliasNames,
+                chapterIndex = target.lastAppearanceChapter.coerceAtLeast(0),
+                source = "user",
             )
-            val list = records.toMutableList()
-            list[idx] = updated
-            records = list
-            repo.saveRecords(currentBook, list)
-            var syncCount = 0
-            if (oldName != finalName) {
-                syncCount = repo.rewriteMarkersAll(currentBook, oldName, finalName, false).replaced
-                repo.renameMergeLogTokens(currentBook, oldName, finalName)
+            if (edVoice != target.voice) {
+                val entryId = runCatching {
+                    voicePool.loadActivePoolTagEntries()[edVoice]?.first.orEmpty()
+                }.getOrDefault("")
+                characterRepo.setDefaultVoice(target.id, edVoice, entryId)
             }
-            context.toastOnUi(
-                if (syncCount > 0) "已保存角色信息（剧本同步 $syncCount 处）" else "已保存角色信息"
-            )
+            context.toastOnUi("已保存角色信息（剧本文本未改写）")
             pendingJoinKind = null
             editIdx = null
             mismatchConfirm = false
@@ -299,8 +306,8 @@ fun CharacterManageScreen(
         }
         edName = name
         val finalAge = draftFinalAge(finalRole)
-        val expected = repo.expectedVoicePrefix(finalRole, edGender, finalAge)
-        val prefix = repo.voiceAgePrefix(edVoice)
+        val expected = voicePool.expectedVoicePrefix(finalRole, edGender, finalAge)
+        val prefix = voicePool.voiceAgePrefix(edVoice)
         if (edVoice.isNotEmpty() && prefix != expected) {
             mismatchConfirm = true
             return
@@ -313,11 +320,10 @@ fun CharacterManageScreen(
     }
 
     fun performDelete() {
-        val list = records.toMutableList()
-        sel.sortedDescending().forEach { if (it in list.indices) list.removeAt(it) }
+        val ids = sel.mapNotNull { records.getOrNull(it)?.id }
         scope.launch {
-            repo.saveRecords(currentBook, list)
-            context.toastOnUi("已删除 ${sel.size} 个角色")
+            characterRepo.deleteCharacters(ids)
+            context.toastOnUi("已删除 ${ids.size} 个角色")
             confirmDelete = false
             reload()
         }
@@ -331,26 +337,10 @@ fun CharacterManageScreen(
             return
         }
         scope.launch {
-            val aliasArr = LinkedHashSet<String>()
-            if (target.name.isNotBlank()) aliasArr.add(target.name)
-            aliasArr.addAll(AliasTokens.of(target.aliases))
-            followers.forEach { f ->
-                if (f.name.isNotBlank()) aliasArr.add(f.name)
-                aliasArr.addAll(AliasTokens.of(f.aliases))
+            followers.forEach { follower ->
+                characterRepo.mergeCharacters(follower.id, target.id, "用户手动合并")
             }
-            target.aliases = aliasArr.joinToString("|")
-            val newList = records.filterNot { it in followers }
-            repo.saveRecords(currentBook, newList)
-            var synced = 0
-            followers.forEach { f ->
-                val from = f.name.trim()
-                if (from.isNotEmpty() && from != target.name.trim()) {
-                    synced += repo.rewriteMarkersAll(currentBook, from, target.name.trim(), true).replaced
-                }
-            }
-            context.toastOnUi(
-                if (synced > 0) "角色合并成功（剧本同步 $synced 行）" else "角色合并成功"
-            )
+            context.toastOnUi("角色合并成功（台词按新人物显示，文本未改写）")
             reload()
         }
     }
@@ -368,63 +358,39 @@ fun CharacterManageScreen(
             scope.launch {
                 val parentIndex = editIdx ?: return@launch
                 val parent = records.getOrNull(parentIndex) ?: return@launch
-                var curAliases = AliasTokens.of(edAliases).filterNot { it == alias }
-                var curName = edName
-                if (curName == alias) {
-                    if (curAliases.isNotEmpty()) {
-                        curName = curAliases[0]
-                        curAliases = curAliases.filterNot { it == curName }
-                    } else {
-                        context.toastOnUi("不能释放当前主名")
-                        return@launch
-                    }
-                }
-                val extraAliases = repo.collectMergeExtraAliases(currentBook, alias)
-                val dropAll = (listOf(alias) + extraAliases).toSet()
-                val remaining = curAliases.filterNot { it in dropAll }
-                parent.name = curName
-                parent.aliases = remaining.joinToString("|")
-
-                val list = records.toMutableList()
-                val existingIdx =
-                    list.indexOfFirst { it !== parent && it.name.trim() == alias }
-                if (existingIdx >= 0) {
-                    val ex = list[existingIdx]
-                    ex.voice = selectedVoice
-                    if (extraAliases.isNotEmpty()) {
-                        ex.aliases = (AliasTokens.of(ex.aliases) + extraAliases)
-                            .distinct().joinToString("|")
-                    }
+                val remaining = AliasTokens.of(edAliases).filterNot { it == alias }
+                characterRepo.replaceAliases(
+                    bookKey = currentBookKey,
+                    characterId = parent.id,
+                    names = remaining,
+                    chapterIndex = parent.lastAppearanceChapter.coerceAtLeast(0),
+                    source = "user",
+                )
+                val voicePrefix = voicePool.voiceAgePrefix(selectedVoice)
+                val age = if (voicePrefix.isNotEmpty() && !voicePrefix.contains("特殊") &&
+                    !voicePrefix.contains("路人")
+                ) {
+                    voicePrefix
                 } else {
-                    val newRec = CharacterRecord(
-                        name = alias,
-                        aliases = extraAliases.joinToString("|"),
-                        roletype = "核心",
-                        gender = edGender,
-                        voice = selectedVoice,
-                    )
-                    val vPrefix = repo.voiceAgePrefix(selectedVoice)
-                    newRec.age = if (vPrefix.isNotEmpty() && !vPrefix.contains("特殊") &&
-                        !vPrefix.contains("路人")
-                    ) {
-                        vPrefix
-                    } else {
-                        if (parent.roletype == "特殊") "系统" else parent.age
-                    }
-                    list.add((parentIndex + 1).coerceAtMost(list.size), newRec)
+                    if (parent.roletype == "特殊") "系统" else parent.age
                 }
-                repo.saveRecords(currentBook, list)
-                val replay = repo.replayMergeOps(currentBook, alias)
-                var msg = "已释放并固定：$alias → $selectedVoice"
-                if (replay.replaced > 0 || replay.chapters.isNotEmpty()) {
-                    msg += "（剧本回放 ${replay.replaced} 行"
-                    if (replay.missed > 0) msg += "，未命中 ${replay.missed}"
-                    msg += "）"
-                }
-                context.toastOnUi(msg)
-                if (replay.viaWords.isNotEmpty()) {
-                    joinLib = JoinLibRequest(replay.viaWords)
-                }
+                val created = characterRepo.ensureCharacter(
+                    bookKey = currentBookKey,
+                    displayName = alias,
+                    roleType = "核心",
+                    gender = edGender,
+                    ageBand = age,
+                    chapterIndex = parent.lastAppearanceChapter.coerceAtLeast(0),
+                    aliases = emptyList(),
+                    status = "ACTIVE",
+                    aliasSource = "user",
+                    attributeSource = "user",
+                )
+                val entryId = runCatching {
+                    voicePool.loadActivePoolTagEntries()[selectedVoice]?.first.orEmpty()
+                }.getOrDefault("")
+                characterRepo.setDefaultVoice(created.id, selectedVoice, entryId)
+                context.toastOnUi("已释放并固定：$alias → $selectedVoice")
                 aliasSheet = false
                 editIdx = null
                 reload()
@@ -440,7 +406,7 @@ fun CharacterManageScreen(
         scope.launch {
             // 仅在「已选声线池」（配置列表勾选）内解析：
             // 标签不绑定插件，试听应跟随当前已选池；否则同名标签会命中未选旧池的条目。
-            val active = repo.loadActiveVoiceBanks().toSet()
+            val active = voicePool.loadActiveVoiceBanks().toSet()
             val groups = centerRepo.loadGroups()
             val entry = groups
                 .filter { it.name in active }
@@ -508,7 +474,7 @@ fun CharacterManageScreen(
                     "角色管理"
                 },
                 useCharMode = sel.isNotEmpty(),
-                subtitle = "当前书：$currentBook · ${records.size} 个角色",
+                subtitle = "当前书：$currentBookName · ${records.size} 个角色",
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (sel.isNotEmpty()) {
@@ -549,7 +515,7 @@ fun CharacterManageScreen(
                                             dismiss()
                                             roleFilter = t
                                             sel = emptySet()
-                                            scope.launch { repo.saveCharacterFilter(t) }
+                                            catalog.setCharacterFilter(t)
                                         },
                                         trailingIcon = if (t == roleFilter) {
                                             {
@@ -621,7 +587,7 @@ fun CharacterManageScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         AppText(
-                                            text = currentBook,
+                                            text = currentBookName,
                                             style = LegadoTheme.typography.titleSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
@@ -642,20 +608,17 @@ fun CharacterManageScreen(
                                 expanded = showBookMenu,
                                 onDismissRequest = { showBookMenu = false },
                             ) { dismiss ->
-                                bookList.forEach { b ->
+                                books.forEach { b ->
                                     RoundDropdownMenuItem(
-                                        text = b,
+                                        text = b.name,
                                         onClick = {
                                             dismiss()
-                                            if (b != currentBook) {
-                                                scope.launch {
-                                                    val (_, msg) = repo.switchBook(b)
-                                                    context.toastOnUi(msg)
-                                                    reload()
-                                                }
+                                            if (b.bookKey != currentBookKey) {
+                                                catalog.setCurrentBookKey(b.bookKey)
+                                                reload()
                                             }
                                         },
-                                        trailingIcon = if (b == currentBook) {
+                                        trailingIcon = if (b.bookKey == currentBookKey) {
                                             {
                                                 Icon(
                                                     imageVector = Icons.Default.Check,
@@ -710,7 +673,7 @@ fun CharacterManageScreen(
                                             dismiss()
                                             roleFilter = t
                                             sel = emptySet()
-                                            scope.launch { repo.saveCharacterFilter(t) }
+                                            catalog.setCharacterFilter(t)
                                         },
                                         trailingIcon = if (t == roleFilter) {
                                             {
@@ -733,7 +696,7 @@ fun CharacterManageScreen(
                 item(key = "empty") {
                     TinyClickableSettingItem(
                         title = "暂无角色数据",
-                        description = "朗读分析产出后自动出现（当前书：$currentBook）",
+                        description = "朗读分析产出后自动出现（当前书：$currentBookName）",
                         onClick = {},
                     )
                 }
@@ -1069,7 +1032,7 @@ fun CharacterManageScreen(
     VoiceTagPickerSheet(
         show = picker != null,
         request = picker,
-        repo = repo,
+        repo = voicePool,
         onDismiss = { picker = null },
     )
 
@@ -1116,7 +1079,10 @@ fun CharacterManageScreen(
                                 records = list
                             }
                             scope.launch {
-                                repo.saveRecords(currentBook, records)
+                                val entryId = runCatching {
+                                    voicePool.loadActivePoolTagEntries()[v]?.first.orEmpty()
+                                }.getOrDefault("")
+                                characterRepo.setDefaultVoice(r.id, v, entryId)
                                 context.toastOnUi("声线已更新：$v")
                                 reload()
                             }
@@ -1146,7 +1112,7 @@ fun CharacterManageScreen(
                     title = "裸属类",
                     onClick = {
                         scope.launch {
-                            val n = repo.appendWordLibrary("bare_words.json", req.words)
+                            val n = wordLibrary.append(WordLibraryRepository.BARE_WORDS_FILE, req.words)
                             req.aliasToRemove?.let { rm ->
                                 edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
@@ -1164,7 +1130,7 @@ fun CharacterManageScreen(
                     title = "特殊类",
                     onClick = {
                         scope.launch {
-                            val n = repo.appendWordLibrary("special_words.json", req.words)
+                            val n = wordLibrary.append(WordLibraryRepository.SPECIAL_WORDS_FILE, req.words)
                             req.aliasToRemove?.let { rm ->
                                 edAliases = AliasTokens.of(edAliases)
                                     .filterNot { it in req.words }.joinToString("|")
@@ -1188,7 +1154,7 @@ fun CharacterManageScreen(
         onDismissRequest = { mismatchConfirm = false },
         title = "音色与性别/年龄不符",
         text = "当前音色「$edVoice」与类型/性别/年龄（期望前缀「${
-            repo.expectedVoicePrefix(
+            voicePool.expectedVoicePrefix(
                 draftFinalRole(),
                 edGender,
                 draftFinalAge(draftFinalRole()),
@@ -1246,7 +1212,7 @@ fun CharacterManageScreen(
 
 @Composable
 private fun CharacterCardRow(
-    record: CharacterRecord,
+    record: RaCharacterView,
     selectionActive: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
@@ -1310,7 +1276,7 @@ private fun CharacterCardRow(
     }
 }
 
-private fun isNoiseAlias(alias: String, record: CharacterRecord): Boolean =
+private fun isNoiseAlias(alias: String, record: RaCharacterView): Boolean =
     alias == record.gender || alias == record.age || alias in setOf(
         "男", "女", "系统", "旁白",
         "男童", "女童", "少年", "少女",

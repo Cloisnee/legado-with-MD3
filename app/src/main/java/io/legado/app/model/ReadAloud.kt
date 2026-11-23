@@ -94,28 +94,7 @@ object ReadAloud {
      * 「多角色分配」只是正文胶囊与手动分配的入口，不改变引擎；开关关闭时一律回默认引擎。
      */
     private fun needsFileSynthesisUpgrade(): Boolean = runCatching {
-        if (!aloudSettingsGateway.currentSettings.useMultiSpeaker) return@runCatching false
-        val bookUrl = (bookSession.book ?: ReadBook.book)?.bookUrl ?: return@runCatching false
-        runBlocking {
-            val voiceIds = appDb.readAloudVoiceDao.getBindings(bookUrl)
-                .mapTo(hashSetOf()) { it.voiceId }
-            val voices = appDb.readAloudVoiceDao.getVoices().filter {
-                it.id in voiceIds && it.enabled && it.available
-            }
-            val serverVoices = voices.filter {
-                it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER
-            }
-            val systemRoutes = voices.filter { it.engineType == ReadAloudVoice.ENGINE_SYSTEM }
-                .mapTo(hashSetOf()) { it.engineId to it.speakerId }
-            if (serverVoices.isEmpty() && systemRoutes.size < 2) {
-                return@runBlocking false
-            }
-            AppLog.put(
-                "多角色朗读: 升级文件合成 系统音色 ${systemRoutes.size} 路 " +
-                    "服务器音色 ${serverVoices.size} 个",
-            )
-            true
-        }
+        aloudSettingsGateway.currentSettings.useMultiSpeaker
     }.getOrDefault(false)
 
     fun upReadAloudClass() {

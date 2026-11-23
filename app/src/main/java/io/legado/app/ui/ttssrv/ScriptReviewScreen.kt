@@ -13,7 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.ui.widget.components.text.AppText
 import org.koin.core.context.GlobalContext
@@ -50,15 +50,15 @@ fun ScriptReviewScreen(
     chapterIndex: Int,
     onBack: () -> Unit,
 ) {
-    val repo = remember(app) { ReadAloudDataRepository(app) }
+    val catalog = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudCatalogRepository>() }
     var ready by remember(bookName) { mutableStateOf(false) }
     var refreshKey by remember { mutableStateOf(0) }
     var tab by remember { mutableStateOf(0) }
 
-    // 进入即把当前朗读书切换为「当前书」
-    LaunchedEffect(bookName) {
-        if (bookName.isNotBlank()) {
-            runCatching { repo.switchBook(bookName) }
+    // 进入即把当前朗读书切换为「当前书」（bookKey 由 bookUrl 解析）
+    LaunchedEffect(bookUrl) {
+        runCatching {
+            catalog.bookKeyByBookUrl(bookUrl)?.let(catalog::setCurrentBookKey)
         }
         ready = true
     }

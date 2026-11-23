@@ -38,7 +38,9 @@ import io.legado.app.constant.NotificationId
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.data.repository.HighlightRuleRepository
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
@@ -601,10 +603,12 @@ abstract class BaseReadAloudService : BaseService(),
             // 批212g：会话取消（换章/换书/停止时旧 prepareJob 被 cancel）是预期语义，静默；
             // 仅真实失败记日志（此前取消噪音会刷满分析日志）。
             runCatching {
-                val bookName: String = bookSession.book?.name.orEmpty()
-                if (bookName.isNotEmpty()) {
-                    val readAloudRepo: ReadAloudDataRepository = get(ReadAloudDataRepository::class.java)
-                    readAloudRepo.setRecentReadBook(bookName)
+                val book = bookSession.book
+                if (book != null) {
+                    val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
+                    val bookKey = identity.keyOf(book.bookUrl, sourceKeyOf(book))
+                    val catalog: ReadAloudCatalogRepository = get(ReadAloudCatalogRepository::class.java)
+                    catalog.setCurrentBookKey(bookKey)
                 }
             }.onFailure {
                 if (it !is io.legado.app.help.coroutine.ActivelyCancelException &&
@@ -720,15 +724,22 @@ abstract class BaseReadAloudService : BaseService(),
         // 「多角色朗读」是唯一的发声开关：关掉就没有任何计划，整章回到用户在朗读设置里
         // 选的默认引擎。
         if (!multiSpeakerOn) return emptyList()
+        val book = bookSession.book ?: return emptyList()
+        val sourceKey = sourceKeyOf(book)
+        val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
+        val bookKey = runCatching { identity.keyOf(book.bookUrl, sourceKey) }.getOrNull()
+            ?: return emptyList()
         val prepareSpeechPlan: PrepareChapterSpeechPlanUseCase =
             get(PrepareChapterSpeechPlanUseCase::class.java)
         return try {
             prepareSpeechPlan(
                 bookUrl = bookUrl,
+                bookKey = bookKey,
+                sourceKey = sourceKey,
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,
                 useMultiSpeaker = ReadConfig.useMultiSpeaker,
-                bookName = bookSession.book?.name.orEmpty(),
+                bookName = book.name,
             )
         } catch (e: CancellationException) {
             // B10.4.3：重新触发朗读/停止会取消等待中的计划构建——取消不是失败，不记错、交回协程机制
@@ -1078,7 +1089,7 @@ abstract class BaseReadAloudService : BaseService(),
             engineName = cue.voice?.displayName.orEmpty(),
             characterName = speechPlan.getOrNull(
                 cursor.cueIndex - playbackQueue.leadingTitleCueCount
-            )?.segment?.characterName.orEmpty(),
+            )?.segment?.surfaceName.orEmpty(),
             roleType = cue.roleType,
         ))
         refreshMediaSessionPlaybackState()

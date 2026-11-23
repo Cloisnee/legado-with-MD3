@@ -25,7 +25,7 @@ class AnalysisConfigStore(private val app: Application) {
         val stage2Prompt: String = "",
         val stage4Prompt: String = "",
         val emotionPrompt: String = "",
-        val audioDirectorPrompt: String = SpeechAnalysisPipelineV3.defaultPrompt("audioDirector"),
+        val audioDirectorPrompt: String = SpeechAnalysisPipelineV4.defaultPrompt("audioDirector"),
         val prevLimit: Int = 600,
         val nextLimit: Int = 400,
         val emotionJoinTimeoutMs: Long = 120_000L,

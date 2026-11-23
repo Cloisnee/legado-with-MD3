@@ -1,5 +1,6 @@
 package io.legado.app.domain.model.readaloud
 
+import io.legado.app.domain.model.readaloud.v4.RaSegment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -60,10 +61,10 @@ class ReadAloudPlaybackQueueTest {
         paragraph: Int,
         role: SpeechRoleType = SpeechRoleType.Narrator,
     ): SpeechPlanItem = SpeechPlanItem(
-        segment = ChapterSpeechSegment(
+        segment = RaSegment(
             id = "$start",
             analysisId = "analysis",
-            bookUrl = "book",
+            bookKey = "book",
             chapterIndex = 1,
             paragraphIndex = paragraph,
             start = 0,

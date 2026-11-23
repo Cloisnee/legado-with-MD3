@@ -35,6 +35,8 @@ data class AudioBookStats(
  */
 class ReadAloudAudioCacheRepository(private val app: Application) {
 
+    fun appContext(): Application = app
+
     companion object {
         private const val DIR_NAME = "audio"
     }
@@ -85,6 +87,12 @@ class ReadAloudAudioCacheRepository(private val app: Application) {
             sizeBytes = chapterSizeBytes(book, chapterIndex),
         )
     }
+
+    fun listChapters(book: String): List<Int> =
+        bookDir(book).listFiles()
+            ?.mapNotNull { it.name.toIntOrNull()?.minus(1) }
+            ?.sorted()
+            .orEmpty()
 
     suspend fun deleteChapter(book: String, chapterIndex: Int): Boolean =
         withContext(Dispatchers.IO) {

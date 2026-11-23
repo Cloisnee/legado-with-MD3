@@ -22,7 +22,7 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
             migration_102_103, migration_105_106, migration_106_107, migration_107_108,
-            migration_108_109, migration_109_110,
+            migration_108_109, migration_109_110, migration_110_111,
         )
     }
 
@@ -786,6 +786,274 @@ object DatabaseMigrations {
     private val migration_109_110 = object : Migration(109, 110) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // 有意留空：只换版本号，不动任何表。
+        }
+    }
+
+    /**
+     * 110 → 111：V4 朗读分析数据底座。
+     * - 删除旧的逐章分析表与按名字的声线绑定表（用户是唯一使用者，不做数据迁移）。
+     * - 新建 ra_* 表；Room 唯一真源，人物身份用 chr_* 稳定 ID。
+     */
+    private val migration_110_111 = object : Migration(110, 111) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP TABLE IF EXISTS `chapter_speech_analysis`")
+            db.execSQL("DROP TABLE IF EXISTS `chapter_speech_segments`")
+            db.execSQL("DROP TABLE IF EXISTS `book_voice_bindings`")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_book_identity` (
+                    `bookUrl` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `sourceKey` TEXT NOT NULL,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`bookUrl`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_book_identity_bookKey` ON `ra_book_identity` (`bookKey`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_book_identity_bookKey_sourceKey` ON `ra_book_identity` (`bookKey`, `sourceKey`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_chapter_build` (
+                    `bookKey` TEXT NOT NULL, `sourceKey` TEXT NOT NULL, `chapterIndex` INTEGER NOT NULL,
+                    `contentHash` TEXT NOT NULL DEFAULT '', `state` TEXT NOT NULL,
+                    `analysisId` TEXT, `failReason` TEXT NOT NULL DEFAULT '',
+                    `attempts` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`bookKey`, `sourceKey`, `chapterIndex`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_chapter_build_bookKey_state` ON `ra_chapter_build` (`bookKey`, `state`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_chapter_analysis` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `sourceKey` TEXT NOT NULL,
+                    `chapterIndex` INTEGER NOT NULL, `contentHash` TEXT NOT NULL,
+                    `resolverVersion` TEXT NOT NULL, `status` TEXT NOT NULL,
+                    `origin` TEXT NOT NULL DEFAULT 'FOREGROUND', `batchId` TEXT,
+                    `modelId` TEXT NOT NULL DEFAULT '', `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_ra_chapter_analysis_bookKey_sourceKey_chapterIndex_contentHash_resolverVersion` ON `ra_chapter_analysis` (`bookKey`, `sourceKey`, `chapterIndex`, `contentHash`, `resolverVersion`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_chapter_analysis_bookKey_chapterIndex_updatedAt` ON `ra_chapter_analysis` (`bookKey`, `chapterIndex`, `updatedAt`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_segment` (
+                    `id` TEXT NOT NULL, `analysisId` TEXT NOT NULL, `bookKey` TEXT NOT NULL,
+                    `chapterIndex` INTEGER NOT NULL, `paragraphIndex` INTEGER NOT NULL,
+                    `start` INTEGER NOT NULL, `end` INTEGER NOT NULL, `chapterPosition` INTEGER NOT NULL,
+                    `text` TEXT NOT NULL, `roleType` TEXT NOT NULL, `seq` INTEGER NOT NULL DEFAULT 0,
+                    `localSpeakerId` TEXT, `characterId` TEXT, `surfaceName` TEXT NOT NULL DEFAULT '',
+                    `confidence` REAL NOT NULL DEFAULT 0, `source` TEXT NOT NULL DEFAULT 'rule',
+                    `voiceEffect` TEXT NOT NULL DEFAULT '', `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_segment_analysisId` ON `ra_segment` (`analysisId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_segment_bookKey_chapterIndex_paragraphIndex` ON `ra_segment` (`bookKey`, `chapterIndex`, `paragraphIndex`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_segment_characterId` ON `ra_segment` (`characterId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_local_speaker` (
+                    `id` TEXT NOT NULL, `analysisId` TEXT NOT NULL, `localKey` TEXT NOT NULL,
+                    `surfaceNames` TEXT NOT NULL, `primaryName` TEXT NOT NULL,
+                    `roleType` TEXT NOT NULL DEFAULT '', `gender` TEXT NOT NULL DEFAULT '',
+                    `ageBand` TEXT NOT NULL DEFAULT '', `batchEntityId` TEXT, `characterId` TEXT,
+                    `resolution` TEXT NOT NULL, `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_local_speaker_analysisId` ON `ra_local_speaker` (`analysisId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_local_speaker_characterId` ON `ra_local_speaker` (`characterId`)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_ra_local_speaker_analysisId_localKey` ON `ra_local_speaker` (`analysisId`, `localKey`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_local_mention` (
+                    `id` TEXT NOT NULL, `analysisId` TEXT NOT NULL, `localKey` TEXT NOT NULL,
+                    `surfaceNames` TEXT NOT NULL, `primaryName` TEXT NOT NULL,
+                    `roleType` TEXT NOT NULL DEFAULT '', `gender` TEXT NOT NULL DEFAULT '',
+                    `ageBand` TEXT NOT NULL DEFAULT '', `batchEntityId` TEXT, `characterId` TEXT,
+                    `resolution` TEXT NOT NULL, `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_local_mention_analysisId` ON `ra_local_mention` (`analysisId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_local_mention_characterId` ON `ra_local_mention` (`characterId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_evidence` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `analysisId` TEXT NOT NULL,
+                    `sourceChapter` INTEGER NOT NULL, `paragraphIndex` INTEGER NOT NULL,
+                    `start` INTEGER NOT NULL, `end` INTEGER NOT NULL, `excerpt` TEXT NOT NULL,
+                    `type` TEXT NOT NULL, `subjectLocalId` TEXT NOT NULL DEFAULT '',
+                    `objectText` TEXT NOT NULL DEFAULT '', `scope` TEXT NOT NULL DEFAULT 'MAIN_TEXT',
+                    `verified` INTEGER NOT NULL DEFAULT 1, `createdAt` INTEGER NOT NULL,
+                    `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_evidence_bookKey` ON `ra_evidence` (`bookKey`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_evidence_analysisId` ON `ra_evidence` (`analysisId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_evidence_subjectLocalId` ON `ra_evidence` (`subjectLocalId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_segment_override` (
+                    `bookKey` TEXT NOT NULL, `chapterIndex` INTEGER NOT NULL,
+                    `paragraphIndex` INTEGER NOT NULL, `textHash` TEXT NOT NULL,
+                    `characterId` TEXT, `voiceProfileId` TEXT,
+                    `narrator` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`bookKey`, `chapterIndex`, `paragraphIndex`, `textHash`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_segment_override_characterId` ON `ra_segment_override` (`characterId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_character` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `displayName` TEXT NOT NULL,
+                    `roleType` TEXT NOT NULL DEFAULT '核心', `gender` TEXT NOT NULL DEFAULT '男',
+                    `ageBand` TEXT NOT NULL DEFAULT '男青年', `status` TEXT NOT NULL,
+                    `firstChapter` INTEGER NOT NULL DEFAULT 0, `lastChapter` INTEGER NOT NULL DEFAULT 0,
+                    `appearanceCount` INTEGER NOT NULL DEFAULT 0,
+                    `userEdited` INTEGER NOT NULL DEFAULT 0,
+                    `identityRevision` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_character_bookKey_status` ON `ra_character` (`bookKey`, `status`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_character_bookKey_displayName` ON `ra_character` (`bookKey`, `displayName`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_character_alias` (
+                    `bookKey` TEXT NOT NULL, `normalized` TEXT NOT NULL, `characterId` TEXT NOT NULL,
+                    `surface` TEXT NOT NULL, `source` TEXT NOT NULL DEFAULT 'ai',
+                    `isGeneric` INTEGER NOT NULL DEFAULT 0, `firstChapter` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`bookKey`, `normalized`, `characterId`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_character_alias_characterId` ON `ra_character_alias` (`characterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_character_alias_bookKey_normalized` ON `ra_character_alias` (`bookKey`, `normalized`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_attribute_obs` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `characterId` TEXT NOT NULL,
+                    `key` TEXT NOT NULL, `value` TEXT NOT NULL,
+                    `fromChapter` INTEGER NOT NULL DEFAULT 0,
+                    `evidenceId` TEXT NOT NULL DEFAULT '', `source` TEXT NOT NULL,
+                    `confidence` REAL NOT NULL DEFAULT 1,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_attribute_obs_characterId` ON `ra_attribute_obs` (`characterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_attribute_obs_bookKey_key` ON `ra_attribute_obs` (`bookKey`, `key`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_relation_obs` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `characterId` TEXT NOT NULL,
+                    `relation` TEXT NOT NULL, `targetCharacterId` TEXT,
+                    `targetText` TEXT NOT NULL DEFAULT '', `fromChapter` INTEGER NOT NULL DEFAULT 0,
+                    `evidenceId` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_relation_obs_characterId` ON `ra_relation_obs` (`characterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_relation_obs_targetCharacterId` ON `ra_relation_obs` (`targetCharacterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_relation_obs_bookKey` ON `ra_relation_obs` (`bookKey`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_identity_link` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `aCharacterId` TEXT NOT NULL,
+                    `bCharacterId` TEXT NOT NULL, `kind` TEXT NOT NULL, `source` TEXT NOT NULL,
+                    `evidenceIds` TEXT NOT NULL DEFAULT '[]', `decisionId` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_identity_link_bookKey_aCharacterId` ON `ra_identity_link` (`bookKey`, `aCharacterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_identity_link_bookKey_bCharacterId` ON `ra_identity_link` (`bookKey`, `bCharacterId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_identity_decision` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `localSpeakerId` TEXT NOT NULL,
+                    `candidateIds` TEXT NOT NULL DEFAULT '[]', `verdict` TEXT NOT NULL,
+                    `chosenCharacterId` TEXT, `confidence` REAL NOT NULL DEFAULT 0,
+                    `reason` TEXT NOT NULL DEFAULT '', `evidenceIds` TEXT NOT NULL DEFAULT '[]',
+                    `modelId` TEXT NOT NULL DEFAULT '', `createdAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_identity_decision_bookKey_createdAt` ON `ra_identity_decision` (`bookKey`, `createdAt`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_identity_decision_localSpeakerId` ON `ra_identity_decision` (`localSpeakerId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_character_redirect` (
+                    `fromCharacterId` TEXT NOT NULL, `toCharacterId` TEXT NOT NULL,
+                    `reason` TEXT NOT NULL DEFAULT '', `createdAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`fromCharacterId`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_character_redirect_toCharacterId` ON `ra_character_redirect` (`toCharacterId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_voice_profile` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `characterId` TEXT NOT NULL,
+                    `kind` TEXT NOT NULL, `label` TEXT NOT NULL,
+                    `castingKey` TEXT NOT NULL DEFAULT '', `voiceTag` TEXT NOT NULL DEFAULT '',
+                    `voiceEntryId` TEXT NOT NULL DEFAULT '', `rangeJson` TEXT NOT NULL DEFAULT '',
+                    `locked` INTEGER NOT NULL DEFAULT 0, `source` TEXT NOT NULL DEFAULT 'auto',
+                    `voiceRevision` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_voice_profile_bookKey_characterId` ON `ra_voice_profile` (`bookKey`, `characterId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_voice_profile_bookKey_voiceTag` ON `ra_voice_profile` (`bookKey`, `voiceTag`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_scene` (
+                    `id` TEXT NOT NULL, `bookKey` TEXT NOT NULL, `name` TEXT NOT NULL,
+                    `firstChapter` INTEGER NOT NULL DEFAULT 0, `lastChapter` INTEGER NOT NULL DEFAULT 0,
+                    `attributesJson` TEXT NOT NULL DEFAULT '{}',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_scene_bookKey_name` ON `ra_scene` (`bookKey`, `name`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_direction_plan` (
+                    `id` TEXT NOT NULL, `analysisId` TEXT NOT NULL, `bookKey` TEXT NOT NULL,
+                    `chapterIndex` INTEGER NOT NULL, `module` TEXT NOT NULL, `status` TEXT NOT NULL,
+                    `directorRevision` INTEGER NOT NULL DEFAULT 1,
+                    `identityRevisionSnapshot` INTEGER NOT NULL DEFAULT 0,
+                    `origin` TEXT NOT NULL DEFAULT 'FOREGROUND',
+                    `failReason` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`))"""
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_ra_direction_plan_analysisId_module` ON `ra_direction_plan` (`analysisId`, `module`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_direction_plan_bookKey_chapterIndex` ON `ra_direction_plan` (`bookKey`, `chapterIndex`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_direction_line` (
+                    `planId` TEXT NOT NULL, `segmentId` TEXT NOT NULL,
+                    `emotionTag` TEXT NOT NULL DEFAULT '', `instruction` TEXT NOT NULL DEFAULT '',
+                    `voiceStateHint` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`planId`, `segmentId`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_direction_line_planId` ON `ra_direction_line` (`planId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_direction_audio` (
+                    `planId` TEXT NOT NULL, `idx` INTEGER NOT NULL, `type` TEXT NOT NULL,
+                    `para` INTEGER NOT NULL DEFAULT 0, `frag` INTEGER NOT NULL DEFAULT 0,
+                    `posRatio` REAL NOT NULL DEFAULT 0, `tag` TEXT NOT NULL DEFAULT '',
+                    `desc` TEXT NOT NULL DEFAULT '', `delayMs` INTEGER NOT NULL DEFAULT 0,
+                    `hold` INTEGER NOT NULL DEFAULT 0, `theme` TEXT NOT NULL DEFAULT '',
+                    `scene` TEXT NOT NULL DEFAULT '', `mood` TEXT NOT NULL DEFAULT '',
+                    `speed` TEXT NOT NULL DEFAULT '', `anchor` TEXT NOT NULL DEFAULT '',
+                    `sceneKey` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`planId`, `idx`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_direction_audio_planId` ON `ra_direction_audio` (`planId`)")
+
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS `ra_direction_scene` (
+                    `planId` TEXT NOT NULL, `sceneKey` TEXT NOT NULL, `sceneId` TEXT,
+                    `fromPara` INTEGER NOT NULL DEFAULT 0, `toPara` INTEGER NOT NULL DEFAULT 0,
+                    `location` TEXT NOT NULL DEFAULT '', `time` TEXT NOT NULL DEFAULT '',
+                    `weather` TEXT NOT NULL DEFAULT '', `lighting` TEXT NOT NULL DEFAULT '',
+                    `atmosphere` TEXT NOT NULL DEFAULT '', `soundscape` TEXT NOT NULL DEFAULT '',
+                    `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`planId`, `sceneKey`))"""
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_ra_direction_scene_planId` ON `ra_direction_scene` (`planId`)")
         }
     }
 

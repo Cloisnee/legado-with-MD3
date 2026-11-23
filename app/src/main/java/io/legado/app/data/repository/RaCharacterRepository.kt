@@ -1,0 +1,704 @@
+package io.legado.app.data.repository
+
+import androidx.room.withTransaction
+import io.legado.app.data.AppDatabase
+import io.legado.app.data.dao.readaloud.RaBuildDao
+import io.legado.app.data.dao.readaloud.RaCharacterDao
+import io.legado.app.data.entities.readaloud.RaAttributeObsEntity
+import io.legado.app.data.entities.readaloud.RaCharacterAliasEntity
+import io.legado.app.data.entities.readaloud.RaCharacterEntity
+import io.legado.app.data.entities.readaloud.RaCharacterRedirectEntity
+import io.legado.app.data.entities.readaloud.RaIdentityDecisionEntity
+import io.legado.app.data.entities.readaloud.RaIdentityLinkEntity
+import io.legado.app.data.entities.readaloud.RaRelationObsEntity
+import io.legado.app.data.entities.readaloud.RaVoiceProfileEntity
+import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.model.readaloud.v4.RaCharacter
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
+import io.legado.app.domain.model.readaloud.v4.RaCharacterStatus
+import io.legado.app.domain.model.readaloud.v4.RaCharacterView
+import io.legado.app.domain.model.readaloud.v4.RaIds
+import io.legado.app.domain.model.readaloud.v4.RaLinkKind
+import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaNameUtils
+import io.legado.app.domain.model.readaloud.v4.RaResolution
+import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
+import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class RaCharacterRepository(
+    private val database: AppDatabase,
+    private val dao: RaCharacterDao,
+    private val buildDao: RaBuildDao,
+    private val wordLibrary: WordLibraryRepository,
+) : RaCharacterGateway {
+
+    override suspend fun characters(bookKey: String): List<RaCharacterView> = withContext(Dispatchers.IO) {
+        val characters = dao.characters(bookKey)
+        if (characters.isEmpty()) return@withContext emptyList()
+        val aliases = dao.aliasesOfBook(bookKey).groupBy { it.characterId }
+        val profiles = dao.voiceProfilesOfBook(bookKey)
+            .filter { it.kind == RaVoiceProfileKind.DEFAULT.storageValue }
+            .associateBy { it.characterId }
+        characters.map { character ->
+            val aliasList = aliases[character.id].orEmpty()
+                .sortedWith(compareBy({ it.isGeneric }, { it.firstChapter }))
+            RaCharacterView(
+                id = character.id,
+                name = character.displayName,
+                aliases = aliasList.joinToString("|") { it.surface },
+                roletype = character.roleType,
+                gender = character.gender,
+                age = character.ageBand,
+                voice = profiles[character.id]?.voiceTag.orEmpty(),
+                lastAppearanceChapter = character.lastChapter,
+                appearanceCount = character.appearanceCount,
+                appearanceChapters = listOf(character.firstChapter, character.lastChapter)
+                    .distinct()
+                    .filter { it >= 0 },
+                status = character.status,
+            )
+        }
+    }
+
+    override suspend fun charactersRaw(bookKey: String): List<RaCharacter> = withContext(Dispatchers.IO) {
+        dao.characters(bookKey).map(RaCharacterEntity::toDomain)
+    }
+
+    override suspend fun character(id: String): RaCharacter? = withContext(Dispatchers.IO) {
+        dao.character(id)?.toDomain()
+    }
+
+    override suspend fun finalCharacterId(id: String): String = withContext(Dispatchers.IO) {
+        var current = id
+        repeat(8) {
+            val redirect = dao.redirect(current) ?: return@withContext current
+            current = redirect.toCharacterId
+        }
+        current
+    }
+
+    override suspend fun aliasesOf(characterId: String): List<RaCharacterAlias> =
+        withContext(Dispatchers.IO) {
+            dao.aliasesOf(characterId).map(RaCharacterAliasEntity::toDomain)
+        }
+
+    override suspend fun charactersByAliases(
+        bookKey: String,
+        normalizedNames: Collection<String>,
+    ): List<RaCharacterAlias> = withContext(Dispatchers.IO) {
+        val names = normalizedNames.filter { it.isNotBlank() }.distinct()
+        if (names.isEmpty()) return@withContext emptyList()
+        dao.aliasesByNormalized(bookKey, names).map(RaCharacterAliasEntity::toDomain)
+    }
+
+    override suspend fun ensureCharacter(
+        bookKey: String,
+        displayName: String,
+        roleType: String,
+        gender: String,
+        ageBand: String,
+        chapterIndex: Int,
+        aliases: List<String>,
+        status: String,
+        aliasSource: String,
+        attributeSource: String,
+    ): RaCharacter = withContext(Dispatchers.IO) {
+        val baseName = displayName.trim()
+        val effectiveName = if (roleType == "路人" && !baseName.contains("【第")) {
+            baseName + "【第${chapterIndex + 1}章】"
+        } else {
+            baseName
+        }
+        val now = System.currentTimeMillis()
+        val entity = RaCharacterEntity(
+            id = RaIds.character(),
+            bookKey = bookKey,
+            displayName = effectiveName,
+            roleType = roleType.ifBlank { "核心" },
+            gender = gender.ifBlank { "男" },
+            ageBand = ageBand.ifBlank { "男青年" },
+            status = status,
+            firstChapter = chapterIndex,
+            lastChapter = chapterIndex,
+            appearanceCount = 1,
+            createdAt = now,
+            updatedAt = now,
+        )
+        database.withTransaction {
+            dao.upsertCharacter(entity)
+            val surfaces = LinkedHashSet<String>()
+            aliases.map { it.trim() }.filter { it.isNotEmpty() }.forEach(surfaces::add)
+            if (baseName.isNotEmpty()) surfaces.add(baseName)
+            surfaces.forEach { surface ->
+                val normalized = RaNameUtils.normalize(surface)
+                if (normalized.isEmpty()) return@forEach
+                dao.upsertAliases(
+                    listOf(
+                        RaCharacterAliasEntity(
+                            bookKey = bookKey,
+                            normalized = normalized,
+                            characterId = entity.id,
+                            surface = surface,
+                            source = aliasSource,
+                            isGeneric = wordLibrary.isBareClassWord(surface) || surface.length <= 1,
+                            firstChapter = chapterIndex,
+                            createdAt = now,
+                            updatedAt = now,
+                        ),
+                    ),
+                )
+            }
+            if (gender.isNotBlank()) {
+                dao.insertAttribute(
+                    RaAttributeObsEntity(
+                        id = "att_${entity.id}_gender_$chapterIndex",
+                        bookKey = bookKey,
+                        characterId = entity.id,
+                        key = "gender",
+                        value = gender,
+                        fromChapter = chapterIndex,
+                        source = attributeSource,
+                        createdAt = now,
+                        updatedAt = now,
+                    ),
+                )
+            }
+            if (ageBand.isNotBlank()) {
+                dao.insertAttribute(
+                    RaAttributeObsEntity(
+                        id = "att_${entity.id}_age_$chapterIndex",
+                        bookKey = bookKey,
+                        characterId = entity.id,
+                        key = "ageBand",
+                        value = ageBand,
+                        fromChapter = chapterIndex,
+                        source = attributeSource,
+                        createdAt = now,
+                        updatedAt = now,
+                    ),
+                )
+            }
+        }
+        entity.toDomain()
+    }
+
+    override suspend fun attachAliases(
+        bookKey: String,
+        characterId: String,
+        names: Collection<String>,
+        chapterIndex: Int,
+        source: String,
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val rows = ArrayList<RaCharacterAliasEntity>()
+        names.map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach { surface ->
+            val normalized = RaNameUtils.normalize(surface)
+            if (normalized.isEmpty()) return@forEach
+            rows.add(
+                RaCharacterAliasEntity(
+                    bookKey = bookKey,
+                    normalized = normalized,
+                    characterId = characterId,
+                    surface = surface,
+                    source = source,
+                    isGeneric = wordLibrary.isBareClassWord(surface) || surface.length <= 1,
+                    firstChapter = chapterIndex,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+        if (rows.isNotEmpty()) dao.upsertAliases(rows)
+    }
+
+    override suspend fun replaceAliases(
+        bookKey: String,
+        characterId: String,
+        names: Collection<String>,
+        chapterIndex: Int,
+        source: String,
+    ) = withContext(Dispatchers.IO) {
+        val desired = names.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val desiredNormalized = desired.map(RaNameUtils::normalize).toSet()
+        val current = dao.aliasesOf(characterId)
+        current.forEach { alias ->
+            if (alias.normalized !in desiredNormalized) dao.deleteAlias(characterId, alias.normalized)
+        }
+        attachAliases(bookKey, characterId, desired, chapterIndex, source)
+    }
+
+    override suspend fun setDefaultVoice(
+        characterId: String,
+        voiceTag: String,
+        voiceEntryId: String,
+    ) = withContext(Dispatchers.IO) {
+        val character = dao.character(characterId) ?: return@withContext
+        val now = System.currentTimeMillis()
+        val profiles = dao.voiceProfilesOf(characterId)
+        val default = profiles.firstOrNull { it.kind == RaVoiceProfileKind.DEFAULT.storageValue }
+        if (default != null) {
+            dao.updateVoiceProfileVoice(default.id, voiceTag, voiceEntryId, "user", now)
+        } else {
+            dao.upsertVoiceProfile(
+                RaVoiceProfileEntity(
+                    id = RaIds.voiceProfile(),
+                    bookKey = character.bookKey,
+                    characterId = characterId,
+                    kind = RaVoiceProfileKind.DEFAULT.storageValue,
+                    label = "默认",
+                    castingKey = "${character.roleType}|${character.gender}|${character.ageBand}",
+                    voiceTag = voiceTag,
+                    voiceEntryId = voiceEntryId,
+                    source = "user",
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+    }
+
+    override suspend fun touchAppearance(characterId: String, chapterIndex: Int) =
+        withContext(Dispatchers.IO) {
+            val character = dao.character(characterId) ?: return@withContext
+            val now = System.currentTimeMillis()
+            if (chapterIndex < character.firstChapter || character.appearanceCount <= 0) {
+                dao.refreshAppearance(
+                    id = characterId,
+                    firstChapter = minOf(character.firstChapter, chapterIndex),
+                    lastChapter = maxOf(character.lastChapter, chapterIndex),
+                    appearanceCount = maxOf(character.appearanceCount, 1),
+                    updatedAt = now,
+                )
+            } else if (chapterIndex > character.lastChapter) {
+                dao.touchAppearance(characterId, chapterIndex, now)
+            }
+        }
+
+    override suspend fun updateDisplayName(characterId: String, name: String) =
+        withContext(Dispatchers.IO) {
+            val trimmed = name.trim()
+            if (trimmed.isEmpty()) return@withContext
+            dao.updateDisplayName(characterId, trimmed, System.currentTimeMillis())
+        }
+
+    override suspend fun updateAttributes(
+        characterId: String,
+        roleType: String,
+        gender: String,
+        ageBand: String,
+    ) = withContext(Dispatchers.IO) {
+        val character = dao.character(characterId) ?: return@withContext
+        val now = System.currentTimeMillis()
+        if (roleType.isNotBlank() && roleType != character.roleType) {
+            dao.updateRoleType(characterId, roleType, now)
+        }
+        if (gender.isNotBlank() && gender != character.gender) {
+            dao.updateGender(characterId, gender, now)
+            dao.insertAttribute(
+                RaAttributeObsEntity(
+                    id = "att_${characterId}_gender_${now}",
+                    bookKey = character.bookKey,
+                    characterId = characterId,
+                    key = "gender",
+                    value = gender,
+                    fromChapter = character.lastChapter,
+                    source = "user",
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+        if (ageBand.isNotBlank() && ageBand != character.ageBand) {
+            dao.updateAgeBand(characterId, ageBand, now)
+            dao.insertAttribute(
+                RaAttributeObsEntity(
+                    id = "att_${characterId}_age_${now}",
+                    bookKey = character.bookKey,
+                    characterId = characterId,
+                    key = "ageBand",
+                    value = ageBand,
+                    fromChapter = character.lastChapter,
+                    source = "user",
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+    }
+
+    override suspend fun deleteCharacters(characterIds: Collection<String>) =
+        withContext(Dispatchers.IO) {
+            if (characterIds.isEmpty()) return@withContext
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                characterIds.forEach { id ->
+                    dao.voiceProfilesOf(id).forEach { dao.deleteVoiceProfile(it.id) }
+                    dao.deleteAttributes(id)
+                    dao.deleteRelations(id)
+                    dao.deleteAliasesOfCharacter(id)
+                    buildDao.clearSegmentCharacter(id, now)
+                    dao.deleteCharacter(id)
+                }
+            }
+        }
+
+    override suspend fun mergeCharacters(fromCharacterId: String, toCharacterId: String, reason: String) =
+        withContext(Dispatchers.IO) {
+            val from = finalCharacterId(fromCharacterId)
+            val to = finalCharacterId(toCharacterId)
+            if (from == to) return@withContext
+            val fromCharacter = dao.character(from) ?: return@withContext
+            val toCharacter = dao.character(to) ?: return@withContext
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                // 1. 台词与章内说话人外键
+                buildDao.reassignSegmentCharacter(from, to, now)
+                buildDao.reassignLocalSpeakerCharacter(from, to, now)
+                // 2. 别名迁移（同 normalized 已存在时删除来源行）
+                val targetNormalized = dao.aliasesOf(to).map { it.normalized }.toSet()
+                dao.aliasesOf(from).forEach { alias ->
+                    if (alias.normalized in targetNormalized) {
+                        dao.deleteAlias(from, alias.normalized)
+                    } else {
+                        dao.moveAlias(fromCharacter.bookKey, alias.normalized, from, to, now)
+                    }
+                }
+                // 3. 观察迁移
+                dao.reassignAttributes(from, to, now)
+                dao.reassignRelations(from, to, now)
+                dao.reassignRelationTargets(from, to, now)
+                // 4. 发声方案冲突（01 §6.4）
+                mergeVoiceProfiles(from, to, fromCharacter.displayName, now)
+                // 5. 重定向与状态
+                dao.upsertRedirect(
+                    RaCharacterRedirectEntity(
+                        fromCharacterId = from,
+                        toCharacterId = to,
+                        reason = reason,
+                        createdAt = now,
+                    ),
+                )
+                dao.reassignRedirects(from, to, now)
+                dao.updateStatus(from, RaCharacterStatus.MERGED.storageValue, now)
+                dao.upsertCharacter(
+                    toCharacter.copy(
+                        firstChapter = minOf(fromCharacter.firstChapter, toCharacter.firstChapter),
+                        lastChapter = maxOf(fromCharacter.lastChapter, toCharacter.lastChapter),
+                        appearanceCount = fromCharacter.appearanceCount + toCharacter.appearanceCount,
+                        userEdited = fromCharacter.userEdited || toCharacter.userEdited,
+                        updatedAt = now,
+                    ),
+                )
+                dao.bumpIdentityRevision(to, now)
+                // 6. SAME 约束 & 关联重定向
+                val a = minOf(from, to)
+                val b = maxOf(from, to)
+                dao.upsertLink(
+                    RaIdentityLinkEntity(
+                        id = "link_${a}_${b}_SAME",
+                        bookKey = toCharacter.bookKey,
+                        aCharacterId = a,
+                        bCharacterId = b,
+                        kind = RaLinkKind.SAME.storageValue,
+                        source = "user",
+                        createdAt = now,
+                        updatedAt = now,
+                    ),
+                )
+                dao.reassignLinksA(from, to, now)
+                dao.reassignLinksB(from, to, now)
+            }
+        }
+
+    private suspend fun mergeVoiceProfiles(
+        fromCharacterId: String,
+        toCharacterId: String,
+        fromDisplayName: String,
+        now: Long,
+    ) {
+        val fromProfiles = dao.voiceProfilesOf(fromCharacterId)
+        val toProfiles = dao.voiceProfilesOf(toCharacterId)
+        val fromDefault = fromProfiles.firstOrNull { it.kind == RaVoiceProfileKind.DEFAULT.storageValue }
+        val toDefault = toProfiles.firstOrNull { it.kind == RaVoiceProfileKind.DEFAULT.storageValue }
+        fromProfiles.filter { it.kind != RaVoiceProfileKind.DEFAULT.storageValue }.forEach {
+            dao.upsertVoiceProfile(it.copy(characterId = toCharacterId, updatedAt = now))
+        }
+        when {
+            fromDefault == null -> Unit
+            toDefault == null -> dao.upsertVoiceProfile(
+                fromDefault.copy(characterId = toCharacterId, updatedAt = now),
+            )
+            fromDefault.locked && !toDefault.locked -> {
+                dao.deleteVoiceProfile(toDefault.id)
+                dao.upsertVoiceProfile(fromDefault.copy(characterId = toCharacterId, updatedAt = now))
+            }
+            fromDefault.locked && toDefault.locked -> {
+                dao.upsertVoiceProfile(
+                    fromDefault.copy(
+                        characterId = toCharacterId,
+                        kind = RaVoiceProfileKind.CUSTOM.storageValue,
+                        label = "合并前·$fromDisplayName",
+                        updatedAt = now,
+                    ),
+                )
+            }
+            toDefault.locked -> dao.deleteVoiceProfile(fromDefault.id)
+            else -> {
+                // 都未锁：保留最早创建的（先被听到的声音）
+                if (fromDefault.createdAt < toDefault.createdAt) {
+                    dao.deleteVoiceProfile(toDefault.id)
+                    dao.upsertVoiceProfile(fromDefault.copy(characterId = toCharacterId, updatedAt = now))
+                } else {
+                    dao.deleteVoiceProfile(fromDefault.id)
+                }
+            }
+        }
+    }
+
+    override suspend fun splitCharacter(
+        fromCharacterId: String,
+        newDisplayName: String,
+        segmentIds: Collection<String>,
+        aliasNames: Collection<String>,
+    ): String = withContext(Dispatchers.IO) {
+        val from = finalCharacterId(fromCharacterId)
+        val source = dao.character(from) ?: return@withContext ""
+        val name = newDisplayName.trim().ifEmpty { "新人物" }
+        val now = System.currentTimeMillis()
+        val newId = RaIds.character()
+        database.withTransaction {
+            dao.upsertCharacter(
+                RaCharacterEntity(
+                    id = newId,
+                    bookKey = source.bookKey,
+                    displayName = name,
+                    roleType = source.roleType,
+                    gender = source.gender,
+                    ageBand = source.ageBand,
+                    status = RaCharacterStatus.ACTIVE.storageValue,
+                    firstChapter = source.firstChapter,
+                    lastChapter = source.lastChapter,
+                    appearanceCount = 1,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+            segmentIds.forEach { segmentId ->
+                buildDao.updateSegmentCharacter(segmentId, newId, now)
+            }
+            val targetNormalized = dao.aliasesOf(newId).map { it.normalized }.toSet()
+            aliasNames.map { it.trim() }.filter { it.isNotEmpty() }.forEach { alias ->
+                val normalized = RaNameUtils.normalize(alias)
+                if (normalized.isEmpty() || normalized in targetNormalized) return@forEach
+                dao.moveAlias(source.bookKey, normalized, from, newId, now)
+                dao.upsertAliases(
+                    listOf(
+                        RaCharacterAliasEntity(
+                            bookKey = source.bookKey,
+                            normalized = normalized,
+                            characterId = newId,
+                            surface = alias,
+                            source = "user",
+                            isGeneric = wordLibrary.isBareClassWord(alias) || alias.length <= 1,
+                            firstChapter = source.firstChapter,
+                            createdAt = now,
+                            updatedAt = now,
+                        ),
+                    ),
+                )
+            }
+            dao.upsertVoiceProfile(
+                RaVoiceProfileEntity(
+                    id = RaIds.voiceProfile(),
+                    bookKey = source.bookKey,
+                    characterId = newId,
+                    kind = RaVoiceProfileKind.DEFAULT.storageValue,
+                    label = "默认",
+                    castingKey = "${source.roleType}|${source.gender}|${source.ageBand}",
+                    source = "auto",
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+            val a = minOf(from, newId)
+            val b = maxOf(from, newId)
+            dao.upsertLink(
+                RaIdentityLinkEntity(
+                    id = "link_${a}_${b}_CANNOT",
+                    bookKey = source.bookKey,
+                    aCharacterId = a,
+                    bCharacterId = b,
+                    kind = RaLinkKind.CANNOT.storageValue,
+                    source = "user",
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+            dao.bumpIdentityRevision(from, now)
+        }
+        newId
+    }
+
+    override suspend fun findCharacterByExactName(bookKey: String, name: String): RaCharacter? =
+        withContext(Dispatchers.IO) {
+            val normalized = RaNameUtils.normalize(name)
+            if (normalized.isEmpty()) return@withContext null
+            val alias = dao.aliasesByNormalized(bookKey, listOf(normalized))
+                .firstOrNull { !it.isGeneric }
+                ?: return@withContext null
+            val character = dao.character(alias.characterId) ?: return@withContext null
+            if (character.status == RaCharacterStatus.MERGED.storageValue) null else character.toDomain()
+        }
+
+    override suspend fun saveDecision(
+        bookKey: String,
+        localSpeaker: RaLocalSpeaker,
+        candidateIds: List<String>,
+        verdict: String,
+        chosenCharacterId: String?,
+        confidence: Float,
+        reason: String,
+        modelId: String,
+    ) = withContext(Dispatchers.IO) {
+        dao.insertDecision(
+            RaIdentityDecisionEntity(
+                id = "dec_${localSpeaker.id}_${System.currentTimeMillis()}",
+                bookKey = bookKey,
+                localSpeakerId = localSpeaker.id,
+                candidateIds = listToJsonArray(candidateIds),
+                verdict = verdict,
+                chosenCharacterId = chosenCharacterId,
+                confidence = confidence,
+                reason = reason.take(200),
+                modelId = modelId,
+            ),
+        )
+    }
+
+    override suspend fun decisionCount(localSpeakerId: String): Int = withContext(Dispatchers.IO) {
+        dao.unknownDecisionCount(localSpeakerId)
+    }
+
+    override suspend fun addCannotLink(bookKey: String, a: String, b: String, source: String) =
+        withContext(Dispatchers.IO) {
+            val x = minOf(a, b)
+            val y = maxOf(a, b)
+            if (x == y) return@withContext
+            val now = System.currentTimeMillis()
+            dao.upsertLink(
+                RaIdentityLinkEntity(
+                    id = "link_${x}_${y}_CANNOT",
+                    bookKey = bookKey,
+                    aCharacterId = x,
+                    bCharacterId = y,
+                    kind = RaLinkKind.CANNOT.storageValue,
+                    source = source,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+
+    override suspend fun voiceProfiles(bookKey: String): List<RaVoiceProfile> =
+        withContext(Dispatchers.IO) {
+            dao.voiceProfilesOfBook(bookKey).map(RaVoiceProfileEntity::toDomain)
+        }
+
+    override suspend fun voiceProfilesOf(characterId: String): List<RaVoiceProfile> =
+        withContext(Dispatchers.IO) {
+            dao.voiceProfilesOf(characterId).map(RaVoiceProfileEntity::toDomain)
+        }
+
+    override suspend fun saveVoiceProfile(profile: RaVoiceProfile) = withContext(Dispatchers.IO) {
+        dao.upsertVoiceProfile(profile.toEntity())
+    }
+
+    override suspend fun updateVoiceProfileVoice(
+        profileId: String,
+        voiceTag: String,
+        voiceEntryId: String,
+        source: String,
+    ) = withContext(Dispatchers.IO) {
+        dao.updateVoiceProfileVoice(
+            profileId,
+            voiceTag,
+            voiceEntryId,
+            source,
+            System.currentTimeMillis(),
+        )
+    }
+
+    override suspend fun setVoiceProfileLocked(profileId: String, locked: Boolean) =
+        withContext(Dispatchers.IO) {
+            dao.updateVoiceProfileLocked(profileId, locked, System.currentTimeMillis())
+        }
+
+    override suspend fun deleteVoiceProfile(profileId: String) = withContext(Dispatchers.IO) {
+        dao.deleteVoiceProfile(profileId)
+    }
+}
+
+internal fun RaCharacterEntity.toDomain() = RaCharacter(
+    id = id,
+    bookKey = bookKey,
+    displayName = displayName,
+    roleType = roleType,
+    gender = gender,
+    ageBand = ageBand,
+    status = RaCharacterStatus.fromStorage(status),
+    firstChapter = firstChapter,
+    lastChapter = lastChapter,
+    appearanceCount = appearanceCount,
+    userEdited = userEdited,
+    identityRevision = identityRevision,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaCharacterAliasEntity.toDomain() = RaCharacterAlias(
+    bookKey = bookKey,
+    normalized = normalized,
+    characterId = characterId,
+    surface = surface,
+    source = source,
+    isGeneric = isGeneric,
+    firstChapter = firstChapter,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaVoiceProfileEntity.toDomain() = RaVoiceProfile(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    kind = RaVoiceProfileKind.fromStorage(kind),
+    label = label,
+    castingKey = castingKey,
+    voiceTag = voiceTag,
+    voiceEntryId = voiceEntryId,
+    rangeJson = rangeJson,
+    locked = locked,
+    source = source,
+    voiceRevision = voiceRevision,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaVoiceProfile.toEntity() = RaVoiceProfileEntity(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    kind = kind.storageValue,
+    label = label,
+    castingKey = castingKey,
+    voiceTag = voiceTag,
+    voiceEntryId = voiceEntryId,
+    rangeJson = rangeJson,
+    locked = locked,
+    source = source,
+    voiceRevision = voiceRevision,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)

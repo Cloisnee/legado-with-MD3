@@ -16,7 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.ui.widget.components.SearchBar
 import io.legado.app.ui.widget.components.modalBottomSheet.AppModalBottomSheet
 import io.legado.app.ui.widget.components.settingItem.TinyClickableSettingItem
@@ -39,7 +39,7 @@ data class VoiceTagPickRequest(
 fun VoiceTagPickerSheet(
     show: Boolean,
     request: VoiceTagPickRequest?,
-    repo: ReadAloudDataRepository,
+    repo: ReadAloudVoicePoolRepository,
     onDismiss: () -> Unit,
 ) {
     var pool by remember { mutableStateOf<List<String>?>(null) }

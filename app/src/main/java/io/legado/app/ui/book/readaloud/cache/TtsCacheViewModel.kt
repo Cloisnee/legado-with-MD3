@@ -5,7 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.usecase.SynthesizeChapterAudioUseCase
 import io.legado.app.help.readaloud.playback.ReadAloudAudioStore
 import kotlinx.collections.immutable.ImmutableList
@@ -36,7 +37,8 @@ class TtsCacheViewModel : ViewModel() {
     private val _effects = MutableSharedFlow<TtsCacheEffect>(extraBufferCapacity = 16)
     val effects = _effects.asSharedFlow()
 
-    private val dataRepository by lazy { GlobalContext.get().get<ReadAloudDataRepository>() }
+    private val catalog by lazy { GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    private val raBuild by lazy { GlobalContext.get().get<RaBuildGateway>() }
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
     private val synthesizeChapter by lazy {
         GlobalContext.get().get<SynthesizeChapterAudioUseCase>()
@@ -139,7 +141,9 @@ class TtsCacheViewModel : ViewModel() {
 
             is TtsCacheIntent.DeleteBookAudio -> viewModelScope.launch {
                 _uiState.update { it.copy(activeDialog = null) }
-                val bookUrl = runCatching { dataRepository.loadBookUrl(intent.book) }.getOrDefault("")
+                val bookUrl = catalog.booksWithData()
+                    .firstOrNull { it.name == intent.book || it.bookKey == intent.book }
+                    ?.bookUrl.orEmpty()
                 audioCache.deleteBook(intent.book)
                 if (bookUrl.isNotBlank()) {
                     runCatching { ReadAloudAudioStore.deleteBookMarkers(bookUrl) }
@@ -150,7 +154,9 @@ class TtsCacheViewModel : ViewModel() {
 
             is TtsCacheIntent.DeleteChapterAudio -> viewModelScope.launch {
                 _uiState.update { it.copy(activeDialog = null) }
-                val bookUrl = runCatching { dataRepository.loadBookUrl(intent.book) }.getOrDefault("")
+                val bookUrl = catalog.booksWithData()
+                    .firstOrNull { it.name == intent.book || it.bookKey == intent.book }
+                    ?.bookUrl.orEmpty()
                 audioCache.deleteChapter(intent.book, intent.chapterIndex)
                 if (bookUrl.isNotBlank()) {
                     runCatching {
@@ -217,11 +223,12 @@ class TtsCacheViewModel : ViewModel() {
     private fun loadAudioCache() {
         viewModelScope.launch(Dispatchers.IO) {
             val books = audioCache.listBooks().map { book ->
-                val author = dataRepository.loadBookAuthor(book)
-                val titles = dataRepository.loadChapterTitles(book)
-                val lineCounts = dataRepository.loadChapterLineCounts(book)
+                val summary = catalog.booksWithData().firstOrNull { it.name == book || it.bookKey == book }
+                val author = summary?.author.orEmpty()
+                val bookUrl = summary?.bookUrl.orEmpty()
+                val titles = if (bookUrl.isBlank()) emptyMap() else catalog.chapterTitles(bookUrl)
+                val lineCounts = if (summary == null) emptyMap() else raBuild.lineCounts(summary.bookKey)
                 // 听书下载区（与朗读侧同一 Store）：按 bookUrl 查已下载章集合，两处状态互通
-                val bookUrl = runCatching { dataRepository.loadBookUrl(book) }.getOrDefault("")
                 val downloadedSet = if (bookUrl.isBlank()) {
                     emptySet()
                 } else {
@@ -275,7 +282,8 @@ class TtsCacheViewModel : ViewModel() {
     }
 
     private suspend fun refreshChapter(item: QueueItem) {
-        val total = dataRepository.loadChapterLineCounts(item.book)[item.chapterIndex] ?: 0
+        val summary = catalog.booksWithData().firstOrNull { it.name == item.book || it.bookKey == item.book }
+        val total = summary?.let { raBuild.lineCounts(it.bookKey)[item.chapterIndex] } ?: 0
         val stats = audioCache.chapterStats(item.book, item.chapterIndex, total)
         _uiState.update { state ->
             state.copy(
@@ -415,7 +423,10 @@ class TtsCacheViewModel : ViewModel() {
                     throw e
                 } catch (e: Exception) {
                     val itemLabel = runCatching {
-                        dataRepository.chapterLabelOf(item.book, item.chapterIndex)
+                        catalog.booksWithData().firstOrNull {
+                            it.name == item.book || it.bookKey == item.book
+                        }?.let { catalog.chapterLabel(it.bookUrl, item.chapterIndex) }
+                            ?: "第${item.chapterIndex + 1}章"
                     }.getOrDefault("第${item.chapterIndex + 1}章")
                     AppLog.putAudio(
                         "【音频缓存】批量合成异常 $itemLabel: ${e.localizedMessage}",

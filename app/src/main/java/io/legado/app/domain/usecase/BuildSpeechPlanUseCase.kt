@@ -1,158 +1,89 @@
 package io.legado.app.domain.usecase
 
-import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.readaloud.BookVoiceBinding
-import io.legado.app.domain.model.readaloud.ChapterSpeechSegment
-import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
+import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.SpeechRoleType
-import io.legado.app.help.readaloud.analysis.NarratorRoleStrip
+import io.legado.app.domain.model.readaloud.v4.RaSegment
+import io.legado.app.help.readaloud.playback.SpeechVoiceResolver
 
+/**
+ * 播放计划：每句台词按 `characterId → voiceProfileId → voiceId` 取声线。
+ * 名字不参与选音；重命名/加别名不会改变声音。
+ */
 class BuildSpeechPlanUseCase(
-    private val voiceGateway: ReadAloudVoiceGateway,
+    private val characters: RaCharacterGateway,
+    private val voices: SpeechVoiceResolver,
 ) {
 
     suspend operator fun invoke(
-        bookUrl: String,
-        segments: List<ChapterSpeechSegment>,
+        bookKey: String,
+        segments: List<RaSegment>,
         preferredDefaultVoiceId: String? = null,
-        characterPerformances: Map<String, CharacterPerformanceProfile> = emptyMap(),
         useMultiSpeaker: Boolean = true,
-        voiceOverrides: Map<String, ReadAloudVoice> = emptyMap(),
+        emotionBySegment: Map<String, String> = emptyMap(),
+        instructionBySegment: Map<String, String> = emptyMap(),
     ): List<SpeechPlanItem> {
-        val voices = voiceGateway.getEnabledVoices()
-        val voicesById = voices.associateBy(ReadAloudVoice::id)
-        val bindings = voiceGateway.getBindings(bookUrl)
-            .associateBy { it.subjectType to it.subjectId }
-        val narrator = bindings.voice(
-            BookVoiceBinding.SUBJECT_NARRATOR,
-            BookVoiceBinding.SUBJECT_NARRATOR,
-            voicesById,
-        )
-        val unknown = bindings.voice(
-            BookVoiceBinding.SUBJECT_UNKNOWN,
-            BookVoiceBinding.SUBJECT_UNKNOWN,
-            voicesById,
-        )
-        val defaultVoice = preferredDefaultVoiceId?.let(voicesById::get)
-            ?: narrator
+        if (segments.isEmpty()) return emptyList()
+        val narrator = voices.narrator()
+        val narratorVoice = preferredDefaultVoiceId?.let { id -> null } ?: narrator
+        val defaultVoice = narratorVoice
+
+        val rawCharacters = characters.charactersRaw(bookKey).associateBy { it.id }
+        val profiles = characters.voiceProfiles(bookKey)
+        val profilesByCharacter = profiles.groupBy { it.characterId }
+        val finalIds = HashMap<String, String>()
+        val voiceCache = HashMap<String, ReadAloudVoice?>()
+
+        suspend fun voiceOfTag(tag: String): ReadAloudVoice? {
+            if (tag.isBlank()) return null
+            return voiceCache.getOrPut(tag) { voices.byTag(tag) }
+        }
 
         return segments.map { segment ->
-            // B30：存量防御——历史数据把「旁白」归为角色时，剥夺其角色属性，按真旁白声线处理
-            val effectiveRole = if (segment.roleType != SpeechRoleType.Narrator &&
-                NarratorRoleStrip.isNarratorName(segment.characterName)
-            ) {
-                SpeechRoleType.Narrator
-            } else {
-                segment.roleType
+            val role = segment.roleType
+            val finalCharacterId = segment.characterId?.let { id ->
+                finalIds.getOrPut(id) { characters.finalCharacterId(id) }
             }
-            val performance = segment.characterId?.let(characterPerformances::get)
-            // 角色（男主/女主/男配/女配）绑定的音色，优先级低于角色专属绑定、高于性别兜底
-            val roleVoice = performance?.roleSubject()?.let { subject ->
-                bindings.voice(subject, subject, voicesById)
-            }
-            val primary = if (!useMultiSpeaker) {
-                // Multi-speaker disabled — every segment uses the default voice
-                defaultVoice
-            } else {
-                val characterVoice = segment.characterId?.let { characterId ->
-                    bindings.voice(
-                        BookVoiceBinding.SUBJECT_CHARACTER,
-                        characterId,
-                        voicesById,
-                    )
-                }
-                val genderFallback = when (performance?.resolvedGender()) {
-                    "male" -> bindings.voice(
-                        BookVoiceBinding.SUBJECT_UNKNOWN_MALE,
-                        BookVoiceBinding.SUBJECT_UNKNOWN_MALE,
-                        voicesById,
-                    )
-
-                    "female" -> bindings.voice(
-                        BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE,
-                        BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE,
-                        voicesById,
-                    )
-                    else -> null
-                }
-                val overrideVoice = voiceOverrides[segment.characterName]
-                when (effectiveRole) {
-                    SpeechRoleType.Character,
-                    SpeechRoleType.Thought -> overrideVoice ?: characterVoice ?: roleVoice ?: genderFallback
-                        ?: voiceOverrides[BookVoiceBinding.SUBJECT_UNKNOWN_MALE]
-                        ?: voiceOverrides[BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE]
-                        ?: unknown ?: narrator ?: defaultVoice
-                    SpeechRoleType.Unknown -> unknown ?: narrator ?: defaultVoice
-                    SpeechRoleType.Narrator -> voiceOverrides[BookVoiceBinding.SUBJECT_NARRATOR]
-                        ?: narrator ?: defaultVoice
-                }
+            val character = finalCharacterId?.let(rawCharacters::get)
+            val profile = if (useMultiSpeaker && role != SpeechRoleType.Narrator) {
+                io.legado.app.domain.model.readaloud.v4.VoiceProfileSelector.select(
+                    profilesByCharacter[finalCharacterId].orEmpty(),
+                    segment.chapterIndex,
+                    segment.paragraphIndex,
+                )
+            } else null
+            val characterVoice = profile?.voiceTag?.let { voiceOfTag(it) }
+            val gender = character?.gender ?: "男"
+            val fallbackDialog = if (useMultiSpeaker) {
+                voices.defaultDialog(gender, (segment.chapterIndex + 1) * 31 + segment.paragraphIndex)
+            } else null
+            val primary = when {
+                !useMultiSpeaker -> defaultVoice
+                role == SpeechRoleType.Narrator -> narratorVoice ?: defaultVoice
+                else -> characterVoice ?: fallbackDialog ?: narratorVoice ?: defaultVoice
             }
             val fallbackVoices = if (!useMultiSpeaker) {
                 emptyList()
             } else {
                 buildList {
-                    if (effectiveRole != SpeechRoleType.Narrator) {
-                        add(roleVoice)
-                        add(
-                            when (performance?.resolvedGender()) {
-                                "male" -> bindings.voice(
-                                BookVoiceBinding.SUBJECT_UNKNOWN_MALE,
-                                BookVoiceBinding.SUBJECT_UNKNOWN_MALE,
-                                voicesById,
-                            )
-
-                                "female" -> bindings.voice(
-                                BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE,
-                                BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE,
-                                voicesById,
-                            )
-                            else -> null
-                        })
-                        add(unknown)
+                    if (role != SpeechRoleType.Narrator) {
+                        characters.voiceProfilesOf(finalCharacterId.orEmpty())
+                            .filter { it.id != profile?.id }
+                            .forEach { other -> voiceOfTag(other.voiceTag)?.let(::add) }
+                        add(fallbackDialog)
+                        add(narratorVoice)
+                        add(defaultVoice)
                     }
-                    add(narrator)
-                    add(defaultVoice)
-                }.filterNotNull()
-                    .distinctBy(ReadAloudVoice::id)
-                    .filterNot { it.id == primary?.id }
+                }.filterNotNull().distinctBy(ReadAloudVoice::id).filterNot { it.id == primary?.id }
             }
             SpeechPlanItem(
                 segment = segment,
                 voice = primary,
                 fallbackVoices = fallbackVoices,
-                characterPerformance = performance,
+                emotionTag = emotionBySegment[segment.id].orEmpty(),
+                instruction = instructionBySegment[segment.id].orEmpty(),
             )
-        }
-    }
-
-    private fun Map<Pair<String, String>, BookVoiceBinding>.voice(
-        subjectType: String,
-        subjectId: String,
-        voicesById: Map<String, ReadAloudVoice>,
-    ): ReadAloudVoice? = get(subjectType to subjectId)?.voiceId?.let(voicesById::get)
-
-    /** 只有已知的角色标识才对应绑定主体，避免任意角色文本参与查询 */
-    private fun CharacterPerformanceProfile.roleSubject(): String? = when (role) {
-        BookVoiceBinding.SUBJECT_MALE_LEAD,
-        BookVoiceBinding.SUBJECT_FEMALE_LEAD,
-        BookVoiceBinding.SUBJECT_MALE_SUPPORTING,
-        BookVoiceBinding.SUBJECT_FEMALE_SUPPORTING -> role
-
-        else -> null
-    }
-
-    private fun CharacterPerformanceProfile.resolvedGender(): String? = when (voiceGender) {
-        "male", "female" -> voiceGender
-        else -> when (role) {
-            BookVoiceBinding.SUBJECT_MALE_LEAD,
-            BookVoiceBinding.SUBJECT_MALE_SUPPORTING -> "male"
-
-            BookVoiceBinding.SUBJECT_FEMALE_LEAD,
-            BookVoiceBinding.SUBJECT_FEMALE_SUPPORTING -> "female"
-
-            else -> null
         }
     }
 }

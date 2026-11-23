@@ -75,6 +75,9 @@ object AudioPlanStore {
         appCtx = context.applicationContext
     }
 
+    private fun contextOrNull(): Context? =
+        appCtx ?: runCatching { splitties.init.appCtx }.getOrNull()
+
     private fun file(context: Context, book: String): File =
         File(TtsDirProvider.baseDir(context), "data/books/$book/audio_plan.$book.json")
 
@@ -82,7 +85,7 @@ object AudioPlanStore {
 
     suspend fun save(book: String, bookUrl: String, chapterIndex: Int, plan: AudioPlan): Boolean =
         withContext(Dispatchers.IO) {
-            val context = appCtx ?: return@withContext false
+            val context = contextOrNull() ?: return@withContext false
             if (book.isBlank() || bookUrl.isBlank() || chapterIndex < 0) return@withContext false
             runCatching {
                 val f = file(context, book)
@@ -109,7 +112,7 @@ object AudioPlanStore {
 
     suspend fun load(book: String, bookUrl: String, chapterIndex: Int): AudioPlan? =
         withContext(Dispatchers.IO) {
-            val context = appCtx ?: return@withContext null
+            val context = contextOrNull() ?: return@withContext null
             runCatching {
                 val f = file(context, book)
                 if (!f.isFile) return@runCatching null

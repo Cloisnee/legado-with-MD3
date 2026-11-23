@@ -1,7 +1,6 @@
 package io.legado.app.domain.usecase
 
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.readaloud.BookVoiceBinding
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.VoiceCatalogEntry
@@ -107,13 +106,4 @@ private class MutableVoiceGateway(
     override suspend fun deleteVoice(voice: ReadAloudVoice) {
         voices.removeAll { it.id == voice.id }
     }
-    override fun observeBindings(bookUrl: String): Flow<List<BookVoiceBinding>> = flowOf(emptyList())
-    override suspend fun getBindings(bookUrl: String): List<BookVoiceBinding> = emptyList()
-    override suspend fun getBinding(
-        bookUrl: String,
-        subjectType: String,
-        subjectId: String,
-    ): BookVoiceBinding? = null
-    override suspend fun upsertBinding(binding: BookVoiceBinding) = Unit
-    override suspend fun deleteBinding(binding: BookVoiceBinding) = Unit
 }

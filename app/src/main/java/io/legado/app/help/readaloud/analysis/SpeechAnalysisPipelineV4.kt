@@ -1,20 +1,31 @@
 package io.legado.app.help.readaloud.analysis
 
-import io.legado.app.utils.ChapterLabels
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
-import io.legado.app.data.repository.CharacterRecord
-import io.legado.app.data.repository.ReadAloudDataRepository
-import io.legado.app.domain.gateway.ChapterSpeechGateway
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.WordLibraryRepository
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.gateway.RaDirectionAudio
+import io.legado.app.domain.gateway.RaDirectionGateway
+import io.legado.app.domain.gateway.RaDirectionLine
+import io.legado.app.domain.gateway.RaDirectionPlan
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
-import io.legado.app.domain.model.readaloud.ChapterSpeechAnalysis
-import io.legado.app.domain.model.readaloud.ChapterSpeechAnalysisResult
-import io.legado.app.domain.model.readaloud.ChapterSpeechSegment
-import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
+import io.legado.app.domain.model.readaloud.v4.RaAnalysis
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
+import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
+import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaNameUtils
+import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
+import io.legado.app.domain.model.readaloud.v4.RaResolution
+import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.utils.AliasTokens
+import io.legado.app.utils.MD5Utils
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanItem
@@ -50,16 +61,22 @@ import kotlin.math.abs
  *  声线分配：三池（核心/路人/特殊）按 性别/年龄类键 未用优先随机 + 耗尽清锁重来再随机；只吃“已选中”声线库。
  *    无候选时复刻原脚本兜底链：特殊→核心·青年 → 默认对话(duihuaA/B)；全缺则留空并记日志（B10.5·Q1）。
  */
-class SpeechAnalysisPipelineV3(
-    private val chapterSpeechGateway: ChapterSpeechGateway,
+class SpeechAnalysisPipelineV4(
+    private val bookIdentity: io.legado.app.domain.gateway.RaBookIdentityGateway,
+    private val raBuild: io.legado.app.domain.gateway.RaBuildGateway,
+    private val raCharacters: io.legado.app.domain.gateway.RaCharacterGateway,
+    private val raDirection: io.legado.app.domain.gateway.RaDirectionGateway,
+    private val catalog: io.legado.app.data.repository.ReadAloudCatalogRepository,
+    private val resolver: io.legado.app.help.readaloud.analysis.v4.IdentityResolver,
+    private val casting: io.legado.app.help.readaloud.analysis.v4.VoiceCastingService,
+    private val wordLibrary: io.legado.app.data.repository.WordLibraryRepository,
     private val aiModels: AiModelRepository,
     private val ai: AiSpeechClient,
     private val configStore: AnalysisConfigStore,
-    private val dataRepository: ReadAloudDataRepository,
 ) {
 
     companion object {
-        const val RESOLVER_VERSION = "v3-script-1"
+        const val RESOLVER_VERSION = "v4.1"
 
         /** 内置默认提示词（「AI 分析设置」页载入编辑器用）；key: stage1/stage2/stage4/emotion。
          *  stage4 含 %ROLE% 占位（角色名）、情绪含 %VOCAB% 占位（情绪词表），运行时自动替换。 */
@@ -72,22 +89,6 @@ class SpeechAnalysisPipelineV3(
         }
 
         private val EMOTIONS = listOf("平静", "愉快", "悲伤", "愤怒", "恐惧", "惊讶", "厌恶", "严肃", "温柔", "鄙夷")
-
-        /** 裸类属词库（脚本 BARE_CLASS_WORDS，另有外挂 bare_words.json 合流） */
-        private val BARE_WORDS = setOf(
-            "你", "我", "他", "她", "祂", "它", "有人", "一人", "众人", "大家", "路人", "陌生人", "男人", "女人", "男孩", "女孩",
-            "少年", "少女", "青年", "老人", "孩子", "大人", "姑娘", "小伙子", "老太太", "老先生", "先生", "女士", "大哥", "大姐",
-            "大嫂", "老板", "掌柜的", "店小二", "师父", "师傅", "师兄", "师弟", "师姐", "师妹", "小姐", "公子", "夫人", "老爷",
-            "少爷", "丫鬟", "侍卫", "士兵", "捕快", "书生", "郎中", "车夫", "猎人", "樵夫", "将军", "王爷", "公主", "太子",
-            "陛下", "太监", "宫女", "嬷嬷", "道长", "和尚", "尼姑", "掌柜", "小二",
-        )
-
-        /** 特殊词库（脚本 SPECIAL_CLASS_WORDS，另有外挂 special_words.json 合流） */
-        private val SPECIAL_WORDS = setOf(
-            "系统", "系统提示", "系统消息", "系统公告", "系统音", "主系统", "智能ai", "人工智能", "ai助手", "语音助手", "虚拟助手",
-            "机器人", "机械音", "电子音", "合成音", "广播", "喇叭", "扬声器", "通知", "公告", "提示音", "邮件", "电子邮件", "短信",
-            "讯息", "留言", "弹幕", "字幕", "画外音", "智脑", "主脑", "光脑", "中央电脑", "电脑", "终端", "通讯器", "通讯仪", "全息投影",
-        )
 
         private val DEFAULT_STAGE1_PROMPT = """
 你是一名专业的小说文本话语标注员。输入文本已按片段编号：每段以〖第N段〗开始，段内片段为 [1][2]…（引号随原文保留）。你的任务：对每一个片段判定 T 或 F：
@@ -372,8 +373,11 @@ BGM 建议缺段从值集补全。
         var minSeq: Int = 99999
     }
 
-    private val bareExtraSet: Set<String> by lazy { loadWordSet("bare_words.json") }
-    private val specialExtraSet: Set<String> by lazy { loadWordSet("special_words.json") }
+    @Volatile
+    private var bareWordsCache: Set<String> = emptySet()
+
+    @Volatile
+    private var specialWordsCache: Set<String> = emptySet()
 
     /** B19：当前 run 的章节显示名（标题截到章；run 由调度器串行调用，用实例字段免逐层透传） */
     @Volatile
@@ -385,101 +389,69 @@ BGM 建议缺段从值集补全。
     suspend fun run(
         bookUrl: String,
         bookName: String,
+        bookKey: String,
+        sourceKey: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
         prevChapterText: String,
         nextChapterText: String,
         force: Boolean = false,
-    ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
+    ): RaPipelineResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        // B19：标题映射 → 章节显示名（日志/消息统一用它；内部匹配仍用 index）
-        val titleMap = runCatching { dataRepository.loadChapterTitles(bookName) }.getOrDefault(emptyMap())
-        chapterLabel = ChapterLabels.of(titleMap[chapterIndex], chapterIndex)
+        chapterLabel = runCatching { catalog.chapterLabel(bookUrl, chapterIndex) }
+            .getOrDefault("第${chapterIndex + 1}章")
         val existing = runCatching {
-            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
+            raBuild.getAnalysis(bookKey, sourceKey, chapterIndex, contentHash, RESOLVER_VERSION)
         }.getOrNull()
-        if (!force && existing != null &&
-            existing.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)
-        ) {
-            val cached = runCatching { chapterSpeechGateway.getSegments(existing.id) }.getOrDefault(emptyList())
+        if (!force && existing != null && existing.status == RaAnalysisStatus.RESOLVED) {
+            val cached = runCatching { raBuild.segments(existing.id) }.getOrDefault(emptyList())
             if (cached.isNotEmpty()) {
-                // 存量补写：早期批次未落文件产物；此处幂等补写（已有则跳过）
-                if (bookName.isNotBlank() && !dataRepository.hasChapterScript(bookName, chapterIndex)) {
-                    val cachedPlan = loadAudioPlanFor(bookName, bookUrl, chapterIndex, contentHash)
-                    writeFileArtifacts(bookName, chapterIndex, bookUrl, cached, cachedPlan)
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}】缓存命中，已补写剧本文件")
-                }
-                // B17：缓存命中也推进「最近完成解析章」（顺读穿过缓存段不断链）
-                if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
-                return@withContext ChapterSpeechAnalysisResult(existing, cached, true)
+                return@withContext RaPipelineResult(existing, cached, true)
             }
         }
-        // ---- B8.3：DB 未命中 → 本地剧本文件回填（与播放侧同构）；命中即免重析 ----
-        if (!force) {
-            restoreFromScriptFiles(bookUrl, bookName, chapterIndex, paragraphs)?.let {
-                return@withContext it
-            }
-        }
-        val lockedOld = runCatching {
-            existing?.let { chapterSpeechGateway.getSegments(it.id) }
-        }.getOrNull().orEmpty().filter { it.userLocked }
-        val lockedByKey = lockedOld.associateBy { it.paragraphIndex to it.text }
 
         val cfg = configStore.load()
-        // B30：旁白角色历史清理——已存在的「旁白」记录剥夺角色属性（静默；此后按旁白声线合成）
-        val records0Raw = dataRepository.loadBookRecords(bookName)
-        val records0 = records0Raw.filterNot { NarratorRoleStrip.isNarratorName(it.name) }
-        val narratorPurged = records0Raw.size - records0.size
-        if (narratorPurged > 0) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}】旁白角色清理：移除已有旁白记录 ${narratorPurged} 条")
-        }
-        // B17：连续 =「最近一次完成解析的章节 == 上一章」（顺读=接上章；跳读/回跳=false → 第1阶段走本地规则）
-        val tailCh = dataRepository.lastResolvedChapter(bookName)
-        val isContinuous = tailCh >= 0 && tailCh == chapterIndex - 1
-        val contLabel = when {
-            isContinuous -> "接上章"
-            chapterIndex == 0 -> "首章"
-            tailCh < 0 -> "跳读；上次分析=无"
-            tailCh > chapterIndex -> "回跳；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
-            tailCh == chapterIndex -> "重析；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
-            else -> "跳读；上次分析=${ChapterLabels.of(titleMap[tailCh], tailCh)}"
-        }
-        AppLog.putAnalysis("【分析V3·${chapterLabel}】开始：连续=$isContinuous（$contLabel） 段数=${paragraphs.size}")
+        bareWordsCache = runCatching { wordLibrary.bareWords() }.getOrDefault(emptySet())
+        specialWordsCache = runCatching { wordLibrary.specialWords() }.getOrDefault(emptySet())
+        val analysisId = SpeechIdentity.analysisId(
+            bookKey = bookKey,
+            sourceKey = sourceKey,
+            chapterIndex = chapterIndex,
+            contentHash = contentHash,
+            resolverVersion = RESOLVER_VERSION,
+        )
+        AppLog.putAnalysis("【V4·$chapterLabel·阶段1】开始：段数=${paragraphs.size}")
 
-        // ===== A 话语分析 =====
+        // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
         val t0 = System.currentTimeMillis()
-        val ranges = stageA(paragraphs, cfg, useAi = isContinuous, chapterIndex = chapterIndex)
-
-        // B33.4b：音频导演（AI 计划）——第1阶段后并发发起；跳过时在片段建议就绪后打「本地建议预扫」行
+        val ranges = stageA(paragraphs, cfg, useAi = true, chapterIndex = chapterIndex)
         val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
         val directorSkipReason = when {
-            !isContinuous -> "首章/非连续"
             directorRefs.isEmpty() -> "未设置Ai"
             else -> ""
         }
         if (ranges.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
+            AppLog.putAnalysis("【V4·$chapterLabel·阶段1】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
         }
         var segments = assemble(paragraphs, ranges)
+        AppLog.putAnalysis(
+            "【V4·$chapterLabel·阶段1】完成 ${System.currentTimeMillis() - t0}ms：话语 ${segments.count { it.roleType != SpeechRoleType.Narrator }}",
+        )
 
-        // B34.2b·③：预插标记——以第1阶段片段文本为模板（与话语分析输入同款；本地建议来自片段级扫描）
+        // 音频导演（暂时保持现状；结果双写 Room 计划表，播放仍读旧存储到 V4-4）
         val unitsByPara = buildParaUnits(paragraphs)
         val flatUnits = unitsByPara.flatMap { pu -> pu.units.map { it.text } }
         val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
             AudioLaneScan.suggest(flatUnits)
         }.getOrNull() ?: List(flatUnits.size) { emptyList() }
-
         if (directorSkipReason.isNotEmpty()) {
-            // P1.5.1：跳过 Ai 导演时的预扫行——与「本地计划」同源（词网+内置+用户建议），
-            // 唯一条目口径=与音频侧「剧本统计」一致（修「分析显示0条 vs 音频5条」的口径误解）
             logLaneFallbackSuggestions(directorSkipReason, unitSuggestions)
         }
 
-        // ===== B 归属+人物（AI 必须）+ 情绪（并发） =====
+        // ===== 阶段2：对白归属（AI） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = renderNumbered(segments)
-        // B34.2c：音频导演并发发起（片段文本就绪 → 与第2阶段/情绪并发；锚点=段号/片段号，音效另带片内pos）
         val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
         val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
             val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
@@ -489,7 +461,6 @@ BGM 建议缺段从值集补全。
         } else null
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
-        // B30：情绪编号定序——就地转旁白的段落不参与计数，情绪按「编号时刻」的 (段号, 区间起点) 反查回填
         val emoSeqIndex = dialogueSegs.mapIndexed { i, s -> (s.paragraphIndex to s.start) to i + 1 }.toMap()
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
             pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
@@ -502,42 +473,75 @@ BGM 建议缺段从值集补全。
                 usedAi2 = true
                 entries = s2.chars
                 segments = applyStage2(segments, s2.seqMap, s2.narratorSeqs)
-                val roleNames = entries.map { it.name }
-                val roleList = if (roleNames.isEmpty()) "" else "：${joinCapped(roleNames)}"
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】完成：角色 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）$roleList")
-                // B30：旁白角色剥离（静默；不判失败、不打回重析）
-                if (s2.narratorSeqs.isNotEmpty()) {
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】旁白角色剥离：${s2.narratorSeqs.size} 段转旁白")
-                }
+                AppLog.putAnalysis(
+                    "【V4·$chapterLabel·阶段2】完成：人物 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
+                )
             } else {
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】失败：话语改用默认对话(duihuaA/duihuaB)发声")
+                AppLog.putAnalysis("【V4·$chapterLabel·阶段2】失败：话语改用默认对话(duihuaA/duihuaB)发声")
             }
         } else if (dialogueSegs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】跳过：未配模型队列 → 话语改用默认对话(duihuaA/duihuaB)发声")
+            AppLog.putAnalysis("【V4·$chapterLabel·阶段2】跳过：未配模型队列 → 话语改用默认对话发声")
         }
 
-        // ===== D 历史对比 + 记录库 =====
-        val t4 = System.currentTimeMillis()
-        val s4Refs = runCatching { aiModels.queueRefs("stage4") }.getOrDefault(emptyList())
-        val stageDResult = stageD(segments, entries, records0, chapterIndex, bookName, s4Refs, cfg)
-        segments = stageDResult.first
-        val recordsUpd = stageDResult.second
-        AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】完成（${System.currentTimeMillis() - t4}ms）：记录 ${recordsUpd.size} 项")
+        // ===== 身份收敛（V4-1 确定性最小版） =====
+        val localSpeakers = buildLocalSpeakers(analysisId, entries, chapterIndex)
+        val keyToCharacter = HashMap<String, String>()
+        val keyToResolution = HashMap<String, RaResolution>()
+        val resolvedCharacters = ArrayList<io.legado.app.domain.model.readaloud.v4.RaCharacter>()
+        localSpeakers.forEach { speaker ->
+            val resolution = resolver.resolve(bookKey, chapterIndex, speaker)
+            keyToCharacter[speaker.localKey] = resolution.characterId
+            keyToResolution[speaker.localKey] = resolution.resolution
+            raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
+        }
+        segments = bindSpeakers(segments, localSpeakers, keyToCharacter)
+        // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
+        val overrides = runCatching { raBuild.overrides(bookKey, chapterIndex) }
+            .getOrDefault(emptyList())
+            .associateBy { it.paragraphIndex to it.textHash }
+        if (overrides.isNotEmpty()) {
+            segments = segments.map { segment ->
+                val override = overrides[segment.paragraphIndex to MD5Utils.md5Encode16(segment.text)]
+                    ?: return@map segment
+                if (override.narrator) {
+                    segment.copy(
+                        roleType = SpeechRoleType.Narrator,
+                        characterId = null,
+                        localSpeakerId = null,
+                        surfaceName = "",
+                        seq = 0,
+                    )
+                } else {
+                    segment.copy(characterId = override.characterId ?: segment.characterId)
+                }
+            }
+        }
+        val updatedSpeakers = localSpeakers.map { speaker ->
+            speaker.copy(
+                characterId = keyToCharacter[speaker.localKey],
+                resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
+            )
+        }
+        if (localSpeakers.isNotEmpty()) {
+            AppLog.putAnalysis(
+                "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}（链接 ${keyToResolution.count { it.value == RaResolution.RESOLVED }}、临时 ${keyToResolution.count { it.value != RaResolution.RESOLVED }}）",
+            )
+        }
+        casting.ensureDefaultProfiles(bookKey, resolvedCharacters.distinctBy { it.id }, chapterLabel)
 
-        // ===== 情绪 join（第4阶段完成后最多再等 joinTimeout；超时先落库） =====
+        // ===== 情绪（V4-1 仍用旧提示词；结果写 ra_direction_line） =====
+        val emotionBySeq = HashMap<Int, String>()
         if (emoJob != null) {
             val emo = withTimeoutOrNull(cfg.emotionJoinTimeoutMs) { emoJob.await() }
             if (emo != null && emo.isNotEmpty()) {
-                segments = applyEmotion(segments, emo, emoSeqIndex)
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
+                emotionBySeq.putAll(emo)
+                AppLog.putAnalysis("【V4·$chapterLabel·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
             } else if (emo == null && emoJob.isActive) {
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库（后台结果不写回）")
-            } else {
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·情绪】无有效结果，以无情绪剧本落库")
+                AppLog.putAnalysis("【V4·$chapterLabel·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库")
             }
         }
 
-        // ===== 音频导演 join（第4阶段完成后 ≤ joinTimeout；超时/失败 → 本地规则兜底） =====
+        // ===== 音频导演 join（暂时保留时域兜底） =====
         var audioPlan: AudioPlan? = null
         if (directorJob != null) {
             val items = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
@@ -547,7 +551,7 @@ BGM 建议缺段从值集补全。
                         .copy(scriptHash = contentHash)
                     audioPlan = plan
                     AppLog.putAnalysis(
-                        "【分析V3·${chapterLabel}·音效与背景音】Ai导演：${plan.countsText()}。"
+                        "【V4·$chapterLabel·音效与背景音】Ai导演：${plan.countsText()}。",
                     )
                     runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
                 }
@@ -555,151 +559,196 @@ BGM 建议缺段从值集补全。
                 else -> logLaneFallback("Ai失败", paragraphs)
             }
         } else {
-            // B34.2b·③-B：首章/非连续/未设置Ai → 本地建议直接成为章节计划（第4阶段+情绪后写入）
             val rulesPlan = AudioPrefill.buildRulesPlan(
                 buildFallbackSeeds(unitsByPara, unitSuggestions, segments),
             )
             if (rulesPlan.itemCount > 0) {
                 audioPlan = rulesPlan.copy(scriptHash = contentHash)
                 AppLog.putAnalysis(
-                    "【分析V3·${chapterLabel}·音效与背景音】本地计划已写入剧本：${rulesPlan.countsText()}。"
+                    "【V4·$chapterLabel·音效与背景音】本地计划已写入：${rulesPlan.countsText()}。",
                 )
                 runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
             }
         }
 
-        // ===== 声线分配（三池，只吃“已选中”声线库） =====
-        val recordsFin = assignVoices(recordsUpd, chapterIndex)
-        if (recordsFin.isNotEmpty() || narratorPurged > 0) {
-            dataRepository.saveBookRecords(bookName, recordsFin)
-        }
-
-        // ===== 落库 =====
-        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
-        val status = if (dialogueSegs.isNotEmpty() && !usedAi2 && s2Refs.isNotEmpty()) {
-            SpeechAnalysisStatus.Partial
-        } else {
-            SpeechAnalysisStatus.Success
-        }
-        val analysis = ChapterSpeechAnalysis(
+        // ===== 落库（一个事务：analysis + segments + localSpeakers + evidence + build） =====
+        val now = System.currentTimeMillis()
+        val analysis = RaAnalysis(
             id = analysisId,
-            bookUrl = bookUrl,
+            bookKey = bookKey,
+            sourceKey = sourceKey,
             chapterIndex = chapterIndex,
             contentHash = contentHash,
             resolverVersion = RESOLVER_VERSION,
-            characterRevision = "",
-            status = status,
+            status = RaAnalysisStatus.RESOLVED,
+            origin = if (force) RaAnalysisOrigin.USER_REANALYZE else RaAnalysisOrigin.FOREGROUND,
+            modelId = "",
+            createdAt = now,
+            updatedAt = now,
         )
-        val finalSegs = if (lockedByKey.isNotEmpty()) {
-            segments.map { lockedByKey[it.paragraphIndex to it.text] ?: it }
-        } else {
-            segments
-        }
-        val bound = finalSegs.map { s ->
-            s.copy(
-                id = SpeechIdentity.segmentId(analysisId, s.paragraphIndex, s.start, s.end),
+        val bound = segments.map { segment ->
+            segment.copy(
+                id = SpeechIdentity.segmentId(analysisId, segment.paragraphIndex, segment.start, segment.end),
                 analysisId = analysisId,
-                bookUrl = bookUrl,
+                bookKey = bookKey,
                 chapterIndex = chapterIndex,
+                createdAt = now,
+                updatedAt = now,
             )
         }
-        runCatching { chapterSpeechGateway.saveAnalysis(analysis, bound) }
-            .onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】落库失败: ${it.localizedMessage}", it) }
-        AppLog.putAnalysis("【分析V3·${chapterLabel}】落库完成 status=${status.storageValue} 段数=${bound.size} AI=$usedAi2")
-        // ===== 文件产物：all_clean_text / chapter_cache（供角色管理/书籍管理读取） =====
-        val fileOk = writeFileArtifacts(bookName, chapterIndex, bookUrl, bound, audioPlan)
-        AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入=$fileOk")
-        // B17：完成解析 → 推进「最近完成解析章」（顺读 / 跳读 / 回跳 判定依据）
-        if (bookName.isNotBlank()) dataRepository.markChapterResolved(bookName, chapterIndex)
-        ChapterSpeechAnalysisResult(analysis, bound, false)
+        val olderBuild = raBuild.getBuild(bookKey, sourceKey, chapterIndex)
+        val build = RaChapterBuild(
+            bookKey = bookKey,
+            sourceKey = sourceKey,
+            chapterIndex = chapterIndex,
+            contentHash = contentHash,
+            state = RaChapterState.IDENTITY_READY,
+            analysisId = analysisId,
+            failReason = "",
+            attempts = olderBuild?.attempts ?: 0,
+            createdAt = olderBuild?.createdAt ?: now,
+            updatedAt = now,
+        )
+        raBuild.saveAnalysisBundle(
+            analysis = analysis,
+            segments = bound,
+            localSpeakers = updatedSpeakers,
+            evidence = emptyList(),
+            build = build,
+        )
+        AppLog.putAnalysis(
+            "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2",
+        )
+
+        // ===== 导演行（情绪）与音频条目双写 Room =====
+        saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
+        RaPipelineResult(analysis, bound, false)
     }
 
 
-    /** 本地快速分段（点击朗读 → 先出声；与 A 阶段本地路径同源）：引号规则 v2 → 段落装配 */
-    fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<ChapterSpeechSegment> {
+    /** 本地快速分段（点击朗读 → 先出声）：引号规则 v2 → 段落装配；不落库。 */
+    fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<RaSegment> {
         val ranges = ArrayList<SpRange>()
         paragraphs.forEach { p ->
             QuoteSpeechRules.quoteSpans(p.text).forEach { s ->
                 ranges.add(SpRange(p.index, s.first, s.last + 1))
             }
         }
-        // B28：纯符号"话语"转旁白（与 stageA 同规则）
         val pruned = pruneSymbolOnly(paragraphs, ranges)
         if (pruned > 0) {
-            AppLog.putAnalysis("【分析V3·快速链】纯符号话语过滤（转旁白）：${pruned} 段")
+            AppLog.putAnalysis("【V4·快速链】纯符号话语过滤（转旁白）：${pruned} 段")
         }
         return assemble(paragraphs, ranges)
     }
 
-    /**
-     * B8.3 本地剧本文件回填：DB 未命中时，把本地剧本（`all_clean_text` / `chapter_cache`）的本章行
-     * 对齐回当前正文，重建 segments 并回写 DB（同 contentHash + resolverVersion）。
-     * 使「清应用数据后」朗读直接消费剧本、不再重析（调度器随后缓存命中），声线/情绪随剧本还原。
-     * 对齐失败（正文已变 / 无法唯一定位）或剧本不存在 → 返回 null，调用方回落快速链。
-     * [logMiss]=false 时静默未命中（播放侧 / 预下载侧的探测用，避免与管线侧重复记账，B10.4.3）。
-     * B10.5·Q3 换源复用：剧本行改「候选序」读取（文件 → 精确键 → 同章任意键），逐个对齐取首个成功者；
-     * 复用成功后为当前 bookUrl 补写缓存键（自愈），后续读取走精确命中。
-     */
-    suspend fun restoreFromScriptFiles(
-        bookUrl: String,
-        bookName: String,
+    private suspend fun buildLocalSpeakers(
+        analysisId: String,
+        entries: List<Calibrated>,
         chapterIndex: Int,
-        paragraphs: List<CanonicalSpeechParagraph>,
-        logMiss: Boolean = true,
-    ): ChapterSpeechAnalysisResult? = withContext(Dispatchers.IO) {
-        if (bookUrl.isBlank() || paragraphs.isEmpty()) return@withContext null
-        val name = bookName.ifBlank { dataRepository.loadBookName(bookUrl) }
-        if (name.isBlank()) return@withContext null
-        // B19：本函数可被播放侧/等待侧直接调用，独立解析显示名（不依赖 run 的字段）
-        val chLabel = runCatching { dataRepository.chapterLabelOf(name, chapterIndex) }
-            .getOrDefault("第${chapterIndex + 1}章")
-        val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        val existing = runCatching {
-            chapterSpeechGateway.getAnalysis(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
-        }.getOrNull()
-        if (existing != null &&
-            existing.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)
-        ) {
-            return@withContext null // DB 已就绪，调用方按命中处理
-        }
-        val candidates = dataRepository.loadChapterScriptCandidates(name, bookUrl, chapterIndex)
-        if (candidates.isEmpty()) {
-            if (logMiss) AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填：无剧本行")
-            return@withContext null
-        }
-        val aligned = candidates.firstNotNullOfOrNull { rows -> ScriptFileBackfill.align(paragraphs, rows) }
-        if (aligned == null) {
-            if (logMiss) AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填跳过：剧本与正文不一致或无法唯一定位")
-            return@withContext null
-        }
-        val analysisId = SpeechIdentity.analysisId(bookUrl, chapterIndex, contentHash, RESOLVER_VERSION)
-        val segments = ScriptFileBackfill.toSegments(aligned, bookUrl, chapterIndex, analysisId)
-        val analysis = ChapterSpeechAnalysis(
-            id = analysisId,
-            bookUrl = bookUrl,
-            chapterIndex = chapterIndex,
-            contentHash = contentHash,
-            resolverVersion = RESOLVER_VERSION,
-            characterRevision = "",
-            status = SpeechAnalysisStatus.Success,
+    ): List<RaLocalSpeaker> = entries.mapIndexed { index, entry ->
+        val names = (listOf(entry.name) + AliasTokens.of(entry.alias))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        RaLocalSpeaker(
+            id = "$analysisId#L${index + 1}",
+            analysisId = analysisId,
+            localKey = "L${index + 1}",
+            surfaceNames = names,
+            primaryName = entry.name,
+            roleType = entry.roleType,
+            gender = entry.gender,
+            ageBand = entry.age,
+            resolution = RaResolution.PENDING,
         )
-        val saved = runCatching { chapterSpeechGateway.saveAnalysis(analysis, segments) }
-        if (saved.isFailure) {
-            AppLog.putAnalysis(
-                "【分析V3·${chLabel}】本地剧本回填：${segments.size} 段（回写 DB 失败，本次仍可用）",
-                saved.exceptionOrNull(),
-            )
-        } else {
-            AppLog.putAnalysis("【分析V3·${chLabel}】本地剧本回填成功：${segments.size} 段（免重析）")
-        }
-        // B17：回填复用也算完成解析 → 推进「最近完成解析章」
-        dataRepository.markChapterResolved(name, chapterIndex)
-        // B10.5·Q3 换源自愈：把复用结果落到当前 bookUrl 的缓存键（已存在则跳过）
-        dataRepository.ensureChapterCacheForUrl(name, bookUrl, chapterIndex, renderScriptForStore(segments, loadAudioPlanFor(name, bookUrl, chapterIndex, contentHash)))
-        ChapterSpeechAnalysisResult(analysis, segments, true)
     }
 
-    // ---------------- A 话语分析 ----------------
+    private fun bindSpeakers(
+        segments: List<RaSegment>,
+        speakers: List<RaLocalSpeaker>,
+        characterByKey: Map<String, String>,
+    ): List<RaSegment> {
+        val keyBySurface = HashMap<String, String>()
+        speakers.forEach { speaker ->
+            speaker.surfaceNames.forEach { name ->
+                keyBySurface[RaNameUtils.normalize(name)] = speaker.localKey
+            }
+        }
+        var seq = 0
+        return segments.map { segment ->
+            if (segment.roleType == SpeechRoleType.Narrator) {
+                segment.copy(seq = 0, localSpeakerId = null, characterId = null)
+            } else {
+                seq++
+                val key = keyBySurface[RaNameUtils.normalize(segment.surfaceName)]
+                segment.copy(
+                    seq = seq,
+                    localSpeakerId = key?.let { "$key" }?.let { localKey ->
+                        speakers.firstOrNull { it.localKey == localKey }?.id
+                    },
+                    characterId = key?.let(characterByKey::get),
+                )
+            }
+        }
+    }
+
+    private suspend fun saveDirectionRows(
+        analysisId: String,
+        bookKey: String,
+        chapterIndex: Int,
+        segments: List<RaSegment>,
+        emotionBySeq: Map<Int, String>,
+        audioPlan: AudioPlan?,
+        now: Long,
+    ) {
+        val planId = "dp_${analysisId}_PLAYBACK_BASE"
+        val lines = ArrayList<RaDirectionLine>()
+        segments.forEach { segment ->
+            if (segment.seq <= 0) return@forEach
+            val emotion = emotionBySeq[segment.seq] ?: return@forEach
+            lines.add(RaDirectionLine(segmentId = segment.id, emotionTag = emotion))
+        }
+        val audio = ArrayList<RaDirectionAudio>()
+        if (audioPlan != null) {
+            var idx = 0
+            (audioPlan.ambience + audioPlan.bgm + audioPlan.sfx).forEach { item ->
+                audio.add(
+                    RaDirectionAudio(
+                        idx = idx++,
+                        type = item.type,
+                        para = item.para,
+                        frag = 0,
+                        posRatio = item.posRatio,
+                        tag = item.tag,
+                        desc = item.desc,
+                        delayMs = item.delayMs.toInt(),
+                        hold = item.hold != 0,
+                        theme = item.theme,
+                        scene = item.scene,
+                        mood = item.mood,
+                        speed = item.speed,
+                        anchor = item.anchor,
+                    ),
+                )
+            }
+        }
+        if (lines.isEmpty() && audio.isEmpty()) return
+        raDirection.savePlan(
+            plan = RaDirectionPlan(
+                id = planId,
+                analysisId = analysisId,
+                bookKey = bookKey,
+                chapterIndex = chapterIndex,
+                module = "PLAYBACK_BASE",
+                status = "READY",
+                directorRevision = 1,
+                identityRevisionSnapshot = 0,
+                origin = "FOREGROUND",
+            ),
+            lines = lines,
+            audio = audio,
+        )
+    }
 
     private suspend fun stageA(
         paragraphs: List<CanonicalSpeechParagraph>,
@@ -877,8 +926,8 @@ BGM 建议缺段从值集补全。
     private fun assemble(
         paragraphs: List<CanonicalSpeechParagraph>,
         ranges: List<SpRange>,
-    ): List<ChapterSpeechSegment> {
-        val out = ArrayList<ChapterSpeechSegment>()
+    ): List<RaSegment> {
+        val out = ArrayList<RaSegment>()
         val byPara = ranges.groupBy { it.para }
         paragraphs.forEach { p ->
             val rs = (byPara[p.index] ?: emptyList()).sortedBy { it.start }
@@ -911,10 +960,10 @@ BGM 建议缺段从值集补全。
         end: Int,
         text: String,
         role: SpeechRoleType,
-    ): ChapterSpeechSegment = ChapterSpeechSegment(
+    ): RaSegment = RaSegment(
         id = "",
         analysisId = "",
-        bookUrl = "",
+        bookKey = "",
         chapterIndex = 0,
         paragraphIndex = p.index,
         start = start,
@@ -922,11 +971,12 @@ BGM 建议缺段从值集补全。
         chapterPosition = p.chapterPosition + start,
         text = text,
         roleType = role,
+        surfaceName = "",
         source = SpeechResolutionSource.Rule,
     )
 
     /** 编号渲染（B31：[n]〔content（外层引号已去除）〕/ [N]旁白；一行一项、段间空行）——发给第2阶段/情绪 */
-    private fun renderNumbered(segments: List<ChapterSpeechSegment>): String {
+    private fun renderNumbered(segments: List<RaSegment>): String {
         val sb = StringBuilder()
         var n = 0
         var lastP = -1
@@ -1199,10 +1249,10 @@ BGM 建议缺段从值集补全。
     }
 
     private fun applyStage2(
-        segments: List<ChapterSpeechSegment>,
+        segments: List<RaSegment>,
         seqMap: Map<Int, String>,
         narratorSeqs: Set<Int> = emptySet(),
-    ): List<ChapterSpeechSegment> {
+    ): List<RaSegment> {
         var n = 0
         return segments.map { s ->
             if (s.roleType == SpeechRoleType.Narrator) {
@@ -1213,13 +1263,13 @@ BGM 建议缺段从值集补全。
                     // B30：旁白角色剥离——剥夺角色属性（名字/归属），就地转真旁白（旁白声线合成）
                     n in narratorSeqs -> s.copy(
                         roleType = SpeechRoleType.Narrator,
-                        characterName = "",
+                        surfaceName = "",
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
                     )
                     seqMap[n].isNullOrBlank() -> s.copy(source = SpeechResolutionSource.Ai)
                     else -> s.copy(
-                        characterName = seqMap.getValue(n),
+                        surfaceName = seqMap.getValue(n),
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
                         confidence = 0.9f,
@@ -1280,425 +1330,7 @@ BGM 建议缺段从值集补全。
         return ValidateOutcome(out)
     }
 
-    private fun applyEmotion(
-        segments: List<ChapterSpeechSegment>,
-        emo: Map<Int, String>,
-        seqIndex: Map<Pair<Int, Int>, Int>,
-    ): List<ChapterSpeechSegment> {
-        // B30：按 (段号, 区间起点) 反查序号——第2阶段就地转旁白的段落不参与计数，避免其余编号错位
-        return segments.map { s ->
-            if (s.roleType == SpeechRoleType.Narrator) {
-                s
-            } else {
-                val n = seqIndex[s.paragraphIndex to s.start]
-                if (n == null) s else emo[n]?.let { s.copy(emotion = it) } ?: s
-            }
-        }
-    }
-
     // ---------------- D 历史对比 + 记录库 ----------------
-
-    private suspend fun stageD(
-        segments: List<ChapterSpeechSegment>,
-        entries: List<Calibrated>,
-        records0: List<CharacterRecord>,
-        chapterIndex: Int,
-        bookName: String,
-        s4Refs: List<AiSpeechClient.ModelRef>,
-        cfg: AnalysisConfigStore.Config,
-    ): Pair<List<ChapterSpeechSegment>, List<CharacterRecord>> {
-        if (entries.isEmpty()) return segments to records0
-        val recs = ArrayList(records0)
-        val suffix = "【第${chapterIndex + 1}章】"
-        val snapshot = recs.filter { it.lastAppearanceChapter < chapterIndex }
-        val hasHistory = snapshot.isNotEmpty()
-        val rename = HashMap<String, String>()
-        val pending = ArrayList<Calibrated>()
-
-        fun finalNameOf(e: Calibrated): String =
-            if (e.roleType == "路人" && !e.name.contains("【第")) e.name + suffix else e.name
-
-        val hitLogs = ArrayList<String>()
-        val backLogs = ArrayList<String>()
-        val newLogs = ArrayList<String>()
-        entries.forEach { e ->
-            val hit = if (hasHistory && e.roleType != "路人") histMatch(snapshot, e) else null
-            val hitAll = if (hit == null && e.roleType != "路人") histMatch(recs, e) else null
-            if (hit != null) {
-                captureAutoMerge(bookName, chapterIndex, segments, e, hit, finalNameOf(e))
-                val (fn, desc) = applyMerge(hit, e, finalNameOf(e), chapterIndex, bookName)
-                rename[e.name] = fn
-                hitLogs.add(desc)
-            } else if (hitAll != null) {
-                captureAutoMerge(bookName, chapterIndex, segments, e, hitAll, finalNameOf(e))
-                val (fn, desc) = applyMerge(hitAll, e, finalNameOf(e), chapterIndex, bookName)
-                rename[e.name] = fn
-                backLogs.add(desc)
-            } else if (!hasHistory || !eligibleHistoryExists(e, snapshot)) {
-                val rec = createRecord(recs, e, chapterIndex)
-                rename[e.name] = rec.name
-                newLogs.add("${rec.name}（${rec.roletype}）")
-            } else {
-                pending.add(e)
-            }
-        }
-        if (hitLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】快速命中：${joinCapped(hitLogs)}")
-        }
-        if (backLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】回跳命中：${joinCapped(backLogs)}")
-        }
-        if (newLogs.isNotEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段】新建：${joinCapped(newLogs)}")
-        }
-
-        pending.forEach { e ->
-            val cands = snapshot.filter { it.gender == e.gender && ageDistance(it.age, e.age) <= 1 }
-            if (cands.isEmpty()) {
-                val rec = createRecord(recs, e, chapterIndex)
-                rename[e.name] = rec.name
-                return@forEach
-            }
-            val ctx = buildStage4Context(bookName, chapterIndex, segments, e, cands, rename)
-            val descs = cands.joinToString("、") { c ->
-                c.name + (if (c.age.isNotBlank()) "(${c.age})" else "") +
-                    (if (c.aliases.isNotBlank()) {
-                        "，别名：" + AliasTokens.of(c.aliases).joinToString("、")
-                    } else {
-                        ""
-                    })
-            }
-            val roleName = rename[e.name] ?: finalNameOf(e)
-            val verdict = callStage4AI(ctx, roleName, descs, cfg, s4Refs, chapterIndex)
-            var target: CharacterRecord? = null
-            if (verdict != null && verdict.first) {
-                val mn = verdict.second.orEmpty()
-                target = cands.firstOrNull { it.name == mn || mn in AliasTokens.of(it.aliases) }
-            }
-            if (target != null) {
-                captureAutoMerge(bookName, chapterIndex, segments, e, target, finalNameOf(e))
-                val (fn, desc) = applyMerge(target, e, finalNameOf(e), chapterIndex, bookName)
-                rename[e.name] = fn
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段·长文本匹配】$desc")
-            } else {
-                val rec = createRecord(recs, e, chapterIndex)
-                rename[e.name] = rec.name
-                AppLog.putAnalysis("【分析V3·${chapterLabel}·第4阶段·长文本匹配】${e.name} 未命中 → 新建 ${rec.name}")
-            }
-        }
-
-        val out = segments.map { s ->
-            if (s.roleType != SpeechRoleType.Narrator && rename.containsKey(s.characterName)) {
-                s.copy(characterName = rename.getValue(s.characterName))
-            } else {
-                s
-            }
-        }
-        return out to recs
-    }
-
-    /** B23：自动合并捕获（对齐 1.4.x `mergeLogCapture`；在合并改名映射覆盖前捕获本章台词行指纹）——
-     *  'm' 凭据供：①回滚逆向（保留区同 from|to 对则跳过）②释放回放（行指纹精确回写）③编辑保存清账。 */
-    private suspend fun captureAutoMerge(
-        bookName: String,
-        chapterIndex: Int,
-        segments: List<ChapterSpeechSegment>,
-        e: Calibrated,
-        hist: CharacterRecord,
-        fromName: String,
-    ) {
-        runCatching {
-            val to = hist.name
-            if (bookName.isBlank() || fromName.isBlank() || to.isBlank() || fromName == to) return@runCatching
-            val extra = AliasTokens.of(e.alias).filter { it.isNotBlank() && it != fromName && it != to }
-            val lines = ArrayList<Pair<Int, String>>()
-            segments.forEachIndexed { i, s ->
-                if (s.roleType != SpeechRoleType.Narrator && s.characterName == e.name) {
-                    lines.add(i to s.text)
-                }
-            }
-            if (lines.isEmpty()) return@runCatching
-            dataRepository.captureAutoMergeOp(
-                book = bookName,
-                chapter = chapterIndex,
-                from = fromName,
-                to = to,
-                aliases = extra,
-                via = mergeViaToken(e, hist),
-                lines = lines,
-            )
-        }
-    }
-
-    /** 合并凭据 via：e（名+别名）与 hist（名+别名）的首个共同 token（对齐原版 __mergeLogViaToken） */
-    private fun mergeViaToken(e: Calibrated, hist: CharacterRecord): String {
-        val eToks = listOf(e.name) + AliasTokens.of(e.alias)
-        val hToks = listOf(hist.name) + AliasTokens.of(hist.aliases)
-        for (t in eToks) {
-            val tt = t.trim()
-            if (tt.isNotEmpty() && tt in hToks) return tt
-        }
-        return ""
-    }
-
-    private suspend fun applyMerge(
-        hist: CharacterRecord,
-        e: Calibrated,
-        eFinalName: String,
-        chapterIndex: Int,
-        bookName: String,
-    ): Pair<String, String> {
-        touchAppearance(hist, chapterIndex)
-        if (hist.roletype == "路人") {
-            if (e.roleType != "路人") {
-                // 升级：核心/特殊 接管主名；旧路人主名（含后缀完整名）转别名
-                val oldName = hist.name
-                val voiceKept = hist.voice
-                val aliasList = AliasTokens.of(hist.aliases).toMutableList()
-                if (oldName.isNotBlank() && oldName != e.name && oldName !in aliasList) aliasList.add(oldName)
-                AliasTokens.of(e.alias).forEach { t ->
-                    if (t.isNotBlank() && t != e.name && t !in aliasList) aliasList.add(t)
-                }
-                hist.name = e.name
-                hist.aliases = aliasList.filter { it.isNotBlank() && it != e.name }.distinct().joinToString("|")
-                hist.roletype = e.roleType
-                replaceMarkersAcrossBook(bookName, oldName, e.name)
-                val voiceNote = if (voiceKept.isNotBlank()) "，声线保留：$voiceKept" else ""
-                return e.name to "$oldName → ${e.name}（升级${e.roleType}$voiceNote）"
-            }
-            return hist.name to "${e.name} → ${hist.name}"
-        }
-        // 并入核心/特殊：别名加法（路人侧用完整名【第N章】；后缀是章节消歧凭据，必须保留）
-        val effName = if (e.roleType == "路人") eFinalName else e.name
-        val aliasList = AliasTokens.of(hist.aliases).toMutableList()
-        if (effName.isNotBlank() && effName != hist.name && effName !in aliasList) aliasList.add(effName)
-        AliasTokens.of(e.alias).forEach { t ->
-            if (t.isNotBlank() && t != hist.name && t !in aliasList) aliasList.add(t)
-        }
-        hist.aliases = aliasList.filter { it.isNotBlank() && it != hist.name }.distinct().joinToString("|")
-        return hist.name to "$effName → ${hist.name}"
-    }
-
-    private fun createRecord(
-        recs: MutableList<CharacterRecord>,
-        e: Calibrated,
-        chapterIndex: Int,
-    ): CharacterRecord {
-        val existing = findRecord(recs, e.name)
-            ?: AliasTokens.of(e.alias).firstNotNullOfOrNull { findRecord(recs, it) }
-        if (existing != null) {
-            touchAppearance(existing, chapterIndex)
-            val aliasList = AliasTokens.of(existing.aliases).toMutableList()
-            AliasTokens.of(e.alias).forEach { t ->
-                if (t.isNotBlank() && t != existing.name && t !in aliasList) aliasList.add(t)
-            }
-            if (e.name != existing.name && e.name !in aliasList) aliasList.add(e.name)
-            existing.aliases = aliasList.filter { it.isNotBlank() && it != existing.name }.distinct().joinToString("|")
-            return existing
-        }
-        val finalName = if (e.roleType == "路人" && !e.name.contains("【第")) {
-            e.name + "【第${chapterIndex + 1}章】"
-        } else {
-            e.name
-        }
-        val rec = CharacterRecord(
-            name = finalName,
-            aliases = if (e.alias.isNotBlank() && e.alias != e.name) e.alias else "",
-            roletype = e.roleType,
-            gender = e.gender,
-            age = e.age,
-            voice = "",
-            lastAppearanceChapter = chapterIndex,
-            appearanceCount = 1,
-            appearanceChapters = mutableListOf(chapterIndex),
-        )
-        recs.add(0, rec)
-        return rec
-    }
-
-    private fun touchAppearance(rec: CharacterRecord, chapterIndex: Int) {
-        rec.lastAppearanceChapter = chapterIndex
-        rec.appearanceCount += 1
-        if (!rec.appearanceChapters.contains(chapterIndex)) rec.appearanceChapters.add(chapterIndex)
-    }
-
-    private suspend fun replaceMarkersAcrossBook(bookName: String, oldName: String, newName: String) {
-        if (oldName.isBlank() || oldName == newName) return
-        runCatching {
-            dataRepository.rewriteMarkersAll(bookName, oldName, newName, writeLog = true)
-            dataRepository.renameMergeLogTokens(bookName, oldName, newName)
-        }.onFailure { AppLog.putAnalysis("分析V3·改名回写失败: ${it.localizedMessage}", it) }
-    }
-
-    private fun findRecord(recs: List<CharacterRecord>, name: String): CharacterRecord? {
-        val n = name.trim()
-        if (n.isBlank()) return null
-        return recs.firstOrNull { it.name.equals(n, true) || AliasTokens.of(it.aliases).any { a -> a.equals(n, true) } }
-    }
-
-    private fun histMatch(records: List<CharacterRecord>, e: Calibrated): CharacterRecord? {
-        val eTokens = (listOf(e.name) + AliasTokens.of(e.alias)).filter { it.isNotBlank() }
-        for (rec in records) {
-            val rTokens = (listOf(rec.name) + AliasTokens.of(rec.aliases)).filter { it.isNotBlank() }
-            if (eTokens.any { t -> rTokens.any { r -> r == t } }) return rec
-        }
-        return null
-    }
-
-    private fun eligibleHistoryExists(e: Calibrated, snapshot: List<CharacterRecord>): Boolean =
-        snapshot.any { it.gender == e.gender && ageDistance(it.age, e.age) <= 1 }
-
-    private suspend fun buildStage4Context(
-        bookName: String,
-        chapterIndex: Int,
-        segments: List<ChapterSpeechSegment>,
-        e: Calibrated,
-        cands: List<CharacterRecord>,
-        rename: Map<String, String>,
-    ): String {
-        var startCh = (chapterIndex - 5).coerceAtLeast(0)
-        val firstMention = findFirstMentionChapter(bookName, e.name, chapterIndex - 1)
-        if (firstMention in 0 until startCh) startCh = firstMention
-
-        val sb = StringBuilder()
-        for (c in startCh until chapterIndex) {
-            val rendered = renderChapterFromRepo(bookName, c)
-            if (rendered.isNotBlank()) {
-                if (sb.isNotEmpty()) sb.append("\n")
-                sb.append("[chapter:").append(c).append("]\n").append(rendered)
-            }
-        }
-        if (sb.isNotEmpty()) sb.append("\n")
-        sb.append("[chapter:").append(chapterIndex).append("]\n")
-        sb.append(renderFinalScript(segments, rename))
-
-        var ctx = stripNarrTag(sb.toString())
-        val keepSet = HashSet<String>()
-        keepSet.add(e.name)
-        keepSet.add(rename[e.name] ?: e.name)
-        if (e.roleType == "路人") keepSet.add(e.name + "【第${chapterIndex + 1}章】")
-        keepSet.addAll(AliasTokens.of(e.alias))
-        cands.forEach { c ->
-            keepSet.add(c.name)
-            keepSet.addAll(AliasTokens.of(c.aliases))
-        }
-        ctx = ctx.lines().joinToString("\n") { line ->
-            if (line.startsWith("[chapter:")) {
-                line
-            } else {
-                val spk = lineSpeakerOf(line)
-                when {
-                    spk == null -> line
-                    spk in keepSet -> line
-                    else -> {
-                        val close = line.indexOf('〗', 1)
-                        if (close != -1) line.substring(close + 1) else line
-                    }
-                }
-            }
-        }
-        return stripEmoTags(ctx)
-    }
-
-    private suspend fun renderChapterFromRepo(bookName: String, chapter: Int): String {
-        val rows = runCatching { dataRepository.loadChapterScript(bookName, chapter) }.getOrDefault(emptyList())
-        if (rows.isEmpty()) return ""
-        val sb = StringBuilder()
-        rows.forEach { r ->
-            if (r.speaker.isBlank()) {
-                sb.append(r.text).append("\n")
-            } else {
-                sb.append("〖").append(r.speaker).append("〗").append(r.text).append("\n")
-            }
-        }
-        return sb.toString().trimEnd('\n')
-    }
-
-    private suspend fun findFirstMentionChapter(bookName: String, baseName: String, maxChapter: Int): Int {
-        if (baseName.length < 2 || maxChapter < 0) return -1
-        for (c in 0..maxChapter) {
-            val rows = runCatching { dataRepository.loadChapterScript(bookName, c) }.getOrDefault(emptyList())
-            if (rows.isEmpty()) continue
-            for (r in rows) {
-                if (r.speaker.isNotBlank()) {
-                    if (r.speaker == baseName) return c
-                } else if (r.text.contains(baseName)) {
-                    return c
-                }
-            }
-        }
-        return -1
-    }
-
-    private fun renderFinalScript(segments: List<ChapterSpeechSegment>, rename: Map<String, String>): String {
-        val sb = StringBuilder()
-        segments.forEach { s ->
-            if (s.roleType == SpeechRoleType.Narrator) {
-                sb.append("〖旁白〗").append(s.text).append("\n")
-            } else {
-                val nm = rename[s.characterName] ?: s.characterName.ifBlank { "旁白" }
-                sb.append("〖").append(nm).append("〗").append(s.text).append("\n")
-            }
-        }
-        return sb.toString().trimEnd('\n')
-    }
-
-    /** 文件产物写入（幂等）：all_clean_text/chapter_cache + 书架索引（B33.4b：附音频标签） */
-    private suspend fun writeFileArtifacts(
-        bookName: String,
-        chapterIndex: Int,
-        bookUrl: String,
-        segments: List<ChapterSpeechSegment>,
-        audioPlan: AudioPlan? = null,
-    ): Boolean {
-        if (bookName.isBlank()) return false
-        return runCatching {
-            dataRepository.ensureBookInList(bookName)
-            dataRepository.saveChapterScript(bookName, chapterIndex, bookUrl, renderScriptForStore(segments, audioPlan))
-        }.onFailure { AppLog.putAnalysis("【分析V3·${chapterLabel}】剧本文件写入失败: ${it.localizedMessage}", it) }.getOrDefault(false)
-    }
-
-    /** 落盘用剧本渲染：〖旁白〗/〖主名〗 + [[emo:情绪]] + 行尾音频标签 [[a:…]]（与脚本文件格式一致） */
-    private fun renderScriptForStore(segments: List<ChapterSpeechSegment>, audioPlan: AudioPlan? = null): String {
-        val sb = StringBuilder()
-        segments.forEachIndexed { i, s ->
-            if (s.roleType == SpeechRoleType.Narrator) {
-                sb.append("〖旁白〗").append(s.text)
-            } else {
-                val nm = s.characterName.ifBlank { "旁白" }
-                sb.append("〖").append(nm).append("〗")
-                if (s.emotion.isNotBlank()) sb.append("[[emo:").append(s.emotion).append("]]")
-                sb.append(s.text)
-            }
-            audioPlan?.let { sb.append(renderAudioTags(it, i + 1)) }
-            sb.append("\n")
-        }
-        return sb.toString().trimEnd('\n')
-    }
-
-    /** 某段落的音频标签串（顺序：环境 → 音效 → BGM） */
-    private fun renderAudioTags(plan: AudioPlan, para: Int): String =
-        AudioTagCodec.renderLine(
-            ambience = plan.ambience.firstOrNull { it.para == para }?.tag,
-            sfx = plan.sfx.filter { it.para == para }
-                .map { AudioTagCodec.sfxValue(it.tag, it.delayMs) },
-            bgm = plan.bgm.firstOrNull { it.para == para }?.let { b ->
-                // P1.6.1：BGM 值=展示名（四段词拼接；rules 计划回退 tag）+（hold>0 时附行数）
-                if (b.hold > 0) "${b.displayName}·${b.hold}" else b.displayName
-            },
-        )
-
-    private fun lineSpeakerOf(line: String): String? {
-        if (!line.startsWith("〖")) return null
-        val end = line.indexOf('〗', 1)
-        return if (end == -1) null else line.substring(1, end)
-    }
-
-    private fun stripNarrTag(s: String): String = s.replace("〖旁白〗", "")
-
-    /** 剥离 emo 与音频标签（上下文文本永不含标签） */
-    private fun stripEmoTags(s: String): String =
-        AudioTagCodec.strip(Regex("\\[\\[(?:emo|emotion)\\s*[:=][^\\[\\]]*\\]\\]").replace(s, ""))
 
     // ---------------- B33.4b 音频导演 ----------------
 
@@ -1752,7 +1384,7 @@ BGM 建议缺段从值集补全。
     private fun convertDirectorItems(
         items: List<AudioDirectorContract.DirectorItem>,
         unitsByPara: List<ParaUnits>,
-        segments: List<ChapterSpeechSegment>,
+        segments: List<RaSegment>,
     ): AudioPlan {
         val amb = ArrayList<AudioPlanItem>()
         val bgm = ArrayList<AudioPlanItem>()
@@ -1794,7 +1426,7 @@ BGM 建议缺段从值集补全。
     private fun buildFallbackSeeds(
         unitsByPara: List<ParaUnits>,
         unitSuggestions: List<List<AudioLaneScan.Suggestion>>,
-        segments: List<ChapterSpeechSegment>,
+        segments: List<RaSegment>,
     ): List<AudioPrefill.PlanSeed> {
         val out = ArrayList<AudioPrefill.PlanSeed>()
         var fi = 0
@@ -1823,10 +1455,10 @@ BGM 建议缺段从值集补全。
 
     /** 片段起点所在剧本行（同段内包含 unitStart 的段；兜底取起点不超过它的最后一段） */
     private fun unitSegment(
-        segments: List<ChapterSpeechSegment>,
+        segments: List<RaSegment>,
         paraIndex: Int,
         unitStart: Int,
-    ): ChapterSpeechSegment? {
+    ): RaSegment? {
         val segs = segments.filter { it.paragraphIndex == paraIndex }.sortedBy { it.start }
         if (segs.isEmpty()) return null
         return segs.lastOrNull { it.start <= unitStart && unitStart < it.end }
@@ -1861,167 +1493,6 @@ BGM 建议缺段从值集补全。
     }
 
     /** 读取本章音频计划（scriptHash 与当前内容一致才采用；脚本写入用） */
-    private suspend fun loadAudioPlanFor(
-        bookName: String,
-        bookUrl: String,
-        chapterIndex: Int,
-        contentHash: String,
-    ): AudioPlan? {
-        if (bookName.isBlank()) return null
-        val plan = runCatching { AudioPlanStore.load(bookName, bookUrl, chapterIndex) }.getOrNull() ?: return null
-        if (plan.scriptHash.isNotBlank() && plan.scriptHash != contentHash) return null
-        return plan
-    }
-
-    private suspend fun callStage4AI(
-        context: String,
-        roleName: String,
-        candidateDescs: String,
-        cfg: AnalysisConfigStore.Config,
-        refs: List<AiSpeechClient.ModelRef>,
-        chapterIndex: Int,
-    ): Pair<Boolean, String?>? {
-        if (context.isBlank() || roleName.isBlank() || candidateDescs.isBlank()) return null
-        if (refs.isEmpty()) return null
-        val promptFactory = { failHint: String ->
-            buildStage4Prompt(cfg.stage4Prompt, roleName, context, candidateDescs, failHint)
-        }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第4阶段") { raw ->
-            validateStage4(raw)
-        }
-    }
-
-    private fun buildStage4Prompt(
-        cfgText: String,
-        roleName: String,
-        context: String,
-        descs: String,
-        failHint: String,
-    ): String = buildString {
-        append((cfgText.ifBlank { DEFAULT_STAGE4_HEAD }).replace("%ROLE%", roleName))
-        append("\n\n【长文本】\n").append(context)
-        append("\n\n【历史角色列表】\n").append(descs)
-        append("\n\n").append(DEFAULT_STAGE4_RULES)
-        if (failHint.isNotBlank()) {
-            append("\n【重要】你上一次的输出存在以下问题：").append(failHint).append("。请修正后重新输出完整JSON。\n")
-        }
-        append("\n【输出格式】只输出纯JSON：\n{\"is_same\": true/false, \"main_name\": \"历史角色主名或null\"}")
-    }
-
-    private fun validateStage4(raw: String): ValidateOutcome<Pair<Boolean, String?>> {
-        val root = ai.extractJson(raw) ?: return ValidateOutcome(null, "返回不是JSON对象")
-        val rawSame: Any? = root.opt("is_same")
-        val isSame: Boolean? = when (rawSame) {
-            is Boolean -> rawSame
-            is String -> when (rawSame.trim().lowercase()) {
-                "true" -> true
-                "false" -> false
-                else -> null
-            }
-            else -> null
-        }
-        var mn = root.optString("main_name").trim()
-        if (mn.equals("null", true) || mn.equals("none", true)) mn = ""
-        val errs = ArrayList<String>()
-        if (isSame == null) errs.add("is_same不是布尔值")
-        if (isSame == true && mn.isBlank()) errs.add("is_same为true但main_name缺失")
-        if (errs.isNotEmpty()) return ValidateOutcome(null, errs.joinToString("；"))
-        return ValidateOutcome(isSame!! to mn.takeIf { it.isNotBlank() })
-    }
-
-    // ---------------- 声线分配（三池） ----------------
-
-    /**
-     * B10.5·Q1：修复「声线未设置」。
-     * 候选=全部已选中池合并（同类型多池取并集）；无候选时复刻原脚本兜底链：
-     *   特殊 → 核心·青年（男青年/女青年）→ 默认对话（duihuaA/B，共享不占锁）。
-     * 全链落空才留空，并以日志给出原因（缺池/无候选）。
-     */
-    private suspend fun assignVoices(records: List<CharacterRecord>, chapterIndex: Int): List<CharacterRecord> {
-        val groups = runCatching { dataRepository.loadActiveVoiceGroups() }.getOrDefault(emptyList())
-        val tag = "${chapterLabel}·声线分配"
-
-        fun poolTags(roletype: String): List<String> =
-            groups.filter { it.effectiveRoleType() == roletype && it.tags.isNotEmpty() }
-                .flatMap { it.tags }.distinct()
-
-        if (groups.isEmpty()) {
-            val blank = records.count {
-                it.voice.isBlank() && (it.roletype == "核心" || it.roletype == "路人" || it.roletype == "特殊")
-            }
-            if (blank > 0) {
-                AppLog.putAnalysis("【分析V3·$tag】未选中任何声线库 → $blank 条角色未分配声线（去「引擎与音色 → 配置列表」勾选声线库）")
-            }
-            return records
-        }
-
-        val used = records.mapNotNull { it.voice.takeIf { v -> v.isNotBlank() } }.toMutableSet()
-
-        fun pickRandom(candidates: List<String>): String {
-            val fresh = candidates.filter { it !in used }
-            val sel = if (fresh.isNotEmpty()) {
-                fresh.random()
-            } else {
-                used.removeAll(candidates.toSet())
-                candidates.random()
-            }
-            used.add(sel)
-            return sel
-        }
-
-        var assigned = 0
-        var fallbackCount = 0
-        var specialDowngrade = 0
-        val unassigned = ArrayList<String>()
-        records.forEach { r ->
-            if (r.voice.isNotBlank()) return@forEach
-            if (r.roletype != "核心" && r.roletype != "路人" && r.roletype != "特殊") return@forEach
-            val prefix = dataRepository.expectedVoicePrefix(r.roletype, r.gender, r.age)
-            val direct = poolTags(r.roletype).filter { it.startsWith(prefix) }
-            var sel: String? = null
-            var missReason = ""
-            if (direct.isNotEmpty()) {
-                sel = pickRandom(direct)
-            } else {
-                missReason = if (poolTags(r.roletype).isEmpty()) "缺「${r.roletype}」声线池" else "「$prefix」无候选"
-                if (r.roletype == "特殊") {
-                    val youth = if (r.gender == "女") "女青年" else "男青年"
-                    val core = poolTags("核心").filter { it.startsWith(youth) }
-                    if (core.isNotEmpty()) {
-                        sel = pickRandom(core)
-                        specialDowngrade++
-                    }
-                }
-                if (sel == null) {
-                    val dh = if (r.gender == "女") "duihuaB" else "duihuaA"
-                    val dhTags = poolTags("默认对话").filter { it.startsWith(dh) }
-                    if (dhTags.isNotEmpty()) {
-                        sel = dhTags.random()
-                        fallbackCount++
-                    }
-                }
-            }
-            if (sel != null) {
-                r.voice = sel
-                assigned++
-            } else {
-                unassigned.add(if (missReason.isBlank()) r.name else "${r.name}（$missReason）")
-            }
-        }
-        if (assigned > 0 || unassigned.isNotEmpty()) {
-            val note = buildString {
-                if (fallbackCount > 0) append("，默认对话兜底 $fallbackCount 条")
-                if (specialDowngrade > 0) append("，特殊降级核心 $specialDowngrade 条")
-                if (unassigned.isNotEmpty()) {
-                    append("；未获声线 ${unassigned.size} 条：")
-                    append(unassigned.take(3).joinToString("、"))
-                    if (unassigned.size > 3) append(" 等")
-                }
-            }
-            AppLog.putAnalysis("【分析V3·$tag】本次新分配 $assigned 条$note")
-        }
-        return records
-    }
 
     /** 日志条数控制：最多列 10 项，其余折叠为「…等 N 项」（B10.5·Q2 降噪） */
     private fun joinCapped(items: List<String>, max: Int = 10): String =
@@ -2033,22 +1504,12 @@ BGM 建议缺段从值集补全。
 
     // ---------------- 工具 ----------------
 
-    private fun loadWordSet(fileName: String): Set<String> = runCatching {
-        val f = File(dataRepository.dataDir(), fileName)
-        if (!f.exists()) return@runCatching emptySet<String>()
-        val arr = JSONArray(f.readText().removePrefix("\uFEFF"))
-        (0 until arr.length()).map { arr.optString(it).trim() }.filter { it.isNotEmpty() }.toSet()
-    }.getOrDefault(emptySet())
-
     private fun isBareClassWord(w: String): Boolean {
         val t = w.trim()
-        return t in BARE_WORDS || t in bareExtraSet
+        return t.isNotEmpty() && (t.length <= 1 || t in bareWordsCache)
     }
 
-    private fun isSpecialClassWord(w: String): Boolean {
-        val t = w.trim()
-        return t in SPECIAL_WORDS || t in specialExtraSet
-    }
+    private fun isSpecialClassWord(w: String): Boolean = w.trim() in specialWordsCache
 
     private fun inferGenderFromAge(rawAge: String): String {
         val a = rawAge.trim()

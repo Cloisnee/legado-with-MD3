@@ -32,9 +32,15 @@ import io.legado.app.data.repository.BookshelfRepository
 import io.legado.app.data.repository.BookshelfSettingsRepository
 import io.legado.app.data.repository.CacheBookDownloadRepository
 import io.legado.app.data.repository.ChangeSourceSettingsRepository
-import io.legado.app.data.repository.ChapterSpeechRepository
+import io.legado.app.data.repository.RaBookIdentityRepository
+import io.legado.app.data.repository.RaBookMaintenanceRepository
+import io.legado.app.data.repository.RaBuildRepository
+import io.legado.app.data.repository.RaCharacterRepository
+import io.legado.app.data.repository.RaDirectionRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
+import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
-import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.data.repository.CheckSourceSettingsRepository
 import io.legado.app.data.repository.CoverAlbumRepository
 import io.legado.app.data.repository.CoverSettingsRepository
@@ -103,7 +109,10 @@ import io.legado.app.domain.gateway.BookSourceCallbackGateway
 import io.legado.app.domain.gateway.BookSourceCheckGateway
 import io.legado.app.domain.gateway.BookshelfSettingsGateway
 import io.legado.app.domain.gateway.ChangeSourceSettingsGateway
-import io.legado.app.domain.gateway.ChapterSpeechGateway
+import io.legado.app.domain.gateway.RaBookIdentityGateway
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.gateway.RaDirectionGateway
 import io.legado.app.domain.gateway.CheckSourceSettingsGateway
 import io.legado.app.domain.gateway.CoverAlbumGateway
 import io.legado.app.domain.gateway.CoverSettingsGateway
@@ -157,7 +166,10 @@ import io.legado.app.domain.usecase.ImportBookshelfUseCase
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
+import io.legado.app.help.readaloud.analysis.v4.IdentityResolver
+import io.legado.app.help.readaloud.analysis.v4.VoiceCastingService
+import io.legado.app.help.readaloud.playback.SpeechVoiceResolver
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.domain.usecase.RefreshTocUseCase
@@ -372,8 +384,18 @@ val appModule = module {
     singleOf(::BackupRestoreUseCase)
     singleOf(::BatchCacheDownloadUseCase)
     singleOf(::BuildSpeechPlanUseCase)
+    singleOf(::SpeechVoiceResolver)
     singleOf(::AiModelRepository)
-    singleOf(::ReadAloudDataRepository)
+    singleOf(::WordLibraryRepository)
+    singleOf(::ReadAloudVoicePoolRepository)
+    singleOf(::ReadAloudCatalogRepository)
+    singleOf(::RaBookIdentityRepository)
+    singleOf(::RaBuildRepository)
+    singleOf(::RaBookMaintenanceRepository)
+    singleOf(::RaCharacterRepository)
+    singleOf(::RaDirectionRepository)
+    singleOf(::IdentityResolver)
+    singleOf(::VoiceCastingService)
     singleOf(::ReadAloudAudioCacheRepository)
     singleOf(::LoudnessNormalizer)
     singleOf(::SynthesizeChapterAudioUseCase)
@@ -382,7 +404,7 @@ val appModule = module {
     singleOf(::BookshelfCoverPreloader)
     singleOf(::AiSpeechClient)
     singleOf(::AnalysisConfigStore)
-    singleOf(::SpeechAnalysisPipelineV3)
+    singleOf(::SpeechAnalysisPipelineV4)
     singleOf(::AnalysisSchedulerV3)
     singleOf(::PrepareChapterSpeechPlanUseCase)
     singleOf(::SyncReadAloudVoicesUseCase)
@@ -428,7 +450,10 @@ val appModule = module {
     single<BookContentProcessGateway> { BookContentProcessRepository(get()) }
     single<BookMarkingGateway> { BookMarkingRepository(get()) }
     single<ReadAloudVoiceGateway> { ReadAloudVoiceRepository(get()) }
-    single<ChapterSpeechGateway> { ChapterSpeechRepository(get()) }
+    single<RaBookIdentityGateway> { get<RaBookIdentityRepository>() }
+    single<RaBuildGateway> { get<RaBuildRepository>() }
+    single<RaCharacterGateway> { get<RaCharacterRepository>() }
+    single<RaDirectionGateway> { get<RaDirectionRepository>() }
     single { ExploreRepositoryImpl(get()) }
     single<ExploreRepository> { get<ExploreRepositoryImpl>() }
     single<ExploreBooksGateway> { get<ExploreRepositoryImpl>() }
@@ -595,7 +620,7 @@ val appModule = module {
             relocateMarkingTargetUseCase = get(),
             bookContentProcessGateway = get(),
             syncReadAloudVoicesUseCase = get(),
-            readAloudDataRepository = get(),
+            readAloudVoicePool = get(),
             readAloudSessionStore = get(),
             replaceRuleRepository = get(),
             changeSourceSettingsGateway = get(),

@@ -12,9 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import io.legado.app.data.repository.ReadAloudDataRepository
 import io.legado.app.ui.widget.components.text.AppText
-import kotlinx.coroutines.CancellationException
 
 /**
  * 「角色与剧本」二合一面（B10.2·U4，我的 → 朗读 →「角色与剧本」）：
@@ -34,17 +32,8 @@ fun RoleScriptManageRouteScreen(onBackClick: () -> Unit) {
 
 @Composable
 fun RoleScriptManageScreen(app: Application, onBack: () -> Unit) {
-    val repo = remember(app) { ReadAloudDataRepository(app) }
     var tab by remember { mutableStateOf(0) }
-    var ready by remember { mutableStateOf(false) }
-
-    // Q4：进入先自动匹配「最近朗读的书」，完成后再进双栏（避免先渲染旧书再跳变）
-    LaunchedEffect(Unit) {
-        runCatching { repo.syncBookToRecentRead() }.onFailure {
-            if (it is CancellationException) throw it
-        }
-        ready = true
-    }
+    val ready = true
     if (!ready) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             AppText(text = "正在准备当前书…")

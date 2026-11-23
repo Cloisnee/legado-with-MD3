@@ -23,7 +23,6 @@ import io.legado.app.constant.NotificationId
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
-import io.legado.app.domain.gateway.ChapterSpeechGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadSettingsGateway
@@ -48,10 +47,14 @@ import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.gateway.RaBookIdentityGateway
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.data.repository.TtsServerCenterRepository
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.help.readaloud.audio.AudioChapterPrelude
 import io.legado.app.help.readaloud.audio.AudioLaneEngine
 import io.legado.app.help.readaloud.audio.AudioNetStore
@@ -157,8 +160,13 @@ class HttpReadAloudService : BaseReadAloudService(),
     }
     // [B8] 朗读音频缓存：持久化于 <数据根>/data/audio/<书名>/<章>/<条目>_<hash>.mp3（不再写索引文件）
     private val audioCache by lazy { GlobalContext.get().get<ReadAloudAudioCacheRepository>() }
-    private val chapterSpeechGateway by lazy { GlobalContext.get().get<ChapterSpeechGateway>() }
-    private val speechPipeline by lazy { GlobalContext.get().get<SpeechAnalysisPipelineV3>() }
+    private val raBuild: RaBuildGateway by lazy { GlobalContext.get().get<RaBuildGateway>() }
+    private val bookIdentity: RaBookIdentityGateway by lazy {
+        GlobalContext.get().get<RaBookIdentityGateway>()
+    }
+    private val catalog: ReadAloudCatalogRepository by lazy {
+        GlobalContext.get().get<ReadAloudCatalogRepository>()
+    }
     private val analysisConfig by lazy { GlobalContext.get().get<AnalysisConfigStore>() }
 
     // ---- B33 音效/BGM/环境·四轨（音频小闭环；全部 runCatching 静默降级，不影响原朗读链路）----
@@ -346,9 +354,6 @@ class HttpReadAloudService : BaseReadAloudService(),
     private val audioDownloadFailed = AtomicInteger(0)
     private val audioDownloadSystemSkipped = AtomicInteger(0)
 
-    private val readAloudDataRepository by lazy {
-        GlobalContext.get().get<ReadAloudDataRepository>()
-    }
     private val synthesizeChapterAudio by lazy {
         GlobalContext.get().get<SynthesizeChapterAudioUseCase>()
     }
@@ -383,7 +388,10 @@ class HttpReadAloudService : BaseReadAloudService(),
                     ensureActive()
                     if (appDb.bookChapterDao.getChapter(bookUrl, index) == null) break
                     val hasScript = runCatching {
-                        readAloudDataRepository.hasChapterScript(book.name, index)
+                        val bookKey = bookIdentity.keyOf(book.bookUrl, sourceKeyOf(book))
+                        val analysis = raBuild.latestAnalysis(bookKey, index)
+                        analysis != null && analysis.status == RaAnalysisStatus.RESOLVED &&
+                            raBuild.segments(analysis.id).isNotEmpty()
                     }.getOrDefault(false)
                     if (!hasScript) {
                         // 剧本门禁（执行端双保险）：无剧本章跳过并注明
@@ -400,7 +408,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                         continue
                     }
                     val label = runCatching {
-                        readAloudDataRepository.chapterLabelOf(book.name, index)
+                        catalog.chapterLabel(bookUrl, index)
                     }.getOrDefault("第${index + 1}章")
                     ReadAloudAudioStore.updateProgress(
                         ReadAloudAudioStore.progress.value.copy(currentChapter = label)
@@ -655,12 +663,11 @@ class HttpReadAloudService : BaseReadAloudService(),
                     val routedVoice = voiceForCue(playbackQueue, index)
                     val cue = playbackQueue.cues.getOrNull(index)
                     val cueEmotion = cue?.emotion.orEmpty()
-                    val characterPerformance = cue?.characterPerformance
                     val cueRoleType = cue?.roleType ?: SpeechRoleType.Unknown
                     val voiceKey = ReadAloudAudioCacheKeys.voiceKey(
                         voice = routedVoice,
                         emotion = cueEmotion,
-                        performance = characterPerformance,
+                        instruction = cue?.instruction.orEmpty(),
                         roleType = cueRoleType,
                     )
                     // 章节标题 cue 序号 = -1（leadingTitleCueCount 已把标题计入 cue 序号）
@@ -874,27 +881,22 @@ class HttpReadAloudService : BaseReadAloudService(),
         if (bookUrl.isEmpty() || paragraphs.isEmpty()) return false
         val timeoutMs = runCatching { analysisConfig.load().waitAnalysisSec * 1000L }
             .getOrDefault(180_000L)
-        // B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；成功即视为就绪
-        val restored = runCatching {
-            speechPipeline.restoreFromScriptFiles(
-                bookUrl = bookUrl,
-                bookName = ReadBook.book?.name.orEmpty(),
-                chapterIndex = chapterIndex,
-                paragraphs = paragraphs,
-                logMiss = false,
-            )
-        }.getOrNull()
-        if (restored != null) return true
+        val book = ReadBook.book ?: return false
+        val bookKey = runCatching {
+            bookIdentity.keyOf(bookUrl, sourceKeyOf(book))
+        }.getOrNull() ?: return false
+        val sourceKey = sourceKeyOf(book)
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val ready = runCatching {
-                chapterSpeechGateway.getAnalysis(
-                    bookUrl = bookUrl,
+                raBuild.getAnalysis(
+                    bookKey = bookKey,
+                    sourceKey = sourceKey,
                     chapterIndex = chapterIndex,
                     contentHash = contentHash,
-                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
-                ) != null
+                    resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
+                )?.status == RaAnalysisStatus.RESOLVED
             }.getOrDefault(false)
             if (ready) return true
             if (System.currentTimeMillis() >= deadline) return false
@@ -1048,7 +1050,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         val voiceKey = ReadAloudAudioCacheKeys.voiceKey(
             voice = routedVoice,
             emotion = cue?.emotion.orEmpty(),
-            performance = cue?.characterPerformance,
+            instruction = cue?.instruction.orEmpty(),
             roleType = cue?.roleType ?: SpeechRoleType.Unknown,
         )
         val cacheFile = cacheFileFor(

@@ -7,7 +7,7 @@ import kotlinx.coroutines.withContext
 /**
  * B33.4a · 音效与背景音章级扫描（本地规则层）：
  * 全章文本 → 规则层候选（唯一条目；resolved=本地可解析）。
- * 供预合成汇总（[AudioChapterPrelude]）与分析侧日志（SpeechAnalysisPipelineV3）共用。
+ * 供预合成汇总（[AudioChapterPrelude]）与分析侧日志（SpeechAnalysisPipelineV4）共用。
  */
 object AudioLaneScan {
 

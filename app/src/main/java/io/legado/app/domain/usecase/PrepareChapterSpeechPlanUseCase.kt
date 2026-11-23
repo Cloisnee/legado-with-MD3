@@ -1,45 +1,43 @@
 package io.legado.app.domain.usecase
 
-import io.legado.app.utils.ChapterLabels
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.ReadAloudDataRepository
-import io.legado.app.domain.gateway.ChapterSpeechGateway
-import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.readaloud.BookVoiceBinding
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaDirectionGateway
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
-import io.legado.app.domain.model.readaloud.ChapterSpeechAnalysis
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
-import io.legado.app.domain.model.readaloud.SpeechAnalysisStatus
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechPlanItem
-import io.legado.app.domain.model.readaloud.VoiceBankRoleType
+import io.legado.app.domain.model.readaloud.v4.RaAnalysis
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
+import io.legado.app.domain.gateway.RaDirectionLine
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
-import kotlin.random.Random
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /**
- * Builds the persisted speech plan used by a read-aloud session.
+ * 构建朗读会话的播放计划：
+ *  1) 本章已有 V4 分析（RESOLVED）→ 读台词 + 导演行 → 按 characterId/发声方案出声；
+ *  2) 未就绪 → 按设置等待（“开播准备”前身），超时后用本地引号规则快速链出声。
  *
- * V4（脚本复刻）链路：
- *  1) 分析管线 V3 产物（调度器后台产出）存在 → 直接消费；声线按 角色记录库（三池分配结果）挂载；
- *  2) 否则本地规则 v2 快速链先出声（引号包裹判定），AI 由调度器后台补全，
- *     完成后重新进入本章（或审查页刷新）即切换到 V3 剧本。
+ * 文件真源已拔除：不再读取剧本文件、不再回填、不再按名字覆盖声线。
  */
 class PrepareChapterSpeechPlanUseCase(
     private val buildSpeechPlan: BuildSpeechPlanUseCase,
-    private val chapterSpeechGateway: ChapterSpeechGateway,
-    private val voiceGateway: ReadAloudVoiceGateway,
-    private val recordsStore: ReadAloudDataRepository,
-    private val pipeline: SpeechAnalysisPipelineV3,
+    private val raBuild: RaBuildGateway,
+    private val raDirection: RaDirectionGateway,
+    private val catalog: ReadAloudCatalogRepository,
+    private val pipeline: SpeechAnalysisPipelineV4,
     private val analysisConfig: AnalysisConfigStore,
 ) {
 
     suspend operator fun invoke(
         bookUrl: String,
+        bookKey: String,
+        sourceKey: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
         preferredDefaultVoiceId: String? = null,
@@ -47,205 +45,105 @@ class PrepareChapterSpeechPlanUseCase(
         bookName: String = "",
     ): List<SpeechPlanItem> {
         if (paragraphs.isEmpty()) return emptyList()
-        val overrides = voiceOverrides(bookName, bookUrl, chapterIndex)
-        // B19：章节显示名（标题截到章；内部匹配仍用 index）
-        val chLabel = runCatching { recordsStore.chapterLabelOf(bookName, chapterIndex) }
+        val chLabel = runCatching { catalog.chapterLabel(bookUrl, chapterIndex) }
             .getOrDefault("第${chapterIndex + 1}章")
-
-        // ---- V3 优先：脚本复刻管线产物直接消费（即时出声） ----
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        val v3 = runCatching {
-            chapterSpeechGateway.getAnalysis(
-                bookUrl = bookUrl,
+
+        var analysis = runCatching {
+            raBuild.getAnalysis(
+                bookKey = bookKey,
+                sourceKey = sourceKey,
                 chapterIndex = chapterIndex,
                 contentHash = contentHash,
-                resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
+                resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
             )
         }.onFailure {
             if (it is CancellationException) throw it
-            AppLog.put("读取 V3 剧本失败，走本地快速链: ${it.localizedMessage}", it)
+            AppLog.put("读取 V4 分析失败，走本地快速链: ${it.localizedMessage}", it)
         }.getOrNull()
-        if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
-            val segments = runCatching { chapterSpeechGateway.getSegments(v3.id) }.getOrElse {
+        if (analysis?.status != RaAnalysisStatus.RESOLVED) {
+            val cfg = runCatching { analysisConfig.load() }.getOrElse {
                 if (it is CancellationException) throw it
-                emptyList()
+                AnalysisConfigStore.Config()
             }
+            if (!cfg.fallbackDefaultVoice) {
+                AppLog.putAudio("【V4·$chLabel·开播】等待身份分析（最长 ${cfg.waitAnalysisSec}s）")
+                analysis = awaitAnalysisReady(
+                    bookKey = bookKey,
+                    sourceKey = sourceKey,
+                    chapterIndex = chapterIndex,
+                    contentHash = contentHash,
+                    timeoutMs = cfg.waitAnalysisSec * 1000L,
+                )
+            }
+        }
+        if (analysis != null && analysis.status == RaAnalysisStatus.RESOLVED) {
+            val segments = runCatching { raBuild.segments(analysis.id) }.getOrDefault(emptyList())
             if (segments.isNotEmpty()) {
-                AppLog.put("多角色计划：消费 V3 剧本（${v3.status.storageValue}，${segments.size} 段）")
-                // B17：消费 V3 = 该章已解析 → 推进「最近完成解析章」（顺读穿过缓存段不断链）
-                if (bookName.isNotBlank()) recordsStore.markChapterResolved(bookName, chapterIndex)
+                val plan = runCatching { raDirection.plan(analysis.id, MODULE) }.getOrNull()
+                val lines = if (plan != null) {
+                    runCatching { raDirection.lines(plan.id) }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+                AppLog.putAnalysis("【V4·$chLabel·开播】身份就绪：消费 ${segments.size} 段")
                 return buildSpeechPlan(
-                    bookUrl = bookUrl,
+                    bookKey = bookKey,
                     segments = segments,
                     preferredDefaultVoiceId = preferredDefaultVoiceId,
                     useMultiSpeaker = useMultiSpeaker,
-                    voiceOverrides = overrides,
+                    emotionBySegment = lines.emotionMap(),
+                    instructionBySegment = lines.instructionMap(),
                 )
             }
         }
 
-        // ---- B8.3：DB 未命中 → 本地剧本文件回填（清应用数据后免重析 + 声线/情绪随剧本还原） ----
-        val restored = runCatching {
-            pipeline.restoreFromScriptFiles(
-                bookUrl = bookUrl,
-                bookName = bookName,
-                chapterIndex = chapterIndex,
-                paragraphs = paragraphs,
-                logMiss = false,
-            )
-        }.onFailure {
-            if (it is CancellationException) throw it
-            AppLog.putAnalysis("本地剧本回填异常: ${it.localizedMessage}", it)
-        }.getOrNull()
-        if (restored != null && restored.segments.isNotEmpty()) {
-            AppLog.put("多角色计划：本地剧本回填（${restored.segments.size} 段）")
-            return buildSpeechPlan(
-                bookUrl = bookUrl,
-                segments = restored.segments,
-                preferredDefaultVoiceId = preferredDefaultVoiceId,
-                useMultiSpeaker = useMultiSpeaker,
-                voiceOverrides = overrides,
-            )
-        }
-
-        // ---- B10.4·S1：按「先用默认声线出声」开关决定：等待分析就绪 或 立即快速链出声 ----
-        val cfg = runCatching { analysisConfig.load() }.getOrElse {
-            if (it is CancellationException) throw it
-            AnalysisConfigStore.Config()
-        }
-        if (!cfg.fallbackDefaultVoice) {
-            AppLog.putAudio("【音频缓存·音效与背景音·$chLabel】等待分析就绪（最长 ${cfg.waitAnalysisSec}s）")
-            val waited = awaitAnalysisReady(
-                bookUrl = bookUrl,
-                chapterIndex = chapterIndex,
-                contentHash = contentHash,
-                timeoutMs = cfg.waitAnalysisSec * 1000L,
-            )
-            if (waited != null) {
-                val segments = runCatching { chapterSpeechGateway.getSegments(waited.id) }
-                    .getOrElse {
-                        if (it is CancellationException) throw it
-                        emptyList()
-                    }
-                if (segments.isNotEmpty()) {
-                    AppLog.put("多角色计划：等待后就绪，消费 V3 剧本（${segments.size} 段）")
-                    // B10.4.3：等待期间分析刚写入角色声线分配——重算覆盖表，避免整章落到「默认对话」声线
-                    val freshOverrides = voiceOverrides(bookName, bookUrl, chapterIndex)
-                    return buildSpeechPlan(
-                        bookUrl = bookUrl,
-                        segments = segments,
-                        preferredDefaultVoiceId = preferredDefaultVoiceId,
-                        useMultiSpeaker = useMultiSpeaker,
-                        voiceOverrides = freshOverrides,
-                    )
-                }
-            }
-            AppLog.putAudio(
-                "【音频缓存】$chLabel 等待分析未就绪（超时），先用默认声线出声" +
-                    "（分析完成后重进本章即切换）"
-            )
-        } else {
-            // 快速链：本地规则 v2 先行（先出声不等 AI）
-            // 此时无人物归属，话语会落到「默认对话」声线；分析完成后重进本章即切换到 V3 剧本
-            AppLog.putAudio(
-                "【音频缓存】$chLabel 朗读分析未就绪，先用默认声线出声" +
-                    "（分析完成后重进本章即切换）"
-            )
-        }
+        AppLog.putAudio(
+            "【V4·$chLabel·开播】分析未就绪 → 本地快速链（引号规则 + 默认对话声线；分析完成后重进本章切换）",
+        )
         val local = pipeline.quickLocalSegments(paragraphs)
         return buildSpeechPlan(
-            bookUrl = bookUrl,
+            bookKey = bookKey,
             segments = local,
             preferredDefaultVoiceId = preferredDefaultVoiceId,
             useMultiSpeaker = useMultiSpeaker,
-            voiceOverrides = overrides,
         )
     }
 
-    /** 等待本章 V3 分析就绪（最长 [timeoutMs]）；由设置开关「关=等待分析后再出声」调用 */
     private suspend fun awaitAnalysisReady(
-        bookUrl: String,
+        bookKey: String,
+        sourceKey: String,
         chapterIndex: Int,
         contentHash: String,
         timeoutMs: Long,
-    ): ChapterSpeechAnalysis? {
+    ): RaAnalysis? {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
-            val v3 = runCatching {
-                chapterSpeechGateway.getAnalysis(
-                    bookUrl = bookUrl,
+            val analysis = runCatching {
+                raBuild.getAnalysis(
+                    bookKey = bookKey,
+                    sourceKey = sourceKey,
                     chapterIndex = chapterIndex,
                     contentHash = contentHash,
-                    resolverVersion = SpeechAnalysisPipelineV3.RESOLVER_VERSION,
+                    resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
                 )
             }.getOrNull()
-            if (v3 != null && v3.status in setOf(SpeechAnalysisStatus.Success, SpeechAnalysisStatus.Partial)) {
-                return v3
-            }
+            if (analysis != null && analysis.status == RaAnalysisStatus.RESOLVED) return analysis
             if (System.currentTimeMillis() >= deadline) return null
             currentCoroutineContext().ensureActive()
             delay(1_000)
         }
     }
 
-    /** 角色记录库 + 声线库分组 → 声线覆盖表：narrator / duihuaA / duihuaB + 角色名→标签 */
-    private suspend fun voiceOverrides(
-        bookName: String,
-        bookUrl: String,
-        chapterIndex: Int,
-    ): Map<String, ReadAloudVoice> {
-        if (bookName.isBlank()) return emptyMap()
-        return runCatching {
-            val catalog = voiceGateway.getEnabledVoices()
-                .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-            // 批212d：同名标签只在「当前启用池」内解析（与试听链同口径），
-            // 身份=条目 id（拔除 tagRuleId）；config 钉到 voice 上（合成按精确条目走）
-            val activeTagEntries = runCatching { recordsStore.loadActivePoolTagEntries() }
-                .getOrDefault(emptyMap())
-            fun byTag(tag: String): ReadAloudVoice? {
-                val t = tag.trim()
-                if (t.isBlank()) return null
-                val e = activeTagEntries[t] ?: return null
-                val entryId = e.first
-                val cfg = e.second
-                val base = catalog.firstOrNull { it.speakerId == t && it.engineId == entryId }
-                return base?.copy(traitsJson = cfg)
-                    ?: ReadAloudVoice(
-                        id = SpeechIdentity.voiceId(ReadAloudVoice.ENGINE_TTS_SERVER, entryId, t),
-                        engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
-                        engineId = entryId,
-                        speakerId = t,
-                        displayName = t,
-                        traitsJson = cfg,
-                        managedBy = ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS,
-                    )
-            }
-            val groups = recordsStore.loadActiveVoiceGroups()
-            val narratorGroup = groups.firstOrNull {
-                it.effectiveRoleType() == VoiceBankRoleType.NARRATOR && it.tags.isNotEmpty()
-            }
-            val duihuaGroup = groups.firstOrNull {
-                it.effectiveRoleType() == VoiceBankRoleType.DEFAULT_DIALOG && it.tags.isNotEmpty()
-            }
-            // 默认对话：章内稳定随机取一（同一章多次进入结果一致；跨章自然变化）
-            val rnd = Random(bookUrl.hashCode() * 31 + chapterIndex)
-            val duihuaA = duihuaGroup?.tags?.filter { it.startsWith("duihuaA") }
-                ?.takeIf { it.isNotEmpty() }?.random(rnd)
-            val duihuaB = duihuaGroup?.tags?.filter { it.startsWith("duihuaB") }
-                ?.takeIf { it.isNotEmpty() }?.random(rnd)
-            buildMap {
-                // 旁白：组内置顶者（列表首个）作为发音人
-                byTag(narratorGroup?.tags?.firstOrNull().orEmpty())
-                    ?.let { put(BookVoiceBinding.SUBJECT_NARRATOR, it) }
-                byTag(duihuaA.orEmpty())?.let { put(BookVoiceBinding.SUBJECT_UNKNOWN_MALE, it) }
-                byTag(duihuaB.orEmpty())?.let { put(BookVoiceBinding.SUBJECT_UNKNOWN_FEMALE, it) }
-                recordsStore.loadBookRecords(bookName).forEach { r ->
-                    byTag(r.voice)?.let { put(r.name, it) }
-                }
-            }
-        }.onFailure {
-            if (it is CancellationException) throw it
-            AppLog.put("声线覆盖表构建失败: ${it.localizedMessage}", it)
-        }.getOrDefault(emptyMap())
+    private fun List<RaDirectionLine>.emotionMap(): Map<String, String> =
+        mapNotNull { line -> line.emotionTag.takeIf { it.isNotBlank() }?.let { line.segmentId to it } }
+            .toMap()
+
+    private fun List<RaDirectionLine>.instructionMap(): Map<String, String> =
+        mapNotNull { line -> line.instruction.takeIf { it.isNotBlank() }?.let { line.segmentId to it } }
+            .toMap()
+
+    companion object {
+        const val MODULE = "PLAYBACK_BASE"
     }
 }

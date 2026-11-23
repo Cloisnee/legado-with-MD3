@@ -1,10 +1,8 @@
 package io.legado.app.data.repository
 
 import io.legado.app.data.dao.ReadAloudVoiceDao
-import io.legado.app.data.entities.BookVoiceBindingEntity
 import io.legado.app.data.entities.ReadAloudVoiceEntity
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.readaloud.BookVoiceBinding
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -36,32 +34,6 @@ class ReadAloudVoiceRepository(
 
     override suspend fun deleteVoice(voice: ReadAloudVoice) = withContext(Dispatchers.IO) {
         dao.deleteVoice(voice.toEntity())
-    }
-
-    override fun observeBindings(bookUrl: String): Flow<List<BookVoiceBinding>> =
-        dao.observeBindings(bookUrl).map { bindings ->
-            bindings.map(BookVoiceBindingEntity::toDomain)
-        }
-
-    override suspend fun getBindings(bookUrl: String): List<BookVoiceBinding> =
-        withContext(Dispatchers.IO) {
-            dao.getBindings(bookUrl).map(BookVoiceBindingEntity::toDomain)
-        }
-
-    override suspend fun getBinding(
-        bookUrl: String,
-        subjectType: String,
-        subjectId: String,
-    ): BookVoiceBinding? = withContext(Dispatchers.IO) {
-        dao.getBinding(bookUrl, subjectType, subjectId)?.toDomain()
-    }
-
-    override suspend fun upsertBinding(binding: BookVoiceBinding) = withContext(Dispatchers.IO) {
-        dao.upsertBinding(binding.toEntity())
-    }
-
-    override suspend fun deleteBinding(binding: BookVoiceBinding) = withContext(Dispatchers.IO) {
-        dao.deleteBinding(binding.toEntity())
     }
 }
 
@@ -95,30 +67,6 @@ private fun ReadAloudVoice.toEntity() = ReadAloudVoiceEntity(
     available = available,
     excluded = excluded,
     revision = revision,
-    createdAt = createdAt,
-    updatedAt = updatedAt,
-)
-
-private fun BookVoiceBindingEntity.toDomain() = BookVoiceBinding(
-    bookUrl = bookUrl,
-    subjectType = subjectType,
-    subjectId = subjectId,
-    voiceId = voiceId,
-    locked = locked,
-    source = source,
-    confidence = confidence,
-    createdAt = createdAt,
-    updatedAt = updatedAt,
-)
-
-private fun BookVoiceBinding.toEntity() = BookVoiceBindingEntity(
-    bookUrl = bookUrl,
-    subjectType = subjectType,
-    subjectId = subjectId,
-    voiceId = voiceId,
-    locked = locked,
-    source = source,
-    confidence = confidence,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )

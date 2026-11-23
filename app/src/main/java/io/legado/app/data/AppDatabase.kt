@@ -16,7 +16,6 @@ import io.legado.app.data.dao.BookMarkingDao
 import io.legado.app.data.dao.BookSourceDao
 import io.legado.app.data.dao.BookmarkDao
 import io.legado.app.data.dao.CacheDao
-import io.legado.app.data.dao.ChapterSpeechDao
 import io.legado.app.data.dao.CookieDao
 import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.ExactChapterPageCountDao
@@ -26,6 +25,9 @@ import io.legado.app.data.dao.HomepageCustomSetDao
 import io.legado.app.data.dao.HomepageModuleDao
 import io.legado.app.data.dao.KeyboardAssistsDao
 import io.legado.app.data.dao.ReadAloudVoiceDao
+import io.legado.app.data.dao.readaloud.RaBuildDao
+import io.legado.app.data.dao.readaloud.RaCharacterDao
+import io.legado.app.data.dao.readaloud.RaDirectionDao
 import io.legado.app.data.dao.ReadRecordDao
 import io.legado.app.data.dao.ReplaceRuleDao
 import io.legado.app.data.dao.RssArticleDao
@@ -46,11 +48,8 @@ import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookMarking
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.BookSourcePart
-import io.legado.app.data.entities.BookVoiceBindingEntity
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.Cache
-import io.legado.app.data.entities.ChapterSpeechAnalysisEntity
-import io.legado.app.data.entities.ChapterSpeechSegmentEntity
 import io.legado.app.data.entities.Cookie
 import io.legado.app.data.entities.DictRule
 import io.legado.app.data.entities.ExactChapterPageCountEntity
@@ -70,6 +69,27 @@ import io.legado.app.data.entities.RuleSub
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.SearchContentHistory
 import io.legado.app.data.entities.SearchKeyword
+import io.legado.app.data.entities.readaloud.RaAttributeObsEntity
+import io.legado.app.data.entities.readaloud.RaBookIdentityEntity
+import io.legado.app.data.entities.readaloud.RaChapterAnalysisEntity
+import io.legado.app.data.entities.readaloud.RaChapterBuildEntity
+import io.legado.app.data.entities.readaloud.RaCharacterAliasEntity
+import io.legado.app.data.entities.readaloud.RaCharacterEntity
+import io.legado.app.data.entities.readaloud.RaCharacterRedirectEntity
+import io.legado.app.data.entities.readaloud.RaDirectionAudioEntity
+import io.legado.app.data.entities.readaloud.RaDirectionLineEntity
+import io.legado.app.data.entities.readaloud.RaDirectionPlanEntity
+import io.legado.app.data.entities.readaloud.RaDirectionSceneEntity
+import io.legado.app.data.entities.readaloud.RaEvidenceEntity
+import io.legado.app.data.entities.readaloud.RaIdentityDecisionEntity
+import io.legado.app.data.entities.readaloud.RaIdentityLinkEntity
+import io.legado.app.data.entities.readaloud.RaLocalMentionEntity
+import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
+import io.legado.app.data.entities.readaloud.RaRelationObsEntity
+import io.legado.app.data.entities.readaloud.RaSceneEntity
+import io.legado.app.data.entities.readaloud.RaSegmentEntity
+import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
+import io.legado.app.data.entities.readaloud.RaVoiceProfileEntity
 import io.legado.app.data.entities.Server
 import io.legado.app.data.entities.TagGroupRule
 import io.legado.app.data.entities.TxtTocRule
@@ -91,7 +111,7 @@ val appDb by lazy {
 }
 
 @Database(
-    version = 110,
+    version = 111,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -101,12 +121,20 @@ val appDb by lazy {
         RuleSub::class, DictRule::class, KeyboardAssist::class, Server::class,
         SearchContentHistory::class, HomepageModule::class, HomepageCustomSet::class,
         HighlightRule::class, HighlightTagRule::class, TagGroupRule::class,
-        BookContentProcess::class, ReadAloudVoiceEntity::class, BookVoiceBindingEntity::class,
-        ChapterSpeechAnalysisEntity::class, ChapterSpeechSegmentEntity::class,
+        BookContentProcess::class, ReadAloudVoiceEntity::class,
         ExactChapterPageCountEntity::class,
         // [合并0716] 听书音频下载（上游件保留）
         ReadAloudAudioDownload::class,
-        BookMarking::class],
+        BookMarking::class,
+        // V4 朗读分析（Room 唯一真源）
+        RaBookIdentityEntity::class, RaChapterBuildEntity::class, RaChapterAnalysisEntity::class,
+        RaSegmentEntity::class, RaLocalSpeakerEntity::class, RaLocalMentionEntity::class,
+        RaEvidenceEntity::class, RaCharacterEntity::class, RaCharacterAliasEntity::class,
+        RaAttributeObsEntity::class, RaRelationObsEntity::class, RaIdentityLinkEntity::class,
+        RaIdentityDecisionEntity::class, RaCharacterRedirectEntity::class,
+        RaVoiceProfileEntity::class, RaSegmentOverrideEntity::class, RaSceneEntity::class,
+        RaDirectionPlanEntity::class, RaDirectionLineEntity::class,
+        RaDirectionAudioEntity::class, RaDirectionSceneEntity::class],
     views = [BookSourcePart::class],
     autoMigrations = [
         AutoMigration(from = 43, to = 44),
@@ -187,7 +215,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val bookChapterDao: BookChapterDao
     abstract val bookContentProcessDao: BookContentProcessDao
     abstract val readAloudVoiceDao: ReadAloudVoiceDao
-    abstract val chapterSpeechDao: ChapterSpeechDao
+    abstract val raBuildDao: RaBuildDao
+    abstract val raCharacterDao: RaCharacterDao
+    abstract val raDirectionDao: RaDirectionDao
     abstract val readAloudAudioDownloadDao: ReadAloudAudioDownloadDao
     abstract val replaceRuleDao: ReplaceRuleDao
     abstract val searchBookDao: SearchBookDao

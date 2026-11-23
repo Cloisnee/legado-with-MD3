@@ -3,6 +3,8 @@ package io.legado.app.help.readaloud.analysis
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import org.koin.core.context.GlobalContext
 import io.legado.app.utils.ChapterLabels
+import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
@@ -41,7 +43,8 @@ import kotlinx.coroutines.sync.withLock
  *  - 分析前先尝试本地剧本回填（B8.3.1）：剧本能对上正文 → 复用、不再重析。
  */
 class AnalysisSchedulerV3(
-    private val pipeline: SpeechAnalysisPipelineV3,
+    private val pipeline: SpeechAnalysisPipelineV4,
+    private val bookIdentity: RaBookIdentityGateway,
     private val bookChapterDao: BookChapterDao,
     private val bookDao: BookDao,
     private val readSettingsGateway: ReadSettingsGateway,
@@ -191,9 +194,13 @@ class AnalysisSchedulerV3(
         if (paragraphs.isEmpty()) return
         val prevText = loadChapterText(book, index - 1)
         val nextText = loadChapterText(book, index + 1)
+        val sourceKey = sourceKeyOf(book)
+        val bookKey = bookIdentity.keyOf(book.bookUrl, sourceKey)
         val result = pipeline.run(
             bookUrl = book.bookUrl,
             bookName = book.name,
+            bookKey = bookKey,
+            sourceKey = sourceKey,
             chapterIndex = index,
             paragraphs = paragraphs,
             prevChapterText = prevText,

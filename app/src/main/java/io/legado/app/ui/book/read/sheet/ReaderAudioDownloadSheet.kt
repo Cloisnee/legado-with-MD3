@@ -45,7 +45,10 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.data.entities.ReadAloudAudioDownload
 import io.legado.app.help.readaloud.playback.ReadAloudAudioStore
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.gateway.RaBookIdentityGateway
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.read.ReadMenuConfig
@@ -87,7 +90,9 @@ fun ReaderAudioDownloadSheet(
     val chapterCount = book.totalChapterNum.coerceAtLeast(1)
     val progress by ReadAloudAudioStore.progress.collectAsState()
     var refreshKey by remember { mutableStateOf(0) }
-    val readAloudDataRepository = remember { GlobalContext.get().get<ReadAloudDataRepository>() }
+    val raBuild = remember { GlobalContext.get().get<RaBuildGateway>() }
+    val catalog = remember { GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    val bookIdentity = remember { GlobalContext.get().get<RaBookIdentityGateway>() }
     // 剧本门禁：只下本章要求本章有剧本；按范围时两端的章也要有剧本（范围内无剧本章执行端跳过）
     val scriptChapters by produceState(
         initialValue = null as Set<Int>?,
@@ -95,7 +100,10 @@ fun ReaderAudioDownloadSheet(
         key2 = refreshKey,
     ) {
         value = withContext(Dispatchers.IO) {
-            readAloudDataRepository.loadChapters(book.name).toSet()
+            runCatching {
+                val bookKey = bookIdentity.keyOf(bookUrl, sourceKeyOf(book))
+                raBuild.lineCounts(bookKey).keys
+            }.getOrDefault(emptySet())
         }
     }
     // null = 还没查完库。第一帧就断言「本章没下载过」会闪一句假话。

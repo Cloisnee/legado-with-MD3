@@ -1,45 +1,38 @@
 package io.legado.app.domain.usecase
 
-import io.legado.app.utils.ChapterLabels
-import android.app.Application
-import com.github.jing332.tts.readaloud.TtsServerSynthesizer
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudAudioCacheRepository
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaDirectionGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.domain.gateway.ReadAloudVoiceGateway
-import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.ReadAloudEmotion
-import io.legado.app.domain.model.readaloud.SpeechIdentity
+import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechRoleType
-import io.legado.app.domain.model.readaloud.VoiceBankRoleType
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.help.readaloud.playback.ReadAloudAudioCacheKeys
 import io.legado.app.help.readaloud.playback.isUsableCacheFile
+import com.github.jing332.tts.readaloud.TtsServerSynthesizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import kotlin.random.Random
 import java.io.File
 
 /**
  * 批量合成一章的朗读音频（音频管理页「缓存缺失条目」/「整本缓存」）。
  *
- * 与播放侧共用同一「命名契约」（[ReadAloudAudioCacheKeys]）与同一份本地剧本
- * （`chapter_cache.<书>.json` / `all_clean_text_<书>.txt`），因此批量产出的文件播放时可直接命中。
- *
- * 声线解析与播放侧同源（旁白组首个 / 角色记录标签 / 默认对话 duihuaA·B 章内稳定随机）；
- * 目前只合成 `tts_server` 引擎声线（系统声线句先跳过，二期补文件合成；播放时会按需合成）。
+ * 与播放侧共用同一 V4 播放计划（characterId → voiceProfile → voiceId）、同一缓存命名契约。
+ * 只合成 tts_server 引擎声线；系统声线句先跳过。
  */
 class SynthesizeChapterAudioUseCase(
-    private val app: Application,
-    private val dataRepository: ReadAloudDataRepository,
     private val audioCache: ReadAloudAudioCacheRepository,
-    private val voiceGateway: ReadAloudVoiceGateway,
+    private val catalog: ReadAloudCatalogRepository,
+    private val raBuild: RaBuildGateway,
+    private val raDirection: RaDirectionGateway,
+    private val buildSpeechPlan: BuildSpeechPlanUseCase,
     private val settingsGateway: ReadAloudSettingsGateway,
-    private val syncTtsServerVoices: SyncTtsServerVoicesUseCase,
     private val loudness: LoudnessNormalizer,
 ) {
 
@@ -47,9 +40,7 @@ class SynthesizeChapterAudioUseCase(
         val done: Int,
         val failed: Int,
         val skipped: Int,
-        /** 本章成功（含命中）的缓存文件（下载落区按文件名清单复制） */
         val files: List<File> = emptyList(),
-        /** 因非内置引擎（系统声线）跳过的句数（一期不支持下载） */
         val skippedOtherEngine: Int = 0,
     )
 
@@ -57,100 +48,59 @@ class SynthesizeChapterAudioUseCase(
         book: String,
         chapterIndex: Int,
         onProgress: suspend (processed: Int, total: Int) -> Unit = { _, _ -> },
-        /** 缓存命名用的源级语速刻度；null = 按当前设置现算（应与播放侧同值） */
         speechRateOverride: Int? = null,
     ): Result = withContext(Dispatchers.IO) {
-        // B19 · M2：章节显示名（与分析侧一致——优先真实章名，回退第N章）
-        val chLabel = dataRepository.chapterLabelOf(book, chapterIndex)
-        val lines = dataRepository.loadChapterScript(book, chapterIndex)
-        if (lines.isEmpty()) {
-            AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章暂无本地剧本")
+        val summary = catalog.booksWithData().firstOrNull { it.name == book || it.bookKey == book }
+        if (summary == null) {
+            AppLog.putAudio("【音频缓存】批量合成跳过：未找到书籍 $book")
             return@withContext Result(0, 0, 0)
         }
-        // 声线目录（Room 镜像表）可能尚未同步（典型：刚清过应用数据）→ 先补写，否则会全部跳过
-        runCatching { syncTtsServerVoices() }
-        AppLog.putAudio(
-            "【音频缓存·$chLabel】批量合成开始（剧本 ${lines.size} 条）"
+        val chLabel = catalog.chapterLabel(summary.bookUrl, chapterIndex)
+        val analysis = raBuild.latestAnalysis(summary.bookKey, chapterIndex)
+        if (analysis == null) {
+            AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章暂无分析")
+            return@withContext Result(0, 0, 0)
+        }
+        val segments = raBuild.segments(analysis.id)
+        if (segments.isEmpty()) {
+            AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章无台词")
+            return@withContext Result(0, 0, 0)
+        }
+        val directionPlan = raDirection.plan(analysis.id, PrepareChapterSpeechPlanUseCase.MODULE)
+        val lines = directionPlan?.let { raDirection.lines(it.id) }.orEmpty()
+        val speechPlan = buildSpeechPlan(
+            bookKey = summary.bookKey,
+            segments = segments,
+            useMultiSpeaker = true,
+            emotionBySegment = lines.mapNotNull {
+                it.emotionTag.takeIf(String::isNotBlank)?.let { tag -> it.segmentId to tag }
+            }.toMap(),
+            instructionBySegment = lines.mapNotNull {
+                it.instruction.takeIf(String::isNotBlank)?.let { text -> it.segmentId to text }
+            }.toMap(),
         )
         val settings = settingsGateway.currentSettings
         val speechRate = speechRateOverride ?: ReadAloudAudioCacheKeys.speechRateScale(
             followSys = settings.ttsFollowSys,
             ttsSpeechRate = settings.ttsSpeechRate,
         )
-        val voices = voiceGateway.getEnabledVoices()
-            .filter { it.engineType == ReadAloudVoice.ENGINE_TTS_SERVER }
-        // 批212d：同名标签只在「当前启用池」内解析（与角色试听链同口径），
-        // 身份=条目 id（拔除 tagRuleId）；config 钉到 voice 上（合成按精确条目走）。
-        val activeTagEntries = runCatching { dataRepository.loadActivePoolTagEntries() }
-            .getOrDefault(emptyMap())
-        fun byTag(tag: String): ReadAloudVoice? {
-            val t = tag.trim()
-            if (t.isBlank()) return null
-            val e = activeTagEntries[t] ?: return null
-            val entryId = e.first
-            val cfg = e.second
-            val base = voices.firstOrNull { it.speakerId == t && it.engineId == entryId }
-            return base?.copy(traitsJson = cfg)
-                ?: ReadAloudVoice(
-                    id = SpeechIdentity.voiceId(
-                        ReadAloudVoice.ENGINE_TTS_SERVER, entryId, t
-                    ),
-                    engineType = ReadAloudVoice.ENGINE_TTS_SERVER,
-                    engineId = entryId,
-                    speakerId = t,
-                    displayName = t,
-                    traitsJson = cfg,
-                    managedBy = ReadAloudVoice.MANAGED_BY_CONFIGURED_TTS,
-                )
-        }
-
-        val groups = dataRepository.loadActiveVoiceGroups()
-        val narrator = byTag(
-            groups.firstOrNull {
-                it.effectiveRoleType() == VoiceBankRoleType.NARRATOR && it.tags.isNotEmpty()
-            }?.tags?.firstOrNull().orEmpty()
-        )
-        val duihuaGroup = groups.firstOrNull {
-            it.effectiveRoleType() == VoiceBankRoleType.DEFAULT_DIALOG && it.tags.isNotEmpty()
-        }
-        // 与播放侧一致：章内稳定随机（种子 = bookUrl + 章序号）
-        val bookUrl = dataRepository.loadBookUrl(book)
-        val rnd = Random(bookUrl.hashCode() * 31 + chapterIndex)
-        val duihuaA = byTag(
-            duihuaGroup?.tags?.filter { it.startsWith("duihuaA") }
-                ?.takeIf { it.isNotEmpty() }?.random(rnd).orEmpty()
-        )
-        val duihuaB = byTag(
-            duihuaGroup?.tags?.filter { it.startsWith("duihuaB") }
-                ?.takeIf { it.isNotEmpty() }?.random(rnd).orEmpty()
-        )
-        val characterVoices = dataRepository.loadBookRecords(book)
-            .mapNotNull { r -> byTag(r.voice)?.let { r.name to it } }
-            .toMap()
-
-        val synthesizer = TtsServerSynthesizer(app)
+        val synthesizer = TtsServerSynthesizer(audioCache.appContext())
         var done = 0
         var failed = 0
         var skipped = 0
         var skippedNoVoice = 0
         var skippedOtherEngine = 0
-        val total = lines.size
+        val total = speechPlan.size
         val files = ArrayList<File>()
-        lines.forEachIndexed { index, row ->
+        speechPlan.forEachIndexed { index, item ->
             currentCoroutineContext().ensureActive()
-            val text = row.text
+            val text = item.segment.text
             if (text.isBlank()) {
                 skipped++
                 onProgress(done + failed + skipped, total)
                 return@forEachIndexed
             }
-            
-            val isNarrator = row.speaker.isBlank() || row.speaker == NARRATOR_TAG
-            val voice = if (isNarrator) {
-                narrator
-            } else {
-                characterVoices[row.speaker] ?: duihuaA ?: duihuaB
-            }
+            val voice = item.voice
             if (voice == null) {
                 skipped++
                 skippedNoVoice++
@@ -165,9 +115,9 @@ class SynthesizeChapterAudioUseCase(
             }
             val voiceKey = ReadAloudAudioCacheKeys.voiceKey(
                 voice = voice,
-                emotion = row.emotion,
-                performance = null,
-                roleType = if (isNarrator) SpeechRoleType.Narrator else SpeechRoleType.Character,
+                emotion = item.emotionTag,
+                instruction = item.instruction,
+                roleType = item.segment.roleType,
             )
             val hash = ReadAloudAudioCacheKeys.contentHash(voiceKey, speechRate, text)
             val file = audioCache.cueFile(book, chapterIndex, index, hash)
@@ -179,45 +129,56 @@ class SynthesizeChapterAudioUseCase(
             }
             val t0 = System.currentTimeMillis()
             val timeoutMs = settings.ttsSynthTimeoutSec.coerceIn(5, 120) * 1000L
-            val emotion = ReadAloudEmotion.forPlugin(row.emotion)
-            var outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion, settings.watermarkRetry)
+            val emotion = if (item.segment.roleType == SpeechRoleType.Narrator) {
+                ""
+            } else {
+                ReadAloudEmotion.forPlugin(item.emotionTag)
+            }
+            var outcome = synthesizer.synthesize(
+                voice.traitsJson,
+                text,
+                file,
+                timeoutMs,
+                emotion,
+                settings.watermarkRetry,
+            )
             val maxRetry = settings.ttsMaxRetry.coerceIn(0, 10)
             var retried = 0
             while (!outcome.ok && retried < maxRetry) {
                 retried++
-                AppLog.putAudio(
-                    "【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index ${row.speaker}"
-                )
+                AppLog.putAudio("【音频缓存·$chLabel】批量合成失败，第 $retried/$maxRetry 次重试 #$index")
                 delay(500)
-                outcome = synthesizer.synthesize(voice.traitsJson, text, file, timeoutMs, emotion, settings.watermarkRetry)
+                outcome = synthesizer.synthesize(
+                    voice.traitsJson,
+                    text,
+                    file,
+                    timeoutMs,
+                    emotion,
+                    settings.watermarkRetry,
+                )
             }
             if (outcome.ok) {
                 done++
                 files.add(file)
                 AppLog.putAudio(
-                    "【音频缓存·$chLabel】批量合成 #$index ${row.speaker} ${file.length() / 1024}KB" +
-                        " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}"
+                    "【音频缓存·$chLabel】批量合成 #$index ${voice.displayName} ${file.length() / 1024}KB" +
+                        " ${System.currentTimeMillis() - t0}ms | ${text.take(24)}",
                 )
-                // B11 响度均衡：学习该声线响度（异步；失败静默）
                 loudness.measureAsync(voice, file)
             } else {
                 failed++
                 runCatching { file.delete() }
                 AppLog.putAudio(
-                    "【音频缓存·$chLabel】批量合成失败 #$index ${row.speaker}:" +
-                        " ${outcome.reason}（已重试 $retried 次） | ${text.take(24)}"
+                    "【音频缓存·$chLabel】批量合成失败 #$index ${voice.displayName}:" +
+                        " ${outcome.reason}（已重试 $retried 次） | ${text.take(24)}",
                 )
             }
             onProgress(done + failed + skipped, total)
         }
         AppLog.putAudio(
             "【音频缓存·$chLabel】批量合成完成：新增/命中 $done，失败 $failed，" +
-                "跳过 $skipped（无声线 $skippedNoVoice / 非内置引擎 $skippedOtherEngine）"
+                "跳过 $skipped（无声线 $skippedNoVoice / 非内置引擎 $skippedOtherEngine）",
         )
         Result(done, failed, skipped, files, skippedOtherEngine)
-    }
-
-    companion object {
-        const val NARRATOR_TAG = "旁白"
     }
 }

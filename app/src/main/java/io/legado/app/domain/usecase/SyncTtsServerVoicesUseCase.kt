@@ -3,7 +3,7 @@ package io.legado.app.domain.usecase
 import android.app.Application
 import com.github.jing332.tts.store.TtsConfigStore
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.domain.gateway.ReadAloudVoiceGateway
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.VoiceCatalogEntry
@@ -23,11 +23,11 @@ class SyncTtsServerVoicesUseCase(
     private val app: Application,
     private val voiceGateway: ReadAloudVoiceGateway,
     private val syncVoices: SyncReadAloudVoicesUseCase,
-    private val dataRepository: ReadAloudDataRepository,
+    private val voicePool: ReadAloudVoicePoolRepository,
 ) {
 
     suspend operator fun invoke(): Int {
-        val banks = runCatching { dataRepository.loadActiveVoiceBanks() }.getOrDefault(emptyList()).toSet()
+        val banks = runCatching { voicePool.loadActiveVoiceBanks() }.getOrDefault(emptyList()).toSet()
         if (banks.isEmpty()) return 0  // 未选池：不补写（防误伤）
         val entries = runCatching { parseEntries(banks) }.getOrElse {
             AppLog.putAudio("【音频缓存】声线目录解析失败: ${it.localizedMessage}", it)

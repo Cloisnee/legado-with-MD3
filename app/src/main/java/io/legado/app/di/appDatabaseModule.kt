@@ -10,7 +10,6 @@ import io.legado.app.data.dao.BookMarkingDao
 import io.legado.app.data.dao.BookSourceDao
 import io.legado.app.data.dao.BookmarkDao
 import io.legado.app.data.dao.CacheDao
-import io.legado.app.data.dao.ChapterSpeechDao
 import io.legado.app.data.dao.CookieDao
 import io.legado.app.data.dao.DictRuleDao
 import io.legado.app.data.dao.ExactChapterPageCountDao
@@ -22,6 +21,9 @@ import io.legado.app.data.dao.KeyboardAssistsDao
 import io.legado.app.data.dao.ReadAloudAudioDownloadDao
 import io.legado.app.data.dao.ReadAloudVoiceDao
 import io.legado.app.data.dao.ReadRecordDao
+import io.legado.app.data.dao.readaloud.RaBuildDao
+import io.legado.app.data.dao.readaloud.RaCharacterDao
+import io.legado.app.data.dao.readaloud.RaDirectionDao
 import io.legado.app.data.dao.ReplaceRuleDao
 import io.legado.app.data.dao.RssArticleDao
 import io.legado.app.data.dao.RssReadRecordDao
@@ -53,7 +55,9 @@ val appDatabaseModule = module {
     factory<BookMarkingDao> { get<AppDatabase>().bookMarkingDao }
     factory<ReadAloudVoiceDao> { get<AppDatabase>().readAloudVoiceDao }
     factory<ReadAloudAudioDownloadDao> { get<AppDatabase>().readAloudAudioDownloadDao }
-    factory<ChapterSpeechDao> { get<AppDatabase>().chapterSpeechDao }
+    factory<RaBuildDao> { get<AppDatabase>().raBuildDao }
+    factory<RaCharacterDao> { get<AppDatabase>().raCharacterDao }
+    factory<RaDirectionDao> { get<AppDatabase>().raDirectionDao }
     factory<ReplaceRuleDao> { get<AppDatabase>().replaceRuleDao }
     factory<SearchBookDao> { get<AppDatabase>().searchBookDao }
     factory<SearchKeywordDao> { get<AppDatabase>().searchKeywordDao }

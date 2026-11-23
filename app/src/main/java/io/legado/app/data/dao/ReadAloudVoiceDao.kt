@@ -5,7 +5,6 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import io.legado.app.data.entities.BookVoiceBindingEntity
 import io.legado.app.data.entities.ReadAloudVoiceEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -42,35 +41,4 @@ interface ReadAloudVoiceDao {
 
     @Delete
     suspend fun deleteVoice(voice: ReadAloudVoiceEntity)
-
-    @Query(
-        "select * from book_voice_bindings where bookUrl = :bookUrl " +
-            "order by subjectType, subjectId"
-    )
-    fun observeBindings(bookUrl: String): Flow<List<BookVoiceBindingEntity>>
-
-    @Query(
-        "select * from book_voice_bindings where bookUrl = :bookUrl " +
-            "order by subjectType, subjectId"
-    )
-    suspend fun getBindings(bookUrl: String): List<BookVoiceBindingEntity>
-
-    @Query(
-        "select * from book_voice_bindings where bookUrl = :bookUrl " +
-            "and subjectType = :subjectType and subjectId = :subjectId limit 1"
-    )
-    suspend fun getBinding(
-        bookUrl: String,
-        subjectType: String,
-        subjectId: String,
-    ): BookVoiceBindingEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertBinding(binding: BookVoiceBindingEntity)
-
-    @Delete
-    suspend fun deleteBinding(binding: BookVoiceBindingEntity)
-
-    @Query("delete from book_voice_bindings where bookUrl = :bookUrl")
-    suspend fun deleteBindingsByBookUrl(bookUrl: String)
 }

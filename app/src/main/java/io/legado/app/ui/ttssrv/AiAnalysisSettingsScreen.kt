@@ -28,7 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV3
+import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding
@@ -159,7 +159,7 @@ fun AiAnalysisSettingsScreen(
                         description = promptDesc(cfg.stage1Prompt),
                         onClick = {
                             promptDraft = cfg.stage1Prompt.ifBlank {
-                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage1.key)
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Stage1.key)
                             }
                             promptTarget = PromptTarget.Stage1
                         },
@@ -169,7 +169,7 @@ fun AiAnalysisSettingsScreen(
                         description = promptDesc(cfg.stage2Prompt),
                         onClick = {
                             promptDraft = cfg.stage2Prompt.ifBlank {
-                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage2.key)
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Stage2.key)
                             }
                             promptTarget = PromptTarget.Stage2
                         },
@@ -179,7 +179,7 @@ fun AiAnalysisSettingsScreen(
                         description = promptDesc(cfg.stage4Prompt),
                         onClick = {
                             promptDraft = cfg.stage4Prompt.ifBlank {
-                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Stage4.key)
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Stage4.key)
                             }
                             promptTarget = PromptTarget.Stage4
                         },
@@ -189,7 +189,7 @@ fun AiAnalysisSettingsScreen(
                         description = promptDesc(cfg.emotionPrompt),
                         onClick = {
                             promptDraft = cfg.emotionPrompt.ifBlank {
-                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.Emotion.key)
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Emotion.key)
                             }
                             promptTarget = PromptTarget.Emotion
                         },
@@ -199,7 +199,7 @@ fun AiAnalysisSettingsScreen(
                         description = promptDesc(cfg.audioDirectorPrompt),
                         onClick = {
                             promptDraft = cfg.audioDirectorPrompt.ifBlank {
-                                SpeechAnalysisPipelineV3.defaultPrompt(PromptTarget.AudioDirector.key)
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.AudioDirector.key)
                             }
                             promptTarget = PromptTarget.AudioDirector
                         },
@@ -262,7 +262,7 @@ fun AiAnalysisSettingsScreen(
                         text = "恢复内置默认",
                         onClick = {
                             dismiss()
-                            promptTarget?.let { promptDraft = SpeechAnalysisPipelineV3.defaultPrompt(it.key) }
+                            promptTarget?.let { promptDraft = SpeechAnalysisPipelineV4.defaultPrompt(it.key) }
                         },
                     )
                 }
@@ -309,7 +309,7 @@ fun AiAnalysisSettingsScreen(
                     onClick = {
                         val k = promptTarget
                         if (k != null) {
-                            val def = SpeechAnalysisPipelineV3.defaultPrompt(k.key).trim()
+                            val def = SpeechAnalysisPipelineV4.defaultPrompt(k.key).trim()
                             // 与内置默认一致时存空串（保持「内置默认」态，便于后续随内置更新）
                             val v = if (promptDraft.trim() == def) "" else promptDraft
                             promptTarget = null

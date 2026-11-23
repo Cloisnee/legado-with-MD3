@@ -12,7 +12,7 @@ import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.VoiceCatalogEntry
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
-import io.legado.app.data.repository.ReadAloudDataRepository
+import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.domain.usecase.SyncReadAloudVoicesUseCase
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
@@ -48,7 +48,7 @@ class ReadAloudDelegate(
     private val readAloudSettingsRepository: ReadAloudSettingsRepository,
     private val readAloudSessionStore: ReadAloudSessionStore,
     private val syncReadAloudVoicesUseCase: SyncReadAloudVoicesUseCase,
-    private val readAloudDataRepository: ReadAloudDataRepository,
+    private val readAloudVoicePool: ReadAloudVoicePoolRepository,
 ) {
 
     val readerSessions = combine(
@@ -124,7 +124,7 @@ class ReadAloudDelegate(
         systemTtsLabel: String = context.getString(R.string.system_tts),
     ) {
         // 批212d：tts_server 只收「当前启用池」+ 条目开启者；身份=条目 id；未选池时不动 tts 目录
-        val activeBanks = runCatching { readAloudDataRepository.loadActiveVoiceBanks() }
+        val activeBanks = runCatching { readAloudVoicePool.loadActiveVoiceBanks() }
             .getOrDefault(emptyList()).toSet()
         syncReadAloudVoicesUseCase(
             entries = buildList {

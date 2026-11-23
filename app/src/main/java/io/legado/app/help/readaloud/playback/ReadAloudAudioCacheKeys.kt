@@ -1,6 +1,5 @@
 package io.legado.app.help.readaloud.playback
 
-import io.legado.app.domain.model.readaloud.CharacterPerformanceProfile
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.utils.MD5Utils
@@ -25,18 +24,25 @@ object ReadAloudAudioCacheKeys {
     fun voiceKey(
         voice: ReadAloudVoice,
         emotion: String,
-        performance: CharacterPerformanceProfile?,
+        instruction: String = "",
         roleType: SpeechRoleType,
     ): String = when (voice.engineType) {
         ReadAloudVoice.ENGINE_SYSTEM ->
             "system:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}"
 
         ReadAloudVoice.ENGINE_TTS_SERVER ->
-            "tts_server:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}:$emotion"
+            "tts_server:${voice.id}:${voice.revision}:${voice.engineId}:${voice.speakerId}:" +
+                "${traitsHash(voice.traitsJson)}:$emotion:${instructionHash(instruction)}"
 
         // 其它引擎（历史「在线朗读」行）不再参与路由；留稳定键避免空串哈希相撞
         else -> "unknown:${voice.engineType}:${voice.id}:${voice.revision}"
     }
+
+    private fun traitsHash(traitsJson: String): String =
+        if (traitsJson.isBlank()) "" else MD5Utils.md5Encode16(traitsJson).take(8)
+
+    private fun instructionHash(instruction: String): String =
+        if (instruction.isBlank()) "" else MD5Utils.md5Encode16(instruction).take(8)
 
     /** 源级语速刻度（0..80，1 倍速 = 5）：与 HttpReadAloudService.speechRate 保持一致 */
     fun speechRateScale(followSys: Boolean, ttsSpeechRate: Int): Int =

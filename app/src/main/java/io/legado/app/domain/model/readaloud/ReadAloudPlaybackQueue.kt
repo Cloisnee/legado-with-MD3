@@ -10,9 +10,10 @@ data class ReadAloudPlaybackCue(
     val roleType: SpeechRoleType,
     val characterId: String?,
     val emotion: String = "",
-    /** 这一段的变声器预设名（空 = 跟随角色全局），见 [ChapterSpeechSegment.voiceEffect]。 */
+    /** AI 自然语言演绎指导；与 emotion 一起下发插件，由插件自行选用。 */
+    val instruction: String = "",
+    /** 这一段的变声器预设名（空 = 跟随角色全局）。 */
     val voiceEffect: String = "",
-    val characterPerformance: CharacterPerformanceProfile? = null,
     val isChapterTitle: Boolean = false,
 ) {
     init {
@@ -128,9 +129,9 @@ class ReadAloudPlaybackQueue private constructor(
                     fallbackVoices = item.fallbackVoices,
                     roleType = segment.roleType,
                     characterId = segment.characterId,
-                    emotion = segment.emotion,
+                    emotion = item.emotionTag,
+                    instruction = item.instruction,
                     voiceEffect = segment.voiceEffect,
-                    characterPerformance = item.characterPerformance,
                 )
             }.sortedWith(compareBy(ReadAloudPlaybackCue::chapterStart, ReadAloudPlaybackCue::chapterEnd))
             require(cues.zipWithNext().none { (left, right) -> left.chapterEnd > right.chapterStart }) {

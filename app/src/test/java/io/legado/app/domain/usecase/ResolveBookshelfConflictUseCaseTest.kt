@@ -3,6 +3,8 @@ package io.legado.app.domain.usecase
 import android.app.Application
 import androidx.room.Room
 import io.legado.app.data.AppDatabase
+import io.legado.app.domain.gateway.RaBookIdentityGateway
+import io.legado.app.domain.gateway.RaBookIdentityRow
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.readRecord.ReadRecordSession
 import io.legado.app.data.repository.BookRepository
@@ -59,6 +61,18 @@ class ResolveBookshelfConflictUseCaseTest {
                 otherSettingsGateway = StubOtherSettingsGateway(),
                 readSettingsGateway = StubReadSettingsGateway(),
                 readRecordRepository = readRecordRepository,
+                bookIdentity = object : RaBookIdentityGateway {
+                    override suspend fun keyOf(bookUrl: String, sourceKey: String): String = "bk_test"
+                    override suspend fun bookKeyOf(bookUrl: String): String? = null
+                    override suspend fun sourceKeyOf(bookUrl: String): String? = null
+                    override suspend fun onSourceChanged(
+                        oldBookUrl: String,
+                        newBookUrl: String,
+                        newSourceKey: String,
+                    ) = Unit
+                    override suspend fun identitiesOf(bookKey: String): List<RaBookIdentityRow> = emptyList()
+                    override suspend fun deleteBookIdentity(bookUrl: String) = Unit
+                },
             ),
         )
     }
