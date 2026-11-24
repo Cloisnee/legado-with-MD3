@@ -200,9 +200,10 @@ class Stage2Validator(
         calibrated.forEach { c ->
             c.minSeq = sm.entries.filter { it.value == c.key }.minOfOrNull { it.key } ?: Int.MAX_VALUE
         }
-        val merged = localNormalize(calibrated, sm)
+        val keyRemap = HashMap<String, String>()
+        val merged = localNormalize(calibrated, sm, keyRemap)
         val mentions = parseMentions(root, merged)
-        val evidence = parseEvidence(root, merged, mentions)
+        val evidence = parseEvidence(root, merged, mentions, keyRemap)
 
         val speakers = merged.map { c ->
             Stage2Speaker(
@@ -265,7 +266,11 @@ class Stage2Validator(
         return item
     }
 
-    private fun localNormalize(list: List<Raw>, sm: MutableMap<Int, String>): List<Raw> {
+    private fun localNormalize(
+        list: List<Raw>,
+        sm: MutableMap<Int, String>,
+        keyRemap: MutableMap<String, String>,
+    ): List<Raw> {
         val work = ArrayList(list)
         var changed = true
         var guard = 80
@@ -292,6 +297,7 @@ class Stage2Validator(
                     loser.allNames.forEach { n -> if (n != winner.name) tokens.add(n) }
                     winner.aliases = tokens.distinct()
                     sm.forEach { (n, v) -> if (v == loser.key) sm[n] = winner.key }
+                    keyRemap[loser.key] = winner.key
                     work.remove(loser)
                     changed = true
                 }
@@ -338,6 +344,7 @@ class Stage2Validator(
         root: JSONObject,
         speakers: List<Raw>,
         mentions: List<Stage2Speaker>,
+        keyRemap: Map<String, String>,
     ): List<Stage2Evidence> {
         val arr = root.optJSONArray("evidence") ?: root.optJSONArray("证据") ?: return emptyList()
         val allKeys = speakers.map { it.key }.toSet() + mentions.map { it.key }.toSet()
@@ -349,15 +356,31 @@ class Stage2Validator(
             c.aliases.forEach { byName[it] = c.key }
         }
         mentions.forEach { m -> byName[m.name] = m.key }
+        fun canonicalKey(raw: String): String? {
+            val base = when {
+                raw in allKeys -> raw
+                keyRemap.containsKey(raw) -> keyRemap.getValue(raw)
+                else -> byName[raw] ?: return null
+            }
+            var current = base
+            var guard = 0
+            while (keyRemap.containsKey(current) && guard++ < 20) {
+                current = keyRemap.getValue(current)
+            }
+            return current
+        }
         val out = ArrayList<Stage2Evidence>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val type = RaEvidenceType.fromStorage(o.optString("type").trim().uppercase())
             val subjectRaw = o.optString("subject").trim()
-            val subjectKey = if (subjectRaw in allKeys) subjectRaw else byName[subjectRaw]
-            if (subjectKey.isNullOrBlank()) continue
+            val subjectKey = canonicalKey(subjectRaw) ?: continue
             val objectRaw = o.optString("object").trim()
-            val objectKey = if (objectRaw in allKeys) objectRaw else null
+            val objectKey = if (objectRaw in allKeys || keyRemap.containsKey(objectRaw)) {
+                canonicalKey(objectRaw)
+            } else {
+                null
+            }
             val objectText = if (objectKey != null) {
                 byKey[objectKey]?.name ?: mentionNames[objectKey].orEmpty()
             } else {

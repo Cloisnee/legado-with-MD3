@@ -279,7 +279,7 @@ fun AiAnalysisSettingsScreen(
                 AppText(
                     text = when (target) {
                         PromptTarget.Resolve ->
-                            "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
+                            "已载入内置默认文本，可直接编辑；输出为三态 JSON；保存后下次分析生效"
                         PromptTarget.Emotion ->
                             "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"
                         PromptTarget.AudioDirector ->

@@ -57,19 +57,17 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * 分析管线 V3 —— 复刻自研朗读脚本（重构 1.4.9.x）四阶段流程（第三阶段已按甲方要求去除）：
+ * 朗读分析管线 V4（单章前台模式）：
  *
- *  触发：调度器按“预加载窗口”驱动；连续性（上一章为最近完成解析章）决定第1阶段是否走 AI 判定。
- *  A 话语分析：本地规则 v2（新书首章 / 非连续章 / 队列空 / AI失败 → 快速路径）或 AI 判定（B31：逐项 T/F）
- *    （〖第N段〗+[n] 编号；校验=段号/全覆盖/长度全量收集→failHint 顺延重试；装配=逐项判定→叙述连T按句收、引号独立、零改写）。
- *  B 归属+人物：必须走 AI。入参=前情提要+本章 [n]〔〕/[N] 行+后续剧情（按完整段落取、上限可配、无人物表）；
- *    校验复刻（seq 全覆盖、characters 归一化、裸词/特殊词校准、默认男/男青年、路人清别名、本地归一）；
- *    失败不降级旁白：话语改由 默认对话(duihuaA/B) 发声。
- *  D 历史对比：快速命中（名/别名精确）→ 回跳命中 → 同性别±1年龄候选 + 长文本 AI 同判 → 合并（别名并、类型升级）
- *    或新建（路人=主名+【第N章】）。
- *  情绪：独立队列与第2阶段并发；第4阶段完成后最多再等 joinTimeout，超时先落库（无情绪剧本）。
- *  声线分配：三池（核心/路人/特殊）按 性别/年龄类键 未用优先随机 + 耗尽清锁重来再随机；只吃“已选中”声线库。
- *    无候选时复刻原脚本兜底链：特殊→核心·青年 → 默认对话(duihuaA/B)；全缺则留空并记日志（B10.5·Q1）。
+ *  阶段1 话语选号：所有章节统一走 AI（B31 逐项 T/F）；未配模型/失败才回退本地引号规则。
+ *  阶段2 观察包：AI 输出 seqmap + speakers + mentions + evidence（V4-2 契约）。
+ *    本地校验 seq 覆盖、键引用、人称代词、裸属词/特殊词校准、同名归一；
+ *    quote 做原文子串校验，失败只剔除该证据，不整章判失败。
+ *  收敛：IdentityResolver 候选召回 + AI 三态裁决（SAME/DIFFERENT/UNKNOWN）；
+ *    UNKNOWN 建 PROVISIONAL，DIFFERENT 建新人并写 CANNOT，SAME 链接。
+ *  落库：一个事务写 analysis + segment + localSpeaker + localMention + evidence + build；
+ *    属性/关系观察按来源写 ra_attribute_obs / ra_relation_obs。
+ *  情绪与音频导演在 V4-2 仍沿用旧链路（V4-4 换成总导演）。
  */
 class SpeechAnalysisPipelineV4(
     private val bookIdentity: io.legado.app.domain.gateway.RaBookIdentityGateway,
@@ -642,7 +640,11 @@ BGM 建议缺段从值集补全。
             excerpt = e.quote,
             type = e.type,
             subjectLocalId = subjectLocalId,
-            objectText = e.objectText,
+            objectText = if (e.type == RaEvidenceType.RELATION && e.relation.isNotBlank()) {
+                "${e.objectText}|${e.relation}"
+            } else {
+                e.objectText
+            },
             scope = if (e.scope == RaEvidenceScope.CONTEXT_CLUE) {
                 RaEvidenceScope.CONTEXT_CLUE
             } else {
@@ -720,13 +722,14 @@ BGM 建议缺段从值集补全。
             when (e.type) {
                 RaEvidenceType.RELATION -> {
                     if (e.objectText.isNotBlank()) {
+                        val parts = e.objectText.split('|', limit = 2)
                         raCharacters.saveRelation(
                             RaRelationObservation(
                                 id = "rel_${e.id}",
                                 bookKey = bookKey,
                                 characterId = characterId,
-                                relation = e.objectText,
-                                targetText = e.objectText,
+                                relation = parts.getOrElse(1) { "关系" },
+                                targetText = parts[0],
                                 fromChapter = chapterIndex,
                                 evidenceId = e.id,
                             ),
@@ -827,12 +830,12 @@ BGM 建议缺段从值集补全。
         // B28：纯符号"话语"（无汉字/数字/字母）转旁白（静默，不触发重试）
         val localPruned = pruneSymbolOnly(paragraphs, local)
         if (localPruned > 0) {
-            AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${localPruned} 段")
+            AppLog.putAnalysis("【V4·${chapterLabel}·阶段1】纯符号话语过滤（转旁白）：${localPruned} 段")
         }
         // AI 路径：逐项判定 T/F（B31；失败回退本地）
         val refs = runCatching { aiModels.queueRefs("stage1") }.getOrDefault(emptyList())
         if (refs.isEmpty()) {
-            AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
+            AppLog.putAnalysis("【V4·${chapterLabel}·阶段1】未配模型队列 → 本地规则：${local.size} 段话语")
             return local
         }
         val cands = buildParaUnits(paragraphs)
@@ -853,7 +856,7 @@ BGM 建议缺段从值集补全。
                 append("=== 待分析文本 ===\n").append(unitsText)
             }
         }
-        val sel = ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第1阶段") { raw ->
+        val sel = ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·阶段1") { raw ->
             validateSelection(raw, unitCounts)
         }
         if (sel != null) {
@@ -866,12 +869,12 @@ BGM 建议缺段从值集补全。
             val asm = SpeechSelectionAssembly.assemble(paras, sel)
             val fromAi = asm.spans.map { SpRange(it.para, it.start, it.end) }
             AppLog.putAnalysis(
-                "【V4·${chapterLabel}·第1阶段】AI判定：话语 ${fromAi.size} 条" +
+                "【V4·${chapterLabel}·阶段1】AI判定：话语 ${fromAi.size} 条" +
                     "（旁白 ${asm.narratorUnits} 片；保险丝修正 ${asm.fusedColon + asm.fusedSymbol} 条）"
             )
             return fromAi
         }
-        AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】AI判定失败 → 回退本地规则：${local.size} 段话语")
+        AppLog.putAnalysis("【V4·${chapterLabel}·阶段1】AI判定失败 → 回退本地规则：${local.size} 段话语")
         return local
     }
 
@@ -1116,7 +1119,7 @@ BGM 建议缺段从值集补全。
             "只输出 JSON。",
             promptFactory,
             cfg.maxOutputTokens,
-            logTag = "${chapterLabel}·第2阶段",
+            logTag = "${chapterLabel}·阶段2",
         ) { raw ->
             validator.validate(raw, expectedCount)
         }

@@ -111,12 +111,13 @@ class IdentityResolver(
                 return@forEach
             }
 
-            // ② 候选召回；排除同场已链接人物、MERGED、CANNOT（对已知链接的约束）
+            // ② 候选召回；排除同场已链接人物、本章明确反证的人物
+            val blockedByContradiction = contradictionIds(bookKey, contradictions)
             val candidates = recallCandidates(
                 bookKey = bookKey,
                 speaker = speaker,
                 evidence = verifiedMain,
-                exclude = linkedThisChapter,
+                exclude = linkedThisChapter + blockedByContradiction,
             )
             when {
                 candidates.isEmpty() -> {
@@ -409,7 +410,7 @@ class IdentityResolver(
             .distinct()
         val contradictionIds = contradictionIds(bookKey, contradictions)
         return hits.mapNotNull { characters.character(it) }
-            .filter { it.status != RaCharacterStatus.MERGED }
+            .filter { it.status == RaCharacterStatus.ACTIVE }
             .filterNot { target ->
                 target.id in contradictionIds || contradictions.any { matchesText(target, it) }
             }
@@ -429,16 +430,23 @@ class IdentityResolver(
         val generic = names.filter { isGeneric(it) }.map(RaNameUtils::normalize).filter { it.isNotEmpty() }
         val relationTexts = evidence
             .filter { it.type == RaEvidenceType.RELATION }
-            .mapNotNull { it.objectText.trim().takeIf(String::isNotEmpty) }
+            .mapNotNull {
+                it.objectText.substringBefore('|').trim().takeIf(String::isNotEmpty)
+            }
 
         val scores = LinkedHashMap<String, Float>()
         val hitRows: List<RaCharacterAlias> = runCatching {
             characters.charactersByAliases(bookKey, (nonGeneric + generic).distinct())
         }.getOrDefault(emptyList())
         hitRows.forEach { row ->
-            val base = if (row.isGeneric) 0.2f else 1.0f
-            val bonus = if (row.isGeneric && relationTexts.isNotEmpty()) 0.2f else 0f
-            scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, base + bonus)
+            if (row.isGeneric) {
+                // 泛称只在有明确关系/组织证据时进入候选（01 §5.3 ②）
+                if (relationTexts.isNotEmpty()) {
+                    scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, 0.4f)
+                }
+            } else {
+                scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, 1.0f)
+            }
         }
         // PROVISIONAL 关联：称呼有交集/包含时纳入再审（最多 3 次）
         runCatching { characters.provisionalCharacters(bookKey) }.getOrDefault(emptyList()).forEach { p ->
@@ -574,7 +582,7 @@ class IdentityResolver(
             .toSet()
     }
 
-    private fun isGeneric(name: String): Boolean {
+    private suspend fun isGeneric(name: String): Boolean {
         val trimmed = name.trim()
         if (trimmed.length <= 1) return true
         return genericNames.isGeneric(trimmed)

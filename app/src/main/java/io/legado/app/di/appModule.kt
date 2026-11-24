@@ -233,6 +233,8 @@ import io.legado.app.ui.book.read.ReaderSessionViewModel
 import io.legado.app.ui.book.readRecord.ReadRecordOverviewViewModel
 import io.legado.app.ui.book.readRecord.ReadRecordViewModel
 import io.legado.app.ui.book.readaloud.cache.TtsCacheViewModel
+import io.legado.app.ui.ttssrv.BookManageViewModel
+import io.legado.app.ui.ttssrv.CharacterManageViewModel
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerCoordinator
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerViewModel
 import io.legado.app.ui.book.search.SearchViewModel
@@ -404,7 +406,14 @@ val appModule = module {
     singleOf(::CharacterCardProjector)
     singleOf(::AiIdentityArbiter)
     single<IdentityArbiter> { get<AiIdentityArbiter>() }
-    singleOf(::IdentityResolver)
+    single {
+        IdentityResolver(
+            characters = get(),
+            genericNames = get(),
+            cards = get(),
+            arbiter = get(),
+        )
+    }
     singleOf(::VoiceCastingService)
     singleOf(::ReadAloudAudioCacheRepository)
     singleOf(::LoudnessNormalizer)
@@ -602,6 +611,8 @@ val appModule = module {
         )
     }
     viewModelOf(::TtsCacheViewModel)
+    viewModelOf(::CharacterManageViewModel)
+    viewModelOf(::BookManageViewModel)
     singleOf(::ReadAloudPlayerCoordinator)
     /**
      * 朗读播放界面状态宿主。

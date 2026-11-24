@@ -6,8 +6,12 @@ import androidx.test.core.app.ApplicationProvider
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.repository.RaCharacterRepository
 import io.legado.app.data.repository.WordLibraryRepository
+import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaResolution
+import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -102,5 +106,164 @@ class IdentityResolverTest {
             assertEquals(RaResolution.PROVISIONAL, result.resolution)
         }
         assertEquals(2, characters.characters(bookKey).size)
+    }
+
+    private fun evidence(
+        bookKey: String,
+        speaker: RaLocalSpeaker,
+        type: RaEvidenceType,
+        objectText: String,
+    ) = RaEvidence(
+        id = "ev_${type.storageValue}_${speaker.localKey}",
+        bookKey = bookKey,
+        analysisId = speaker.analysisId,
+        sourceChapter = 99,
+        paragraphIndex = 0,
+        start = 0,
+        end = 1,
+        excerpt = "原文",
+        type = type,
+        subjectLocalId = speaker.id,
+        objectText = objectText,
+        scope = RaEvidenceScope.MAIN_TEXT,
+        verified = true,
+    )
+
+    private fun fakeArbiter(answer: (String) -> IdentityAnswer) = object : IdentityArbiter {
+        override suspend fun decide(
+            bookKey: String,
+            questions: List<IdentityQuestion>,
+        ): List<IdentityAnswer> = questions.map { answer(it.key) }
+    }
+
+    @Test
+    fun `alias equal evidence links existing character`() = runBlocking {
+        val bookKey = "bk_evidence"
+        val existing = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val speaker = speaker("a1", "L1", "沈七", emptyList(), 99)
+        val result = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = listOf(evidence(bookKey, speaker, RaEvidenceType.ALIAS_EQUAL, "青衫客")),
+        )
+        assertEquals(existing.id, result.resolutions["L1"]?.characterId)
+    }
+
+    @Test
+    fun `contradiction blocks fast link`() = runBlocking {
+        val bookKey = "bk_contra"
+        val existing = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("沈七"), "ACTIVE", "ai", "inferred",
+        )
+        val speaker = speaker("a1", "L1", "沈七", emptyList(), 99)
+        val result = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = listOf(evidence(bookKey, speaker, RaEvidenceType.CONTRADICTION, "沈孤鸿")),
+        )
+        assertTrue(result.resolutions["L1"]?.characterId != existing.id)
+    }
+
+    @Test
+    fun `same verdict links the chosen candidate`() = runBlocking {
+        val bookKey = "bk_same"
+        val target = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "林雪儿", "核心", "女", "少女", 1, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val resolverWithArbiter = IdentityResolver(
+            characters,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            fakeArbiter { key ->
+                IdentityAnswer(key, RaVerdict.SAME, target.id, 0.9f, "证据充分", emptyList())
+            },
+        )
+        val speaker = speaker("a1", "L1", "青衫客", emptyList(), 99)
+        val result = resolverWithArbiter.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = emptyList(),
+        )
+        assertEquals(target.id, result.resolutions["L1"]?.characterId)
+    }
+
+    @Test
+    fun `different verdict creates new character and cannot links`() = runBlocking {
+        val bookKey = "bk_diff"
+        val a = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "林雪儿", "核心", "女", "少女", 1, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val resolverWithArbiter = IdentityResolver(
+            characters,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            fakeArbiter { key ->
+                IdentityAnswer(key, RaVerdict.DIFFERENT, null, 0.9f, "明确不是同一人", emptyList())
+            },
+        )
+        val speaker = speaker("a1", "L1", "青衫客", emptyList(), 99)
+        val result = resolverWithArbiter.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = emptyList(),
+        )
+        val created = result.resolutions["L1"]?.characterId
+        assertTrue(created != null && created != a.id)
+        assertTrue(
+            characters.linksOfBook(bookKey).any {
+                it.kind == io.legado.app.domain.model.readaloud.v4.RaLinkKind.CANNOT &&
+                    (it.aCharacterId == created || it.bCharacterId == created)
+            },
+        )
+    }
+
+    @Test
+    fun `unknown verdict creates a provisional character`() = runBlocking {
+        val bookKey = "bk_unknown"
+        characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "林雪儿", "核心", "女", "少女", 1, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val resolverWithArbiter = IdentityResolver(
+            characters,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            fakeArbiter { key ->
+                IdentityAnswer(key, RaVerdict.UNKNOWN, null, 0.4f, "证据不足", emptyList())
+            },
+        )
+        val speaker = speaker("a1", "L1", "青衫客", emptyList(), 99)
+        val result = resolverWithArbiter.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = emptyList(),
+        )
+        assertEquals(RaResolution.PROVISIONAL, result.resolutions["L1"]?.resolution)
+        assertEquals("PROVISIONAL", characters.character(result.resolutions["L1"]!!.characterId)?.status?.storageValue)
     }
 }

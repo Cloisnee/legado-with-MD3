@@ -6,6 +6,7 @@ import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
+import io.legado.app.help.readaloud.analysis.queueRefs
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.ValidateOutcome
 import org.json.JSONArray

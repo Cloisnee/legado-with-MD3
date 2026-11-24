@@ -1,8 +1,6 @@
 package io.legado.app.ui.ttssrv
 
 import android.app.Application
-import io.legado.app.utils.ChapterLabels
-import io.legado.app.utils.MD5Utils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -62,14 +60,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.RaBookMaintenanceRepository
-import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.data.repository.ReadAloudVoicePoolRepository
-import io.legado.app.domain.gateway.RaBuildGateway
-import io.legado.app.domain.gateway.RaCharacterGateway
-import io.legado.app.domain.gateway.RaDirectionGateway
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
@@ -101,9 +95,9 @@ import io.legado.app.ui.widget.components.topbar.GlassTopAppBarDefaults
 import io.legado.app.ui.widget.components.topbar.TopBarActionButton
 import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.toastOnUi
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import org.koin.androidx.compose.koinViewModel
 import org.koin.core.context.GlobalContext
 
 /**
@@ -128,23 +122,10 @@ fun BookManageScreen(
     bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
-    val catalog = remember { GlobalContext.get().get<ReadAloudCatalogRepository>() }
-    val raBuild = remember { GlobalContext.get().get<RaBuildGateway>() }
-    val raDirection = remember { GlobalContext.get().get<RaDirectionGateway>() }
-    val characterRepo = remember { GlobalContext.get().get<RaCharacterGateway>() }
-    val maintenance = remember { GlobalContext.get().get<RaBookMaintenanceRepository>() }
+    val vm: BookManageViewModel = koinViewModel()
+    val state by vm.uiState.collectAsStateWithLifecycle()
     val voicePool = remember { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     val scope = rememberCoroutineScope()
-
-    var books by remember { mutableStateOf<List<RaBookSummary>>(emptyList()) }
-    var currentBookKey by remember { mutableStateOf("") }
-    var currentBookUrl by remember { mutableStateOf("") }
-    var currentSourceKey by remember { mutableStateOf("") }
-    var records by remember { mutableStateOf<List<RaCharacterView>>(emptyList()) }
-    var chapters by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var selectedChapter by remember { mutableStateOf<Int?>(null) }
-    var lines by remember { mutableStateOf<List<RaScriptLineRow>>(emptyList()) }
-    val currentBookName = books.firstOrNull { it.bookKey == currentBookKey }?.name ?: "默认"
 
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -173,114 +154,9 @@ fun BookManageScreen(
     var exportSel by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingExportBooks by remember { mutableStateOf<List<String>>(emptyList()) }
     var confirmImportAssets by remember { mutableStateOf(false) }
-    var chapterTitles by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
 
     /** B19：章号显示统一 = 章节显示名（标题截到章；前言类原样；无标题回退 第N章；内部仍用 index 匹配） */
-    fun chLabel(ch: Int): String = ChapterLabels.of(chapterTitles[ch], ch)
-
-    fun reloadLines() {
-        scope.launch {
-            val ch = selectedChapter
-            if (ch == null || currentBookKey.isBlank()) {
-                lines = emptyList()
-            } else {
-                val segments = raBuild.segmentsOfChapter(currentBookKey, currentSourceKey, ch)
-                val analysis = raBuild.getBuild(currentBookKey, currentSourceKey, ch)?.analysisId
-                    ?.let { raBuild.analysisById(it) }
-                    ?: raBuild.latestAnalysisForSource(currentBookKey, currentSourceKey, ch)
-                val directionLines = analysis?.let { item ->
-                    raDirection.plan(item.id, "PLAYBACK_BASE")?.let { plan -> raDirection.lines(plan.id) }
-                }.orEmpty().associateBy { it.segmentId }
-                val characters = characterRepo.charactersRaw(currentBookKey).associateBy { it.id }
-                val finalIdCache = HashMap<String, String>()
-                suspend fun displayNameOf(characterId: String?): String {
-                    if (characterId.isNullOrBlank()) return ""
-                    val finalId = finalIdCache.getOrPut(characterId) {
-                        characterRepo.finalCharacterId(characterId)
-                    }
-                    return characters[finalId]?.displayName.orEmpty()
-                }
-                lines = segments.mapIndexed { index, segment ->
-                    val displayName = if (segment.roleType == SpeechRoleType.Narrator) {
-                        "旁白"
-                    } else {
-                        displayNameOf(segment.characterId)
-                            .ifBlank { segment.surfaceName.ifBlank { "未识别" } }
-                    }
-                    RaScriptLineRow(
-                        segmentId = segment.id,
-                        absIndex = index,
-                        paragraphIndex = segment.paragraphIndex,
-                        speaker = displayName,
-                        characterId = segment.characterId,
-                        text = segment.text,
-                        emotion = directionLines[segment.id]?.emotionTag.orEmpty(),
-                    )
-                }
-            }
-            pending.clear()
-            pendingIds.clear()
-            selLines = emptySet()
-        }
-    }
-
-    fun reload() {
-        scope.launch {
-            val list = catalog.booksWithData()
-            books = list
-            var key = if (externalBookUrl != null) {
-                catalog.bookKeyByBookUrl(externalBookUrl)
-            } else {
-                catalog.currentBookKey()
-            }
-            if (key.isNullOrBlank()) key = list.firstOrNull()?.bookKey
-            currentBookKey = key.orEmpty()
-            if (currentBookKey.isNotBlank() && catalog.currentBookKey() != currentBookKey &&
-                externalBookUrl == null
-            ) {
-                catalog.setCurrentBookKey(currentBookKey)
-            }
-            val summary = list.firstOrNull { it.bookKey == currentBookKey }
-            currentBookUrl = externalBookUrl ?: summary?.bookUrl.orEmpty()
-            currentSourceKey = summary?.sourceKey
-                ?: catalog.sourceKeyByBookUrl(currentBookUrl).orEmpty()
-            records = if (currentBookKey.isBlank()) emptyList() else characterRepo.characters(currentBookKey)
-            val lineCounts = if (currentBookKey.isBlank()) emptyMap() else raBuild.lineCounts(currentBookKey, currentSourceKey)
-            chapters = lineCounts.keys.sorted()
-            chapterTitles = catalog.chapterTitles(currentBookUrl)
-            if (embedded && initialChapter != null) {
-                selectedChapter = initialChapter
-            } else if (selectedChapter == null || selectedChapter !in chapters) {
-                selectedChapter = chapters.lastOrNull()
-            }
-            reloadLines()
-        }
-    }
-
-    fun reloadRecordsOnly() {
-        scope.launch {
-            records = if (currentBookKey.isBlank()) emptyList() else characterRepo.characters(currentBookKey)
-        }
-    }
-
-    /** 重析当前章：优先宿主提供的 bookUrl（剧本审查），否则按当前书解析（二合一面） */
-    fun enqueueReanalyze() {
-        val ch = selectedChapter ?: return
-        scope.launch {
-            val url = externalBookUrl ?: currentBookUrl
-            if (url.isBlank()) {
-                context.toastOnUi("无法定位该书数据（先朗读一次以建立章节缓存）")
-                return@launch
-            }
-            runCatching {
-                val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
-                scheduler.enqueueChapter(url, ch, force = true)
-            }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }
-            context.toastOnUi("已提交重新分析（${chLabel(ch)}）")
-        }
-    }
-
-    LaunchedEffect(refreshKey) { reload() }
+    fun chLabel(ch: Int): String = vm.chLabel(ch)
 
     fun applySpeakerTo(targets: List<Int>, speaker: String, characterId: String? = null) {
         targets.forEach {
@@ -288,66 +164,41 @@ fun BookManageScreen(
             pendingIds[it] = characterId.orEmpty()
         }
         tagPanelFor = null
-        // 保留所选：多选底栏随即提供「主题色 ✓ 保存」（B10.3·U8）
     }
 
     fun savePending() {
-        val ch = selectedChapter ?: return
-        if (pending.isEmpty() || currentBookKey.isBlank()) return
+        val ch = state.selectedChapter ?: return
+        if (pending.isEmpty() || state.currentBookKey.isBlank()) return
         val changes = pending.toMap()
+        val ids = pendingIds.toMap()
         scope.launch {
-            var saved = 0
-            changes.forEach { (lineIndex, speakerName) ->
-                val line = lines.getOrNull(lineIndex) ?: return@forEach
-                val name = speakerName.trim()
-                if (name.isBlank()) return@forEach
-                val isNarrator = name == "旁白"
-                val newCharacterId = if (isNarrator) null else pendingIds[lineIndex]?.takeIf { it.isNotBlank() }
-                if (!isNarrator && newCharacterId.isNullOrBlank()) return@forEach
-                // 只处理用户实际改过的行；不变的行不写 override，避免误伤
-                if (name == line.speaker && newCharacterId == line.characterId) return@forEach
-                if (isNarrator) {
-                    raBuild.markSegmentNarrator(line.segmentId)
-                    raBuild.saveOverride(
-                        bookKey = currentBookKey,
-                        chapterIndex = ch,
-                        paragraphIndex = line.paragraphIndex,
-                        textHash = MD5Utils.md5Encode16(line.text),
-                        characterId = null,
-                        narrator = true,
-                    )
-                    saved++
-                    return@forEach
-                }
-                raBuild.updateSegmentSpeaker(line.segmentId, newCharacterId, name)
-                raBuild.saveOverride(
-                    bookKey = currentBookKey,
-                    chapterIndex = ch,
-                    paragraphIndex = line.paragraphIndex,
-                    textHash = MD5Utils.md5Encode16(line.text),
-                    characterId = newCharacterId,
-                    narrator = false,
-                )
-                saved++
-            }
-            raBuild.getBuild(currentBookKey, currentSourceKey, ch)?.analysisId?.let { raDirection.markPlaybackStale(it) }
+            val saved = vm.savePending(changes, ids)
             context.toastOnUi(if (saved > 0) "已保存：$saved 句说话人" else "保存失败：改动无效")
-            reloadLines()
+            pending.clear()
+            pendingIds.clear()
+            selLines = emptySet()
         }
     }
 
-    // 尾部连续章判断（回滚适用性）
-    fun tailMin(): Int {
-        val sorted = chapters.sorted()
-        if (sorted.isEmpty()) return 0
-        var tail = sorted.last()
-        for (i in sorted.size - 2 downTo 0) {
-            if (sorted[i] == sorted[i + 1] - 1) tail = sorted[i] else break
-        }
-        return tail
+    fun tailMin(): Int = vm.tailMin()
+
+    fun enqueueReanalyze() {
+        val ch = state.selectedChapter ?: return
+        scope.launch { vm.reanalyze(ch) }
     }
 
-    val shown = lines.filter {
+    LaunchedEffect(Unit) {
+        vm.configure(externalBookUrl, embedded, initialChapter)
+        vm.effects.collect { context.toastOnUi(it) }
+    }
+    LaunchedEffect(refreshKey) { vm.load() }
+    LaunchedEffect(state.selectedChapter) {
+        pending.clear()
+        pendingIds.clear()
+        selLines = emptySet()
+    }
+
+    val shown = state.lines.filter {
         query.isBlank() ||
             it.text.contains(query, ignoreCase = true) ||
             it.speaker.contains(query, ignoreCase = true)
@@ -362,14 +213,7 @@ fun BookManageScreen(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val books = pendingExportBooks
-                val n = runCatching {
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openOutputStream(uri)?.use { out ->
-                            maintenance.exportBooksJson(books, out)
-                        } ?: -1
-                    }
-                }.getOrDefault(-1)
+                val n = vm.exportBooks(pendingExportBooks, uri)
                 context.toastOnUi(
                     when {
                         n < 0 -> "导出失败"
@@ -385,14 +229,9 @@ fun BookManageScreen(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val (ok, msg) = runCatching {
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)?.use { maintenance.importBooksJson(it) }
-                            ?: (false to "读取文件失败")
-                    }
-                }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
+                val (ok, msg) = vm.importBooks(uri)
                 context.toastOnUi(msg)
-                if (ok) reload()
+                if (ok) vm.load()
             }
         }
     }
@@ -408,9 +247,9 @@ fun BookManageScreen(
                 },
                 useCharMode = selLines.isNotEmpty(),
                 subtitle = if (embedded) {
-                    "当前书：$currentBookName · ${selectedChapter?.let { chLabel(it) } ?: "-"}"
+                    "当前书：${state.currentBookName} · ${state.selectedChapter?.let { chLabel(it) } ?: "-"}"
                 } else {
-                    "当前书：$currentBookName · ${chapters.size} 章剧本"
+                    "当前书：${state.currentBookName} · ${state.chapters.size} 章剧本"
                 },
                 scrollBehavior = scrollBehavior,
                 navigationIcon = {
@@ -527,7 +366,7 @@ fun BookManageScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             AppText(
-                                                text = currentBookName,
+                                                text = state.currentBookName,
                                                 style = LegadoTheme.typography.titleSmall,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
@@ -545,18 +384,16 @@ fun BookManageScreen(
                                     expanded = showBookMenu,
                                     onDismissRequest = { showBookMenu = false },
                                 ) { dismiss ->
-                                    books.forEach { b ->
+                                    state.books.forEach { b ->
                                         RoundDropdownMenuItem(
                                             text = b.name,
                                             onClick = {
                                                 dismiss()
-                                                if (b.bookKey != currentBookKey) {
-                                                    catalog.setCurrentBookKey(b.bookKey)
-                                                    selectedChapter = null
-                                                    reload()
+                                                if (b.bookKey != state.currentBookKey) {
+                                                    vm.selectBook(b.bookKey)
                                                 }
                                             },
-                                            trailingIcon = if (b.bookKey == currentBookKey) {
+                                            trailingIcon = if (b.bookKey == state.currentBookKey) {
                                                 {
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
@@ -591,7 +428,7 @@ fun BookManageScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             AppText(
-                                                text = selectedChapter?.let { chLabel(it) } ?: "未选择",
+                                                text = state.selectedChapter?.let { chLabel(it) } ?: "未选择",
                                                 style = LegadoTheme.typography.titleSmall,
                                                 maxLines = 1,
                                             )
@@ -608,15 +445,14 @@ fun BookManageScreen(
                                     expanded = showChapterMenu,
                                     onDismissRequest = { showChapterMenu = false },
                                 ) { dismiss ->
-                                    chapters.sorted().forEach { ch ->
+                                    state.chapters.sorted().forEach { ch ->
                                         RoundDropdownMenuItem(
                                             text = chLabel(ch),
                                             onClick = {
                                                 dismiss()
-                                                selectedChapter = ch
-                                                reloadLines()
+                                                vm.selectChapter(ch)
                                             },
-                                            trailingIcon = if (ch == selectedChapter) {
+                                            trailingIcon = if (ch == state.selectedChapter) {
                                                 {
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
@@ -640,15 +476,15 @@ fun BookManageScreen(
                     }
 
                 }
-                if (chapters.isEmpty()) {
+                if (state.chapters.isEmpty()) {
                     item(key = "empty") {
                         TinyClickableSettingItem(
                             title = "暂无剧本",
-                            description = "朗读分析产出后自动出现（当前书：$currentBookName）",
+                            description = "朗读分析产出后自动出现（当前书：${state.currentBookName}）",
                             onClick = {},
                         )
                     }
-                } else if (selectedChapter == null) {
+                } else if (state.selectedChapter == null) {
                     item(key = "noselect") {
                         TinyClickableSettingItem(
                             title = "请选择章节",
@@ -866,13 +702,13 @@ fun BookManageScreen(
         title = "章节列表",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            if (chapters.isEmpty()) {
+            if (state.chapters.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无已落库章节）", onClick = {})
             }
-            chapters.sorted().forEach { ch ->
+            state.chapters.sorted().forEach { ch ->
                 TinyClickableSettingItem(
                     title = chLabel(ch),
-                    description = if (ch == selectedChapter) "当前显示中" else null,
+                    description = if (ch == state.selectedChapter) "当前显示中" else null,
                     trailingContent = {
                         SmallPlainButton(
                             onClick = { deleteChapterTarget = ch },
@@ -881,9 +717,8 @@ fun BookManageScreen(
                         )
                     },
                     onClick = {
-                        selectedChapter = ch
+                        vm.selectChapter(ch)
                         showChapterSheet = false
-                        reloadLines()
                     },
                 )
             }
@@ -907,10 +742,8 @@ fun BookManageScreen(
                     onClick = {
                         deleteChapterTarget = null
                         scope.launch {
-                            maintenance.deleteChapters(currentBookKey, currentSourceKey, currentBookName, setOf(target), false)
+                            vm.deleteChapters(target, false)
                             context.toastOnUi("已删除${chLabel(target)}剧本（轻量）")
-                            selectedChapter = null
-                            reload()
                         }
                     },
                 )
@@ -919,13 +752,10 @@ fun BookManageScreen(
                         title = "回滚（恢复本章分析之前）",
                         description = "删除${chLabel(target)}起（连续尾章）的剧本、缓存、音频与分析记录/合并账本，并逆向人物出场与合并",
                         onClick = {
-                            val set = chapters.filter { it >= target }.toSet()
                             deleteChapterTarget = null
                             scope.launch {
-                                maintenance.deleteChapters(currentBookKey, currentSourceKey, currentBookName, set, true)
+                                vm.deleteChapters(target, true)
                                 context.toastOnUi("已回滚：${chLabel(target)}起全部撤销")
-                                selectedChapter = null
-                                reload()
                             }
                         },
                     )
@@ -942,14 +772,14 @@ fun BookManageScreen(
         title = "删除书籍",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            val deletable = books
+            val deletable = state.books
             if (deletable.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无可删除的书籍）", onClick = {})
             }
             deletable.forEach { b ->
                 TinyClickableSettingItem(
                     title = b.name,
-                    description = if (b.bookKey == currentBookKey) "点按删除（当前书将回退）" else "点按删除该书全部数据",
+                    description = if (b.bookKey == state.currentBookKey) "点按删除（当前书将回退）" else "点按删除该书全部数据",
                     onClick = { pendingDeleteBook = b.bookKey },
                 )
             }
@@ -959,23 +789,15 @@ fun BookManageScreen(
         show = pendingDeleteBook != null,
         onDismissRequest = { pendingDeleteBook = null },
         title = "删除书籍",
-        text = "将删除「${books.firstOrNull { it.bookKey == pendingDeleteBook }?.name ?: ""}」的分析数据与音频缓存（不动书架）；此操作不可恢复。",
+        text = "将删除「${state.books.firstOrNull { it.bookKey == pendingDeleteBook }?.name ?: ""}」的分析数据与音频缓存（不动书架）；此操作不可恢复。",
         confirmText = "删除",
         onConfirm = {
             val b = pendingDeleteBook
             pendingDeleteBook = null
             showDeleteBookSheet = false
             if (b != null) scope.launch {
-                val targetName = books.firstOrNull { it.bookKey == b }?.name.orEmpty()
-                maintenance.deleteBook(b, targetName)
-                val ok = true
-                val msg = "已删除书籍分析数据"
-                if (ok) catalog.setCurrentBookKey("")
-                context.toastOnUi(msg)
-                if (ok) {
-                    selectedChapter = null
-                    reload()
-                }
+                vm.deleteBook(b)
+                context.toastOnUi("已删除书籍分析数据")
             }
         },
         dismissText = "取消",
@@ -990,7 +812,7 @@ fun BookManageScreen(
         title = "导出书籍资产",
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            val exportable = books
+            val exportable = state.books
             if (exportable.isEmpty()) {
                 TinyClickableSettingItem(title = "（暂无可导出的书籍）", onClick = {})
             } else {
@@ -1068,7 +890,7 @@ fun BookManageScreen(
         },
     ) {
         val targets = tagPanelFor
-        val ch = selectedChapter
+        val ch = state.selectedChapter
         if (targets != null && ch != null) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 SearchBar(
@@ -1086,10 +908,10 @@ fun BookManageScreen(
                     description = "改为旁白发声（只改标记，不动文本）",
                     onClick = { applySpeakerTo(targets, "旁白", null) },
                 )
-                val thisChapter = records.filter {
+                val thisChapter = state.records.filter {
                     ch in it.appearanceChapters || it.lastAppearanceChapter == ch
                 }.filter { tagSearch.isBlank() || it.name.contains(tagSearch, ignoreCase = true) }
-                val history = records.filter {
+                val history = state.records.filter {
                     it !in thisChapter && it.roletype in listOf("核心", "特殊")
                 }.filter { tagSearch.isBlank() || it.name.contains(tagSearch, ignoreCase = true) }
                 if (thisChapter.isNotEmpty()) {
@@ -1191,7 +1013,7 @@ fun BookManageScreen(
             TinyClickableSettingItem(
                 title = "创建并标记",
                 onClick = {
-                    val ch = selectedChapter
+                    val ch = state.selectedChapter
                     val nm = ncName.trim()
                     if (ch == null || nm.isEmpty()) {
                         context.toastOnUi("主名不能为空")
@@ -1206,31 +1028,10 @@ fun BookManageScreen(
                     val targets = (tagPanelFor ?: emptyList()).toList()
                     newCharDialog = false
                     scope.launch {
-                        val created = characterRepo.ensureCharacter(
-                            bookKey = currentBookKey,
-                            displayName = finalName,
-                            roleType = ncRole,
-                            gender = ncGender,
-                            ageBand = when {
-                                ncRole == "特殊" -> "系统"
-                                ncGender == "女" -> "女青年"
-                                else -> "男青年"
-                            },
-                            chapterIndex = ch,
-                            aliases = emptyList(),
-                            status = "ACTIVE",
-                            aliasSource = "user",
-                            attributeSource = "user",
-                        )
-                        if (ncVoice.isNotBlank()) {
-                            val entryId = runCatching {
-                                voicePool.loadActivePoolTagEntries()[ncVoice]?.first.orEmpty()
-                            }.getOrDefault("")
-                            characterRepo.setDefaultVoice(created.id, ncVoice, entryId)
+                        val created = vm.createCharacter(finalName, ncRole, ncGender, ncVoice, ch)
+                        if (created != null) {
+                            applySpeakerTo(targets, created.second, created.first)
                         }
-                        context.toastOnUi("已新增人物：$finalName")
-                        reloadRecordsOnly()
-                        applySpeakerTo(targets, finalName, created.id)
                     }
                 },
             )
