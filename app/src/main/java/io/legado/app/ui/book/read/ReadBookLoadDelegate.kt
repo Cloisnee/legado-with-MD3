@@ -1,5 +1,9 @@
 package io.legado.app.ui.book.read
 
+import io.legado.app.data.appDb
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import android.content.Context
 import io.legado.app.R
 import io.legado.app.constant.AppLog
@@ -282,6 +286,7 @@ class ReadBookLoadDelegate(
                         } else {
                             bookRepository.replace(oldBook, book)
                             BookHelp.updateCacheFolder(oldBook, book)
+                            RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
                         }
                         bookRepository.deleteChaptersByBook(oldBook.bookUrl)
                         bookRepository.insertChapters(*cList.toTypedArray())

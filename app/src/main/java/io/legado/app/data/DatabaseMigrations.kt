@@ -794,7 +794,7 @@ object DatabaseMigrations {
      * - 删除旧的逐章分析表与按名字的声线绑定表（用户是唯一使用者，不做数据迁移）。
      * - 新建 ra_* 表；Room 唯一真源，人物身份用 chr_* 稳定 ID。
      */
-    private val migration_110_111 = object : Migration(110, 111) {
+    val migration_110_111 = object : Migration(110, 111) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("DROP TABLE IF EXISTS `chapter_speech_analysis`")
             db.execSQL("DROP TABLE IF EXISTS `chapter_speech_segments`")
@@ -890,7 +890,7 @@ object DatabaseMigrations {
                 """CREATE TABLE IF NOT EXISTS `ra_segment_override` (
                     `bookKey` TEXT NOT NULL, `chapterIndex` INTEGER NOT NULL,
                     `paragraphIndex` INTEGER NOT NULL, `textHash` TEXT NOT NULL,
-                    `characterId` TEXT, `voiceProfileId` TEXT,
+                    `characterId` TEXT,
                     `narrator` INTEGER NOT NULL DEFAULT 0,
                     `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
                     PRIMARY KEY(`bookKey`, `chapterIndex`, `paragraphIndex`, `textHash`))"""

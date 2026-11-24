@@ -1,5 +1,8 @@
 package io.legado.app.model.localBook
 
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import android.net.Uri
 import android.util.Base64
 import androidx.core.net.toUri
@@ -333,6 +336,7 @@ object LocalBook {
             appDb.bookChapterDao.delByBook(oldBook.bookUrl)
             appDb.bookDao.replace(oldBook, reboundBook)
             BookHelp.updateCacheFolder(oldBook, reboundBook)
+            RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, reboundBook.bookUrl, sourceKeyOf(reboundBook))
         }
         oldBook.removeLocalUriCache()
         reboundBook.removeLocalUriCache()
@@ -632,6 +636,7 @@ object LocalBook {
                             )
                             appDb.bookDao.replace(oldBook, newBook)
                             BookHelp.updateCacheFolder(oldBook, newBook)
+                            RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, newBook.bookUrl, sourceKeyOf(newBook))
                             localBook.bookUrl = newBookUrl
                             localBook.origin = newBook.origin
                         }

@@ -10,8 +10,6 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
-import io.legado.app.data.repository.sourceKeyOf
-import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
@@ -135,22 +133,6 @@ object BookHelp {
     }
 
     fun updateCacheFolder(oldBook: Book, newBook: Book) {
-        // 换源/本地书重绑定：新 bookUrl 沿用旧 bookKey（朗读分析数据换源不丢）
-        if (oldBook.bookUrl != newBook.bookUrl) {
-            runCatching {
-                kotlinx.coroutines.CoroutineScope(
-                    kotlinx.coroutines.SupervisorJob() + IO,
-                ).launch {
-                    runCatching {
-                        GlobalContext.get().get<RaBookIdentityGateway>().onSourceChanged(
-                            oldBookUrl = oldBook.bookUrl,
-                            newBookUrl = newBook.bookUrl,
-                            newSourceKey = sourceKeyOf(newBook),
-                        )
-                    }
-                }
-            }
-        }
         val oldFolderName = oldBook.getFolderNameNoCache()
         val newFolderName = newBook.getFolderNameNoCache()
         if (oldFolderName == newFolderName) return

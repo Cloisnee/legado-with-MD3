@@ -25,6 +25,7 @@ import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.utils.AliasTokens
+import io.legado.app.help.readaloud.analysis.v4.SpeakerBinder
 import io.legado.app.utils.MD5Utils
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
@@ -44,7 +45,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import kotlin.math.abs
 
 /**
  * 分析管线 V3 —— 复刻自研朗读脚本（重构 1.4.9.x）四阶段流程（第三阶段已按甲方要求去除）：
@@ -350,7 +350,7 @@ BGM 建议缺段从值集补全。
 
     private val pipelineScope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO +
-            CoroutineExceptionHandler { _, e -> AppLog.putAnalysis("分析V3·后台任务异常: ${e.localizedMessage}", e) },
+            CoroutineExceptionHandler { _, e -> AppLog.putAnalysis("V4·后台任务异常: ${e.localizedMessage}", e) },
     )
 
     private data class TextUnit(val start: Int, val end: Int, val text: String)
@@ -425,7 +425,7 @@ BGM 建议缺段从值集补全。
 
         // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
         val t0 = System.currentTimeMillis()
-        val ranges = stageA(paragraphs, cfg, useAi = true, chapterIndex = chapterIndex)
+        val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex)
         val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
         val directorSkipReason = when {
             directorRefs.isEmpty() -> "未设置Ai"
@@ -467,11 +467,13 @@ BGM 建议缺段从值集补全。
         } else null
         var usedAi2 = false
         var entries: List<Calibrated> = emptyList()
+        var seqMap: Map<Int, String> = emptyMap()
         if (s2Refs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
             val s2 = callStage2(numbered, prevChapterText, nextChapterText, cfg, dialogueSegs.size, s2Refs, chapterIndex)
             if (s2 != null) {
                 usedAi2 = true
                 entries = s2.chars
+                seqMap = s2.seqMap
                 segments = applyStage2(segments, s2.seqMap, s2.narratorSeqs)
                 AppLog.putAnalysis(
                     "【V4·$chapterLabel·阶段2】完成：人物 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
@@ -494,7 +496,7 @@ BGM 建议缺段从值集补全。
             keyToResolution[speaker.localKey] = resolution.resolution
             raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
         }
-        segments = bindSpeakers(segments, localSpeakers, keyToCharacter)
+        segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
         // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
         val overrides = runCatching { raBuild.overrides(bookKey, chapterIndex) }
             .getOrDefault(emptyList())
@@ -572,6 +574,7 @@ BGM 建议缺段从值集补全。
         }
 
         // ===== 落库（一个事务：analysis + segments + localSpeakers + evidence + build） =====
+        val stage2Failed = dialogueSegs.isNotEmpty() && !usedAi2
         val now = System.currentTimeMillis()
         val analysis = RaAnalysis(
             id = analysisId,
@@ -580,7 +583,7 @@ BGM 建议缺段从值集补全。
             chapterIndex = chapterIndex,
             contentHash = contentHash,
             resolverVersion = RESOLVER_VERSION,
-            status = RaAnalysisStatus.RESOLVED,
+            status = if (stage2Failed) RaAnalysisStatus.FAILED else RaAnalysisStatus.RESOLVED,
             origin = if (force) RaAnalysisOrigin.USER_REANALYZE else RaAnalysisOrigin.FOREGROUND,
             modelId = "",
             createdAt = now,
@@ -602,10 +605,10 @@ BGM 建议缺段从值集补全。
             sourceKey = sourceKey,
             chapterIndex = chapterIndex,
             contentHash = contentHash,
-            state = RaChapterState.IDENTITY_READY,
+            state = if (stage2Failed) RaChapterState.FAILED else RaChapterState.IDENTITY_READY,
             analysisId = analysisId,
-            failReason = "",
-            attempts = olderBuild?.attempts ?: 0,
+            failReason = if (stage2Failed) "阶段2未完成：未配置模型或调用失败" else "",
+            attempts = (olderBuild?.attempts ?: 0) + if (stage2Failed) 1 else 0,
             createdAt = olderBuild?.createdAt ?: now,
             updatedAt = now,
         )
@@ -617,8 +620,12 @@ BGM 建议缺段从值集补全。
             build = build,
         )
         AppLog.putAnalysis(
-            "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2",
+            "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
+                (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
         )
+        resolvedCharacters.distinctBy { it.id }.forEach { character ->
+            runCatching { raCharacters.recomputeAppearance(character.id) }
+        }
 
         // ===== 导演行（情绪）与音频条目双写 Room =====
         saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
@@ -661,35 +668,6 @@ BGM 建议缺段从值集补全。
             ageBand = entry.age,
             resolution = RaResolution.PENDING,
         )
-    }
-
-    private fun bindSpeakers(
-        segments: List<RaSegment>,
-        speakers: List<RaLocalSpeaker>,
-        characterByKey: Map<String, String>,
-    ): List<RaSegment> {
-        val keyBySurface = HashMap<String, String>()
-        speakers.forEach { speaker ->
-            speaker.surfaceNames.forEach { name ->
-                keyBySurface[RaNameUtils.normalize(name)] = speaker.localKey
-            }
-        }
-        var seq = 0
-        return segments.map { segment ->
-            if (segment.roleType == SpeechRoleType.Narrator) {
-                segment.copy(seq = 0, localSpeakerId = null, characterId = null)
-            } else {
-                seq++
-                val key = keyBySurface[RaNameUtils.normalize(segment.surfaceName)]
-                segment.copy(
-                    seq = seq,
-                    localSpeakerId = key?.let { "$key" }?.let { localKey ->
-                        speakers.firstOrNull { it.localKey == localKey }?.id
-                    },
-                    characterId = key?.let(characterByKey::get),
-                )
-            }
-        }
     }
 
     private suspend fun saveDirectionRows(
@@ -753,7 +731,6 @@ BGM 建议缺段从值集补全。
     private suspend fun stageA(
         paragraphs: List<CanonicalSpeechParagraph>,
         cfg: AnalysisConfigStore.Config,
-        useAi: Boolean,
         chapterIndex: Int,
     ): List<SpRange> {
         // 本地路径：引号包裹规则 v2
@@ -766,16 +743,12 @@ BGM 建议缺段从值集补全。
         // B28：纯符号"话语"（无汉字/数字/字母）转旁白（静默，不触发重试）
         val localPruned = pruneSymbolOnly(paragraphs, local)
         if (localPruned > 0) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${localPruned} 段")
-        }
-        if (!useAi) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】本地规则快速识别（首章/非连续）：${local.size} 段话语")
-            return local
+            AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】纯符号话语过滤（转旁白）：${localPruned} 段")
         }
         // AI 路径：逐项判定 T/F（B31；失败回退本地）
         val refs = runCatching { aiModels.queueRefs("stage1") }.getOrDefault(emptyList())
         if (refs.isEmpty()) {
-            AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
+            AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】未配模型队列 → 本地规则：${local.size} 段话语")
             return local
         }
         val cands = buildParaUnits(paragraphs)
@@ -809,12 +782,12 @@ BGM 建议缺段从值集补全。
             val asm = SpeechSelectionAssembly.assemble(paras, sel)
             val fromAi = asm.spans.map { SpRange(it.para, it.start, it.end) }
             AppLog.putAnalysis(
-                "【分析V3·${chapterLabel}·第1阶段】AI判定：话语 ${fromAi.size} 条" +
+                "【V4·${chapterLabel}·第1阶段】AI判定：话语 ${fromAi.size} 条" +
                     "（旁白 ${asm.narratorUnits} 片；保险丝修正 ${asm.fusedColon + asm.fusedSymbol} 条）"
             )
             return fromAi
         }
-        AppLog.putAnalysis("【分析V3·${chapterLabel}·第1阶段】AI判定失败 → 回退本地规则：${local.size} 段话语")
+        AppLog.putAnalysis("【V4·${chapterLabel}·第1阶段】AI判定失败 → 回退本地规则：${local.size} 段话语")
         return local
     }
 
@@ -1137,7 +1110,7 @@ BGM 建议缺段从值集补全。
             if (!byName.containsKey(v)) {
                 val tgt = aliasIndex[v.lowercase()]
                 if (tgt != null) {
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】seqmap校正：$v → $tgt")
+                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】seqmap校正：$v → $tgt")
                     sm[n] = tgt
                 } else if (!NarratorRoleStrip.isNarratorName(v)) {
                     errs.add("seqmap中人物「$v」未在characters中定义")
@@ -1179,11 +1152,11 @@ BGM 建议缺段从值集补全。
             if (c.alias.isNotBlank() && isBareClassWord(c.alias)) c.alias = ""
             if (isBareClassWord(c.name)) {
                 if (c.alias.isNotBlank() && !isBareClassWord(c.alias)) {
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】校准：主名「${c.name}」为裸属词，别名「${c.alias}」上位为主名")
+                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】校准：主名「${c.name}」为裸属词，别名「${c.alias}」上位为主名")
                     c.name = c.alias
                     c.alias = ""
                 } else {
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】校准：主名「${c.name}」与别名均为裸属词，降级为路人")
+                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】校准：主名「${c.name}」与别名均为裸属词，降级为路人")
                     c.roleType = "路人"
                 }
             }
@@ -1224,7 +1197,7 @@ BGM 建议缺段从值集补全。
                     // 序号在前者为主名（意图复刻；原脚本此处疑似笔误，按意图实现）
                     val winner = if (b.minSeq < a.minSeq) b else a
                     val loser = if (winner === a) b else a
-                    AppLog.putAnalysis("【分析V3·${chapterLabel}·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
+                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
                     val toks = AliasTokens.of(winner.alias).toMutableList()
                     if (loser.name != winner.name && loser.name !in toks) toks.add(loser.name)
                     AliasTokens.of(loser.alias).forEach { t ->
@@ -1266,13 +1239,15 @@ BGM 建议缺段从值集补全。
                         surfaceName = "",
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
+                        seq = n,
                     )
-                    seqMap[n].isNullOrBlank() -> s.copy(source = SpeechResolutionSource.Ai)
+                    seqMap[n].isNullOrBlank() -> s.copy(source = SpeechResolutionSource.Ai, seq = n)
                     else -> s.copy(
                         surfaceName = seqMap.getValue(n),
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
                         confidence = 0.9f,
+                        seq = n,
                     )
                 }
             }
@@ -1340,7 +1315,7 @@ BGM 建议缺段从值集补全。
             val laneSummary = AudioLaneScan.summaryText(paragraphs.map { it.text })
             if (laneSummary != null) {
                 AppLog.putAnalysis(
-                    "【分析V3·${chapterLabel}·音效与背景音】本地规则快速识别（$reason）：$laneSummary。"
+                    "【V4·${chapterLabel}·音效与背景音】本地规则快速识别（$reason）：$laneSummary。"
                 )
             }
         }
@@ -1356,7 +1331,7 @@ BGM 建议缺段从值集补全。
         val amb = uniq.count { it.lane == SynthLane.AMB }
         val sfx = uniq.count { it.lane == SynthLane.SFX }
         AppLog.putAnalysis(
-            "【分析V3·${chapterLabel}·音效与背景音】本地建议预扫（$reason）：bgm${bgm}条、环境声${amb}条、音效${sfx}条。"
+            "【V4·${chapterLabel}·音效与背景音】本地建议预扫（$reason）：bgm${bgm}条、环境声${amb}条、音效${sfx}条。"
         )
     }
 
@@ -1533,21 +1508,5 @@ BGM 建议缺段从值集补全。
             r.contains("青") || r.contains("轻") -> if (gender == "女") "女青年" else "男青年"
             else -> if (gender == "女") "女青年" else "男青年"
         }
-    }
-
-    private fun ageLevel(age: String): Int = when {
-        age == "系统" -> 0
-        age.contains("童") -> 1
-        age.contains("少年") || age.contains("少女") -> 2
-        age.contains("青年") -> 3
-        age.contains("中年") -> 4
-        age.contains("老年") -> 5
-        else -> 3
-    }
-
-    private fun ageDistance(a: String, b: String): Int {
-        if (a == "系统" && b == "系统") return 0
-        if (a == "系统" || b == "系统") return 99
-        return abs(ageLevel(a) - ageLevel(b))
     }
 }

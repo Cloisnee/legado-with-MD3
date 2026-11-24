@@ -1,5 +1,6 @@
 package io.legado.app.data.repository
 
+import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.readaloud.RaBuildDao
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBookIdentityRow
@@ -11,6 +12,7 @@ import kotlinx.coroutines.withContext
 
 class RaBookIdentityRepository(
     private val dao: RaBuildDao,
+    private val bookDao: BookDao,
 ) : RaBookIdentityGateway {
 
     private val mutex = Mutex()
@@ -26,7 +28,14 @@ class RaBookIdentityRepository(
                 }
                 return@withLock existing.bookKey
             }
-            val key = RaIds.book()
+            // 第二道防线：同一本书换 URL 后，按 同书名+同作者 的旧记录兜底
+            val book = bookDao.getBook(bookUrl)
+            val siblingIdentity = book?.let { current ->
+                bookDao.getAll()
+                    .filter { it.bookUrl != bookUrl && it.name == current.name && it.author == current.author }
+                    .firstNotNullOfOrNull { dao.getIdentity(it.bookUrl) }
+            }
+            val key = siblingIdentity?.bookKey ?: RaIds.book()
             dao.upsertIdentity(
                 io.legado.app.data.entities.readaloud.RaBookIdentityEntity(
                     bookUrl = bookUrl,

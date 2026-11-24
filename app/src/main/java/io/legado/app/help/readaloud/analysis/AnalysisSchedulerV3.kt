@@ -4,6 +4,7 @@ import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import org.koin.core.context.GlobalContext
 import io.legado.app.utils.ChapterLabels
 import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
@@ -61,6 +62,7 @@ class AnalysisSchedulerV3(
     private val queue = Channel<Task>(Channel.UNLIMITED)
     private val queueMutex = Mutex()
     private val queued = HashSet<String>()
+    private val failedThisSession = HashSet<String>()
     private var worker: Job? = null
     private var currentBookUrl: String? = null
 
@@ -93,6 +95,7 @@ class AnalysisSchedulerV3(
         if (bookUrl.isBlank()) return
         sessionBookUrl = bookUrl
         sessionAnchor = chapterIndex
+        failedThisSession.clear()
         enqueueWindow(bookUrl, chapterIndex)
         startSweepIfNeeded()
     }
@@ -102,6 +105,7 @@ class AnalysisSchedulerV3(
         if (bookUrl.isBlank()) return
         sessionBookUrl = bookUrl
         sessionAnchor = chapterIndex
+        failedThisSession.clear()
         enqueueWindow(bookUrl, chapterIndex)
         startSweepIfNeeded()
     }
@@ -152,7 +156,7 @@ class AnalysisSchedulerV3(
                 currentBookUrl = bookUrl
                 for (i in fromIndex until fromIndex + count) {
                     val key = "$bookUrl|$i"
-                    if (!force && key in queued) continue
+                    if (!force && (key in queued || key in failedThisSession)) continue
                     queued.add(key)
                     queue.trySend(Task(bookUrl, i, force))
                 }
@@ -177,7 +181,7 @@ class AnalysisSchedulerV3(
                         bookChapterDao.getChapter(task.bookUrl, task.chapterIndex)?.title
                     }.getOrNull()
                     AppLog.putAnalysis(
-                        "【分析V3·${ChapterLabels.of(chTitle, task.chapterIndex)}】调度失败: ${it.localizedMessage}",
+                        "【V4·${ChapterLabels.of(chTitle, task.chapterIndex)}】调度失败: ${it.localizedMessage}",
                         it,
                     )
                 }
@@ -207,6 +211,9 @@ class AnalysisSchedulerV3(
             nextChapterText = nextText,
             force = task.force,
         ) ?: return
+        if (result.analysis.status == RaAnalysisStatus.FAILED) {
+            failedThisSession.add("${task.bookUrl}|${task.chapterIndex}")
+        }
         val usedAi = result.segments.any { it.source.storageValue == "ai" }
         _events.tryEmit(
             ReadyEvent(

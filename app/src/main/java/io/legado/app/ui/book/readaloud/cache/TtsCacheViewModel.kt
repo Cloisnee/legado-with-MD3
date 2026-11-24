@@ -227,7 +227,7 @@ class TtsCacheViewModel : ViewModel() {
                 val author = summary?.author.orEmpty()
                 val bookUrl = summary?.bookUrl.orEmpty()
                 val titles = if (bookUrl.isBlank()) emptyMap() else catalog.chapterTitles(bookUrl)
-                val lineCounts = if (summary == null) emptyMap() else raBuild.lineCounts(summary.bookKey)
+                val lineCounts = if (summary == null) emptyMap() else raBuild.lineCounts(summary.bookKey, summary.sourceKey)
                 // 听书下载区（与朗读侧同一 Store）：按 bookUrl 查已下载章集合，两处状态互通
                 val downloadedSet = if (bookUrl.isBlank()) {
                     emptySet()
@@ -283,7 +283,7 @@ class TtsCacheViewModel : ViewModel() {
 
     private suspend fun refreshChapter(item: QueueItem) {
         val summary = catalog.booksWithData().firstOrNull { it.name == item.book || it.bookKey == item.book }
-        val total = summary?.let { raBuild.lineCounts(it.bookKey)[item.chapterIndex] } ?: 0
+        val total = summary?.let { raBuild.lineCounts(it.bookKey, it.sourceKey)[item.chapterIndex] } ?: 0
         val stats = audioCache.chapterStats(item.book, item.chapterIndex, total)
         _uiState.update { state ->
             state.copy(

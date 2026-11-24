@@ -388,8 +388,11 @@ class HttpReadAloudService : BaseReadAloudService(),
                     ensureActive()
                     if (appDb.bookChapterDao.getChapter(bookUrl, index) == null) break
                     val hasScript = runCatching {
-                        val bookKey = bookIdentity.keyOf(book.bookUrl, sourceKeyOf(book))
-                        val analysis = raBuild.latestAnalysis(bookKey, index)
+                        val sourceKey = sourceKeyOf(book)
+                        val bookKey = bookIdentity.keyOf(book.bookUrl, sourceKey)
+                        val analysis = raBuild.getBuild(bookKey, sourceKey, index)?.analysisId
+                            ?.let { raBuild.analysisById(it) }
+                            ?: raBuild.latestAnalysisForSource(bookKey, sourceKey, index)
                         analysis != null && analysis.status == RaAnalysisStatus.RESOLVED &&
                             raBuild.segments(analysis.id).isNotEmpty()
                     }.getOrDefault(false)

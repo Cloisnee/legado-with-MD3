@@ -1,5 +1,9 @@
 package io.legado.app.domain.usecase
 
+import io.legado.app.data.appDb
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
@@ -48,6 +52,7 @@ class RefreshTocUseCase(
         } else {
             bookRepository.replace(oldBook, book)
             BookHelp.updateCacheFolder(oldBook, book)
+            RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
         }
         bookRepository.deleteChaptersByBook(bookUrl)
         bookRepository.insertChapters(*toc.toTypedArray())

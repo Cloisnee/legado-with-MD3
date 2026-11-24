@@ -40,7 +40,6 @@ class PrepareChapterSpeechPlanUseCase(
         sourceKey: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
-        preferredDefaultVoiceId: String? = null,
         useMultiSpeaker: Boolean = true,
         bookName: String = "",
     ): List<SpeechPlanItem> {
@@ -61,7 +60,9 @@ class PrepareChapterSpeechPlanUseCase(
             if (it is CancellationException) throw it
             AppLog.put("读取 V4 分析失败，走本地快速链: ${it.localizedMessage}", it)
         }.getOrNull()
-        if (analysis?.status != RaAnalysisStatus.RESOLVED) {
+        if (analysis?.status == RaAnalysisStatus.FAILED) {
+            AppLog.putAudio("【V4·$chLabel·开播】本章分析失败 → 本地快速链（下次进入会重试）")
+        } else if (analysis?.status != RaAnalysisStatus.RESOLVED) {
             val cfg = runCatching { analysisConfig.load() }.getOrElse {
                 if (it is CancellationException) throw it
                 AnalysisConfigStore.Config()
@@ -90,7 +91,6 @@ class PrepareChapterSpeechPlanUseCase(
                 return buildSpeechPlan(
                     bookKey = bookKey,
                     segments = segments,
-                    preferredDefaultVoiceId = preferredDefaultVoiceId,
                     useMultiSpeaker = useMultiSpeaker,
                     emotionBySegment = lines.emotionMap(),
                     instructionBySegment = lines.instructionMap(),
@@ -105,7 +105,6 @@ class PrepareChapterSpeechPlanUseCase(
         return buildSpeechPlan(
             bookKey = bookKey,
             segments = local,
-            preferredDefaultVoiceId = preferredDefaultVoiceId,
             useMultiSpeaker = useMultiSpeaker,
         )
     }

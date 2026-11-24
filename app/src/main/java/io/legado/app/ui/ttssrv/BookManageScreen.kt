@@ -69,6 +69,7 @@ import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.gateway.RaDirectionGateway
+import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
 import io.legado.app.domain.model.readaloud.v4.RaScriptLineRow
@@ -181,8 +182,10 @@ fun BookManageScreen(
             if (ch == null || currentBookKey.isBlank()) {
                 lines = emptyList()
             } else {
-                val segments = raBuild.segmentsOfChapter(currentBookKey, ch)
-                val analysis = raBuild.latestAnalysis(currentBookKey, ch)
+                val segments = raBuild.segmentsOfChapter(currentBookKey, currentSourceKey, ch)
+                val analysis = raBuild.getBuild(currentBookKey, currentSourceKey, ch)?.analysisId
+                    ?.let { raBuild.analysisById(it) }
+                    ?: raBuild.latestAnalysisForSource(currentBookKey, currentSourceKey, ch)
                 val directionLines = analysis?.let { item ->
                     raDirection.plan(item.id, "PLAYBACK_BASE")?.let { plan -> raDirection.lines(plan.id) }
                 }.orEmpty().associateBy { it.segmentId }
@@ -191,7 +194,7 @@ fun BookManageScreen(
                         segmentId = segment.id,
                         absIndex = index,
                         paragraphIndex = segment.paragraphIndex,
-                        speaker = if (segment.roleType == io.legado.app.domain.model.readaloud.SpeechRoleType.Narrator) {
+                        speaker = if (segment.roleType == SpeechRoleType.Narrator) {
                             "旁白"
                         } else {
                             segment.surfaceName
@@ -228,7 +231,7 @@ fun BookManageScreen(
             currentSourceKey = summary?.sourceKey
                 ?: catalog.sourceKeyByBookUrl(currentBookUrl).orEmpty()
             records = if (currentBookKey.isBlank()) emptyList() else characterRepo.characters(currentBookKey)
-            val lineCounts = if (currentBookKey.isBlank()) emptyMap() else raBuild.lineCounts(currentBookKey)
+            val lineCounts = if (currentBookKey.isBlank()) emptyMap() else raBuild.lineCounts(currentBookKey, currentSourceKey)
             chapters = lineCounts.keys.sorted()
             chapterTitles = catalog.chapterTitles(currentBookUrl)
             if (embedded && initialChapter != null) {
@@ -289,7 +292,6 @@ fun BookManageScreen(
                         paragraphIndex = line.paragraphIndex,
                         textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
                         characterId = null,
-                        voiceProfileId = null,
                         narrator = true,
                     )
                     saved++
@@ -326,12 +328,11 @@ fun BookManageScreen(
                     paragraphIndex = line.paragraphIndex,
                     textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
                     characterId = character.id,
-                    voiceProfileId = null,
                     narrator = name == "旁白",
                 )
                 saved++
             }
-            raBuild.latestAnalysis(currentBookKey, ch)?.let { raDirection.markPlaybackStale(it.id) }
+            raBuild.getBuild(currentBookKey, currentSourceKey, ch)?.analysisId?.let { raDirection.markPlaybackStale(it) }
             context.toastOnUi(if (saved > 0) "已保存：$saved 句说话人" else "保存失败：改动无效")
             reloadLines()
         }
@@ -357,8 +358,8 @@ fun BookManageScreen(
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
     val listState = rememberLazyListState()
 
-    // B10.4.2·U10：书籍资产导出 / 导入（zip · SAF）
-    val exportZipLauncher = rememberLauncherForActivityResult(
+    // 书籍分析数据导出 / 导入（JSON · SAF）
+    val exportJsonLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
@@ -367,7 +368,7 @@ fun BookManageScreen(
                 val n = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { out ->
-                            maintenance.exportBooksZip(books, out)
+                            maintenance.exportBooksJson(books, out)
                         } ?: -1
                     }
                 }.getOrDefault(-1)
@@ -381,14 +382,14 @@ fun BookManageScreen(
             }
         }
     }
-    val importZipLauncher = rememberLauncherForActivityResult(
+    val importJsonLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             scope.launch {
                 val (ok, msg) = runCatching {
                     withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)?.use { maintenance.importBooksZip(it) }
+                        context.contentResolver.openInputStream(uri)?.use { maintenance.importBooksJson(it) }
                             ?: (false to "读取文件失败")
                     }
                 }.getOrElse { false to "导入失败：${it.localizedMessage ?: it.javaClass.simpleName}" }
@@ -982,7 +983,7 @@ fun BookManageScreen(
         onDismiss = { pendingDeleteBook = null },
     )
 
-    // ---------------- 导出书籍资产（zip，不含音频） ----------------
+    // ---------------- 导出书籍分析（JSON，不含音频） ----------------
     AppModalBottomSheet(
         animateContentSize = false,
         show = showExportAssetSheet,
@@ -1000,7 +1001,7 @@ fun BookManageScreen(
                     onClick = {
                         showExportAssetSheet = false
                         pendingExportBooks = exportable.map { it.name }
-                        exportZipLauncher.launch("legado-book-analysis.json")
+                        exportJsonLauncher.launch("legado-book-analysis.json")
                     },
                 )
             }
@@ -1025,7 +1026,7 @@ fun BookManageScreen(
                     onClick = {
                         showExportAssetSheet = false
                         pendingExportBooks = exportSel.toList()
-                        exportZipLauncher.launch("legado-book-analysis.json")
+                        exportJsonLauncher.launch("legado-book-analysis.json")
                     },
                 )
             }
@@ -1041,7 +1042,7 @@ fun BookManageScreen(
         confirmText = "选择文件",
         onConfirm = {
             confirmImportAssets = false
-            importZipLauncher.launch(arrayOf("application/json", "*/*"))
+            importJsonLauncher.launch(arrayOf("application/json", "*/*"))
         },
         dismissText = "取消",
         onDismiss = { confirmImportAssets = false },

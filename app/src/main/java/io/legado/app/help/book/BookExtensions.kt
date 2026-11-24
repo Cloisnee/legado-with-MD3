@@ -2,6 +2,8 @@
 
 package io.legado.app.help.book
 
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
 import android.net.Uri
 import androidx.core.net.toUri
 import com.script.buildScriptBindings
@@ -225,6 +227,7 @@ fun Book.getLocalUri(): Uri {
                         appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                         appDb.bookDao.replace(oldBook, newBook)
                         BookHelp.updateCacheFolder(oldBook, newBook)
+                        RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, newBook.bookUrl, sourceKeyOf(newBook))
                         this.bookUrl = newBookUrl
                         this.latestChapterTime = 0
                     }
@@ -260,6 +263,7 @@ fun Book.getLocalUri(): Uri {
                     appDb.bookChapterDao.delByBook(oldBook.bookUrl)
                     appDb.bookDao.replace(oldBook, newBook)
                     BookHelp.updateCacheFolder(oldBook, newBook)
+                    RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, newBook.bookUrl, sourceKeyOf(newBook))
                     this.bookUrl = newBookUrl
                     this.latestChapterTime = 0
                 }

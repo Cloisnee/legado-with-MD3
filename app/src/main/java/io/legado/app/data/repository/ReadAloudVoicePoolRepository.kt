@@ -12,7 +12,6 @@ import java.io.File
 
 /**
  * 声线池读取（配置列表 → 已选中池）；不存任何朗读分析数据。
- * 不存任何朗读分析数据。
  */
 class ReadAloudVoicePoolRepository(private val app: Application) {
 

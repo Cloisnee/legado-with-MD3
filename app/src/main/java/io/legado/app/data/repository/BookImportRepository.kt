@@ -1,5 +1,8 @@
 package io.legado.app.data.repository
 
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.help.book.BookHelp
@@ -33,6 +36,7 @@ class BookImportRepository(
                 appDb.bookChapterDao.delByBook(book.bookUrl)
                 appDb.bookDao.replace(book, reboundBook)
                 BookHelp.updateCacheFolder(book, reboundBook)
+                RaBookIdentitySync.migrate(appDb, book.bookUrl, reboundBook.bookUrl, sourceKeyOf(reboundBook))
             }
             reboundBook
         }

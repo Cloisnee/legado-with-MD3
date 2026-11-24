@@ -24,9 +24,7 @@ interface RaBuildGateway {
 
     suspend fun analysisById(id: String): RaAnalysis?
 
-    suspend fun latestAnalysis(bookKey: String, chapterIndex: Int): RaAnalysis?
-
-    suspend fun resolvedAnalysesByHash(bookKey: String, contentHash: String): List<RaAnalysis>
+    suspend fun latestAnalysisForSource(bookKey: String, sourceKey: String, chapterIndex: Int): RaAnalysis?
 
     suspend fun saveAnalysisBundle(
         analysis: RaAnalysis,
@@ -38,9 +36,9 @@ interface RaBuildGateway {
 
     suspend fun segments(analysisId: String): List<RaSegment>
 
-    suspend fun segmentsOfChapter(bookKey: String, chapterIndex: Int): List<RaSegment>
+    suspend fun segmentsOfChapter(bookKey: String, sourceKey: String, chapterIndex: Int): List<RaSegment>
 
-    suspend fun lineCounts(bookKey: String): Map<Int, Int>
+    suspend fun lineCounts(bookKey: String, sourceKey: String): Map<Int, Int>
 
     suspend fun localSpeakers(analysisId: String): List<RaLocalSpeaker>
 
@@ -54,8 +52,6 @@ interface RaBuildGateway {
         resolution: String,
     )
 
-    suspend fun updateSegmentCharacter(segmentId: String, characterId: String?)
-
     suspend fun updateSegmentSpeaker(segmentId: String, characterId: String?, surfaceName: String)
 
     suspend fun markSegmentNarrator(segmentId: String)
@@ -66,7 +62,6 @@ interface RaBuildGateway {
         paragraphIndex: Int,
         textHash: String,
         characterId: String?,
-        voiceProfileId: String?,
         narrator: Boolean,
     )
 

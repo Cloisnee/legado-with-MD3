@@ -64,15 +64,13 @@ class RaBuildRepository(
         dao.getAnalysisById(id)?.toDomain()
     }
 
-    override suspend fun latestAnalysis(bookKey: String, chapterIndex: Int): RaAnalysis? =
-        withContext(Dispatchers.IO) {
-            dao.latestAnalysis(bookKey, chapterIndex)?.toDomain()
-        }
-
-    override suspend fun resolvedAnalysesByHash(bookKey: String, contentHash: String): List<RaAnalysis> =
-        withContext(Dispatchers.IO) {
-            dao.resolvedAnalysesByHash(bookKey, contentHash).map(RaChapterAnalysisEntity::toDomain)
-        }
+    override suspend fun latestAnalysisForSource(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndex: Int,
+    ): RaAnalysis? = withContext(Dispatchers.IO) {
+        dao.latestAnalysisForSource(bookKey, sourceKey, chapterIndex)?.toDomain()
+    }
 
     override suspend fun saveAnalysisBundle(
         analysis: RaAnalysis,
@@ -98,14 +96,26 @@ class RaBuildRepository(
         dao.segments(analysisId).map(RaSegmentEntity::toDomain)
     }
 
-    override suspend fun segmentsOfChapter(bookKey: String, chapterIndex: Int): List<RaSegment> =
-        withContext(Dispatchers.IO) {
-            dao.segmentsOfChapter(bookKey, chapterIndex).map(RaSegmentEntity::toDomain)
+    override suspend fun segmentsOfChapter(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndex: Int,
+    ): List<RaSegment> = withContext(Dispatchers.IO) {
+        val rows = dao.segmentsOfChapter(bookKey, sourceKey, chapterIndex)
+        if (rows.isNotEmpty()) {
+            rows.map(RaSegmentEntity::toDomain)
+        } else {
+            // 兼容旧数据/刚迁移：没有 build 指针时退回当前 sourceKey 的最新分析
+            dao.latestAnalysisForSource(bookKey, sourceKey, chapterIndex)
+                ?.let { dao.segments(it.id).map(RaSegmentEntity::toDomain) }
+                .orEmpty()
         }
-
-    override suspend fun lineCounts(bookKey: String): Map<Int, Int> = withContext(Dispatchers.IO) {
-        dao.lineCounts(bookKey).associate { it.chapterIndex to it.lineCount }
     }
+
+    override suspend fun lineCounts(bookKey: String, sourceKey: String): Map<Int, Int> =
+        withContext(Dispatchers.IO) {
+            dao.lineCounts(bookKey, sourceKey).associate { it.chapterIndex to it.lineCount }
+        }
 
     override suspend fun localSpeakers(analysisId: String): List<RaLocalSpeaker> =
         withContext(Dispatchers.IO) {
@@ -125,7 +135,6 @@ class RaBuildRepository(
                     paragraphIndex = entity.paragraphIndex,
                     textHash = entity.textHash,
                     characterId = entity.characterId,
-                    voiceProfileId = entity.voiceProfileId,
                     narrator = entity.narrator,
                 )
             }
@@ -138,11 +147,6 @@ class RaBuildRepository(
     ) = withContext(Dispatchers.IO) {
         dao.updateLocalSpeaker(localSpeakerId, characterId, resolution, System.currentTimeMillis())
     }
-
-    override suspend fun updateSegmentCharacter(segmentId: String, characterId: String?) =
-        withContext(Dispatchers.IO) {
-            dao.updateSegmentCharacter(segmentId, characterId, System.currentTimeMillis())
-        }
 
     override suspend fun updateSegmentSpeaker(
         segmentId: String,
@@ -162,7 +166,6 @@ class RaBuildRepository(
         paragraphIndex: Int,
         textHash: String,
         characterId: String?,
-        voiceProfileId: String?,
         narrator: Boolean,
     ) = withContext(Dispatchers.IO) {
         dao.upsertOverride(
@@ -172,7 +175,6 @@ class RaBuildRepository(
                 paragraphIndex = paragraphIndex,
                 textHash = textHash,
                 characterId = characterId,
-                voiceProfileId = voiceProfileId,
                 narrator = narrator,
             ),
         )
@@ -184,13 +186,29 @@ class RaBuildRepository(
         chapterIndexes: List<Int>,
     ) = withContext(Dispatchers.IO) {
         if (chapterIndexes.isEmpty()) return@withContext
+        val analyses = dao.analysesForChapters(bookKey, chapterIndexes)
+        val analysisIds = analyses.map { it.id }
+        val localSpeakerIds = if (analysisIds.isEmpty()) {
+            emptyList()
+        } else {
+            dao.localSpeakerIdsOf(analysisIds)
+        }
         database.withTransaction {
-            chapterIndexes.forEach { chapter ->
-                directionDao.plansOfChapter(bookKey, chapter).forEach { plan ->
+            if (analysisIds.isNotEmpty()) {
+                directionDao.plansOfAnalyses(analysisIds).forEach { plan ->
                     directionDao.deletePlanCompletely(plan.id)
                 }
+                dao.deleteSegmentsByAnalysisIds(analysisIds)
+                dao.deleteLocalSpeakersByAnalysisIds(analysisIds)
+                dao.deleteLocalMentionsByAnalysisIds(analysisIds)
+                dao.deleteEvidenceByAnalysisIds(analysisIds)
+                dao.deleteAnalysesByIds(analysisIds)
             }
-            dao.deleteChapters(bookKey, sourceKey, chapterIndexes)
+            dao.deleteBuildsAllSources(bookKey, chapterIndexes)
+            dao.deleteOverridesOfChapters(bookKey, chapterIndexes)
+            if (localSpeakerIds.isNotEmpty()) {
+                characterDao.deleteDecisionsByLocalSpeakerIds(localSpeakerIds)
+            }
         }
     }
 
@@ -209,6 +227,9 @@ class RaBuildRepository(
                 characterDao.deleteRelations(character.id)
             }
             characterDao.deleteLinksOfBook(bookKey)
+            characterDao.deleteRedirectsOfBook(bookKey)
+            characterDao.deleteDecisionsOfBook(bookKey)
+            dao.deleteLocalMentionsOfBook(bookKey)
             dao.deleteAnalysesOfBook(bookKey)
             dao.deleteSegmentsOfBook(bookKey)
             dao.deleteLocalSpeakersOfBook(bookKey)

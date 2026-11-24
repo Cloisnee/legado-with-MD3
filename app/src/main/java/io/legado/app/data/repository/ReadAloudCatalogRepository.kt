@@ -78,7 +78,8 @@ class ReadAloudCatalogRepository(
             ChapterLabels.of(title, chapterIndex)
         }
 
-    suspend fun lineCounts(bookKey: String): Map<Int, Int> = buildGateway.lineCounts(bookKey)
+    suspend fun lineCounts(bookKey: String, sourceKey: String): Map<Int, Int> =
+        buildGateway.lineCounts(bookKey, sourceKey)
 
     fun currentBookKey(): String = AppConfigStore.getString(KEY_CURRENT_BOOK) ?: ""
 

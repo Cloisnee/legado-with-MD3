@@ -93,7 +93,7 @@ class RaBookMaintenanceRepository(
         if (bookName.isNotBlank()) audioCache.deleteBook(bookName)
     }
 
-    suspend fun exportBooksZip(books: List<String>, out: OutputStream): Int = withContext(Dispatchers.IO) {
+    suspend fun exportBooksJson(books: List<String>, out: OutputStream): Int = withContext(Dispatchers.IO) {
         val summaries = catalog.booksWithData()
         val selected = books.mapNotNull { name ->
             summaries.firstOrNull { it.name == name || it.bookKey == name }
@@ -106,7 +106,7 @@ class RaBookMaintenanceRepository(
         packages.size
     }
 
-    suspend fun importBooksZip(input: InputStream): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+    suspend fun importBooksJson(input: InputStream): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         runCatching {
             val text = input.bufferedReader().use { it.readText() }
             val packageData = Gson().fromJson(text, ExportPackage::class.java)
@@ -129,9 +129,7 @@ class RaBookMaintenanceRepository(
 
     private suspend fun exportBook(bookKey: String): BookData {
         val characters = characterDao.allCharacters(bookKey)
-        val redirects = characters.flatMap { character ->
-            characterDao.redirect(character.id)?.let(::listOf).orEmpty()
-        } + characterDao.allCharacters(bookKey).mapNotNull { characterDao.redirect(it.id) }
+        val redirects = characterDao.redirectsOfBook(bookKey)
         return BookData(
             bookKey = bookKey,
             identities = buildDao.identitiesOf(bookKey),
@@ -146,7 +144,7 @@ class RaBookMaintenanceRepository(
             relations = characterDao.relationsOfBook(bookKey),
             links = characterDao.linksOfBook(bookKey),
             decisions = characterDao.decisionsOfBook(bookKey),
-            redirects = redirects.distinctBy { it.fromCharacterId },
+            redirects = redirects,
             voiceProfiles = characterDao.voiceProfilesOfBook(bookKey),
             overrides = buildDao.overridesOfBook(bookKey),
         )
@@ -174,6 +172,9 @@ class RaBookMaintenanceRepository(
         characterDao.allCharacters(bookKey).forEach { character ->
             val aggregate = buildDao.appearanceOf(character.id)
             if (aggregate.lineCount <= 0) {
+                characterDao.deleteRedirectsForCharacter(character.id)
+                characterDao.deleteLinksForCharacter(bookKey, character.id)
+                characterDao.deleteDecisionsByChosenCharacter(character.id)
                 characterDao.deleteVoiceProfilesOfCharacter(character.id)
                 characterDao.deleteAliasesOfCharacter(character.id)
                 characterDao.deleteAttributes(character.id)

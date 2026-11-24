@@ -99,10 +99,14 @@ interface RaBuildDao {
     ): RaChapterAnalysisEntity?
 
     @Query(
-        "select * from ra_chapter_analysis where bookKey = :bookKey and chapterIndex = :chapterIndex " +
-            "order by updatedAt desc limit 1"
+        "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
+            "and chapterIndex = :chapterIndex order by updatedAt desc limit 1"
     )
-    suspend fun latestAnalysis(bookKey: String, chapterIndex: Int): RaChapterAnalysisEntity?
+    suspend fun latestAnalysisForSource(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndex: Int,
+    ): RaChapterAnalysisEntity?
 
     @Query(
         "select * from ra_chapter_analysis where bookKey = :bookKey " +
@@ -110,20 +114,8 @@ interface RaBuildDao {
     )
     suspend fun analyses(bookKey: String, sourceKey: String): List<RaChapterAnalysisEntity>
 
-    @Query(
-        "select * from ra_chapter_analysis where bookKey = :bookKey and contentHash = :contentHash " +
-            "and status = 'RESOLVED' order by updatedAt desc"
-    )
-    suspend fun resolvedAnalysesByHash(bookKey: String, contentHash: String): List<RaChapterAnalysisEntity>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAnalysis(entity: RaChapterAnalysisEntity)
-
-    @Query(
-        "delete from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
-            "and chapterIndex in (:chapterIndexes)"
-    )
-    suspend fun deleteAnalyses(bookKey: String, sourceKey: String, chapterIndexes: List<Int>)
 
     @Query("select * from ra_chapter_analysis where bookKey = :bookKey order by chapterIndex, updatedAt desc")
     suspend fun allAnalysesOf(bookKey: String): List<RaChapterAnalysisEntity>
@@ -137,28 +129,34 @@ interface RaBuildDao {
     suspend fun segments(analysisId: String): List<RaSegmentEntity>
 
     @Query(
-        "select * from ra_segment where bookKey = :bookKey and chapterIndex = :chapterIndex " +
-            "order by paragraphIndex, start, end"
+        "select s.* from ra_segment s inner join ra_chapter_build b " +
+            "on b.bookKey = s.bookKey and b.chapterIndex = s.chapterIndex and b.analysisId = s.analysisId " +
+            "where b.bookKey = :bookKey and b.sourceKey = :sourceKey and b.chapterIndex = :chapterIndex " +
+            "order by s.paragraphIndex, s.start, s.end"
     )
-    suspend fun segmentsOfChapter(bookKey: String, chapterIndex: Int): List<RaSegmentEntity>
+    suspend fun segmentsOfChapter(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndex: Int,
+    ): List<RaSegmentEntity>
 
     @Query("select * from ra_segment where bookKey = :bookKey order by chapterIndex, paragraphIndex, start")
     suspend fun allSegmentsOf(bookKey: String): List<RaSegmentEntity>
 
     @Query(
-        "select chapterIndex as chapterIndex, count(*) as lineCount from ra_segment " +
-            "where bookKey = :bookKey group by chapterIndex"
+        "select s.chapterIndex as chapterIndex, count(*) as lineCount from ra_segment s " +
+            "inner join ra_chapter_build b on b.bookKey = s.bookKey " +
+            "and b.chapterIndex = s.chapterIndex and b.analysisId = s.analysisId " +
+            "where b.bookKey = :bookKey and b.sourceKey = :sourceKey " +
+            "group by s.chapterIndex"
     )
-    suspend fun lineCounts(bookKey: String): List<RaChapterLineCount>
+    suspend fun lineCounts(bookKey: String, sourceKey: String): List<RaChapterLineCount>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSegments(entities: List<RaSegmentEntity>)
 
     @Query("delete from ra_segment where analysisId = :analysisId")
     suspend fun deleteSegments(analysisId: String)
-
-    @Query("update ra_segment set characterId = :characterId, updatedAt = :updatedAt where id = :id")
-    suspend fun updateSegmentCharacter(id: String, characterId: String?, updatedAt: Long)
 
     @Query("update ra_segment set characterId = :characterId, surfaceName = :surfaceName, source = 'user', updatedAt = :updatedAt where id = :id")
     suspend fun updateSegmentSpeaker(id: String, characterId: String?, surfaceName: String, updatedAt: Long)
@@ -175,16 +173,15 @@ interface RaBuildDao {
     @Query("update ra_segment set characterId = null, updatedAt = :updatedAt where characterId = :characterId")
     suspend fun clearSegmentCharacter(characterId: String, updatedAt: Long)
 
-    @Query("delete from ra_segment where bookKey = :bookKey and chapterIndex in (:chapterIndexes)")
-    suspend fun deleteSegmentsOfChapters(bookKey: String, chapterIndexes: List<Int>)
-
     @Query("delete from ra_segment where bookKey = :bookKey")
     suspend fun deleteSegmentsOfBook(bookKey: String)
 
     @Query(
-        "select min(chapterIndex) as firstChapter, max(chapterIndex) as lastChapter, " +
-            "count(distinct chapterIndex) as chapterCount, count(*) as lineCount " +
-            "from ra_segment where characterId = :characterId"
+        "select min(s.chapterIndex) as firstChapter, max(s.chapterIndex) as lastChapter, " +
+            "count(distinct s.chapterIndex) as chapterCount, count(*) as lineCount " +
+            "from ra_segment s inner join ra_chapter_build b " +
+            "on b.bookKey = s.bookKey and b.chapterIndex = s.chapterIndex and b.analysisId = s.analysisId " +
+            "where s.characterId = :characterId"
     )
     suspend fun appearanceOf(characterId: String): RaAppearanceAggregate
 
@@ -226,12 +223,6 @@ interface RaBuildDao {
     @Query("delete from ra_local_speaker where analysisId = :analysisId")
     suspend fun deleteLocalSpeakers(analysisId: String)
 
-    @Query(
-        "delete from ra_local_speaker where analysisId in " +
-            "(select id from ra_chapter_analysis where bookKey = :bookKey and chapterIndex in (:chapterIndexes))"
-    )
-    suspend fun deleteLocalSpeakersOfChapters(bookKey: String, chapterIndexes: List<Int>)
-
     @Query("delete from ra_local_speaker where analysisId in (select id from ra_chapter_analysis where bookKey = :bookKey)")
     suspend fun deleteLocalSpeakersOfBook(bookKey: String)
 
@@ -266,12 +257,6 @@ interface RaBuildDao {
     @Query("delete from ra_evidence where analysisId = :analysisId")
     suspend fun deleteEvidence(analysisId: String)
 
-    @Query(
-        "delete from ra_evidence where analysisId in " +
-            "(select id from ra_chapter_analysis where bookKey = :bookKey and chapterIndex in (:chapterIndexes))"
-    )
-    suspend fun deleteEvidenceOfChapters(bookKey: String, chapterIndexes: List<Int>)
-
     @Query("delete from ra_evidence where bookKey = :bookKey")
     suspend fun deleteEvidenceOfBook(bookKey: String)
 
@@ -305,6 +290,42 @@ interface RaBuildDao {
     @Query("select * from ra_segment_override where bookKey = :bookKey")
     suspend fun overridesOfBook(bookKey: String): List<RaSegmentOverrideEntity>
 
+
+    // ---------------- 按 analysisId 的精确删除（B5） ----------------
+
+    @Query("select * from ra_chapter_analysis where bookKey = :bookKey and chapterIndex in (:chapters)")
+    suspend fun analysesForChapters(
+        bookKey: String,
+        chapters: List<Int>,
+    ): List<RaChapterAnalysisEntity>
+
+    @Query("select id from ra_local_speaker where analysisId in (:analysisIds)")
+    suspend fun localSpeakerIdsOf(analysisIds: List<String>): List<String>
+
+    @Query("delete from ra_segment where analysisId in (:analysisIds)")
+    suspend fun deleteSegmentsByAnalysisIds(analysisIds: List<String>)
+
+    @Query("delete from ra_local_speaker where analysisId in (:analysisIds)")
+    suspend fun deleteLocalSpeakersByAnalysisIds(analysisIds: List<String>)
+
+    @Query("delete from ra_local_mention where analysisId in (:analysisIds)")
+    suspend fun deleteLocalMentionsByAnalysisIds(analysisIds: List<String>)
+
+    @Query("delete from ra_evidence where analysisId in (:analysisIds)")
+    suspend fun deleteEvidenceByAnalysisIds(analysisIds: List<String>)
+
+    @Query("delete from ra_chapter_analysis where id in (:analysisIds)")
+    suspend fun deleteAnalysesByIds(analysisIds: List<String>)
+
+    @Query("delete from ra_chapter_build where bookKey = :bookKey and chapterIndex in (:chapters)")
+    suspend fun deleteBuildsAllSources(bookKey: String, chapters: List<Int>)
+
+    @Query("delete from ra_segment_override where bookKey = :bookKey and chapterIndex in (:chapters)")
+    suspend fun deleteOverridesOfChapters(bookKey: String, chapters: List<Int>)
+
+    @Query("delete from ra_local_mention where analysisId in (select id from ra_chapter_analysis where bookKey = :bookKey)")
+    suspend fun deleteLocalMentionsOfBook(bookKey: String)
+
     // ---------------- 组合事务 ----------------
 
     @Transaction
@@ -326,13 +347,4 @@ interface RaBuildDao {
         if (evidence.isNotEmpty()) upsertEvidence(evidence)
     }
 
-    @Transaction
-    suspend fun deleteChapters(bookKey: String, sourceKey: String, chapterIndexes: List<Int>) {
-        if (chapterIndexes.isEmpty()) return
-        deleteSegmentsOfChapters(bookKey, chapterIndexes)
-        deleteLocalSpeakersOfChapters(bookKey, chapterIndexes)
-        deleteEvidenceOfChapters(bookKey, chapterIndexes)
-        deleteAnalyses(bookKey, sourceKey, chapterIndexes)
-        deleteBuilds(bookKey, sourceKey, chapterIndexes)
-    }
 }

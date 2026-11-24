@@ -167,9 +167,11 @@ import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
+import io.legado.app.help.readaloud.analysis.v4.GenericNameClassifier
 import io.legado.app.help.readaloud.analysis.v4.IdentityResolver
 import io.legado.app.help.readaloud.analysis.v4.VoiceCastingService
 import io.legado.app.help.readaloud.playback.SpeechVoiceResolver
+import io.legado.app.help.readaloud.playback.SpeechVoiceSource
 import io.legado.app.help.readaloud.playback.LoudnessNormalizer
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.domain.usecase.RefreshTocUseCase
@@ -385,6 +387,7 @@ val appModule = module {
     singleOf(::BatchCacheDownloadUseCase)
     singleOf(::BuildSpeechPlanUseCase)
     singleOf(::SpeechVoiceResolver)
+    single<SpeechVoiceSource> { get<SpeechVoiceResolver>() }
     singleOf(::AiModelRepository)
     singleOf(::WordLibraryRepository)
     singleOf(::ReadAloudVoicePoolRepository)
@@ -394,6 +397,7 @@ val appModule = module {
     singleOf(::RaBookMaintenanceRepository)
     singleOf(::RaCharacterRepository)
     singleOf(::RaDirectionRepository)
+    single<GenericNameClassifier> { get<WordLibraryRepository>() }
     singleOf(::IdentityResolver)
     singleOf(::VoiceCastingService)
     singleOf(::ReadAloudAudioCacheRepository)

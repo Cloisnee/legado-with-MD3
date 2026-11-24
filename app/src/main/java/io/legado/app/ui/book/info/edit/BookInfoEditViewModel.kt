@@ -1,5 +1,9 @@
 package io.legado.app.ui.book.info.edit
 
+import io.legado.app.data.appDb
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import android.app.Application
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
@@ -146,6 +150,7 @@ class BookInfoEditViewModel(
                 book.customTag = currentState.kindList.joinToString(",").ifBlank { null }
                 applyTagGroupRulesForBook(book)
                 BookHelp.updateCacheFolder(oldBook, book)
+                RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
 
                 if (ReadBook.isCurrentBook(book.bookUrl)) {
                     ReadBook.replaceCurrentBook(book)

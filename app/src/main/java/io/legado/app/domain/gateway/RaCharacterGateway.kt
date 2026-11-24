@@ -55,7 +55,7 @@ interface RaCharacterGateway {
         source: String,
     )
 
-    suspend fun touchAppearance(characterId: String, chapterIndex: Int)
+    suspend fun recomputeAppearance(characterId: String)
 
     suspend fun updateDisplayName(characterId: String, name: String)
 
@@ -70,15 +70,6 @@ interface RaCharacterGateway {
 
     suspend fun mergeCharacters(fromCharacterId: String, toCharacterId: String, reason: String)
 
-    suspend fun splitCharacter(
-        fromCharacterId: String,
-        newDisplayName: String,
-        segmentIds: Collection<String>,
-        aliasNames: Collection<String>,
-    ): String
-
-    suspend fun findCharacterByExactName(bookKey: String, name: String): RaCharacter?
-
     suspend fun saveDecision(
         bookKey: String,
         localSpeaker: RaLocalSpeaker,
@@ -89,10 +80,6 @@ interface RaCharacterGateway {
         reason: String,
         modelId: String,
     )
-
-    suspend fun decisionCount(localSpeakerId: String): Int
-
-    suspend fun addCannotLink(bookKey: String, a: String, b: String, source: String)
 
     // ---- 发声方案 ----
 

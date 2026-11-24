@@ -24,6 +24,7 @@ object RaIds {
     fun voiceProfile(): String = "vp_" + randomBase32(12)
     fun scene(): String = "scn_" + randomBase32(12)
     fun book(): String = "bk_" + randomBase32(12)
+    fun decision(): String = "dec_" + randomBase32(12)
 }
 
 /** 章节建库状态机（02 §2）。 */
@@ -333,7 +334,6 @@ data class RaSegmentOverride(
     val paragraphIndex: Int,
     val textHash: String,
     val characterId: String? = null,
-    val voiceProfileId: String? = null,
     val narrator: Boolean = false,
 )
 

@@ -7,6 +7,7 @@ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.legado.app.data.AppDatabase
+import io.legado.app.data.DatabaseMigrations
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,6 +28,18 @@ class MigrationTest {
         AppDatabase::class.java.canonicalName,
         FrameworkSQLiteOpenHelperFactory()
     )
+
+    @Test
+    @Throws(IOException::class)
+    fun migrate110To111() {
+        helper.createDatabase(TEST_DB, 110).apply { close() }
+        helper.runMigrationsAndValidate(
+            TEST_DB,
+            111,
+            true,
+            DatabaseMigrations.migration_110_111,
+        )
+    }
 
     @Test
     @Throws(IOException::class)

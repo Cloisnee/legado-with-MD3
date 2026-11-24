@@ -9,8 +9,8 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.repository.ReadRecordRepository
+import io.legado.app.data.repository.RaBookIdentitySync
 import io.legado.app.data.repository.sourceKeyOf
-import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.help.book.BookHelp
@@ -77,7 +77,6 @@ class ChangeBookSourceUseCase(
     private val otherSettingsGateway: OtherSettingsGateway,
     private val readSettingsGateway: ReadSettingsGateway,
     private val readRecordRepository: ReadRecordRepository,
-    private val bookIdentity: RaBookIdentityGateway,
 ) {
 
     fun applyMigration(
@@ -109,6 +108,7 @@ class ChangeBookSourceUseCase(
         } else if (oldBook.bookUrl != newBook.bookUrl) {
             BookHelp.updateCacheFolder(oldBook, newBook)
         }
+        RaBookIdentitySync.migrate(database, oldBookUrl, newBook.bookUrl, sourceKeyOf(newBook))
         database.withTransaction {
             bookChapterDao.delByBook(oldBook.bookUrl)
             bookDao.delete(oldBook)
@@ -119,7 +119,6 @@ class ChangeBookSourceUseCase(
             // 旧书已从书架删除，它的阅读会话必须跟着改挂到新副本，否则新副本的时长会从零开始。
             readRecordRepository.reassignBookReadSessions(oldBook, newBook)
         }
-        bookIdentity.onSourceChanged(oldBookUrl, newBook.bookUrl, sourceKeyOf(newBook))
         if (options.migrateChapters) {
             ReadBook.onChapterListUpdated(newBook)
         }

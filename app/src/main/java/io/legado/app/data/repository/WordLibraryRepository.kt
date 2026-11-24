@@ -12,7 +12,7 @@ import java.text.Normalizer
  * 词库（裸属词 / 特殊词）：不属于朗读分析真源，只是分类辅助；仍使用数据目录下的
  * `bare_words.json` / `special_words.json`（用户可在角色页入库）。
  */
-class WordLibraryRepository(private val app: Application) {
+class WordLibraryRepository(private val app: Application) : io.legado.app.help.readaloud.analysis.v4.GenericNameClassifier {
 
     companion object {
         const val BARE_WORDS_FILE = "bare_words.json"
@@ -50,22 +50,50 @@ class WordLibraryRepository(private val app: Application) {
             .toSet()
     }.getOrDefault(emptySet())
 
-    private val bareExtra by lazy { loadExtra(BARE_WORDS_FILE) }
-    private val specialExtra by lazy { loadExtra(SPECIAL_WORDS_FILE) }
+    private data class CachedWords(val stamp: Long, val words: Set<String>)
+
+    @Volatile
+    private var bareCache: CachedWords? = null
+
+    @Volatile
+    private var specialCache: CachedWords? = null
+
+    private fun cachedExtra(fileName: String, current: CachedWords?): Set<String> {
+        val file = File(dataDir(), fileName)
+        if (!file.exists()) return emptySet()
+        val stamp = file.lastModified()
+        current?.takeIf { it.stamp == stamp }?.let { return it.words }
+        val words = loadExtra(fileName)
+        if (fileName == BARE_WORDS_FILE) {
+            bareCache = CachedWords(stamp, words)
+        } else {
+            specialCache = CachedWords(stamp, words)
+        }
+        return words
+    }
+
+    private fun bareExtra(): Set<String> = cachedExtra(BARE_WORDS_FILE, bareCache)
+
+    private fun specialExtra(): Set<String> = cachedExtra(SPECIAL_WORDS_FILE, specialCache)
+
+    override suspend fun isGeneric(name: String): Boolean = withContext(Dispatchers.IO) {
+        val normalized = normalizeWord(name)
+        normalized.length <= 1 || normalized in BARE_WORDS || normalized in bareExtra()
+    }
 
     suspend fun isBareClassWord(word: String): Boolean = withContext(Dispatchers.IO) {
         val normalized = normalizeWord(word)
-        normalized.isNotEmpty() && (normalized in BARE_WORDS || normalized in bareExtra)
+        normalized.isNotEmpty() && (normalized in BARE_WORDS || normalized in bareExtra())
     }
 
     suspend fun isSpecialClassWord(word: String): Boolean = withContext(Dispatchers.IO) {
         val normalized = normalizeWord(word)
-        normalized.isNotEmpty() && (normalized in SPECIAL_WORDS || normalized in specialExtra)
+        normalized.isNotEmpty() && (normalized in SPECIAL_WORDS || normalized in specialExtra())
     }
 
-    suspend fun bareWords(): Set<String> = withContext(Dispatchers.IO) { BARE_WORDS + bareExtra }
+    suspend fun bareWords(): Set<String> = withContext(Dispatchers.IO) { BARE_WORDS + bareExtra() }
 
-    suspend fun specialWords(): Set<String> = withContext(Dispatchers.IO) { SPECIAL_WORDS + specialExtra }
+    suspend fun specialWords(): Set<String> = withContext(Dispatchers.IO) { SPECIAL_WORDS + specialExtra() }
 
     suspend fun append(fileName: String, words: List<String>): Int = withContext(Dispatchers.IO) {
         runCatching {
@@ -84,6 +112,7 @@ class WordLibraryRepository(private val app: Application) {
             if (added > 0) {
                 file.parentFile?.mkdirs()
                 file.writeText(JSONArray(existing.toList()).toString())
+                if (fileName == BARE_WORDS_FILE) bareCache = null else specialCache = null
             }
             added
         }.getOrDefault(0)

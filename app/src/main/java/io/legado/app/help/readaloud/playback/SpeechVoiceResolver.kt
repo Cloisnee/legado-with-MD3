@@ -14,9 +14,9 @@ import kotlin.random.Random
 class SpeechVoiceResolver(
     private val voiceGateway: ReadAloudVoiceGateway,
     private val pool: ReadAloudVoicePoolRepository,
-) {
+) : SpeechVoiceSource {
 
-    suspend fun byTag(tag: String): ReadAloudVoice? {
+    override suspend fun byTag(tag: String): ReadAloudVoice? {
         val value = tag.trim()
         if (value.isBlank()) return null
         val catalog = voiceGateway.getEnabledVoices()
@@ -38,7 +38,7 @@ class SpeechVoiceResolver(
             )
     }
 
-    suspend fun narrator(): ReadAloudVoice? {
+    override suspend fun narrator(): ReadAloudVoice? {
         val groups = runCatching { pool.loadActiveVoiceGroups() }.getOrDefault(emptyList())
         val group = groups.firstOrNull {
             it.effectiveRoleType() == VoiceBankRoleType.NARRATOR && it.tags.isNotEmpty()
@@ -46,7 +46,7 @@ class SpeechVoiceResolver(
         return byTag(group.tags.first())
     }
 
-    suspend fun defaultDialog(gender: String, seed: Int): ReadAloudVoice? {
+    override suspend fun defaultDialog(gender: String, seed: Int): ReadAloudVoice? {
         val groups = runCatching { pool.loadActiveVoiceGroups() }.getOrDefault(emptyList())
         val group = groups.firstOrNull {
             it.effectiveRoleType() == VoiceBankRoleType.DEFAULT_DIALOG && it.tags.isNotEmpty()

@@ -1,5 +1,8 @@
 package io.legado.app.data.repository.manga
 
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import android.app.Application
 import io.legado.app.BuildConfig
 import io.legado.app.R
@@ -80,6 +83,7 @@ class MangaReaderDataRepository(
             else {
                 database.bookDao.replace(oldBook, book)
                 BookHelp.updateCacheFolder(oldBook, book)
+                RaBookIdentitySync.migrate(database, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
             }
         }
         var chapterCount = database.bookChapterDao.getChapterCount(book.bookUrl)
@@ -106,6 +110,7 @@ class MangaReaderDataRepository(
                 } else {
                     database.bookDao.replace(oldBook, book)
                     BookHelp.updateCacheFolder(oldBook, book)
+                    RaBookIdentitySync.migrate(database, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
                 }
                 database.bookChapterDao.delByBook(oldBook.bookUrl)
                 database.bookChapterDao.insert(*chapters.toTypedArray())

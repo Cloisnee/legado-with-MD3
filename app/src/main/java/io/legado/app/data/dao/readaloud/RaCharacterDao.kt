@@ -16,6 +16,30 @@ import io.legado.app.data.entities.readaloud.RaVoiceProfileEntity
 @Dao
 interface RaCharacterDao {
 
+
+    // ---------------- 删除清理（B5 / Q5） ----------------
+
+    @Query("select r.* from ra_character_redirect r inner join ra_character c on c.id = r.fromCharacterId where c.bookKey = :bookKey")
+    suspend fun redirectsOfBook(bookKey: String): List<RaCharacterRedirectEntity>
+
+    @Query("delete from ra_character_redirect where fromCharacterId = :characterId or toCharacterId = :characterId")
+    suspend fun deleteRedirectsForCharacter(characterId: String)
+
+    @Query("delete from ra_character_redirect where fromCharacterId in (select id from ra_character where bookKey = :bookKey) or toCharacterId in (select id from ra_character where bookKey = :bookKey)")
+    suspend fun deleteRedirectsOfBook(bookKey: String)
+
+    @Query("delete from ra_identity_link where bookKey = :bookKey and (aCharacterId = :characterId or bCharacterId = :characterId)")
+    suspend fun deleteLinksForCharacter(bookKey: String, characterId: String)
+
+    @Query("delete from ra_identity_decision where localSpeakerId in (:localSpeakerIds)")
+    suspend fun deleteDecisionsByLocalSpeakerIds(localSpeakerIds: List<String>)
+
+    @Query("delete from ra_identity_decision where chosenCharacterId = :characterId")
+    suspend fun deleteDecisionsByChosenCharacter(characterId: String)
+
+    @Query("delete from ra_identity_decision where bookKey = :bookKey")
+    suspend fun deleteDecisionsOfBook(bookKey: String)
+
     // ---------------- 人物 ----------------
 
     @Query("select * from ra_character where bookKey = :bookKey and status != 'MERGED' order by appearanceCount desc, firstChapter")
@@ -26,9 +50,6 @@ interface RaCharacterDao {
 
     @Query("select * from ra_character where id = :id limit 1")
     suspend fun character(id: String): RaCharacterEntity?
-
-    @Query("select * from ra_character where id in (:ids)")
-    suspend fun charactersByIds(ids: List<String>): List<RaCharacterEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCharacter(entity: RaCharacterEntity)
@@ -47,9 +68,6 @@ interface RaCharacterDao {
 
     @Query("update ra_character set status = :status, identityRevision = identityRevision + 1, updatedAt = :updatedAt where id = :id")
     suspend fun updateStatus(id: String, status: String, updatedAt: Long)
-
-    @Query("update ra_character set lastChapter = :lastChapter, appearanceCount = appearanceCount + 1, updatedAt = :updatedAt where id = :id")
-    suspend fun touchAppearance(id: String, lastChapter: Int, updatedAt: Long)
 
     @Query("update ra_character set identityRevision = identityRevision + 1, updatedAt = :updatedAt where id = :id")
     suspend fun bumpIdentityRevision(id: String, updatedAt: Long)
@@ -79,9 +97,6 @@ interface RaCharacterDao {
 
     @Query("select * from ra_character_alias where bookKey = :bookKey and normalized in (:normalized)")
     suspend fun aliasesByNormalized(bookKey: String, normalized: List<String>): List<RaCharacterAliasEntity>
-
-    @Query("select * from ra_character_alias where characterId in (:characterIds)")
-    suspend fun aliasesOfCharacters(characterIds: List<String>): List<RaCharacterAliasEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAliases(entities: List<RaCharacterAliasEntity>)
@@ -141,9 +156,6 @@ interface RaCharacterDao {
     @Query("select * from ra_identity_link where bookKey = :bookKey and (aCharacterId = :characterId or bCharacterId = :characterId)")
     suspend fun linksOf(bookKey: String, characterId: String): List<RaIdentityLinkEntity>
 
-    @Query("select * from ra_identity_link where bookKey = :bookKey and kind = 'CANNOT'")
-    suspend fun cannotLinks(bookKey: String): List<RaIdentityLinkEntity>
-
     @Query("select * from ra_identity_link where bookKey = :bookKey")
     suspend fun linksOfBook(bookKey: String): List<RaIdentityLinkEntity>
 
@@ -172,9 +184,6 @@ interface RaCharacterDao {
 
     @Query("select * from ra_identity_decision where bookKey = :bookKey")
     suspend fun decisionsOfBook(bookKey: String): List<RaIdentityDecisionEntity>
-
-    @Query("select count(*) from ra_identity_decision where localSpeakerId = :localSpeakerId and verdict = 'UNKNOWN'")
-    suspend fun unknownDecisionCount(localSpeakerId: String): Int
 
     // ---------------- 重定向 ----------------
 

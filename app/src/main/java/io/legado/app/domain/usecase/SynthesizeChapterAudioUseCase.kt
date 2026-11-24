@@ -56,7 +56,9 @@ class SynthesizeChapterAudioUseCase(
             return@withContext Result(0, 0, 0)
         }
         val chLabel = catalog.chapterLabel(summary.bookUrl, chapterIndex)
-        val analysis = raBuild.latestAnalysis(summary.bookKey, chapterIndex)
+        val analysis = raBuild.getBuild(summary.bookKey, summary.sourceKey, chapterIndex)?.analysisId
+            ?.let { raBuild.analysisById(it) }
+            ?: raBuild.latestAnalysisForSource(summary.bookKey, summary.sourceKey, chapterIndex)
         if (analysis == null) {
             AppLog.putAudio("【音频缓存·$chLabel】批量合成跳过：本章暂无分析")
             return@withContext Result(0, 0, 0)

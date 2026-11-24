@@ -206,7 +206,6 @@ data class RaSegmentOverrideEntity(
     val paragraphIndex: Int,
     val textHash: String,
     val characterId: String? = null,
-    val voiceProfileId: String? = null,
     @ColumnInfo(defaultValue = "0")
     val narrator: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),

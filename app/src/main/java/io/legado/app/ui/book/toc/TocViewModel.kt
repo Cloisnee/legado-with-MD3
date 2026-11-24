@@ -1,5 +1,9 @@
 package io.legado.app.ui.book.toc
 
+import io.legado.app.data.appDb
+import io.legado.app.data.repository.RaBookIdentitySync
+import io.legado.app.data.repository.sourceKeyOf
+
 import android.app.Application
 import android.net.Uri
 import androidx.compose.runtime.Immutable
@@ -722,6 +726,7 @@ class TocViewModel(
                         } else {
                             bookRepository.replace(oldBook, book)
                             BookHelp.updateCacheFolder(oldBook, book)
+                            RaBookIdentitySync.migrate(appDb, oldBook.bookUrl, book.bookUrl, sourceKeyOf(book))
                         }
                         bookRepository.deleteChaptersByBook(oldBook.bookUrl)
                         bookRepository.insertChapters(*cList.toTypedArray())
