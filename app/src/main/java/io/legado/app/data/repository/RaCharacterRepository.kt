@@ -104,6 +104,11 @@ class RaCharacterRepository(
             dao.aliasesOf(characterId).map(RaCharacterAliasEntity::toDomain)
         }
 
+    override suspend fun aliasesOfBook(bookKey: String): List<RaCharacterAlias> =
+        withContext(Dispatchers.IO) {
+            dao.aliasesOfBook(bookKey).map(RaCharacterAliasEntity::toDomain)
+        }
+
     override suspend fun charactersByAliases(
         bookKey: String,
         normalizedNames: Collection<String>,
@@ -392,8 +397,24 @@ class RaCharacterRepository(
             }
         }
 
-    override suspend fun mergeCharacters(fromCharacterId: String, toCharacterId: String, reason: String) =
-        withContext(Dispatchers.IO) {
+    override suspend fun mergeCharacters(
+        fromCharacterId: String,
+        toCharacterId: String,
+        reason: String,
+    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "user")
+
+    override suspend fun mergeCharactersAsAi(
+        fromCharacterId: String,
+        toCharacterId: String,
+        reason: String,
+    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "ai")
+
+    private suspend fun mergeCharactersInternal(
+        fromCharacterId: String,
+        toCharacterId: String,
+        reason: String,
+        source: String,
+    ) = withContext(Dispatchers.IO) {
             val from = finalCharacterId(fromCharacterId)
             val to = finalCharacterId(toCharacterId)
             if (from == to) return@withContext
@@ -452,13 +473,18 @@ class RaCharacterRepository(
                         aCharacterId = a,
                         bCharacterId = b,
                         kind = RaLinkKind.SAME.storageValue,
-                        source = "user",
+                        source = source,
                         createdAt = now,
                         updatedAt = now,
                     ),
                 )
             }
             recomputeAppearance(to)
+        }
+
+    override suspend fun updateStatus(characterId: String, status: String) =
+        withContext(Dispatchers.IO) {
+            dao.updateStatus(characterId, status, System.currentTimeMillis())
         }
 
     private suspend fun mergeVoiceProfiles(

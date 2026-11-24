@@ -64,6 +64,8 @@ class Stage2Validator(
     private val chapterIndex: Int,
     private val prevText: String,
     private val nextText: String,
+    private val prevChapter: Int? = null,
+    private val nextChapter: Int? = null,
     private val isBareClassWord: (String) -> Boolean,
     private val isSpecialClassWord: (String) -> Boolean,
     private val log: (String) -> Unit,
@@ -102,6 +104,15 @@ class Stage2Validator(
             sm[n] = smObj.optString(k).trim()
         }
         if (sm.isEmpty() && expectedCount > 0) return ValidateOutcome(null, "seqmap为空")
+        val expectedKeys = (1..expectedCount).toSet()
+        if (sm.keys != expectedKeys) {
+            val extra = (sm.keys - expectedKeys).sorted()
+            val missing = (expectedKeys - sm.keys).sorted()
+            return ValidateOutcome(
+                null,
+                "seqmap键集合不匹配（多:${extra.joinToString(",")} 缺:${missing.joinToString(",")}）",
+            )
+        }
 
         val speakersRaw = ArrayList<Raw>()
         val newFormat = root.optJSONArray("speakers") != null
@@ -164,6 +175,10 @@ class Stage2Validator(
             if (!allNarrator) return ValidateOutcome(null, "speakers为空")
         }
 
+        val duplicateSpeakerKey = speakersRaw.groupBy { it.key }.entries.firstOrNull { it.value.size > 1 }
+        if (duplicateSpeakerKey != null) {
+            return ValidateOutcome(null, "speaker键重复：${duplicateSpeakerKey.key}")
+        }
         // 旁白角色剥离：不参与定义/引用校验
         speakersRaw.removeAll { NarratorRoleStrip.isNarratorName(it.name) }
         // 主名为人称代词视为非法
@@ -176,9 +191,6 @@ class Stage2Validator(
         speakersRaw.forEach { c ->
             byName[c.name] = c
             c.aliases.forEach { a -> if (a.isNotBlank()) byName.putIfAbsent(a, c) }
-        }
-        for (s in 1..expectedCount) {
-            if (sm[s].isNullOrBlank()) return ValidateOutcome(null, "seqmap缺少序号${s.toString().padStart(2, '0')}")
         }
         for ((n, v) in sm) {
             if (v.isBlank()) return ValidateOutcome(null, "seqmap序号${n.toString().padStart(2, '0')}为空")
@@ -196,12 +208,13 @@ class Stage2Validator(
             return ValidateOutcome(null, "角色「${unreferenced.first().name}」未被任何序号引用")
         }
 
+        val confirmedSame = parseAliasEqualPairs(root)
         val calibrated = speakersRaw.map { calibrate(it) }
         calibrated.forEach { c ->
             c.minSeq = sm.entries.filter { it.value == c.key }.minOfOrNull { it.key } ?: Int.MAX_VALUE
         }
         val keyRemap = HashMap<String, String>()
-        val merged = localNormalize(calibrated, sm, keyRemap)
+        val merged = localNormalize(calibrated, sm, keyRemap, confirmedSame)
         sm.forEach { (n, v) ->
             var current = v
             var guard = 0
@@ -278,6 +291,7 @@ class Stage2Validator(
         list: List<Raw>,
         sm: MutableMap<Int, String>,
         keyRemap: MutableMap<String, String>,
+        confirmedSame: Set<Pair<String, String>>,
     ): List<Raw> {
         val work = ArrayList(list)
         var changed = true
@@ -294,7 +308,7 @@ class Stage2Validator(
                         j++
                         continue
                     }
-                    if (!isSamePerson(a, b)) {
+                    if (!isSamePerson(a, b, confirmedSame)) {
                         j++
                         continue
                     }
@@ -315,23 +329,50 @@ class Stage2Validator(
         return work
     }
 
-    private fun isSamePerson(a: Raw, b: Raw): Boolean {
-        if (a.name == b.name) return true
-        if (b.name in a.aliases) return true
-        if (a.name in b.aliases) return true
-        return a.aliases.any { it in b.aliases }
+    private fun isSamePerson(
+        a: Raw,
+        b: Raw,
+        confirmedSame: Set<Pair<String, String>>,
+    ): Boolean {
+        if (confirmedSame.isEmpty()) return false
+        val aTokens = a.allNames + a.key
+        val bTokens = b.allNames + b.key
+        return confirmedSame.any { (x, y) ->
+            (x in aTokens && y in bTokens) || (x in bTokens && y in aTokens)
+        }
+    }
+
+    private fun parseAliasEqualPairs(root: JSONObject): Set<Pair<String, String>> {
+        val arr = root.optJSONArray("evidence") ?: root.optJSONArray("证据") ?: return emptySet()
+        val out = HashSet<Pair<String, String>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (RaEvidenceType.fromStorage(o.optString("type").trim().uppercase()) != RaEvidenceType.ALIAS_EQUAL) {
+                continue
+            }
+            val subject = o.optString("subject").trim()
+            val obj = o.optString("object").trim()
+            val quote = o.optString("quote").trim()
+            if (subject.isEmpty() || obj.isEmpty() || quote.isEmpty()) continue
+            val inMain = paragraphs.any { it.text.contains(quote) }
+            val inContext = (prevText.isNotEmpty() && prevText.contains(quote)) ||
+                (nextText.isNotEmpty() && nextText.contains(quote))
+            if (inMain || inContext) out.add(subject to obj)
+        }
+        return out
     }
 
     private fun parseMentions(root: JSONObject, speakers: List<Raw>): List<Stage2Speaker> {
         val arr = root.optJSONArray("mentions") ?: root.optJSONArray("提及") ?: return emptyList()
         val keys = speakers.map { it.key }.toSet()
+        val seen = HashSet<String>()
         val out = ArrayList<Stage2Speaker>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val nm = o.optString("name").trim()
             if (nm.isBlank() || NarratorRoleStrip.isNarratorName(nm)) continue
             val key = o.optString("key").trim().ifBlank { "M${i + 1}" }
-            if (key in keys) continue
+            if (key in keys || !seen.add(key)) continue
             out.add(
                 Stage2Speaker(
                     key = key,
@@ -421,10 +462,20 @@ class Stage2Validator(
                     ),
                 )
             } else {
-                val inContext = (prevText.isNotEmpty() && prevText.contains(quote)) ||
-                    (nextText.isNotEmpty() && nextText.contains(quote))
-                if (!inContext) {
-                    log("证据剔除：上下文 quote 不在给定前情/后续中（${quote.take(20)}）")
+                // 上下文证据：ch/p 必须指向真实来源章，且 quote 落在该段
+                val p = o.optInt("p", 0)
+                val sourceText = when (ch) {
+                    prevChapter -> prevText
+                    nextChapter -> nextText
+                    else -> null
+                }
+                if (sourceText == null) {
+                    log("证据剔除：上下文 ch=$ch 不属于前情/后续（${quote.take(20)}）")
+                    continue
+                }
+                val lines = sourceText.split('\n').filter { it.isNotBlank() }
+                if (p < 1 || p > lines.size || !lines[p - 1].contains(quote)) {
+                    log("证据剔除：上下文 ch=$ch p=$p 与原文不匹配（${quote.take(20)}）")
                     continue
                 }
                 out.add(

@@ -61,6 +61,9 @@ class BookManageViewModel : ViewModel() {
     private val voicePool by lazy { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     private val app by lazy { GlobalContext.get().get<Context>() as Application }
 
+    val pickerRepo: ReadAloudVoicePoolRepository
+        get() = voicePool
+
     private var externalBookUrl: String? = null
     private var embedded = false
     private var initialChapter: Int? = null
@@ -256,11 +259,13 @@ class BookManageViewModel : ViewModel() {
             _effects.tryEmit("无法定位该书数据（先朗读一次以建立章节缓存）")
             return
         }
-        runCatching {
+        val ok = runCatching {
             val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
             scheduler.enqueueChapter(url, chapter, force = true)
-        }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }
-        _effects.tryEmit("已提交重新分析（${chLabel(chapter)}）")
+        }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }.isSuccess
+        _effects.tryEmit(
+            if (ok) "已提交重新分析（${chLabel(chapter)}）" else "重析提交失败，请查看日志",
+        )
     }
 
     /** 新增人物并返回 (id, 最终主名)；失败返回 null。 */

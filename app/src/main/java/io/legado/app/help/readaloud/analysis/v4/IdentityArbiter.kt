@@ -98,66 +98,73 @@ class AiIdentityArbiter(
             promptFactory = promptFactory,
             maxTokens = maxTokens,
             logTag = "裁决",
-        ) { raw -> validate(raw, questions) }
+        ) { raw -> validateIdentityDecisions(raw, questions) }
     }
+}
 
-    private fun validate(
-        raw: String,
-        questions: List<IdentityQuestion>,
-    ): ValidateOutcome<List<IdentityAnswer>> {
-        val root = runCatching { JSONObject(raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()) }
-            .getOrNull() ?: return ValidateOutcome(null, "返回不是JSON对象")
+fun validateIdentityDecisions(
+    raw: String,
+    questions: List<IdentityQuestion>,
+): ValidateOutcome<List<IdentityAnswer>> {
+        val root = runCatching {
+            JSONObject(raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim())
+        }.getOrNull() ?: return ValidateOutcome(null, "返回不是JSON对象")
         val arr = root.optJSONArray("decisions") ?: root.optJSONArray("裁决")
             ?: return ValidateOutcome(null, "缺少decisions")
         val byKey = questions.associateBy { it.key }
         val out = LinkedHashMap<String, IdentityAnswer>()
         for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
+            val o = arr.optJSONObject(i) ?: return ValidateOutcome(null, "decisions存在非对象条目")
             val key = o.optString("q").trim()
-            val question = byKey[key] ?: continue
-            val verdict = RaVerdict.fromStorage(o.optString("verdict").trim().uppercase())
-            val candidateIds = question.candidates.map { it.characterId }.toSet()
-            var characterId = o.optString("characterId").trim().takeIf { it.isNotEmpty() }
-            if (verdict == RaVerdict.SAME && characterId !in candidateIds) {
-                continue
+            val question = byKey[key] ?: return ValidateOutcome(null, "未知q=$key")
+            if (out.containsKey(key)) return ValidateOutcome(null, "q重复：$key")
+            val verdict = when (o.optString("verdict").trim().uppercase()) {
+                "SAME" -> RaVerdict.SAME
+                "DIFFERENT" -> RaVerdict.DIFFERENT
+                "UNKNOWN" -> RaVerdict.UNKNOWN
+                else -> return ValidateOutcome(null, "$key verdict非法")
             }
-            var confidence = o.optDouble("confidence", 0.0).toFloat().coerceIn(0f, 1f)
+            if (!o.has("confidence")) return ValidateOutcome(null, "$key 缺少confidence")
+            val rawConfidence = o.optDouble("confidence", Double.NaN)
+            if (rawConfidence.isNaN() || rawConfidence < 0.0 || rawConfidence > 1.0) {
+                return ValidateOutcome(null, "$key confidence越界")
+            }
+            var confidence = rawConfidence.toFloat()
+            val candidateIds = question.candidates.map { it.characterId }.toSet()
+            val characterId = o.optString("characterId").trim().takeIf { it.isNotEmpty() }
+            if (verdict == RaVerdict.SAME && characterId !in candidateIds) {
+                return ValidateOutcome(null, "$key SAME的characterId不在候选列表")
+            }
             val quotes = ArrayList<String>()
             val ev = o.optJSONArray("evidence")
             if (ev != null) {
                 for (j in 0 until ev.length()) {
-                    ev.optJSONObject(j)?.optString("quote")?.trim()
-                        ?.takeIf { it.isNotEmpty() }?.let(quotes::add)
+                    val quote = ev.optJSONObject(j)?.optString("quote")?.trim()
+                        ?.takeIf { it.isNotEmpty() } ?: continue
+                    if (isVerifiableQuote(question, quote)) quotes.add(quote)
                 }
             }
             if (verdict == RaVerdict.SAME && quotes.isEmpty()) {
                 confidence = minOf(confidence, 0.6f)
             }
-            val reason = o.optString("reason").trim().take(200)
             out[key] = IdentityAnswer(
                 key = key,
                 verdict = verdict,
                 characterId = characterId,
                 confidence = confidence,
-                reason = reason,
+                reason = o.optString("reason").trim().take(200),
                 evidenceQuotes = quotes,
-                modelId = "",
+                modelId = "resolve",
             )
         }
-        // 输出缺失的 q 视为 UNKNOWN，避免一次漏答导致整批失败
-        questions.forEach { q ->
-            out.putIfAbsent(
-                q.key,
-                IdentityAnswer(
-                    key = q.key,
-                    verdict = RaVerdict.UNKNOWN,
-                    characterId = null,
-                    confidence = 0f,
-                    reason = "裁决未返回该对象",
-                    evidenceQuotes = emptyList(),
-                ),
-            )
-        }
-        return ValidateOutcome(out.values.toList())
+        val missing = questions.map { it.key }.filter { it !in out.keys }
+        if (missing.isNotEmpty()) return ValidateOutcome(null, "缺少q=${missing.joinToString(",")}")
+        return ValidateOutcome(questions.map { out.getValue(it.key) })
     }
-}
+
+    private fun isVerifiableQuote(question: IdentityQuestion, quote: String): Boolean {
+        if (question.contextText.isNotBlank() && question.contextText.contains(quote)) return true
+        return question.evidence.any { e ->
+            e.excerpt.contains(quote) || e.objectText.contains(quote)
+        }
+    }

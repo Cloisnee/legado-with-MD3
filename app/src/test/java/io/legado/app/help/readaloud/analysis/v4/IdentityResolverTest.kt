@@ -9,6 +9,7 @@ import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
@@ -88,7 +89,7 @@ class IdentityResolverTest {
     }
 
     @Test
-    fun `multiple candidates with same alias do not grow character count`() = runBlocking {
+    fun `multiple candidates without arbiter create independent provisional`() = runBlocking {
         val bookKey = "bk_multi"
         val a = characters.ensureCharacter(
             bookKey, "甲", "核心", "男", "男青年", 0, listOf("老三"), "ACTIVE", "ai", "inferred",
@@ -102,10 +103,10 @@ class IdentityResolverTest {
                 chapter + 10,
                 speaker("a${chapter + 10}", "L1", "老三", emptyList(), chapter + 10),
             )
-            assertEquals(a.id, result.characterId)
+            // A 策略：多候选且无裁决能力时不把未知者吸附到已有 ACTIVE
+            assertTrue(result.characterId != a.id)
             assertEquals(RaResolution.PROVISIONAL, result.resolution)
         }
-        assertEquals(2, characters.characters(bookKey).size)
     }
 
     private fun evidence(
@@ -265,5 +266,105 @@ class IdentityResolverTest {
         )
         assertEquals(RaResolution.PROVISIONAL, result.resolutions["L1"]?.resolution)
         assertEquals("PROVISIONAL", characters.character(result.resolutions["L1"]!!.characterId)?.status?.storageValue)
+    }
+
+    @Test
+    fun `two same-name speakers in one chapter stay two characters`() = runBlocking {
+        val bookKey = "bk_same_chapter"
+        val existing = characters.ensureCharacter(
+            bookKey, "沈七", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val result = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 1,
+            chapterLabel = "第2章",
+            speakers = listOf(
+                speaker("a1", "L1", "沈七", emptyList(), 1),
+                speaker("a1", "L2", "沈七", emptyList(), 1),
+            ),
+            mentions = emptyList(),
+            evidence = emptyList(),
+        )
+        assertEquals(existing.id, result.resolutions["L1"]?.characterId)
+        assertTrue(result.resolutions["L2"]?.characterId != existing.id)
+    }
+
+    @Test
+    fun `relation target is not a candidate for the speaker`() = runBlocking {
+        val bookKey = "bk_relation"
+        val target = characters.ensureCharacter(
+            bookKey, "林雪儿", "核心", "女", "少女", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val speaker = speaker("a1", "L1", "师兄", emptyList(), 1)
+        val result = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 1,
+            chapterLabel = "第2章",
+            speakers = listOf(speaker),
+            mentions = emptyList(),
+            evidence = listOf(evidence(bookKey, speaker, RaEvidenceType.RELATION, "林雪儿|师兄妹")),
+        )
+        assertTrue(result.resolutions["L1"]?.characterId != target.id)
+    }
+
+    @Test
+    fun `ambiguous mention does not attach aliases to an arbitrary character`() = runBlocking {
+        val bookKey = "bk_mention"
+        characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("沈公子"), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "沈孤雁", "核心", "男", "男青年", 0, listOf("沈公子"), "ACTIVE", "ai", "inferred",
+        )
+        val mention = RaLocalMention(
+            id = "a5#M1",
+            analysisId = "a5",
+            localKey = "M1",
+            surfaceNames = listOf("沈公子", "沈大侠"),
+            primaryName = "沈公子",
+        )
+        resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 5,
+            chapterLabel = "第6章",
+            speakers = listOf(speaker("a5", "L1", "路人甲", emptyList(), 5)),
+            mentions = listOf(mention),
+            evidence = emptyList(),
+        )
+        assertTrue(characters.charactersRaw(bookKey).none { c ->
+            characters.aliasesOf(c.id).any { it.surface == "沈大侠" }
+        })
+    }
+
+    @Test
+    fun `different verdict writes cannot and stops repeated arbitration`() = runBlocking {
+        val bookKey = "bk_cannot"
+        val a = characters.ensureCharacter(
+            bookKey, "老三", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "老三", "核心", "男", "男青年", 1, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        var asked = 0
+        val arbiter = fakeArbiter {
+            asked++
+            IdentityAnswer(it, RaVerdict.DIFFERENT, null, 0.9f, "不同人", emptyList())
+        }
+        val withArbiter = IdentityResolver(
+            characters,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            arbiter,
+        )
+        withArbiter.resolveChapter(
+            bookKey, 2, "第3章", listOf(speaker("a2", "L1", "老三", emptyList(), 2)),
+            emptyList(), emptyList(),
+        )
+        withArbiter.resolveChapter(
+            bookKey, 3, "第4章", listOf(speaker("a3", "L1", "老三", emptyList(), 3)),
+            emptyList(), emptyList(),
+        )
+        assertEquals(1, asked)
+        assertTrue(characters.linksOfBook(bookKey).any { it.kind == io.legado.app.domain.model.readaloud.v4.RaLinkKind.CANNOT && (it.aCharacterId == a.id || it.bCharacterId == a.id) })
     }
 }

@@ -15,6 +15,7 @@ import io.legado.app.data.entities.readaloud.RaCharacterRedirectEntity
 import io.legado.app.data.entities.readaloud.RaEvidenceEntity
 import io.legado.app.data.entities.readaloud.RaIdentityDecisionEntity
 import io.legado.app.data.entities.readaloud.RaIdentityLinkEntity
+import io.legado.app.data.entities.readaloud.RaLocalMentionEntity
 import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaRelationObsEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
@@ -40,7 +41,7 @@ class RaBookMaintenanceRepository(
 ) {
 
     data class ExportPackage(
-        val schemaVersion: Int = 1,
+        val schemaVersion: Int = 2,
         val books: List<BookData> = emptyList(),
     )
 
@@ -51,6 +52,7 @@ class RaBookMaintenanceRepository(
         val analyses: List<RaChapterAnalysisEntity> = emptyList(),
         val segments: List<RaSegmentEntity> = emptyList(),
         val localSpeakers: List<RaLocalSpeakerEntity> = emptyList(),
+        val localMentions: List<RaLocalMentionEntity> = emptyList(),
         val evidence: List<RaEvidenceEntity> = emptyList(),
         val characters: List<RaCharacterEntity> = emptyList(),
         val aliases: List<RaCharacterAliasEntity> = emptyList(),
@@ -111,7 +113,7 @@ class RaBookMaintenanceRepository(
             val text = input.bufferedReader().use { it.readText() }
             val packageData = Gson().fromJson(text, ExportPackage::class.java)
                 ?: return@runCatching false to "JSON 为空"
-            if (packageData.schemaVersion != 1) {
+            if (packageData.schemaVersion != 2) {
                 return@runCatching false to "不支持的 schemaVersion=${packageData.schemaVersion}"
             }
             var imported = 0
@@ -137,6 +139,7 @@ class RaBookMaintenanceRepository(
             analyses = buildDao.allAnalysesOf(bookKey),
             segments = buildDao.allSegmentsOf(bookKey),
             localSpeakers = buildDao.localSpeakersOfBook(bookKey),
+            localMentions = buildDao.localMentionsOfBook(bookKey),
             evidence = buildDao.evidenceOfBook(bookKey),
             characters = characters,
             aliases = characterDao.aliasesOfBook(bookKey),
@@ -156,6 +159,7 @@ class RaBookMaintenanceRepository(
         book.analyses.forEach { buildDao.upsertAnalysis(it) }
         if (book.segments.isNotEmpty()) buildDao.upsertSegments(book.segments)
         if (book.localSpeakers.isNotEmpty()) buildDao.upsertLocalSpeakers(book.localSpeakers)
+        if (book.localMentions.isNotEmpty()) buildDao.upsertLocalMentions(book.localMentions)
         if (book.evidence.isNotEmpty()) buildDao.upsertEvidence(book.evidence)
         book.characters.forEach { characterDao.upsertCharacter(it) }
         if (book.aliases.isNotEmpty()) characterDao.upsertAliases(book.aliases)

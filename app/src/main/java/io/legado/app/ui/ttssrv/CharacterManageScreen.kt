@@ -61,7 +61,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.zIndex
 import io.legado.app.R
-import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
 import io.legado.app.ui.theme.LegadoTheme
@@ -90,7 +89,6 @@ import io.legado.app.ui.widget.components.topbar.TopBarNavigationButton
 import io.legado.app.utils.AliasTokens
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.flow.collect
-import org.koin.core.context.GlobalContext
 import org.koin.androidx.compose.koinViewModel
 
 private data class JoinLibRequest(
@@ -125,7 +123,6 @@ fun CharacterManageScreen(
     val context = LocalContext.current
     val vm: CharacterManageViewModel = koinViewModel()
     val state by vm.uiState.collectAsStateWithLifecycle()
-    val voicePool = remember { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
 
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -259,8 +256,8 @@ fun CharacterManageScreen(
         }
         edName = name
         val finalAge = draftFinalAge(finalRole)
-        val expected = voicePool.expectedVoicePrefix(finalRole, edGender, finalAge)
-        val prefix = voicePool.voiceAgePrefix(edVoice)
+        val expected = vm.expectedVoicePrefix(finalRole, edGender, finalAge)
+        val prefix = vm.voiceAgePrefix(edVoice)
         if (edVoice.isNotEmpty() && prefix != expected) {
             mismatchConfirm = true
             return
@@ -898,7 +895,7 @@ fun CharacterManageScreen(
     VoiceTagPickerSheet(
         show = picker != null,
         request = picker,
-        repo = voicePool,
+        repo = vm.pickerRepo,
         onDismiss = { picker = null },
     )
 
@@ -993,7 +990,7 @@ fun CharacterManageScreen(
         onDismissRequest = { mismatchConfirm = false },
         title = "音色与性别/年龄不符",
         text = "当前音色「$edVoice」与类型/性别/年龄（期望前缀「${
-            voicePool.expectedVoicePrefix(
+            vm.expectedVoicePrefix(
                 draftFinalRole(),
                 edGender,
                 draftFinalAge(draftFinalRole()),

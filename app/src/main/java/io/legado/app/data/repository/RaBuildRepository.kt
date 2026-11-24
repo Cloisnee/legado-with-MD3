@@ -211,6 +211,12 @@ class RaBuildRepository(
         } else {
             dao.localSpeakerIdsOf(analysisIds)
         }
+        val deletedEvidenceIds = if (analysisIds.isEmpty()) {
+            emptySet()
+        } else {
+            dao.evidenceByAnalysisIds(analysisIds).map { it.id }.toSet()
+        }
+        val links = characterDao.linksOfBook(bookKey)
         database.withTransaction {
             if (analysisIds.isNotEmpty()) {
                 directionDao.plansOfAnalyses(analysisIds).forEach { plan ->
@@ -226,6 +232,32 @@ class RaBuildRepository(
             dao.deleteOverridesOfChapters(bookKey, chapterIndexes)
             if (localSpeakerIds.isNotEmpty()) {
                 characterDao.deleteDecisionsByLocalSpeakerIds(localSpeakerIds)
+            }
+            // 回滚/删章：清理这些章节贡献的观察与 AI 约束（用户手动编辑保留）
+            characterDao.deleteAttributesFromChapters(bookKey, chapterIndexes)
+            characterDao.deleteRelationsFromChapters(bookKey, chapterIndexes)
+            characterDao.deleteAiAliasesFromChapters(bookKey, chapterIndexes)
+            links.filter { link ->
+                val ids = jsonArrayToList(link.evidenceIds)
+                link.source == "ai" &&
+                    ids.isNotEmpty() &&
+                    ids.all { it in deletedEvidenceIds }
+            }.forEach { link ->
+                characterDao.deleteLink(link.id)
+                if (link.kind == "SAME") {
+                    // 回滚区证据支撑的 AI 合并：撤销 redirect 并恢复 from 的 ACTIVE 状态。
+                    // 已迁移的段/别名仍留在 to，需用户确认后手动拆分（V4-5 提供拆分 UI）。
+                    val redirect = characterDao.redirect(link.aCharacterId)
+                        ?: characterDao.redirect(link.bCharacterId)
+                    if (redirect != null) {
+                        characterDao.deleteRedirect(redirect.fromCharacterId)
+                        characterDao.updateStatus(
+                            redirect.fromCharacterId,
+                            "ACTIVE",
+                            System.currentTimeMillis(),
+                        )
+                    }
+                }
             }
         }
     }

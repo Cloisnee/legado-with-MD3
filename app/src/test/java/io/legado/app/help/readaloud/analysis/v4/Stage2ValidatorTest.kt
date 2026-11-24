@@ -114,15 +114,69 @@ class Stage2ValidatorTest {
     }
 
     @Test
-    fun `alias merge keeps one speaker and remaps seqmap`() {
+    fun `same name without evidence keeps two speakers`() {
+        val raw = """
+            {"seqmap":{"1":"L1","2":"L2"},
+             "speakers":[{"key":"L1","name":"沈七","aliases":[]},
+                         {"key":"L2","name":"沈七","aliases":[]}]}
+        """.trimIndent()
+        val data = validator().validate(raw, 2).data!!
+        assertEquals(2, data.speakers.size)
+        assertEquals("L1", data.seqMap[1])
+        assertEquals("L2", data.seqMap[2])
+    }
+
+    @Test
+    fun `alias equal evidence merges and remaps seqmap`() {
         val raw = """
             {"seqmap":{"1":"L1","2":"L2"},
              "speakers":[{"key":"L1","name":"沈孤鸿","aliases":["沈七"]},
-                         {"key":"L2","name":"沈七","aliases":[]}]}
+                         {"key":"L2","name":"沈七","aliases":[]}],
+             "evidence":[{"type":"ALIAS_EQUAL","subject":"L1","object":"沈七","ch":100,"p":1,
+               "quote":"青衫客正是沈七"}]}
         """.trimIndent()
         val data = validator().validate(raw, 2).data!!
         assertEquals(1, data.speakers.size)
         assertEquals("L1", data.seqMap[1])
         assertEquals("L1", data.seqMap[2])
+    }
+
+    @Test
+    fun `seqmap with an extra key is rejected`() {
+        val raw = """{"seqmap":{"1":"L1","2":"L1"},"speakers":[{"key":"L1","name":"沈孤鸿","aliases":[]}]}"""
+        assertNull(validator().validate(raw, 1).data)
+    }
+
+    @Test
+    fun `duplicate speaker key is rejected`() {
+        val raw = """
+            {"seqmap":{"1":"L1","2":"L1"},
+             "speakers":[{"key":"L1","name":"沈孤鸿","aliases":[]},
+                         {"key":"L1","name":"沈七","aliases":[]}]}
+        """.trimIndent()
+        assertNull(validator().validate(raw, 2).data)
+    }
+
+    @Test
+    fun `context evidence with wrong chapter is dropped`() {
+        val raw = """
+            {"seqmap":{"1":"L1"},
+             "speakers":[{"key":"L1","name":"沈孤鸿","aliases":[]}],
+             "evidence":[{"type":"ALIAS_EQUAL","subject":"L1","object":"沈七","ch":98,"p":1,
+               "quote":"沈七即沈孤鸿"}]}
+        """.trimIndent()
+        val v = Stage2Validator(
+            paragraphs = paragraphs,
+            chapterIndex = 99,
+            prevText = "沈七即沈孤鸿",
+            nextText = "",
+            prevChapter = 99,
+            nextChapter = null,
+            isBareClassWord = { it == "师兄" },
+            isSpecialClassWord = { it == "系统" },
+            log = {},
+        )
+        val data = v.validate(raw, 1).data!!
+        assertTrue(data.evidence.isEmpty())
     }
 }

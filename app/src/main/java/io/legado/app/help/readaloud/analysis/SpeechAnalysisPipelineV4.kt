@@ -366,6 +366,7 @@ BGM 建议缺段从值集补全。
                 callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel)
             }
         } else null
+        val knownCharacters = buildKnownCharacters(bookKey, paragraphs, chapterIndex)
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
@@ -383,6 +384,7 @@ BGM 建议缺段从值集补全。
                 expectedCount = dialogueSegs.size,
                 refs = s2Refs,
                 chapterIndex = chapterIndex,
+                knownCharacters = knownCharacters,
             )
             if (s2 != null) {
                 usedAi2 = true
@@ -630,6 +632,12 @@ BGM 建议缺段从值集补全。
                 start = e.start,
                 type = e.type.storageValue,
                 subjectLocalId = subjectLocalId,
+                objectText = if (e.type == RaEvidenceType.RELATION && e.relation.isNotBlank()) {
+                    "${e.objectText}|${e.relation}|${e.objectKey.orEmpty()}"
+                } else {
+                    e.objectText
+                },
+                quote = e.quote,
             ),
             bookKey = bookKey,
             analysisId = analysisId,
@@ -641,7 +649,7 @@ BGM 建议缺段从值集补全。
             type = e.type,
             subjectLocalId = subjectLocalId,
             objectText = if (e.type == RaEvidenceType.RELATION && e.relation.isNotBlank()) {
-                "${e.objectText}|${e.relation}"
+                "${e.objectText}|${e.relation}|${e.objectKey.orEmpty()}"
             } else {
                 e.objectText
             },
@@ -722,13 +730,15 @@ BGM 建议缺段从值集补全。
             when (e.type) {
                 RaEvidenceType.RELATION -> {
                     if (e.objectText.isNotBlank()) {
-                        val parts = e.objectText.split('|', limit = 2)
+                        val parts = e.objectText.split('|', limit = 3)
+                        val targetKey = parts.getOrElse(2) { "" }
                         raCharacters.saveRelation(
                             RaRelationObservation(
                                 id = "rel_${e.id}",
                                 bookKey = bookKey,
                                 characterId = characterId,
                                 relation = parts.getOrElse(1) { "关系" },
+                                targetCharacterId = keyToCharacter[targetKey],
                                 targetText = parts[0],
                                 fromChapter = chapterIndex,
                                 evidenceId = e.id,
@@ -1075,6 +1085,41 @@ BGM 建议缺段从值集补全。
 
     // ---------------- B 归属+人物 ----------------
 
+    /** 本章出现非泛称别名的人物 + 上一章出场人物，最多 12 人。 */
+    private suspend fun buildKnownCharacters(
+        bookKey: String,
+        paragraphs: List<CanonicalSpeechParagraph>,
+        chapterIndex: Int,
+    ): String {
+        val all = runCatching { raCharacters.charactersRaw(bookKey) }.getOrDefault(emptyList())
+        if (all.isEmpty()) return ""
+        val aliases = runCatching { raCharacters.aliasesOfBook(bookKey) }.getOrDefault(emptyList())
+        val byId = aliases.groupBy { it.characterId }
+        val chapterText = paragraphs.joinToString("\n") { it.text }
+        val hit = all.filter { character ->
+            byId[character.id].orEmpty().any { alias ->
+                !alias.isGeneric && alias.surface.isNotBlank() && chapterText.contains(alias.surface)
+            }
+        }
+        val previous = all.filter {
+            it.firstChapter <= chapterIndex - 1 && it.lastChapter >= chapterIndex - 1
+        }
+        val chosen = (hit + previous + all.sortedByDescending { it.appearanceCount })
+            .distinctBy { it.id }
+            .take(12)
+        return chosen.joinToString("\n") { character ->
+            val names = byId[character.id].orEmpty()
+                .filterNot { it.isGeneric }
+                .map { it.surface }
+                .distinct()
+                .take(6)
+            buildString {
+                append(character.id).append("：").append(character.displayName)
+                if (names.isNotEmpty()) append("（别名：").append(names.joinToString("、")).append("）")
+            }
+        }
+    }
+
     private suspend fun callStage2(
         numbered: String,
         paragraphs: List<CanonicalSpeechParagraph>,
@@ -1084,14 +1129,24 @@ BGM 建议缺段从值集补全。
         expectedCount: Int,
         refs: List<AiSpeechClient.ModelRef>,
         chapterIndex: Int,
+        knownCharacters: String,
     ): Stage2Payload? {
         val prev = takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
         val next = takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
         val head = cfg.stage2Prompt.ifBlank { V4Prompts.DEFAULT_STAGE2_PROMPT }
+        val prevLabeled = prev.lines().filter { it.isNotBlank() }
+            .mapIndexed { index, line -> "[来源 ch=${chapterIndex} p=${index + 1}] $line" }
+            .joinToString("\n")
+        val nextLabeled = next.lines().filter { it.isNotBlank() }
+            .mapIndexed { index, line -> "[来源 ch=${chapterIndex + 2} p=${index + 1}] $line" }
+            .joinToString("\n")
         val user = buildString {
-            if (prev.isNotBlank()) append("【前情提要】\n").append(prev).append("\n\n")
-            append("【本章正文】\n").append(numbered)
-            if (next.isNotBlank()) append("\n\n【后续剧情】\n").append(next)
+            if (prevLabeled.isNotBlank()) append("【前情提要】\n").append(prevLabeled).append("\n\n")
+            append("【本章正文】ch=${chapterIndex + 1}\n").append(numbered)
+            if (nextLabeled.isNotBlank()) append("\n\n【后续剧情】\n").append(nextLabeled)
+            if (knownCharacters.isNotBlank()) {
+                append("\n\n【已知人物参考】\n").append(knownCharacters)
+            }
         }
         val promptFactory = { failHint: String ->
             buildString {
@@ -1110,6 +1165,8 @@ BGM 建议缺段从值集补全。
             chapterIndex = chapterIndex,
             prevText = prev,
             nextText = next,
+            prevChapter = if (prev.isNotBlank()) chapterIndex else null,
+            nextChapter = if (next.isNotBlank()) chapterIndex + 2 else null,
             isBareClassWord = { word -> this.isBareClassWord(word) },
             isSpecialClassWord = { word -> this.isSpecialClassWord(word) },
             log = { message -> AppLog.putAnalysis("【V4·$chapterLabel·阶段2】$message") },
@@ -1390,27 +1447,5 @@ BGM 建议缺段从值集补全。
 
     private fun isSpecialClassWord(w: String): Boolean = w.trim() in specialWordsCache
 
-    private fun inferGenderFromAge(rawAge: String): String {
-        val a = rawAge.trim()
-        if (a.startsWith("女") || a.contains("少女")) return "女"
-        if (a.startsWith("男") || a.contains("少年")) return "男"
-        return "男"
-    }
 
-    private fun standardizeAge(rawAge: String, gender: String): String {
-        var r = rawAge.trim()
-        if (gender == "男" && (r.startsWith("女") || r.contains("少女"))) {
-            r = r.replace("少女", "少年").replace("女", "男")
-        }
-        if (gender == "女" && (r.startsWith("男") || r.contains("少年"))) {
-            r = r.replace("少年", "少女").replace("男", "女")
-        }
-        return when {
-            r.contains("童") || r.contains("幼") || r.contains("婴") -> if (gender == "女") "女童" else "男童"
-            r.contains("老") -> if (gender == "女") "女老年" else "男老年"
-            r.contains("中") -> if (gender == "女") "女中年" else "男中年"
-            r.contains("青") || r.contains("轻") -> if (gender == "女") "女青年" else "男青年"
-            else -> if (gender == "女") "女青年" else "男青年"
-        }
-    }
 }

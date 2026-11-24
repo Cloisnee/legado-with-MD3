@@ -29,6 +29,8 @@ interface RaCharacterGateway {
 
     suspend fun aliasesOf(characterId: String): List<RaCharacterAlias>
 
+    suspend fun aliasesOfBook(bookKey: String): List<RaCharacterAlias> = emptyList()
+
     suspend fun charactersByAliases(
         bookKey: String,
         normalizedNames: Collection<String>,
@@ -87,6 +89,13 @@ interface RaCharacterGateway {
     suspend fun deleteCharacters(characterIds: Collection<String>)
 
     suspend fun mergeCharacters(fromCharacterId: String, toCharacterId: String, reason: String)
+
+    /** AI 复审确认同人时的合并；默认等价于用户合并，假实现可只实现三参版本。 */
+    suspend fun mergeCharactersAsAi(fromCharacterId: String, toCharacterId: String, reason: String) {
+        mergeCharacters(fromCharacterId, toCharacterId, reason)
+    }
+
+    suspend fun updateStatus(characterId: String, status: String) {}
 
     suspend fun linksOfBook(bookKey: String): List<RaIdentityLink>
 

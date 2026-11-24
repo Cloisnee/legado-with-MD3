@@ -59,6 +59,14 @@ class CharacterManageViewModel : ViewModel() {
     private val centerRepo by lazy { TtsServerCenterRepository(app) }
     private val player by lazy { MediaPlayer() }
 
+    val pickerRepo: ReadAloudVoicePoolRepository
+        get() = voicePool
+
+    fun expectedVoicePrefix(roleType: String, gender: String, ageBand: String): String =
+        voicePool.expectedVoicePrefix(roleType, gender, ageBand)
+
+    fun voiceAgePrefix(voiceTag: String): String = voicePool.voiceAgePrefix(voiceTag)
+
     fun load() {
         viewModelScope.launch {
             _uiState.update { it.copy(loading = true) }

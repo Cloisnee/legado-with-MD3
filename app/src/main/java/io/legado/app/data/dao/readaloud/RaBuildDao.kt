@@ -231,6 +231,9 @@ interface RaBuildDao {
     @Query("select * from ra_local_mention where analysisId = :analysisId")
     suspend fun localMentions(analysisId: String): List<RaLocalMentionEntity>
 
+    @Query("select * from ra_local_mention where analysisId in (select id from ra_chapter_analysis where bookKey = :bookKey)")
+    suspend fun localMentionsOfBook(bookKey: String): List<RaLocalMentionEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertLocalMentions(entities: List<RaLocalMentionEntity>)
 
@@ -262,6 +265,9 @@ interface RaBuildDao {
         characterId: String,
         limit: Int,
     ): List<RaEvidenceEntity>
+
+    @Query("select * from ra_evidence where analysisId in (:analysisIds)")
+    suspend fun evidenceByAnalysisIds(analysisIds: List<String>): List<RaEvidenceEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEvidence(entities: List<RaEvidenceEntity>)

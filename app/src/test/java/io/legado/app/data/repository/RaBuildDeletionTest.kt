@@ -4,6 +4,10 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.legado.app.data.AppDatabase
+import io.legado.app.data.entities.readaloud.RaAttributeObsEntity
+import io.legado.app.data.entities.readaloud.RaCharacterAliasEntity
+import io.legado.app.data.entities.readaloud.RaIdentityLinkEntity
+import io.legado.app.data.entities.readaloud.RaRelationObsEntity
 import io.legado.app.data.entities.readaloud.RaChapterAnalysisEntity
 import io.legado.app.data.entities.readaloud.RaCharacterEntity
 import io.legado.app.data.entities.readaloud.RaCharacterRedirectEntity
@@ -144,6 +148,62 @@ class RaBuildDeletionTest {
                 id = "chr_test", bookKey = BOOK, displayName = "测试人物", status = "ACTIVE",
             ),
         )
+        db.raCharacterDao.insertAttribute(
+            RaAttributeObsEntity(
+                id = "att_ai_1", bookKey = BOOK, characterId = "chr_test", key = "gender",
+                value = "男", fromChapter = 1, source = "inferred",
+            ),
+        )
+        db.raCharacterDao.insertAttribute(
+            RaAttributeObsEntity(
+                id = "att_user_1", bookKey = BOOK, characterId = "chr_test", key = "ageBand",
+                value = "男青年", fromChapter = 1, source = "user",
+            ),
+        )
+        db.raCharacterDao.insertAttribute(
+            RaAttributeObsEntity(
+                id = "att_ai_2", bookKey = BOOK, characterId = "chr_test", key = "identity",
+                value = "弟子", fromChapter = 2, source = "explicit",
+            ),
+        )
+        db.raCharacterDao.insertRelation(
+            RaRelationObsEntity(
+                id = "rel_1", bookKey = BOOK, characterId = "chr_test", relation = "师兄妹",
+                targetText = "师妹", fromChapter = 1,
+            ),
+        )
+        db.raCharacterDao.insertRelation(
+            RaRelationObsEntity(
+                id = "rel_2", bookKey = BOOK, characterId = "chr_test", relation = "师徒",
+                targetText = "师父", fromChapter = 2,
+            ),
+        )
+        db.raCharacterDao.upsertAliases(
+            listOf(
+                RaCharacterAliasEntity(
+                    bookKey = BOOK, normalized = "ai-alias", characterId = "chr_test",
+                    surface = "AI别名", source = "ai", firstChapter = 1,
+                ),
+                RaCharacterAliasEntity(
+                    bookKey = BOOK, normalized = "user-alias", characterId = "chr_test",
+                    surface = "用户别名", source = "user", firstChapter = 1,
+                ),
+            ),
+        )
+        db.raCharacterDao.upsertLink(
+            RaIdentityLinkEntity(
+                id = "link_e1", bookKey = BOOK, aCharacterId = "chr_test",
+                bCharacterId = "chr_test_from", kind = "CANNOT", source = "ai",
+                evidenceIds = "[\"e1\"]",
+            ),
+        )
+        db.raCharacterDao.upsertLink(
+            RaIdentityLinkEntity(
+                id = "link_e2", bookKey = BOOK, aCharacterId = "chr_test",
+                bCharacterId = "chr_test_from", kind = "CANNOT", source = "ai",
+                evidenceIds = "[\"e2\"]",
+            ),
+        )
         db.raCharacterDao.upsertRedirect(
             RaCharacterRedirectEntity(
                 fromCharacterId = "chr_test_from", toCharacterId = "chr_test",
@@ -166,6 +226,16 @@ class RaBuildDeletionTest {
         assertEquals(0, db.raCharacterDao.decisionsOf("l1").size)
         assertNull(db.raBuildDao.getAnalysisById("a1b"))
         assertEquals(0, db.raBuildDao.segments("a1b").size)
+
+        assertNull(db.raCharacterDao.attributesOfBook(BOOK).firstOrNull { it.id == "att_ai_1" })
+        assertNotNull(db.raCharacterDao.attributesOfBook(BOOK).firstOrNull { it.id == "att_user_1" })
+        assertNotNull(db.raCharacterDao.attributesOfBook(BOOK).firstOrNull { it.id == "att_ai_2" })
+        assertNull(db.raCharacterDao.relationsOfBook(BOOK).firstOrNull { it.id == "rel_1" })
+        assertNotNull(db.raCharacterDao.relationsOfBook(BOOK).firstOrNull { it.id == "rel_2" })
+        assertNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "AI别名" })
+        assertNotNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "用户别名" })
+        assertNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e1" })
+        assertNotNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e2" })
 
         assertNotNull(db.raBuildDao.getBuild(BOOK, SOURCE, 2))
         assertEquals(1, db.raBuildDao.segments("a2").size)

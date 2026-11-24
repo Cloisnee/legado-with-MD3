@@ -63,7 +63,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
 import io.legado.app.constant.AppLog
-import io.legado.app.data.repository.ReadAloudVoicePoolRepository
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
@@ -98,7 +97,6 @@ import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
-import org.koin.core.context.GlobalContext
 
 /**
  * 书籍管理（对照「角色管理」v36 插件书籍管理 + MD3 真身元素复刻）：
@@ -124,7 +122,6 @@ fun BookManageScreen(
     val context = LocalContext.current
     val vm: BookManageViewModel = koinViewModel()
     val state by vm.uiState.collectAsStateWithLifecycle()
-    val voicePool = remember { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     val scope = rememberCoroutineScope()
 
     var searchMode by remember { mutableStateOf(false) }
@@ -951,7 +948,7 @@ fun BookManageScreen(
     VoiceTagPickerSheet(
         show = bmPicker != null,
         request = bmPicker,
-        repo = voicePool,
+        repo = vm.pickerRepo,
         onDismiss = { bmPicker = null },
     )
 

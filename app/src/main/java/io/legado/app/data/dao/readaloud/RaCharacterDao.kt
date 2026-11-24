@@ -183,6 +183,18 @@ interface RaCharacterDao {
     @Query("delete from ra_identity_link where bookKey = :bookKey")
     suspend fun deleteLinksOfBook(bookKey: String)
 
+    @Query("delete from ra_identity_link where id = :id")
+    suspend fun deleteLink(id: String)
+
+    @Query("delete from ra_attribute_obs where bookKey = :bookKey and fromChapter in (:chapters) and source != 'user'")
+    suspend fun deleteAttributesFromChapters(bookKey: String, chapters: List<Int>)
+
+    @Query("delete from ra_relation_obs where bookKey = :bookKey and fromChapter in (:chapters)")
+    suspend fun deleteRelationsFromChapters(bookKey: String, chapters: List<Int>)
+
+    @Query("delete from ra_character_alias where bookKey = :bookKey and source = 'ai' and firstChapter in (:chapters)")
+    suspend fun deleteAiAliasesFromChapters(bookKey: String, chapters: List<Int>)
+
     // ---------------- 裁决记录 ----------------
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

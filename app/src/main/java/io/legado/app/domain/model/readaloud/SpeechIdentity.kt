@@ -36,8 +36,11 @@ object SpeechIdentity {
         start: Int,
         type: String,
         subjectLocalId: String,
+        objectText: String,
+        quote: String,
     ): String = "ev_${sha256(
-        "$analysisId\u0000$sourceChapter\u0000$paragraphIndex\u0000$start\u0000$type\u0000$subjectLocalId",
+        "$analysisId\u0000$sourceChapter\u0000$paragraphIndex\u0000$start\u0000$type\u0000$subjectLocalId" +
+            "\u0000$objectText\u0000$quote",
     ).take(32)}"
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
