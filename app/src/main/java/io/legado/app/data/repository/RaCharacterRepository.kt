@@ -408,12 +408,6 @@ class RaCharacterRepository(
         fromCharacterId: String,
         toCharacterId: String,
         reason: String,
-    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "ai", emptyList(), "")
-
-    override suspend fun mergeCharactersAsAi(
-        fromCharacterId: String,
-        toCharacterId: String,
-        reason: String,
         evidenceIds: List<String>,
         decisionId: String,
     ) = mergeCharactersInternal(
