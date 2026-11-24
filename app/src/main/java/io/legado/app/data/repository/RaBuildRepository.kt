@@ -307,7 +307,8 @@ class RaBuildRepository(
             characterDao.updateRelationCharacter(it.id, fromCharacterId, now)
         }
         snapshot.voiceProfiles.forEach {
-            characterDao.updateVoiceProfileCharacter(it.id, fromCharacterId, now)
+            // 合并时可能删除/移动了方案；按快照恢复归属，id 相同会覆盖 to 上的同一行
+            characterDao.upsertVoiceProfile(it.copy(characterId = fromCharacterId, updatedAt = now))
         }
     }
 

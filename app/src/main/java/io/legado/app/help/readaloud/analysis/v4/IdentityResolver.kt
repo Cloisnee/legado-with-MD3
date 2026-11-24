@@ -142,6 +142,35 @@ class IdentityResolver(
                 evidence = verifiedMain,
                 exclude = linkedThisChapter + blockedByContradiction,
             )
+            val sameNameCount = candidates.count {
+                RaNameUtils.normalize(it.character.displayName) == RaNameUtils.normalize(speaker.primaryName)
+            }
+            if (sameNameCount >= 3) {
+                // 同名已出现多个 ACTIVE：身份不足，不再新建 ACTIVE，也不再无限问裁决
+                val reusable = findReusableProvisional(bookKey, speaker, linkedThisChapter)
+                    ?: findExhaustedProvisional(bookKey, speaker, linkedThisChapter)
+                val character = reusable ?: create(bookKey, chapterIndex, speaker, RaCharacterStatus.PROVISIONAL)
+                if (reusable == null) created.add(character)
+                charDecision(
+                    bookKey = bookKey,
+                    speaker = speaker,
+                    candidates = candidates.map { it.character.id },
+                    verdict = RaVerdict.UNKNOWN,
+                    chosen = character.id,
+                    confidence = 0f,
+                    reason = "同名多实体且无区分证据",
+                    evidenceIds = verifiedMain.map { it.id },
+                )
+                resolutions[speaker.localKey] = Resolution(
+                    characterId = character.id,
+                    resolution = RaResolution.PROVISIONAL,
+                    created = reusable == null,
+                    candidateIds = candidates.map { it.character.id },
+                    createdCharacter = if (reusable == null) character else null,
+                )
+                linkedThisChapter.add(character.id)
+                return@forEach
+            }
             when {
                 candidates.isEmpty() -> {
                     // 同名对象被同章占用/排除，不等于“已证实是新人”：先建临时人物待定
@@ -230,7 +259,12 @@ class IdentityResolver(
                     val blockedByOwnConstraint = target != null &&
                         item.speaker.characterId != null &&
                         isCannot(item.speaker.characterId, target.id)
-                    if (target != null && isAllowed(target.id) && !blockedByOwnConstraint) {
+                    val linkedSameWithEvidence = target != null &&
+                        target.id in linkedThisChapter &&
+                        answer.evidenceQuotes.isNotEmpty()
+                    if (target != null && (isAllowed(target.id) || linkedSameWithEvidence) &&
+                        !blockedByOwnConstraint
+                    ) {
                         val decisionId = charDecision(
                             bookKey = bookKey,
                             speaker = item.speaker,

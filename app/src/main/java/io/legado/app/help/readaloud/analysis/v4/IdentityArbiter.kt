@@ -175,7 +175,8 @@ fun validateIdentityDecisions(
         p: Int,
     ): Boolean {
         val byEvidence = question.evidence.any { e ->
-            e.sourceChapter == ch && e.paragraphIndex == p &&
+            val paragraphMatches = e.paragraphIndex == p - 1 || e.paragraphIndex == p
+            e.sourceChapter == ch && paragraphMatches &&
                 (e.excerpt.contains(quote) || e.objectText.contains(quote))
         }
         if (byEvidence) return true

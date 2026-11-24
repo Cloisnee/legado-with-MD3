@@ -102,7 +102,7 @@ interface RaCharacterGateway {
         evidenceIds: List<String>,
         decisionId: String,
     ) {
-        mergeCharactersAsAi(fromCharacterId, toCharacterId, reason)
+        mergeCharacters(fromCharacterId, toCharacterId, reason)
     }
 
     suspend fun updateStatus(characterId: String, status: String) {}
