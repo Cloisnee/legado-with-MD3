@@ -263,10 +263,11 @@ class CharacterManageViewModel : ViewModel() {
                     centerRepo.auditionDetailed(entry.tagRuleId, voiceTag, text)
                 }
             }.getOrNull()
-            if (out?.ok == true && !out.path.isNullOrBlank()) {
+            val path = out?.path
+            if (out?.ok == true && !path.isNullOrBlank()) {
                 runCatching {
                     player.reset()
-                    player.setDataSource(out.path)
+                    player.setDataSource(path)
                     player.prepare()
                     player.start()
                 }.onSuccess {

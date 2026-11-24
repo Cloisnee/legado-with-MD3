@@ -268,26 +268,55 @@ class IdentityResolver(
                     linkedThisChapter.add(character.id)
                 }
                 else -> {
-                    val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
-                    created.add(character)
-                    charDecision(
-                        bookKey = bookKey,
-                        speaker = item.speaker,
-                        candidates = candidateIds,
-                        verdict = answer.verdict,
-                        chosen = character.id,
-                        confidence = answer.confidence,
-                        reason = answer.reason,
-                        evidenceIds = item.evidence.map { it.id },
-                    )
-                    resolutions[item.speaker.localKey] = Resolution(
-                        characterId = character.id,
-                        resolution = RaResolution.PROVISIONAL,
-                        created = true,
-                        candidateIds = candidateIds,
-                        createdCharacter = character,
-                    )
-                    linkedThisChapter.add(character.id)
+                    // UNKNOWN/低置信：若候选里已有临时人物，链接它而不是再建一个，避免临时人物按章膨胀
+                    val provisionalCandidate = item.candidates.firstOrNull {
+                        it.character.status == RaCharacterStatus.PROVISIONAL
+                    }
+                    if (provisionalCandidate != null) {
+                        val linked = link(
+                            bookKey = bookKey,
+                            chapterIndex = chapterIndex,
+                            speaker = item.speaker,
+                            target = provisionalCandidate.character,
+                            candidateIds = candidateIds,
+                        )
+                        charDecision(
+                            bookKey = bookKey,
+                            speaker = item.speaker,
+                            candidates = candidateIds,
+                            verdict = answer.verdict,
+                            chosen = provisionalCandidate.character.id,
+                            confidence = answer.confidence,
+                            reason = answer.reason,
+                            evidenceIds = item.evidence.map { it.id },
+                        )
+                        resolutions[item.speaker.localKey] = linked.copy(
+                            resolution = RaResolution.PROVISIONAL,
+                            candidateIds = candidateIds,
+                        )
+                        linkedThisChapter.add(provisionalCandidate.character.id)
+                    } else {
+                        val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
+                        created.add(character)
+                        charDecision(
+                            bookKey = bookKey,
+                            speaker = item.speaker,
+                            candidates = candidateIds,
+                            verdict = answer.verdict,
+                            chosen = character.id,
+                            confidence = answer.confidence,
+                            reason = answer.reason,
+                            evidenceIds = item.evidence.map { it.id },
+                        )
+                        resolutions[item.speaker.localKey] = Resolution(
+                            characterId = character.id,
+                            resolution = RaResolution.PROVISIONAL,
+                            created = true,
+                            candidateIds = candidateIds,
+                            createdCharacter = character,
+                        )
+                        linkedThisChapter.add(character.id)
+                    }
                 }
             }
         }

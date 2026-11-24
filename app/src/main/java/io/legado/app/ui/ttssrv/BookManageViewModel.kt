@@ -263,15 +263,6 @@ class BookManageViewModel : ViewModel() {
         _effects.tryEmit("已提交重新分析（${chLabel(chapter)}）")
     }
 
-    suspend fun setVoice(characterId: String, voice: String) {
-        val entryId = runCatching {
-            voicePool.loadActivePoolTagEntries()[voice]?.first.orEmpty()
-        }.getOrDefault("")
-        characters.setDefaultVoice(characterId, voice, entryId)
-        _uiState.update { it.copy(records = characters.characters(it.currentBookKey)) }
-        _effects.tryEmit("声线已更新：$voice")
-    }
-
     /** 新增人物并返回 (id, 最终主名)；失败返回 null。 */
     suspend fun createCharacter(
         name: String,

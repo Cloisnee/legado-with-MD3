@@ -202,6 +202,14 @@ class Stage2Validator(
         }
         val keyRemap = HashMap<String, String>()
         val merged = localNormalize(calibrated, sm, keyRemap)
+        sm.forEach { (n, v) ->
+            var current = v
+            var guard = 0
+            while (keyRemap.containsKey(current) && guard++ < 20) {
+                current = keyRemap.getValue(current)
+            }
+            sm[n] = current
+        }
         val mentions = parseMentions(root, merged)
         val evidence = parseEvidence(root, merged, mentions, keyRemap)
 

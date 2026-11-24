@@ -229,6 +229,7 @@ fun CharacterManageScreen(
         pendingJoinKind = null
         editIdx = null
         mismatchConfirm = false
+        sel = emptySet()
     }
 
     fun saveEditWithCheck() {
@@ -275,12 +276,14 @@ fun CharacterManageScreen(
         val ids = sel.mapNotNull { state.records.getOrNull(it)?.id }
         vm.deleteCharacters(ids)
         confirmDelete = false
+        sel = emptySet()
     }
 
     fun performMerge(targetIdx: Int) {
         val target = state.records.getOrNull(targetIdx) ?: return
         val followers = sel.filter { it != targetIdx }.mapNotNull { state.records.getOrNull(it) }
         vm.mergeCharacters(followers.map { it.id }, target.id)
+        sel = emptySet()
     }
 
     fun releaseAlias(alias: String) {
@@ -478,6 +481,7 @@ fun CharacterManageScreen(
                                         onClick = {
                                             dismiss()
                                             if (b.bookKey != state.currentBookKey) {
+                                                sel = emptySet()
                                                 vm.selectBook(b.bookKey)
                                             }
                                         },
