@@ -18,6 +18,7 @@ import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.ui.widget.components.text.AppText
 import org.koin.core.context.GlobalContext
 
+
 /**
  * 剧本审查页（B10.2·U3 改版）——从听书播放器「剧本审查」按钮进入的全屏页：
  *  - 顶栏下 AppTabRow 双栏（角色管理 / 剧本），点按切换、无左右滑动；
@@ -50,7 +51,7 @@ fun ScriptReviewScreen(
     chapterIndex: Int,
     onBack: () -> Unit,
 ) {
-    val catalog = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    val catalog = remember { GlobalContext.get().get<ReadAloudCatalogRepository>() }
     var ready by remember(bookName) { mutableStateOf(false) }
     var refreshKey by remember { mutableStateOf(0) }
     var tab by remember { mutableStateOf(0) }

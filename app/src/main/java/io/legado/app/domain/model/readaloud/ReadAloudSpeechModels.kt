@@ -1,5 +1,7 @@
 package io.legado.app.domain.model.readaloud
 
+import io.legado.app.domain.model.readaloud.v4.RaSegment
+
 data class ReadAloudVoice(
     val id: String,
     val engineType: String,
@@ -70,7 +72,7 @@ data class CanonicalSpeechParagraph(
 )
 
 data class SpeechPlanItem(
-    val segment: io.legado.app.domain.model.readaloud.v4.RaSegment,
+    val segment: RaSegment,
     val voice: ReadAloudVoice?,
     val fallbackVoices: List<ReadAloudVoice>,
     val emotionTag: String = "",

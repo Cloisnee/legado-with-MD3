@@ -11,6 +11,7 @@ import io.legado.app.data.entities.readaloud.RaChapterBuildEntity
 import io.legado.app.data.entities.readaloud.RaEvidenceEntity
 import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
+import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
@@ -25,6 +26,7 @@ import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
+import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -126,10 +128,10 @@ class RaBuildRepository(
         dao.evidence(analysisId).map(RaEvidenceEntity::toDomain)
     }
 
-    override suspend fun overrides(bookKey: String, chapterIndex: Int): List<io.legado.app.domain.model.readaloud.v4.RaSegmentOverride> =
+    override suspend fun overrides(bookKey: String, chapterIndex: Int): List<RaSegmentOverride> =
         withContext(Dispatchers.IO) {
             dao.overrides(bookKey, chapterIndex).map { entity ->
-                io.legado.app.domain.model.readaloud.v4.RaSegmentOverride(
+                RaSegmentOverride(
                     bookKey = entity.bookKey,
                     chapterIndex = entity.chapterIndex,
                     paragraphIndex = entity.paragraphIndex,
@@ -169,7 +171,7 @@ class RaBuildRepository(
         narrator: Boolean,
     ) = withContext(Dispatchers.IO) {
         dao.upsertOverride(
-            io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity(
+            RaSegmentOverrideEntity(
                 bookKey = bookKey,
                 chapterIndex = chapterIndex,
                 paragraphIndex = paragraphIndex,

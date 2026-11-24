@@ -1,7 +1,8 @@
 package io.legado.app.ui.ttssrv
 
-import io.legado.app.utils.ChapterLabels
 import android.app.Application
+import io.legado.app.utils.ChapterLabels
+import io.legado.app.utils.MD5Utils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -127,12 +128,12 @@ fun BookManageScreen(
     bookTabLabel: String = "剧本",
 ) {
     val context = LocalContext.current
-    val catalog = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudCatalogRepository>() }
-    val raBuild = remember { org.koin.core.context.GlobalContext.get().get<RaBuildGateway>() }
-    val raDirection = remember { org.koin.core.context.GlobalContext.get().get<RaDirectionGateway>() }
-    val characterRepo = remember { org.koin.core.context.GlobalContext.get().get<RaCharacterGateway>() }
-    val maintenance = remember { org.koin.core.context.GlobalContext.get().get<RaBookMaintenanceRepository>() }
-    val voicePool = remember { org.koin.core.context.GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
+    val catalog = remember { GlobalContext.get().get<ReadAloudCatalogRepository>() }
+    val raBuild = remember { GlobalContext.get().get<RaBuildGateway>() }
+    val raDirection = remember { GlobalContext.get().get<RaDirectionGateway>() }
+    val characterRepo = remember { GlobalContext.get().get<RaCharacterGateway>() }
+    val maintenance = remember { GlobalContext.get().get<RaBookMaintenanceRepository>() }
+    val voicePool = remember { GlobalContext.get().get<ReadAloudVoicePoolRepository>() }
     val scope = rememberCoroutineScope()
 
     var books by remember { mutableStateOf<List<RaBookSummary>>(emptyList()) }
@@ -290,7 +291,7 @@ fun BookManageScreen(
                         bookKey = currentBookKey,
                         chapterIndex = ch,
                         paragraphIndex = line.paragraphIndex,
-                        textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
+                        textHash = MD5Utils.md5Encode16(line.text),
                         characterId = null,
                         narrator = true,
                     )
@@ -326,7 +327,7 @@ fun BookManageScreen(
                     bookKey = currentBookKey,
                     chapterIndex = ch,
                     paragraphIndex = line.paragraphIndex,
-                    textHash = io.legado.app.utils.MD5Utils.md5Encode16(line.text),
+                    textHash = MD5Utils.md5Encode16(line.text),
                     characterId = character.id,
                     narrator = name == "旁白",
                 )

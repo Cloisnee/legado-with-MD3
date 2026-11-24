@@ -19,6 +19,7 @@ import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaNameUtils
 import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
@@ -489,7 +490,7 @@ BGM 建议缺段从值集补全。
         val localSpeakers = buildLocalSpeakers(analysisId, entries, chapterIndex)
         val keyToCharacter = HashMap<String, String>()
         val keyToResolution = HashMap<String, RaResolution>()
-        val resolvedCharacters = ArrayList<io.legado.app.domain.model.readaloud.v4.RaCharacter>()
+        val resolvedCharacters = ArrayList<RaCharacter>()
         localSpeakers.forEach { speaker ->
             val resolution = resolver.resolve(bookKey, chapterIndex, speaker)
             keyToCharacter[speaker.localKey] = resolution.characterId

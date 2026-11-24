@@ -5,6 +5,7 @@ import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaSegment
+import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 
 interface RaBuildGateway {
 
@@ -44,7 +45,7 @@ interface RaBuildGateway {
 
     suspend fun evidence(analysisId: String): List<RaEvidence>
 
-    suspend fun overrides(bookKey: String, chapterIndex: Int): List<io.legado.app.domain.model.readaloud.v4.RaSegmentOverride>
+    suspend fun overrides(bookKey: String, chapterIndex: Int): List<RaSegmentOverride>
 
     suspend fun updateLocalSpeakerResolution(
         localSpeakerId: String,
