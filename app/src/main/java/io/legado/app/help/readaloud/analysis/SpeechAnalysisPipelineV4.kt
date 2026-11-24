@@ -19,14 +19,23 @@ import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaCharacter
+import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
-import io.legado.app.domain.model.readaloud.v4.RaNameUtils
+import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
-import io.legado.app.utils.AliasTokens
 import io.legado.app.help.readaloud.analysis.v4.SpeakerBinder
+import io.legado.app.help.readaloud.analysis.v4.Stage2Evidence
+import io.legado.app.help.readaloud.analysis.v4.Stage2Payload
+import io.legado.app.help.readaloud.analysis.v4.Stage2Speaker
+import io.legado.app.help.readaloud.analysis.v4.Stage2Validator
+import io.legado.app.help.readaloud.analysis.v4.V4Prompts
 import io.legado.app.utils.MD5Utils
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
@@ -77,14 +86,14 @@ class SpeechAnalysisPipelineV4(
 ) {
 
     companion object {
-        const val RESOLVER_VERSION = "v4.1"
+        const val RESOLVER_VERSION = "v4.2"
 
-        /** 内置默认提示词（「AI 分析设置」页载入编辑器用）；key: stage1/stage2/stage4/emotion。
-         *  stage4 含 %ROLE% 占位（角色名）、情绪含 %VOCAB% 占位（情绪词表），运行时自动替换。 */
+        /** 内置默认提示词（「AI 分析设置」页载入编辑器用）；key: stage1/stage2/resolve/emotion。
+         *  情绪含 %VOCAB% 占位（旧 10 词，V4-4 替换）；resolve 使用 V4Prompts 的三态裁决提示词。 */
         fun defaultPrompt(key: String): String = when (key) {
             "stage1" -> DEFAULT_STAGE1_PROMPT
-            "stage2" -> DEFAULT_STAGE2_PROMPT
-            "stage4" -> DEFAULT_STAGE4_HEAD
+            "stage2" -> V4Prompts.DEFAULT_STAGE2_PROMPT
+            "resolve" -> V4Prompts.DEFAULT_RESOLVE_PROMPT
             "audioDirector" -> DEFAULT_AUDIO_DIRECTOR_PROMPT
             else -> DEFAULT_EMOTION_PROMPT
         }
@@ -168,90 +177,6 @@ class SpeechAnalysisPipelineV4(
 - 如果把它用双引号括起来，像角色在说话吗？
 - 它包含具体的字词句，而不是只有声音或标点吗？
 三个问题都回答“是”，才标 T；否则标 F。
-""".trimIndent()
-
-        private val DEFAULT_STAGE2_PROMPT = """
-你是一个小说角色分析专家。下面的小说文本中，[1][2] 等为话语编号，紧随其后的〔〕内是该话语的内容（外层引号已去除）；[N] 开头的行为旁白叙述。
-
-=== 步骤1：识别对话【序号】所对应的说话人 ===
-通读全文，了解故事情节、逻辑后，精准识别所有对话【序号】所对应的说话人。
-对话若有引导词（"XX说"）、动作描写、称呼指向等线索，优先遵循。若无明确线索，根据前后文、对话内容、语境、人物立场/关系推断。
-输出格式：对话序号 → 说话人指称（保留原文形式）。
-
-=== 步骤2：说话人实体归一化（同指合并） ===
-基于完整章节的上下文，将步骤1输出的所有说话人指称中【指向同一真实实体】的项合并为一个角色。
-合并后，每个角色仅保留一条记录，并确定其主名（必须来自原文，禁止自行创造、总结，禁止使用'你我他她它祂'作为主名）：
-  - 若该实体有专名（人名、绰号、姓+身份/职业/亲属称谓），以专名为主名。
-  - 若无专名，取当前章节中【最完整、最具辨识度】的指称短语为主名（如'穿黑衣的男子'优于'男子'）。
-输出格式：唯一角色列表，每项包含【主名】和【该角色在本章中的所有指称别名列表】。
-
-=== 步骤3：确定每个角色的类型（roletype）===
-【强提醒】：只允许三个值：核心/路人/特殊
-【判定铁律】：优先检查主名是否具有明确的特指化标识（姓氏、排行、修饰语、专名）。
-1. 核心（特指个体）：满足任意一条即可。
-   a) 主名含常见姓氏且后接身份/职业/亲属称谓（张妈、王秘书、李老师），或"老/小/大+姓"（老李、小张）；
-   b) 主名含排行修饰（大舅、二姨、老三）；
-   c) 主名含描述性修饰语（高个子的女生、我的秘书、站在门口的人）；
-   d) 主名为专有名词/绰号（张三、独眼龙）；
-   e) 作为独立角色出场的非人存在：有名字或有人格的灵兽、器灵、鬼魂、心魔、第二人格、NPC等。
-2. 路人（泛指）：满足任意一条即可。
-   a) 裸类属名词且未被姓氏/排行/修饰附着（农民、女人、妈妈、声音、老太太、秘书、皇帝、陛下）；
-   b) 数量词/不定指词/指示代词（有人、几位弟子、那个秘书、你、我、他）；
-   c) 仅单个姓氏且上下文未锚定具体个人；
-   d) 不带姓氏的固化复合词（老板娘）。
-   此类角色若需区分多个同类个体，用"弟子A/弟子B"式区分，仍归路人。
-3. 特殊：话语由非人来源生成且向人类传递可理解语义，如系统提示音、游戏/直播系统音、邮件/短信/聊天消息的内容本身、智能程序/机器人/机械合成音的播报、广播喇叭通知。动物的无语义叫声不属于任何类，该话语忽略。
-铁律：带姓氏的称谓必须核心；主名为"系统/广播/邮件"一类信息源词必须特殊。
-
-=== 步骤4：确定每个角色的完整信息 ===
-对于步骤3输出的每个角色，补充以下字段：
-1. name（角色名称）：
-   - 若 role_type 为 路人：直接取主名中的【裸类属名词】核心词（去掉数量词、指示词等）。若存在多个同类裸词，按首次出现顺序加字母后缀（如“弟子A”、“弟子B”）。
-   - 若 role_type 为 核心：name 必须使用步骤2确定的【主名】原文（禁止自行创造、总结），保留姓氏、修饰、排行等所有特指化成分。例如：“张妈”、“王秘书”、“老李”、“大舅”、“高个子的女生”，不得简化或去除姓氏。
-   - 若 role_type 为 特殊：name 必须使用步骤2确定的【主名】原文（禁止自行创造、总结），并且符合步骤3关于【特殊】的定义。例如：“系统”、“电视广播”、“机器人”、“人工智能”、“Ai”，不得简化。
-2. aliases（别名）：
-   - 若 role_type 为 路人：别名为空。
-   - 若 role_type 为 核心/特殊：别名取步骤2中该角色【除主名外最常用、最具辨识度】的一个指称形式（非裸类属名词）。若没有别名，则留空。**禁止输出多个别名**，只允许最多一个“|”符号。
-   - 特殊规则：若当前章节有示意某角色是冒名顶替他人（如'张三冒充李四'、'张三其实是李四假扮'），则本角色的 aliases 字段必须为空字符串，且 name 字段使用冒名者本来的名字，不得将冒名者与被冒名者视为同一角色。
-3. gender（性别）：男/女，根据上下文判断，如无线索默认男。
-4. age（年龄段）：核心/路人只能填 男童/少年/男青年/男中年/男老年/女童/少女/女青年/女中年/女老年，根据上下文判断，如无线索默认男青年。特殊固定填 系统。
-
-=== 步骤5：角色列表去重 ===
-检查最终需要输出的角色列表，确保没有重复实体。若有重复，以步骤2的归一化结果为准进行合并（禁止将'你我他她它祂'作为实体人物主名）。
-
-注意：
-- 特别检查：①带有姓氏的称谓（张妈、王秘书、老李等）必须归为 核心，切勿归为 路人。②输出角色的name时禁止输入旁白！
-
-- seqmap必须覆盖文中每一个话语编号，不允许遗漏；同一人物的所有编号必须映射到同一个名称；每个被引用的人物都必须在characters中有定义。
-
-【输出格式】只输出纯JSON：
-{"seqmap":{"01":"张三","02":"张三"},"characters":[{"name":"张三","aliases":"","roletype":"核心","gender":"男","age":"男青年"}]}
-""".trimIndent()
-
-        private val DEFAULT_STAGE4_HEAD =
-            "你是一个小说角色识别专家。现在给定你一份截取多个连续章节内容的小说文本，阅读完后判断「%ROLE%」是否与历史角色列表中的某个人是同一人。"
-
-        private val DEFAULT_STAGE4_RULES = """
-【判断标准】
-应当判定为不同人（满足任意一条即可）：
-1. 场景/空间矛盾：两者同时出现在同一场景，被描述为不同个体；或历史角色被困于无法离开的场景而新角色在另一场景活跃。
-2. 冒名顶替：文本明确示意A是B冒名顶替的，判定A和B非同一人。
-3. 属性矛盾：身份、职业或从属组织明显不一致且无转职说明。
-4. 年龄差≥2（男童/女童=1，少年/少女=2，男青年/女青年=3，男中年/女中年=4，男老年/女老年=5），判定非同一人。
-5. 时间线/生命状态矛盾：一人已死另一人仍活跃；或互动关系时间线冲突。
-6. 缺乏证据：历史角色在长文本中完全未出现且无任何线索关联，默认不同人。
-
-应当判定为同一人（满足任意一条即可）：
-1. 文本有类似描述：A就是B、A即B、A原名B、A叫做B、A外号B等。
-2. 从年龄差≤1、行为逻辑、外貌性格语言特征、身份职业、互动对象等多维度综合判断高度匹配。
-3. 特定语境下只有一个角色可能拥有该称呼。
-4. 并置揭示：叙述中将历史角色与当前称呼直接并置讨论（如：众人所说的X正是他），此时必须判同一。
-5. 称呼链延续：文本显示同一实体在不同时期被不同称呼指代（幼年小名→成年大名）。
-6. 唯一语境：该场景/该关系下只有一个历史角色可能对应此称呼。
-
-无论结论如何，你必须先在心里找到至少一处具体文本依据；找不到依据时才允许判false。
-注意：历史角色的别名也指代该人物。若既满足同一人又满足非同一人条件，以非同一人为准。若不满足上述所有标准，以非同一人为准。
-如果判定为true，main_name必须是候选列表中的主名。
 """.trimIndent()
 
         private val DEFAULT_EMOTION_PROMPT = """
@@ -357,23 +282,6 @@ BGM 建议缺段从值集补全。
     private data class TextUnit(val start: Int, val end: Int, val text: String)
     private data class ParaUnits(val paraIndex: Int, val units: List<TextUnit>)
     private data class SpRange(val para: Int, val start: Int, val end: Int)
-    private data class Stage2Payload(
-        val seqMap: Map<Int, String>,
-        val chars: List<Calibrated>,
-        val narratorSeqs: Set<Int> = emptySet(),
-    )
-
-    private class Calibrated(
-        var name: String,
-        var alias: String,
-        var roleType: String = "",
-        var gender: String = "",
-        var age: String = "",
-    ) {
-        val rawKey: String = name
-        var minSeq: Int = 99999
-    }
-
     @Volatile
     private var bareWordsCache: Set<String> = emptySet()
 
@@ -466,17 +374,25 @@ BGM 建议缺段从值集补全。
             pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
         } else null
         var usedAi2 = false
-        var entries: List<Calibrated> = emptyList()
-        var seqMap: Map<Int, String> = emptyMap()
+        var stage2: Stage2Payload? = null
         if (s2Refs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            val s2 = callStage2(numbered, prevChapterText, nextChapterText, cfg, dialogueSegs.size, s2Refs, chapterIndex)
+            val s2 = callStage2(
+                numbered = numbered,
+                paragraphs = paragraphs,
+                prevText = prevChapterText,
+                nextText = nextChapterText,
+                cfg = cfg,
+                expectedCount = dialogueSegs.size,
+                refs = s2Refs,
+                chapterIndex = chapterIndex,
+            )
             if (s2 != null) {
                 usedAi2 = true
-                entries = s2.chars
-                seqMap = s2.seqMap
-                segments = applyStage2(segments, s2.seqMap, s2.narratorSeqs)
+                stage2 = s2
+                segments = applyStage2(segments, s2.seqMap)
                 AppLog.putAnalysis(
-                    "【V4·$chapterLabel·阶段2】完成：人物 ${entries.size} 个（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
+                    "【V4·$chapterLabel·阶段2】完成：人物 ${s2.speakers.size} 个、" +
+                        "提及 ${s2.mentions.size}、证据 ${s2.evidence.size}（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
                 )
             } else {
                 AppLog.putAnalysis("【V4·$chapterLabel·阶段2】失败：话语改用默认对话(duihuaA/duihuaB)发声")
@@ -485,16 +401,31 @@ BGM 建议缺段从值集补全。
             AppLog.putAnalysis("【V4·$chapterLabel·阶段2】跳过：未配模型队列 → 话语改用默认对话发声")
         }
 
-        // ===== 身份收敛（V4-1 确定性最小版） =====
-        val localSpeakers = buildLocalSpeakers(analysisId, entries, chapterIndex)
+        // ===== 身份收敛（V4-2 完整版：候选召回 + AI 三态） =====
+        val localSpeakers = buildLocalSpeakers(analysisId, stage2?.speakers.orEmpty())
+        val localMentions = buildLocalMentions(analysisId, stage2?.mentions.orEmpty())
+        val evidence = buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
+        val seqMap = stage2?.seqMap.orEmpty()
+        val contextBySpeaker = buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
+        val resolveResult = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = chapterIndex,
+            chapterLabel = chapterLabel,
+            speakers = localSpeakers,
+            mentions = localMentions,
+            evidence = evidence,
+            contextBySpeaker = contextBySpeaker,
+        )
         val keyToCharacter = HashMap<String, String>()
         val keyToResolution = HashMap<String, RaResolution>()
         val resolvedCharacters = ArrayList<RaCharacter>()
         localSpeakers.forEach { speaker ->
-            val resolution = resolver.resolve(bookKey, chapterIndex, speaker)
-            keyToCharacter[speaker.localKey] = resolution.characterId
-            keyToResolution[speaker.localKey] = resolution.resolution
-            raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
+            val resolution = resolveResult.resolutions[speaker.localKey]
+            if (resolution != null) {
+                keyToCharacter[speaker.localKey] = resolution.characterId
+                keyToResolution[speaker.localKey] = resolution.resolution
+                raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
+            }
         }
         segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
         // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
@@ -524,9 +455,13 @@ BGM 建议缺段从值集补全。
                 resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
             )
         }
+        writeObservations(bookKey, chapterIndex, stage2, keyToCharacter, evidence)
         if (localSpeakers.isNotEmpty()) {
+            val linked = resolveResult.resolutions.count { !it.value.created }
+            val provisional = resolveResult.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
             AppLog.putAnalysis(
-                "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}（链接 ${keyToResolution.count { it.value == RaResolution.RESOLVED }}、临时 ${keyToResolution.count { it.value != RaResolution.RESOLVED }}）",
+                "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}" +
+                    "（新建 ${resolveResult.created.size}、链接 $linked、临时 $provisional）",
             )
         }
         casting.ensureDefaultProfiles(bookKey, resolvedCharacters.distinctBy { it.id }, chapterLabel)
@@ -616,7 +551,8 @@ BGM 建议缺段从值集补全。
             analysis = analysis,
             segments = bound,
             localSpeakers = updatedSpeakers,
-            evidence = emptyList(),
+            localMentions = localMentions,
+            evidence = evidence,
             build = build,
         )
         AppLog.putAnalysis(
@@ -648,26 +584,174 @@ BGM 建议缺段从值集补全。
         return assemble(paragraphs, ranges)
     }
 
-    private suspend fun buildLocalSpeakers(
+    private fun buildLocalSpeakers(
         analysisId: String,
-        entries: List<Calibrated>,
-        chapterIndex: Int,
-    ): List<RaLocalSpeaker> = entries.mapIndexed { index, entry ->
-        val names = (listOf(entry.name) + AliasTokens.of(entry.alias))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
+        entries: List<Stage2Speaker>,
+    ): List<RaLocalSpeaker> = entries.map { entry ->
         RaLocalSpeaker(
-            id = "$analysisId#L${index + 1}",
+            id = "$analysisId#${entry.key}",
             analysisId = analysisId,
-            localKey = "L${index + 1}",
-            surfaceNames = names,
+            localKey = entry.key,
+            surfaceNames = entry.allNames,
             primaryName = entry.name,
             roleType = entry.roleType,
             gender = entry.gender,
-            ageBand = entry.age,
+            ageBand = entry.ageBand,
             resolution = RaResolution.PENDING,
         )
+    }
+
+    private fun buildLocalMentions(
+        analysisId: String,
+        entries: List<Stage2Speaker>,
+    ): List<RaLocalMention> = entries.map { entry ->
+        RaLocalMention(
+            id = "$analysisId#${entry.key}",
+            analysisId = analysisId,
+            localKey = entry.key,
+            surfaceNames = entry.allNames,
+            primaryName = entry.name,
+            roleType = entry.roleType,
+            gender = entry.gender,
+            ageBand = entry.ageBand,
+            resolution = RaResolution.PENDING,
+        )
+    }
+
+    private fun buildEvidence(
+        analysisId: String,
+        bookKey: String,
+        entries: List<Stage2Evidence>,
+    ): List<RaEvidence> = entries.map { e ->
+        val subjectLocalId = "$analysisId#${e.subjectKey}"
+        RaEvidence(
+            id = SpeechIdentity.evidenceId(
+                analysisId = analysisId,
+                sourceChapter = e.chapter,
+                paragraphIndex = e.paragraphIndex,
+                start = e.start,
+                type = e.type.storageValue,
+                subjectLocalId = subjectLocalId,
+            ),
+            bookKey = bookKey,
+            analysisId = analysisId,
+            sourceChapter = e.chapter,
+            paragraphIndex = e.paragraphIndex,
+            start = e.start,
+            end = e.end,
+            excerpt = e.quote,
+            type = e.type,
+            subjectLocalId = subjectLocalId,
+            objectText = e.objectText,
+            scope = if (e.scope == RaEvidenceScope.CONTEXT_CLUE) {
+                RaEvidenceScope.CONTEXT_CLUE
+            } else {
+                RaEvidenceScope.MAIN_TEXT
+            },
+            verified = e.verified,
+        )
+    }
+
+    /** 给裁决的“本批相关原文”：每人取首句所在段 + 前后各 1 段，≤1200 字。 */
+    private fun buildContextBySpeaker(
+        paragraphs: List<CanonicalSpeechParagraph>,
+        segments: List<RaSegment>,
+        seqMap: Map<Int, String>,
+        speakers: List<RaLocalSpeaker>,
+    ): Map<String, String> {
+        val byKey = speakers.associateBy { it.localKey }
+        val out = HashMap<String, String>()
+        segments.filter { it.seq > 0 }.forEach { segment ->
+            val key = seqMap[segment.seq] ?: return@forEach
+            if (key == "N" || out.containsKey(key)) return@forEach
+            byKey[key] ?: return@forEach
+            val index = paragraphs.indexOfFirst { it.index == segment.paragraphIndex }
+            if (index < 0) return@forEach
+            val from = (index - 1).coerceAtLeast(0)
+            val to = (index + 1).coerceAtMost(paragraphs.lastIndex)
+            out[key] = paragraphs.subList(from, to + 1)
+                .joinToString("\n") { it.text }
+                .take(1200)
+        }
+        return out
+    }
+
+    /** 属性/关系观察落库（default 来源不写；identityRevision 由 ensureCharacter 负责）。 */
+    private suspend fun writeObservations(
+        bookKey: String,
+        chapterIndex: Int,
+        payload: Stage2Payload?,
+        keyToCharacter: Map<String, String>,
+        evidence: List<RaEvidence>,
+    ) {
+        payload ?: return
+        payload.speakers.forEach { speaker ->
+            val characterId = keyToCharacter[speaker.key] ?: return@forEach
+            if (speaker.genderSource != "default" && speaker.gender.isNotBlank()) {
+                raCharacters.saveAttribute(
+                    RaAttributeObservation(
+                        id = "att_${characterId}_gender_$chapterIndex",
+                        bookKey = bookKey,
+                        characterId = characterId,
+                        key = "gender",
+                        value = speaker.gender,
+                        fromChapter = chapterIndex,
+                        source = speaker.genderSource,
+                    ),
+                )
+            }
+            if (speaker.ageSource != "default" && speaker.ageBand.isNotBlank()) {
+                raCharacters.saveAttribute(
+                    RaAttributeObservation(
+                        id = "att_${characterId}_ageBand_$chapterIndex",
+                        bookKey = bookKey,
+                        characterId = characterId,
+                        key = "ageBand",
+                        value = speaker.ageBand,
+                        fromChapter = chapterIndex,
+                        source = speaker.ageSource,
+                    ),
+                )
+            }
+        }
+        evidence.filter { it.scope == RaEvidenceScope.MAIN_TEXT && it.verified }.forEach { e ->
+            val localKey = e.subjectLocalId.substringAfterLast('#')
+            val characterId = keyToCharacter[localKey] ?: return@forEach
+            when (e.type) {
+                RaEvidenceType.RELATION -> {
+                    if (e.objectText.isNotBlank()) {
+                        raCharacters.saveRelation(
+                            RaRelationObservation(
+                                id = "rel_${e.id}",
+                                bookKey = bookKey,
+                                characterId = characterId,
+                                relation = e.objectText,
+                                targetText = e.objectText,
+                                fromChapter = chapterIndex,
+                                evidenceId = e.id,
+                            ),
+                        )
+                    }
+                }
+                RaEvidenceType.ATTRIBUTE -> {
+                    if (e.objectText.isNotBlank()) {
+                        raCharacters.saveAttribute(
+                            RaAttributeObservation(
+                                id = "att_${e.id}",
+                                bookKey = bookKey,
+                                characterId = characterId,
+                                key = "identity",
+                                value = e.objectText.take(60),
+                                fromChapter = chapterIndex,
+                                evidenceId = e.id,
+                                source = "explicit",
+                            ),
+                        )
+                    }
+                }
+                else -> Unit
+            }
+        }
     }
 
     private suspend fun saveDirectionRows(
@@ -990,6 +1074,7 @@ BGM 建议缺段从值集补全。
 
     private suspend fun callStage2(
         numbered: String,
+        paragraphs: List<CanonicalSpeechParagraph>,
         prevText: String,
         nextText: String,
         cfg: AnalysisConfigStore.Config,
@@ -999,7 +1084,7 @@ BGM 建议缺段从值集补全。
     ): Stage2Payload? {
         val prev = takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
         val next = takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
-        val head = cfg.stage2Prompt.ifBlank { DEFAULT_STAGE2_PROMPT }
+        val head = cfg.stage2Prompt.ifBlank { V4Prompts.DEFAULT_STAGE2_PROMPT }
         val user = buildString {
             if (prev.isNotBlank()) append("【前情提要】\n").append(prev).append("\n\n")
             append("【本章正文】\n").append(numbered)
@@ -1017,214 +1102,29 @@ BGM 建议缺段从值集补全。
                 append("=== 待分析文本 ===\n").append(user)
             }
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·第2阶段") { raw ->
-            validateStage2(raw, expectedCount, chapterIndex)
+        val validator = Stage2Validator(
+            paragraphs = paragraphs,
+            chapterIndex = chapterIndex,
+            prevText = prev,
+            nextText = next,
+            isBareClassWord = { word -> this.isBareClassWord(word) },
+            isSpecialClassWord = { word -> this.isSpecialClassWord(word) },
+            log = { message -> AppLog.putAnalysis("【V4·$chapterLabel·阶段2】$message") },
+        )
+        return ai.completeValidated(
+            refs,
+            "只输出 JSON。",
+            promptFactory,
+            cfg.maxOutputTokens,
+            logTag = "${chapterLabel}·第2阶段",
+        ) { raw ->
+            validator.validate(raw, expectedCount)
         }
-    }
-
-    /** 第2阶段校验全复刻（⑦⑧一致性 → ⑨~⑫校准 → ⑬本地归一） */
-    private fun validateStage2(raw: String, expectedCount: Int, chapterIndex: Int): ValidateOutcome<Stage2Payload> {
-        val root = ai.extractJson(raw) ?: return ValidateOutcome(null, "返回不是JSON对象")
-        val smObj = root.optJSONObject("seqmap") ?: root.optJSONObject("序号映射") ?: root.optJSONObject("seqMap")
-            ?: return ValidateOutcome(null, "缺少seqmap")
-        val sm = HashMap<Int, String>()
-        val keys = smObj.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val n = k.trim().toIntOrNull() ?: continue
-            if (n < 1) continue
-            sm[n] = smObj.optString(k).trim()
-        }
-        val arr = ArrayList<JSONObject>()
-        val rcArr = root.optJSONArray("characters") ?: root.optJSONArray("角色列表")
-            ?: root.optJSONArray("characterlist") ?: root.optJSONArray("characterList")
-        if (rcArr != null) {
-            for (i in 0 until rcArr.length()) rcArr.optJSONObject(i)?.let { arr.add(it) }
-        } else {
-            val rcObj = root.optJSONObject("characters") ?: root.optJSONObject("角色列表")
-            if (rcObj != null) {
-                val ks = rcObj.keys()
-                while (ks.hasNext()) {
-                    val kk = ks.next()
-                    val oo = rcObj.optJSONObject(kk) ?: JSONObject()
-                    if (oo.optString("name").isBlank()) oo.put("name", kk)
-                    arr.add(oo)
-                }
-            }
-        }
-        // B30：全旁白退让——characters 为空但 seqmap 全部指向「旁白」时不再判失败（整体转旁白）
-        if (arr.isEmpty()) {
-            val allNarrator = sm.isNotEmpty() && sm.values.all { NarratorRoleStrip.isNarratorName(it) }
-            if (!allNarrator) return ValidateOutcome(null, "characters为空")
-        }
-
-        val byName = LinkedHashMap<String, Calibrated>()
-        val aliasIndex = HashMap<String, String>()
-        val errs = ArrayList<String>()
-        arr.forEach { o ->
-            val nm = o.optString("name").ifBlank { o.optString("主名") }.ifBlank { o.optString("名称") }.trim()
-            if (nm.isBlank()) {
-                errs.add("存在name为空的角色")
-                return@forEach
-            }
-            var al = ""
-            val alRaw: Any? = o.opt("aliases") ?: o.opt("别名")
-            when (alRaw) {
-                is JSONArray -> {
-                    for (q in 0 until alRaw.length()) {
-                        val t = alRaw.optString(q).trim()
-                        if (t.isNotEmpty()) {
-                            al = t
-                            break
-                        }
-                    }
-                }
-                null -> Unit
-                else -> al = alRaw.toString().split("|").firstOrNull()?.trim().orEmpty()
-            }
-            if (al == nm) al = ""
-            if (byName.containsKey(nm)) {
-                val cur = byName.getValue(nm)
-                if (cur.alias.isBlank() && al.isNotBlank()) cur.alias = al
-                return@forEach
-            }
-            val cal = Calibrated(
-                name = nm,
-                alias = al,
-                roleType = o.optString("roletype").ifBlank { o.optString("type") }.ifBlank { o.optString("类型") }.trim(),
-                gender = o.optString("gender").ifBlank { o.optString("性别") }.trim(),
-                age = o.optString("age").ifBlank { o.optString("年龄") }.trim(),
-            )
-            byName[nm] = cal
-            aliasIndex[nm.lowercase()] = nm
-            if (al.isNotBlank()) aliasIndex[al.lowercase()] = nm
-        }
-        for (s in 1..expectedCount) {
-            if (sm[s].isNullOrBlank()) errs.add("seqmap缺少序号${s.toString().padStart(2, '0')}")
-        }
-        sm.forEach { (n, v) ->
-            if (v.isBlank()) {
-                errs.add("seqmap序号${n.toString().padStart(2, '0')}为空")
-                return@forEach
-            }
-            if (!byName.containsKey(v)) {
-                val tgt = aliasIndex[v.lowercase()]
-                if (tgt != null) {
-                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】seqmap校正：$v → $tgt")
-                    sm[n] = tgt
-                } else if (!NarratorRoleStrip.isNarratorName(v)) {
-                    errs.add("seqmap中人物「$v」未在characters中定义")
-                }
-            }
-        }
-        // B30：旁白角色剥离——「旁白」不参与定义/引用校验、校准与归一（静默转真旁白，不判失败）
-        byName.entries.removeAll { NarratorRoleStrip.isNarratorName(it.key) }
-        val narratorSeqs = NarratorRoleStrip.narratorSeqs(sm)
-        val referenced = sm.values.filter { it.isNotBlank() }.toSet()
-        byName.forEach { (name, _) ->
-            if (name !in referenced) errs.add("角色「$name」未被任何序号引用")
-        }
-        if (errs.isNotEmpty()) return ValidateOutcome(null, errs.joinToString("；"))
-
-        // ⑨~⑫ 校准
-        val calibrated = byName.values.map { calibrate(it, chapterIndex) }
-        calibrated.forEach { c ->
-            if (c.rawKey != c.name) {
-                sm.forEach { (n, v) -> if (v == c.rawKey) sm[n] = c.name }
-            }
-        }
-        // ⑬ 本地归一（仅核心/特殊参与）
-        val normalized = localNormalize(calibrated, sm, chapterIndex)
-        return ValidateOutcome(Stage2Payload(sm.toMap(), normalized, narratorSeqs))
-    }
-
-    private fun calibrate(c: Calibrated, chapterIndex: Int): Calibrated {
-        val rt = c.roleType.trim()
-        c.roleType = when {
-            rt == "核心" || rt == "路人" || rt == "特殊" -> rt
-            isBareClassWord(c.name) -> "路人"
-            isSpecialClassWord(c.name) -> "特殊"
-            else -> "核心"
-        }
-        if (c.roleType == "路人") {
-            c.alias = ""
-        } else {
-            if (c.alias.isNotBlank() && isBareClassWord(c.alias)) c.alias = ""
-            if (isBareClassWord(c.name)) {
-                if (c.alias.isNotBlank() && !isBareClassWord(c.alias)) {
-                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】校准：主名「${c.name}」为裸属词，别名「${c.alias}」上位为主名")
-                    c.name = c.alias
-                    c.alias = ""
-                } else {
-                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】校准：主名「${c.name}」与别名均为裸属词，降级为路人")
-                    c.roleType = "路人"
-                }
-            }
-        }
-        c.gender = if (c.gender == "男" || c.gender == "女") c.gender else inferGenderFromAge(c.age)
-        c.age = if (c.roleType == "特殊") "系统" else standardizeAge(c.age, c.gender)
-        return c
-    }
-
-    private fun localNormalize(list: List<Calibrated>, sm: MutableMap<Int, String>, chapterIndex: Int): List<Calibrated> {
-        val minSeq = HashMap<String, Int>()
-        sm.forEach { (n, k) ->
-            if (k.isNotBlank()) {
-                val cur = minSeq[k]
-                if (cur == null || n < cur) minSeq[k] = n
-            }
-        }
-        list.forEach { it.minSeq = minSeq[it.name] ?: 99999 }
-        val work = ArrayList(list)
-        var changed = true
-        var guard = 80
-        while (changed && guard-- > 0) {
-            changed = false
-            var i = 0
-            while (i < work.size) {
-                var j = i + 1
-                while (j < work.size) {
-                    val a = work[i]
-                    val b = work[j]
-                    if (a.roleType == "路人" || b.roleType == "路人") {
-                        j++
-                        continue
-                    }
-                    if (!isSamePersonEntry(a, b)) {
-                        j++
-                        continue
-                    }
-                    // 序号在前者为主名（意图复刻；原脚本此处疑似笔误，按意图实现）
-                    val winner = if (b.minSeq < a.minSeq) b else a
-                    val loser = if (winner === a) b else a
-                    AppLog.putAnalysis("【V4·${chapterLabel}·第2阶段】本地归一：${loser.name} 并入 ${winner.name}")
-                    val toks = AliasTokens.of(winner.alias).toMutableList()
-                    if (loser.name != winner.name && loser.name !in toks) toks.add(loser.name)
-                    AliasTokens.of(loser.alias).forEach { t ->
-                        if (t != winner.name && t !in toks) toks.add(t)
-                    }
-                    winner.alias = toks.distinct().joinToString("|")
-                    sm.forEach { (n, v) -> if (v == loser.name) sm[n] = winner.name }
-                    work.remove(loser)
-                    changed = true
-                }
-                i++
-            }
-        }
-        return work
-    }
-
-    private fun isSamePersonEntry(a: Calibrated, b: Calibrated): Boolean {
-        if (a.name == b.name) return true
-        if (b.name in AliasTokens.of(a.alias)) return true
-        if (a.name in AliasTokens.of(b.alias)) return true
-        return false
     }
 
     private fun applyStage2(
         segments: List<RaSegment>,
         seqMap: Map<Int, String>,
-        narratorSeqs: Set<Int> = emptySet(),
     ): List<RaSegment> {
         var n = 0
         return segments.map { s ->
@@ -1232,18 +1132,19 @@ BGM 建议缺段从值集补全。
                 s
             } else {
                 n++
-                when {
-                    // B30：旁白角色剥离——剥夺角色属性（名字/归属），就地转真旁白（旁白声线合成）
-                    n in narratorSeqs -> s.copy(
+                val reference = seqMap[n]
+                if (reference.isNullOrBlank() || reference == "N") {
+                    s.copy(
                         roleType = SpeechRoleType.Narrator,
                         surfaceName = "",
                         characterId = null,
+                        localSpeakerId = null,
                         source = SpeechResolutionSource.Ai,
-                        seq = n,
+                        seq = 0,
                     )
-                    seqMap[n].isNullOrBlank() -> s.copy(source = SpeechResolutionSource.Ai, seq = n)
-                    else -> s.copy(
-                        surfaceName = seqMap.getValue(n),
+                } else {
+                    s.copy(
+                        surfaceName = "",
                         characterId = null,
                         source = SpeechResolutionSource.Ai,
                         confidence = 0.9f,

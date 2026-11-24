@@ -87,6 +87,9 @@ interface RaCharacterDao {
     @Query("select * from ra_character where bookKey = :bookKey and status = 'ACTIVE'")
     suspend fun activeCharacters(bookKey: String): List<RaCharacterEntity>
 
+    @Query("select * from ra_character where bookKey = :bookKey and status = 'PROVISIONAL'")
+    suspend fun provisionalCharacters(bookKey: String): List<RaCharacterEntity>
+
     // ---------------- 别名 ----------------
 
     @Query("select * from ra_character_alias where characterId = :characterId order by isGeneric, firstChapter")
@@ -187,6 +190,9 @@ interface RaCharacterDao {
 
     @Query("select * from ra_identity_decision where localSpeakerId = :localSpeakerId order by createdAt desc")
     suspend fun decisionsOf(localSpeakerId: String): List<RaIdentityDecisionEntity>
+
+    @Query("select * from ra_identity_decision where chosenCharacterId = :characterId order by createdAt desc")
+    suspend fun decisionsForCharacter(characterId: String): List<RaIdentityDecisionEntity>
 
     @Query("select * from ra_identity_decision where bookKey = :bookKey")
     suspend fun decisionsOfBook(bookKey: String): List<RaIdentityDecisionEntity>

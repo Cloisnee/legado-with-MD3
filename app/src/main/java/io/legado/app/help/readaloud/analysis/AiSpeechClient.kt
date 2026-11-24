@@ -378,7 +378,7 @@ suspend fun AiModelRepository.queueRefs(key: String): List<AiSpeechClient.ModelR
     val ids = when (key) {
         "stage1" -> cfg.stages.stage1
         "stage2" -> cfg.stages.stage2
-        "stage4" -> cfg.stages.stage4
+        "resolve" -> cfg.stages.resolve
         "emotion" -> cfg.stages.emotion
         "audioDirector" -> cfg.stages.audioDirector
         "synthSfx" -> cfg.stages.synthSfx

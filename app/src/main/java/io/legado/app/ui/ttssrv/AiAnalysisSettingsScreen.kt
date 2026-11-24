@@ -53,7 +53,7 @@ import org.koin.core.context.GlobalContext
 /**
  * 「AI 分析设置」独立页（B10.4·A1-A5）——我的 → 朗读 →「AI 分析设置」：
  *  - 请求：统一超时（覆盖模型级 timeoutMs）· 等分析就绪最长等待；
- *  - 提示词：stage1 话语选号 / stage2 角色归并 / stage4 同名判定 / 情绪 / 音频导演（留空 = 内置默认）；
+ *  - 提示词：stage1 话语选号 / stage2 角色归并 / resolve 同人裁决 / 情绪 / 音频导演（留空 = 内置默认）；
  *  - 取文与输出：前情提要 / 后续剧情字数 · 情绪等待 · 单次输出上限。
  * 全部落盘 `_store/analysis_config.json`，保存即生效（下次分析）。
  */
@@ -65,7 +65,7 @@ fun AiAnalysisSettingsRouteScreen(onBackClick: () -> Unit) {
 private enum class PromptTarget(val title: String, val key: String) {
     Stage1("stage1 话语选号 提示词", "stage1"),
     Stage2("stage2 角色归并 提示词", "stage2"),
-    Stage4("stage4 同名判定 提示词", "stage4"),
+    Resolve("裁决 同人判定 提示词", "resolve"),
     Emotion("情绪分析 提示词", "emotion"),
     AudioDirector("音频导演 提示词", "audioDirector"),
 }
@@ -74,7 +74,7 @@ private fun AnalysisConfigStore.Config.withPrompt(key: String, value: String): A
     when (key) {
         "stage1" -> copy(stage1Prompt = value)
         "stage2" -> copy(stage2Prompt = value)
-        "stage4" -> copy(stage4Prompt = value)
+        "resolve" -> copy(resolvePrompt = value)
         "emotion" -> copy(emotionPrompt = value)
         else -> copy(audioDirectorPrompt = value)
     }
@@ -175,13 +175,13 @@ fun AiAnalysisSettingsScreen(
                         },
                     )
                     TinyClickableSettingItem(
-                        title = PromptTarget.Stage4.title,
-                        description = promptDesc(cfg.stage4Prompt),
+                        title = PromptTarget.Resolve.title,
+                        description = promptDesc(cfg.resolvePrompt),
                         onClick = {
-                            promptDraft = cfg.stage4Prompt.ifBlank {
-                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Stage4.key)
+                            promptDraft = cfg.resolvePrompt.ifBlank {
+                                SpeechAnalysisPipelineV4.defaultPrompt(PromptTarget.Resolve.key)
                             }
-                            promptTarget = PromptTarget.Stage4
+                            promptTarget = PromptTarget.Resolve
                         },
                     )
                     TinyClickableSettingItem(
@@ -278,7 +278,7 @@ fun AiAnalysisSettingsScreen(
             ) {
                 AppText(
                     text = when (target) {
-                        PromptTarget.Stage4 ->
+                        PromptTarget.Resolve ->
                             "已载入内置默认文本，可直接编辑；支持 %ROLE% 占位符（自动替换为角色名）；保存后下次分析生效"
                         PromptTarget.Emotion ->
                             "已载入内置默认文本，可直接编辑；支持 %VOCAB% 占位符（自动替换为情绪词表）；保存后下次分析生效"

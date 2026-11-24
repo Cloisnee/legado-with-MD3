@@ -168,6 +168,9 @@ import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.domain.gateway.GenericNameClassifier
+import io.legado.app.help.readaloud.analysis.v4.AiIdentityArbiter
+import io.legado.app.help.readaloud.analysis.v4.CharacterCardProjector
+import io.legado.app.help.readaloud.analysis.v4.IdentityArbiter
 import io.legado.app.help.readaloud.analysis.v4.IdentityResolver
 import io.legado.app.help.readaloud.analysis.v4.VoiceCastingService
 import io.legado.app.help.readaloud.playback.SpeechVoiceResolver
@@ -398,6 +401,9 @@ val appModule = module {
     singleOf(::RaCharacterRepository)
     singleOf(::RaDirectionRepository)
     single<GenericNameClassifier> { get<WordLibraryRepository>() }
+    singleOf(::CharacterCardProjector)
+    singleOf(::AiIdentityArbiter)
+    single<IdentityArbiter> { get<AiIdentityArbiter>() }
     singleOf(::IdentityResolver)
     singleOf(::VoiceCastingService)
     singleOf(::ReadAloudAudioCacheRepository)

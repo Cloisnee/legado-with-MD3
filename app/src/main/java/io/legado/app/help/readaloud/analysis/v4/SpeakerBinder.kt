@@ -25,6 +25,7 @@ object SpeakerBinder {
                 segment.copy(
                     localSpeakerId = speaker?.id,
                     characterId = speaker?.localKey?.let(characterByKey::get),
+                    surfaceName = speaker?.primaryName ?: segment.surfaceName,
                 )
             }
         }

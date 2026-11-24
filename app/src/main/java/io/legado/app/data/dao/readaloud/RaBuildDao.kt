@@ -251,6 +251,18 @@ interface RaBuildDao {
     )
     suspend fun evidenceOfType(bookKey: String, type: String, limit: Int): List<RaEvidenceEntity>
 
+    @Query(
+        "select * from ra_evidence where bookKey = :bookKey and subjectLocalId in " +
+            "(select id from ra_local_speaker where characterId = :characterId) " +
+            "order by case type when 'ALIAS_EQUAL' then 0 when 'CONTRADICTION' then 1 else 2 end, " +
+            "sourceChapter desc limit :limit",
+    )
+    suspend fun evidenceOfCharacter(
+        bookKey: String,
+        characterId: String,
+        limit: Int,
+    ): List<RaEvidenceEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEvidence(entities: List<RaEvidenceEntity>)
 

@@ -1,9 +1,13 @@
 package io.legado.app.domain.gateway
 
+import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
+import io.legado.app.domain.model.readaloud.v4.RaIdentityDecision
+import io.legado.app.domain.model.readaloud.v4.RaIdentityLink
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
 
 interface RaCharacterGateway {
@@ -11,6 +15,12 @@ interface RaCharacterGateway {
     suspend fun characters(bookKey: String): List<RaCharacterView>
 
     suspend fun charactersRaw(bookKey: String): List<RaCharacter>
+
+    suspend fun provisionalCharacters(bookKey: String): List<RaCharacter>
+
+    suspend fun attributesOf(characterId: String): List<RaAttributeObservation>
+
+    suspend fun relationsOf(characterId: String): List<RaRelationObservation>
 
     suspend fun character(id: String): RaCharacter?
 
@@ -78,6 +88,24 @@ interface RaCharacterGateway {
 
     suspend fun mergeCharacters(fromCharacterId: String, toCharacterId: String, reason: String)
 
+    suspend fun linksOfBook(bookKey: String): List<RaIdentityLink>
+
+    suspend fun saveLink(link: RaIdentityLink)
+
+    suspend fun saveCannotLink(
+        bookKey: String,
+        aCharacterId: String,
+        bCharacterId: String,
+        source: String,
+        evidenceIds: List<String> = emptyList(),
+    )
+
+    suspend fun decisionsForCharacter(characterId: String): List<RaIdentityDecision>
+
+    suspend fun saveAttribute(observation: RaAttributeObservation)
+
+    suspend fun saveRelation(observation: RaRelationObservation)
+
     suspend fun saveDecision(
         bookKey: String,
         localSpeaker: RaLocalSpeaker,
@@ -87,7 +115,8 @@ interface RaCharacterGateway {
         confidence: Float,
         reason: String,
         modelId: String,
-    )
+        evidenceIds: List<String> = emptyList(),
+    ): String
 
     // ---- 发声方案 ----
 

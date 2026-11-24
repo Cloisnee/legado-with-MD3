@@ -125,7 +125,7 @@ private sealed interface TestUi {
 private val STAGE_CARDS = listOf(
     "stage1" to "stage1 话语选号",
     "stage2" to "stage2 角色归并",
-    "stage4" to "stage4 同名判定",
+    "resolve" to "裁决 同人判定",
     "emotion" to "情绪分析",
 )
 
@@ -232,7 +232,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     fun stageIds(c: AiModelsConfig, key: String): List<String> = when (key) {
         "stage1" -> c.stages.stage1
         "stage2" -> c.stages.stage2
-        "stage4" -> c.stages.stage4
+        "resolve" -> c.stages.resolve
         "emotion" -> c.stages.emotion
         "audioDirector" -> c.stages.audioDirector
         "synthSfx" -> c.stages.synthSfx
@@ -1469,7 +1469,7 @@ private fun AllocationPage(
             val queue = when (key) {
                 "stage1" -> config.stages.stage1
                 "stage2" -> config.stages.stage2
-                "stage4" -> config.stages.stage4
+                "resolve" -> config.stages.resolve
                 else -> config.stages.emotion
             }
             item(key = "stage_$key") {
@@ -1672,7 +1672,7 @@ private fun AllocationPage(
             val queueForCtx0 = when (ctx0) {
                 "stage1" -> config?.stages?.stage1
                 "stage2" -> config?.stages?.stage2
-                "stage4" -> config?.stages?.stage4
+                "resolve" -> config?.stages?.resolve
                 "emotion" -> config?.stages?.emotion
                 "audioDirector" -> config?.stages?.audioDirector
                 "synthSfx" -> config?.stages?.synthSfx

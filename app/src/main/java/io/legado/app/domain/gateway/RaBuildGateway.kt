@@ -3,6 +3,7 @@ package io.legado.app.domain.gateway
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
@@ -31,6 +32,7 @@ interface RaBuildGateway {
         analysis: RaAnalysis,
         segments: List<RaSegment>,
         localSpeakers: List<RaLocalSpeaker>,
+        localMentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
         build: RaChapterBuild?,
     )
@@ -43,7 +45,11 @@ interface RaBuildGateway {
 
     suspend fun localSpeakers(analysisId: String): List<RaLocalSpeaker>
 
+    suspend fun localMentions(analysisId: String): List<RaLocalMention>
+
     suspend fun evidence(analysisId: String): List<RaEvidence>
+
+    suspend fun evidenceOfCharacter(bookKey: String, characterId: String, limit: Int = 6): List<RaEvidence>
 
     suspend fun overrides(bookKey: String, chapterIndex: Int): List<RaSegmentOverride>
 

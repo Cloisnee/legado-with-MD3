@@ -19,7 +19,7 @@ import java.io.File
  * 结构（_store/ai_models.json）：
  *  providers：[{id,name,baseUrl,apiKey,protocol,enabled}]
  *  models   ：[{id,providerId,name,modelId,enabled,requestAttempts,validateRetries,timeoutMs,thinkingMode}]
- *  stages   ：{stage1:[modelId...], stage2:[...], stage4:[...], emotion:[...]}
+ *  stages   ：{stage1:[modelId...], stage2:[...], resolve:[...], emotion:[...]}
  *   - requestAttempts：响应尝试次数（超时/HTTP错/非JSON → 算一次），1=只试一次
  *   - validateRetries：内容校验重试次数（JSON合法但字段不符 → 算一次）
  *   - thinkingMode：关闭思考发送方式（auto/reasoning_effort…/none）
@@ -96,7 +96,7 @@ data class AiModelEntry(
 data class AiStageAssignments(
     val stage1: List<String> = emptyList(),
     val stage2: List<String> = emptyList(),
-    val stage4: List<String> = emptyList(),
+    val resolve: List<String> = emptyList(),
     val emotion: List<String> = emptyList(),
     // ---- B33 背景音乐与音效（2026-09-30）----
     /** 音频导演（判插点）分析模型队列（chat 模型，可多选轮换） */
@@ -265,7 +265,7 @@ class AiModelRepository(private val app: Application) {
             stages = AiStageAssignments(
                 stage1 = ids("stage1"),
                 stage2 = ids("stage2"),
-                stage4 = ids("stage4"),
+                resolve = ids("resolve"),
                 emotion = ids("emotion"),
                 audioDirector = ids("audioDirector"),
                 synthSfx = ids("synthSfx"),
@@ -306,7 +306,7 @@ class AiModelRepository(private val app: Application) {
             o.put("stages", JSONObject().apply {
                 put("stage1", JSONArray(cfg.stages.stage1))
                 put("stage2", JSONArray(cfg.stages.stage2))
-                put("stage4", JSONArray(cfg.stages.stage4))
+                put("resolve", JSONArray(cfg.stages.resolve))
                 put("emotion", JSONArray(cfg.stages.emotion))
                 put("audioDirector", JSONArray(cfg.stages.audioDirector))
                 put("synthSfx", JSONArray(cfg.stages.synthSfx))
@@ -353,7 +353,7 @@ class AiModelRepository(private val app: Application) {
                 stages = cfg.stages.copy(
                     stage1 = cfg.stages.stage1.filterNot { it in modelIds },
                     stage2 = cfg.stages.stage2.filterNot { it in modelIds },
-                    stage4 = cfg.stages.stage4.filterNot { it in modelIds },
+                    resolve = cfg.stages.resolve.filterNot { it in modelIds },
                     emotion = cfg.stages.emotion.filterNot { it in modelIds },
                     audioDirector = cfg.stages.audioDirector.filterNot { it in modelIds },
                     synthSfx = cfg.stages.synthSfx.filterNot { it in modelIds },
@@ -382,7 +382,7 @@ class AiModelRepository(private val app: Application) {
                 stages = cfg.stages.copy(
                     stage1 = cfg.stages.stage1.filterNot { it == id },
                     stage2 = cfg.stages.stage2.filterNot { it == id },
-                    stage4 = cfg.stages.stage4.filterNot { it == id },
+                    resolve = cfg.stages.resolve.filterNot { it == id },
                     emotion = cfg.stages.emotion.filterNot { it == id },
                     audioDirector = cfg.stages.audioDirector.filterNot { it == id },
                     synthSfx = cfg.stages.synthSfx.filterNot { it == id },
@@ -401,7 +401,7 @@ class AiModelRepository(private val app: Application) {
         val newStages = when (stageKey) {
             "stage1" -> s.copy(stage1 = ids)
             "stage2" -> s.copy(stage2 = ids)
-            "stage4" -> s.copy(stage4 = ids)
+            "resolve" -> s.copy(resolve = ids)
             "emotion" -> s.copy(emotion = ids)
             "audioDirector" -> s.copy(audioDirector = ids)
             "synthSfx" -> s.copy(synthSfx = ids)

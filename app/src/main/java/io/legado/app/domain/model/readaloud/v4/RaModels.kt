@@ -349,3 +349,116 @@ data class RaAnalysisBundle(
     val localSpeakers: List<RaLocalSpeaker>,
     val evidence: List<RaEvidence>,
 )
+
+/** 旁白中提及、但本章没有台词的人物（01 §2）。 */
+data class RaLocalMention(
+    val id: String,
+    val analysisId: String,
+    val localKey: String,
+    val surfaceNames: List<String>,
+    val primaryName: String,
+    val roleType: String = "",
+    val gender: String = "",
+    val ageBand: String = "",
+    val batchEntityId: String? = null,
+    val characterId: String? = null,
+    val resolution: RaResolution = RaResolution.PENDING,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+data class RaAttributeObservation(
+    val id: String,
+    val bookKey: String,
+    val characterId: String,
+    val key: String,
+    val value: String,
+    val fromChapter: Int,
+    val evidenceId: String = "",
+    /** explicit / inferred / user / default */
+    val source: String,
+    val confidence: Float = 1f,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+data class RaRelationObservation(
+    val id: String,
+    val bookKey: String,
+    val characterId: String,
+    val relation: String,
+    val targetCharacterId: String? = null,
+    val targetText: String = "",
+    val fromChapter: Int = 0,
+    val evidenceId: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+data class RaIdentityLink(
+    val id: String,
+    val bookKey: String,
+    val aCharacterId: String,
+    val bCharacterId: String,
+    val kind: RaLinkKind,
+    val source: String,
+    val evidenceIds: List<String> = emptyList(),
+    val decisionId: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+data class RaIdentityDecision(
+    val id: String,
+    val bookKey: String,
+    val localSpeakerId: String,
+    val candidateIds: List<String>,
+    val verdict: RaVerdict,
+    val chosenCharacterId: String? = null,
+    val confidence: Float = 0f,
+    val reason: String = "",
+    val evidenceIds: List<String> = emptyList(),
+    val modelId: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** CharacterCardProjector 的输出（01 §7）。 */
+data class RaCharacterCard(
+    val characterId: String,
+    val displayName: String,
+    val aliases: List<String>,
+    val roleType: String,
+    val gender: String,
+    val ageBand: String,
+    val firstChapter: Int,
+    val lastChapter: Int,
+    val timeline: List<RaCardTimelineFact>,
+    val relations: List<RaCardRelationFact>,
+    val voiceProfiles: List<RaCardVoiceProfile>,
+    val keyEvidence: List<RaCardEvidenceRef>,
+)
+
+data class RaCardTimelineFact(
+    val key: String,
+    val value: String,
+    val fromChapter: Int,
+    val source: String,
+)
+
+data class RaCardRelationFact(
+    val relation: String,
+    val targetText: String,
+    val fromChapter: Int,
+)
+
+data class RaCardVoiceProfile(
+    val label: String,
+    val voiceTag: String,
+    val kind: String,
+)
+
+data class RaCardEvidenceRef(
+    val type: RaEvidenceType,
+    val chapter: Int,
+    val excerpt: String,
+)

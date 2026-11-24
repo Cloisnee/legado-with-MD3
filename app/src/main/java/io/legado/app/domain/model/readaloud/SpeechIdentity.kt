@@ -29,6 +29,17 @@ object SpeechIdentity {
         end: Int,
     ): String = "speech-segment:${sha256("$analysisId\u0000$paragraphIndex\u0000$start\u0000$end").take(32)}"
 
+    fun evidenceId(
+        analysisId: String,
+        sourceChapter: Int,
+        paragraphIndex: Int,
+        start: Int,
+        type: String,
+        subjectLocalId: String,
+    ): String = "ev_${sha256(
+        "$analysisId\u0000$sourceChapter\u0000$paragraphIndex\u0000$start\u0000$type\u0000$subjectLocalId",
+    ).take(32)}"
+
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(StandardCharsets.UTF_8))
         .joinToString("") { byte -> "%02x".format(byte) }

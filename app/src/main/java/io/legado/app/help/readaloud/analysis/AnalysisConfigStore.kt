@@ -9,7 +9,7 @@ import java.io.File
 
 /**
  * 分析配置（提示词/上下文参数）· 暴露给用户随时修改：`_store/analysis_config.json`。
- *  - stage1Prompt/stage2Prompt/stage4Prompt/emotionPrompt/audioDirectorPrompt：提示词（默认=内置提示词；留空 = 用内置默认，即朗读脚本同款）；
+ *  - stage1Prompt/stage2Prompt/resolvePrompt/emotionPrompt/audioDirectorPrompt：提示词（默认=内置提示词；留空 = 用内置默认，即朗读脚本同款）；
  *  - timeoutSec：AI 分析全局超时上限（B10.4·A3，30..600s，默认 120；与模型级 timeoutMs 取更短者）；
  *  - waitAnalysisSec：等分析就绪最长等待（B10.4·A4，30..600s，默认 600）；
  *  - fallbackDefaultVoice：分析未就绪先用默认声线出声（B10.4·S1，默认 false；false=等待分析就绪后再出声）；
@@ -23,7 +23,7 @@ class AnalysisConfigStore(private val app: Application) {
     data class Config(
         val stage1Prompt: String = "",
         val stage2Prompt: String = "",
-        val stage4Prompt: String = "",
+        val resolvePrompt: String = "",
         val emotionPrompt: String = "",
         val audioDirectorPrompt: String = SpeechAnalysisPipelineV4.defaultPrompt("audioDirector"),
         val prevLimit: Int = 600,
@@ -46,7 +46,7 @@ class AnalysisConfigStore(private val app: Application) {
             Config(
                 stage1Prompt = o.optString("stage1Prompt"),
                 stage2Prompt = o.optString("stage2Prompt"),
-                stage4Prompt = o.optString("stage4Prompt"),
+                resolvePrompt = o.optString("resolvePrompt"),
                 emotionPrompt = o.optString("emotionPrompt"),
                 audioDirectorPrompt = o.optString("audioDirectorPrompt"),
                 prevLimit = o.optInt("prevLimit", 600).coerceIn(0, 3000),
@@ -69,7 +69,7 @@ class AnalysisConfigStore(private val app: Application) {
                 JSONObject().apply {
                     put("stage1Prompt", cfg.stage1Prompt)
                     put("stage2Prompt", cfg.stage2Prompt)
-                    put("stage4Prompt", cfg.stage4Prompt)
+                    put("resolvePrompt", cfg.resolvePrompt)
                     put("emotionPrompt", cfg.emotionPrompt)
                     put("audioDirectorPrompt", cfg.audioDirectorPrompt)
                     put("prevLimit", cfg.prevLimit)

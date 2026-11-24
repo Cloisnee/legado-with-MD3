@@ -9,6 +9,7 @@ import io.legado.app.data.entities.readaloud.RaBookIdentityEntity
 import io.legado.app.data.entities.readaloud.RaChapterAnalysisEntity
 import io.legado.app.data.entities.readaloud.RaChapterBuildEntity
 import io.legado.app.data.entities.readaloud.RaEvidenceEntity
+import io.legado.app.data.entities.readaloud.RaLocalMentionEntity
 import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
 import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
@@ -23,6 +24,7 @@ import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
@@ -78,6 +80,7 @@ class RaBuildRepository(
         analysis: RaAnalysis,
         segments: List<RaSegment>,
         localSpeakers: List<RaLocalSpeaker>,
+        localMentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
         build: RaChapterBuild?,
     ) = withContext(Dispatchers.IO) {
@@ -86,7 +89,7 @@ class RaBuildRepository(
                 analysis = analysis.toEntity(),
                 segments = segments.map(RaSegment::toEntity),
                 localSpeakers = localSpeakers.map(RaLocalSpeaker::toEntity),
-                localMentions = emptyList(),
+                localMentions = localMentions.map(RaLocalMention::toEntity),
                 evidence = evidence.map(RaEvidence::toEntity),
             )
             build?.let { dao.upsertBuild(it.toEntity()) }
@@ -124,8 +127,21 @@ class RaBuildRepository(
             dao.localSpeakers(analysisId).map(RaLocalSpeakerEntity::toDomain)
         }
 
+    override suspend fun localMentions(analysisId: String): List<RaLocalMention> =
+        withContext(Dispatchers.IO) {
+            dao.localMentions(analysisId).map(RaLocalMentionEntity::toDomain)
+        }
+
     override suspend fun evidence(analysisId: String): List<RaEvidence> = withContext(Dispatchers.IO) {
         dao.evidence(analysisId).map(RaEvidenceEntity::toDomain)
+    }
+
+    override suspend fun evidenceOfCharacter(
+        bookKey: String,
+        characterId: String,
+        limit: Int,
+    ): List<RaEvidence> = withContext(Dispatchers.IO) {
+        dao.evidenceOfCharacter(bookKey, characterId, limit).map(RaEvidenceEntity::toDomain)
     }
 
     override suspend fun overrides(bookKey: String, chapterIndex: Int): List<RaSegmentOverride> =
@@ -363,6 +379,38 @@ internal fun RaLocalSpeakerEntity.toDomain() = RaLocalSpeaker(
 )
 
 internal fun RaLocalSpeaker.toEntity() = RaLocalSpeakerEntity(
+    id = id,
+    analysisId = analysisId,
+    localKey = localKey,
+    surfaceNames = listToJsonArray(surfaceNames),
+    primaryName = primaryName,
+    roleType = roleType,
+    gender = gender,
+    ageBand = ageBand,
+    batchEntityId = batchEntityId,
+    characterId = characterId,
+    resolution = resolution.storageValue,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaLocalMentionEntity.toDomain() = RaLocalMention(
+    id = id,
+    analysisId = analysisId,
+    localKey = localKey,
+    surfaceNames = jsonArrayToList(surfaceNames),
+    primaryName = primaryName,
+    roleType = roleType,
+    gender = gender,
+    ageBand = ageBand,
+    batchEntityId = batchEntityId,
+    characterId = characterId,
+    resolution = RaResolution.fromStorage(resolution),
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaLocalMention.toEntity() = RaLocalMentionEntity(
     id = id,
     analysisId = analysisId,
     localKey = localKey,

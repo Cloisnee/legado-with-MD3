@@ -13,15 +13,20 @@ import io.legado.app.data.entities.readaloud.RaIdentityLinkEntity
 import io.legado.app.data.entities.readaloud.RaRelationObsEntity
 import io.legado.app.data.entities.readaloud.RaVoiceProfileEntity
 import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaCharacterStatus
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
+import io.legado.app.domain.model.readaloud.v4.RaIdentityDecision
+import io.legado.app.domain.model.readaloud.v4.RaIdentityLink
 import io.legado.app.domain.model.readaloud.v4.RaIds
 import io.legado.app.domain.model.readaloud.v4.RaLinkKind
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaNameUtils
+import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
+import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +70,21 @@ class RaCharacterRepository(
     override suspend fun charactersRaw(bookKey: String): List<RaCharacter> = withContext(Dispatchers.IO) {
         dao.characters(bookKey).map(RaCharacterEntity::toDomain)
     }
+
+    override suspend fun provisionalCharacters(bookKey: String): List<RaCharacter> =
+        withContext(Dispatchers.IO) {
+            dao.provisionalCharacters(bookKey).map(RaCharacterEntity::toDomain)
+        }
+
+    override suspend fun attributesOf(characterId: String): List<RaAttributeObservation> =
+        withContext(Dispatchers.IO) {
+            dao.attributesOf(characterId).map(RaAttributeObsEntity::toDomain)
+        }
+
+    override suspend fun relationsOf(characterId: String): List<RaRelationObservation> =
+        withContext(Dispatchers.IO) {
+            dao.relationsOf(characterId).map(RaRelationObsEntity::toDomain)
+        }
 
     override suspend fun character(id: String): RaCharacter? = withContext(Dispatchers.IO) {
         dao.character(id)?.toDomain()
@@ -150,7 +170,7 @@ class RaCharacterRepository(
                     ),
                 )
             }
-            if (gender.isNotBlank()) {
+            if (gender.isNotBlank() && attributeSource != "default") {
                 dao.insertAttribute(
                     RaAttributeObsEntity(
                         id = "att_${entity.id}_gender_$chapterIndex",
@@ -165,7 +185,7 @@ class RaCharacterRepository(
                     ),
                 )
             }
-            if (ageBand.isNotBlank()) {
+            if (ageBand.isNotBlank() && attributeSource != "default") {
                 dao.insertAttribute(
                     RaAttributeObsEntity(
                         id = "att_${entity.id}_age_$chapterIndex",
@@ -486,6 +506,72 @@ class RaCharacterRepository(
         }
     }
 
+    override suspend fun linksOfBook(bookKey: String): List<RaIdentityLink> =
+        withContext(Dispatchers.IO) {
+            dao.linksOfBook(bookKey).map(RaIdentityLinkEntity::toDomain)
+        }
+
+    override suspend fun saveLink(link: RaIdentityLink) = withContext(Dispatchers.IO) {
+        val a = minOf(link.aCharacterId, link.bCharacterId)
+        val b = maxOf(link.aCharacterId, link.bCharacterId)
+        if (a == b) return@withContext
+        dao.upsertLink(
+            RaIdentityLinkEntity(
+                id = link.id.ifBlank { "link_${a}_${b}_${link.kind.storageValue}" },
+                bookKey = link.bookKey,
+                aCharacterId = a,
+                bCharacterId = b,
+                kind = link.kind.storageValue,
+                source = link.source,
+                evidenceIds = listToJsonArray(link.evidenceIds),
+                decisionId = link.decisionId,
+                createdAt = link.createdAt,
+                updatedAt = link.updatedAt,
+            ),
+        )
+    }
+
+    override suspend fun saveCannotLink(
+        bookKey: String,
+        aCharacterId: String,
+        bCharacterId: String,
+        source: String,
+        evidenceIds: List<String>,
+    ) = withContext(Dispatchers.IO) {
+        val a = minOf(aCharacterId, bCharacterId)
+        val b = maxOf(aCharacterId, bCharacterId)
+        if (a == b) return@withContext
+        val now = System.currentTimeMillis()
+        dao.upsertLink(
+            RaIdentityLinkEntity(
+                id = "link_${a}_${b}_CANNOT",
+                bookKey = bookKey,
+                aCharacterId = a,
+                bCharacterId = b,
+                kind = RaLinkKind.CANNOT.storageValue,
+                source = source,
+                evidenceIds = listToJsonArray(evidenceIds),
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+    }
+
+    override suspend fun decisionsForCharacter(characterId: String): List<RaIdentityDecision> =
+        withContext(Dispatchers.IO) {
+            dao.decisionsForCharacter(characterId).map(RaIdentityDecisionEntity::toDomain)
+        }
+
+    override suspend fun saveAttribute(observation: RaAttributeObservation) =
+        withContext(Dispatchers.IO) {
+            dao.insertAttribute(observation.toEntity())
+        }
+
+    override suspend fun saveRelation(observation: RaRelationObservation) =
+        withContext(Dispatchers.IO) {
+            dao.insertRelation(observation.toEntity())
+        }
+
     override suspend fun saveDecision(
         bookKey: String,
         localSpeaker: RaLocalSpeaker,
@@ -495,10 +581,12 @@ class RaCharacterRepository(
         confidence: Float,
         reason: String,
         modelId: String,
-    ) = withContext(Dispatchers.IO) {
+        evidenceIds: List<String>,
+    ): String = withContext(Dispatchers.IO) {
+        val id = RaIds.decision()
         dao.insertDecision(
             RaIdentityDecisionEntity(
-                id = RaIds.decision(),
+                id = id,
                 bookKey = bookKey,
                 localSpeakerId = localSpeaker.id,
                 candidateIds = listToJsonArray(candidateIds),
@@ -506,9 +594,11 @@ class RaCharacterRepository(
                 chosenCharacterId = chosenCharacterId,
                 confidence = confidence,
                 reason = reason.take(200),
+                evidenceIds = listToJsonArray(evidenceIds),
                 modelId = modelId,
             ),
         )
+        id
     }
 
     override suspend fun voiceProfiles(bookKey: String): List<RaVoiceProfile> =
@@ -609,6 +699,87 @@ internal fun RaVoiceProfile.toEntity() = RaVoiceProfileEntity(
     locked = locked,
     source = source,
     voiceRevision = voiceRevision,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaIdentityLinkEntity.toDomain() = RaIdentityLink(
+    id = id,
+    bookKey = bookKey,
+    aCharacterId = aCharacterId,
+    bCharacterId = bCharacterId,
+    kind = RaLinkKind.fromStorage(kind),
+    source = source,
+    evidenceIds = jsonArrayToList(evidenceIds),
+    decisionId = decisionId,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaIdentityDecisionEntity.toDomain() = RaIdentityDecision(
+    id = id,
+    bookKey = bookKey,
+    localSpeakerId = localSpeakerId,
+    candidateIds = jsonArrayToList(candidateIds),
+    verdict = RaVerdict.fromStorage(verdict),
+    chosenCharacterId = chosenCharacterId,
+    confidence = confidence,
+    reason = reason,
+    evidenceIds = jsonArrayToList(evidenceIds),
+    modelId = modelId,
+    createdAt = createdAt,
+)
+
+internal fun RaAttributeObsEntity.toDomain() = RaAttributeObservation(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    key = key,
+    value = value,
+    fromChapter = fromChapter,
+    evidenceId = evidenceId,
+    source = source,
+    confidence = confidence,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaAttributeObservation.toEntity() = RaAttributeObsEntity(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    key = key,
+    value = value,
+    fromChapter = fromChapter,
+    evidenceId = evidenceId,
+    source = source,
+    confidence = confidence,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaRelationObsEntity.toDomain() = RaRelationObservation(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    relation = relation,
+    targetCharacterId = targetCharacterId,
+    targetText = targetText,
+    fromChapter = fromChapter,
+    evidenceId = evidenceId,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
+
+internal fun RaRelationObservation.toEntity() = RaRelationObsEntity(
+    id = id,
+    bookKey = bookKey,
+    characterId = characterId,
+    relation = relation,
+    targetCharacterId = targetCharacterId,
+    targetText = targetText,
+    fromChapter = fromChapter,
+    evidenceId = evidenceId,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )
