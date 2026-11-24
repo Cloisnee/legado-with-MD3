@@ -204,9 +204,22 @@ class RaBuildDeletionTest {
                 evidenceIds = "[\"e2\"]",
             ),
         )
+        db.raCharacterDao.upsertCharacter(
+            RaCharacterEntity(
+                id = "chr_test_from", bookKey = BOOK, displayName = "被合并人物",
+                status = "MERGED",
+            ),
+        )
         db.raCharacterDao.upsertRedirect(
             RaCharacterRedirectEntity(
                 fromCharacterId = "chr_test_from", toCharacterId = "chr_test",
+            ),
+        )
+        db.raCharacterDao.upsertLink(
+            RaIdentityLinkEntity(
+                id = "link_same", bookKey = BOOK, aCharacterId = "chr_test",
+                bCharacterId = "chr_test_from", kind = "SAME", source = "ai",
+                evidenceIds = "[\"e1\"]",
             ),
         )
     }
@@ -236,6 +249,9 @@ class RaBuildDeletionTest {
         assertNotNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "用户别名" })
         assertNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e1" })
         assertNotNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e2" })
+        assertNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_same" })
+        assertNull(db.raCharacterDao.redirect("chr_test_from"))
+        assertEquals("ACTIVE", db.raCharacterDao.character("chr_test_from")?.status)
 
         assertNotNull(db.raBuildDao.getBuild(BOOK, SOURCE, 2))
         assertEquals(1, db.raBuildDao.segments("a2").size)
