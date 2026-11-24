@@ -184,8 +184,18 @@ class BookManageViewModel : ViewModel() {
         _uiState.update { it.copy(lines = rows) }
     }
 
-    /** 保存说话人修改；只处理实际改动的行。返回保存数量。 */
-    suspend fun savePending(
+    /** 保存说话人修改；只处理实际改动的行。 */
+    fun savePending(
+        pending: Map<Int, String>,
+        pendingIds: Map<Int, String>,
+    ) {
+        viewModelScope.launch {
+            val saved = doSavePending(pending, pendingIds)
+            _effects.tryEmit(if (saved > 0) "已保存：$saved 句说话人" else "保存失败：改动无效")
+        }
+    }
+
+    private suspend fun doSavePending(
         pending: Map<Int, String>,
         pendingIds: Map<Int, String>,
     ): Int {
@@ -231,7 +241,16 @@ class BookManageViewModel : ViewModel() {
         return saved
     }
 
-    suspend fun deleteChapters(target: Int, rollback: Boolean) {
+    fun deleteChapters(target: Int, rollback: Boolean) {
+        viewModelScope.launch {
+            doDeleteChapters(target, rollback)
+            _effects.tryEmit(
+                if (rollback) "已回滚：${chLabel(target)}起全部撤销" else "已删除${chLabel(target)}剧本（轻量）",
+            )
+        }
+    }
+
+    private suspend fun doDeleteChapters(target: Int, rollback: Boolean) {
         val state = _uiState.value
         val set = if (rollback) state.chapters.filter { it >= target }.toSet() else setOf(target)
         maintenance.deleteChapters(
@@ -245,31 +264,50 @@ class BookManageViewModel : ViewModel() {
         load()
     }
 
-    suspend fun deleteBook(bookKey: String) {
-        val name = _uiState.value.books.firstOrNull { it.bookKey == bookKey }?.name.orEmpty()
-        maintenance.deleteBook(bookKey, name)
-        catalog.setCurrentBookKey("")
-        _uiState.update { it.copy(selectedChapter = null) }
-        load()
-    }
-
-    suspend fun reanalyze(chapter: Int) {
-        val url = externalBookUrl ?: _uiState.value.currentBookUrl
-        if (url.isBlank()) {
-            _effects.tryEmit("无法定位该书数据（先朗读一次以建立章节缓存）")
-            return
+    fun deleteBook(bookKey: String) {
+        viewModelScope.launch {
+            val name = _uiState.value.books.firstOrNull { it.bookKey == bookKey }?.name.orEmpty()
+            maintenance.deleteBook(bookKey, name)
+            catalog.setCurrentBookKey("")
+            _uiState.update { it.copy(selectedChapter = null) }
+            load()
+            _effects.tryEmit("已删除书籍分析数据")
         }
-        val ok = runCatching {
-            val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
-            scheduler.enqueueChapter(url, chapter, force = true)
-        }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }.isSuccess
-        _effects.tryEmit(
-            if (ok) "已提交重新分析（${chLabel(chapter)}）" else "重析提交失败，请查看日志",
-        )
     }
 
-    /** 新增人物并返回 (id, 最终主名)；失败返回 null。 */
-    suspend fun createCharacter(
+    fun reanalyze(chapter: Int) {
+        viewModelScope.launch {
+            val url = externalBookUrl ?: _uiState.value.currentBookUrl
+            if (url.isBlank()) {
+                _effects.tryEmit("无法定位该书数据（先朗读一次以建立章节缓存）")
+                return@launch
+            }
+            val ok = runCatching {
+                val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
+                scheduler.enqueueChapter(url, chapter, force = true)
+            }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }.isSuccess
+            _effects.tryEmit(
+                if (ok) "已提交重新分析（${chLabel(chapter)}）" else "重析提交失败，请查看日志",
+            )
+        }
+    }
+
+    /** 新增人物并通过回调返回 (id, 最终主名)。 */
+    fun createCharacter(
+        name: String,
+        roleType: String,
+        gender: String,
+        voice: String,
+        chapter: Int,
+        onCreated: (String, String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val created = doCreateCharacter(name, roleType, gender, voice, chapter)
+            if (created != null) onCreated(created.first, created.second)
+        }
+    }
+
+    private suspend fun doCreateCharacter(
         name: String,
         roleType: String,
         gender: String,
@@ -309,7 +347,20 @@ class BookManageViewModel : ViewModel() {
         return created.id to finalName
     }
 
-    suspend fun exportBooks(names: List<String>, uri: Uri): Int = withContext(Dispatchers.IO) {
+    fun exportBooks(names: List<String>, uri: Uri) {
+        viewModelScope.launch {
+            val count = doExportBooks(names, uri)
+            _effects.tryEmit(
+                when {
+                    count < 0 -> "导出失败"
+                    count == 0 -> "没有可导出的数据"
+                    else -> "已导出 $count 本书资产"
+                },
+            )
+        }
+    }
+
+    private suspend fun doExportBooks(names: List<String>, uri: Uri): Int = withContext(Dispatchers.IO) {
         runCatching {
             app.contentResolver.openOutputStream(uri)?.use { out ->
                 maintenance.exportBooksJson(names, out)
@@ -317,7 +368,15 @@ class BookManageViewModel : ViewModel() {
         }.getOrDefault(-1)
     }
 
-    suspend fun importBooks(uri: Uri): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+    fun importBooks(uri: Uri) {
+        viewModelScope.launch {
+            val (ok, msg) = doImportBooks(uri)
+            _effects.tryEmit(msg)
+            if (ok) load()
+        }
+    }
+
+    private suspend fun doImportBooks(uri: Uri): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         runCatching {
             app.contentResolver.openInputStream(uri)?.use { maintenance.importBooksJson(it) }
                 ?: (false to "读取文件失败")

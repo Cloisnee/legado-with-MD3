@@ -50,7 +50,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -122,7 +121,6 @@ fun BookManageScreen(
     val context = LocalContext.current
     val vm: BookManageViewModel = koinViewModel()
     val state by vm.uiState.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
 
     var searchMode by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -168,20 +166,17 @@ fun BookManageScreen(
         if (pending.isEmpty() || state.currentBookKey.isBlank()) return
         val changes = pending.toMap()
         val ids = pendingIds.toMap()
-        scope.launch {
-            val saved = vm.savePending(changes, ids)
-            context.toastOnUi(if (saved > 0) "已保存：$saved 句说话人" else "保存失败：改动无效")
-            pending.clear()
-            pendingIds.clear()
-            selLines = emptySet()
-        }
+        vm.savePending(changes, ids)
+        pending.clear()
+        pendingIds.clear()
+        selLines = emptySet()
     }
 
     fun tailMin(): Int = vm.tailMin()
 
     fun enqueueReanalyze() {
         val ch = state.selectedChapter ?: return
-        scope.launch { vm.reanalyze(ch) }
+        vm.reanalyze(ch)
     }
 
     LaunchedEffect(Unit) {
@@ -209,27 +204,14 @@ fun BookManageScreen(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
-            scope.launch {
-                val n = vm.exportBooks(pendingExportBooks, uri)
-                context.toastOnUi(
-                    when {
-                        n < 0 -> "导出失败"
-                        n == 0 -> "没有可导出的数据"
-                        else -> "已导出 $n 本书资产"
-                    }
-                )
-            }
+            vm.exportBooks(pendingExportBooks, uri)
         }
     }
     val importJsonLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            scope.launch {
-                val (ok, msg) = vm.importBooks(uri)
-                context.toastOnUi(msg)
-                if (ok) vm.load()
-            }
+            vm.importBooks(uri)
         }
     }
 
@@ -738,10 +720,7 @@ fun BookManageScreen(
                     description = "删除该章剧本、缓存、音频与分析记录；人物与合并日志不动",
                     onClick = {
                         deleteChapterTarget = null
-                        scope.launch {
-                            vm.deleteChapters(target, false)
-                            context.toastOnUi("已删除${chLabel(target)}剧本（轻量）")
-                        }
+                        vm.deleteChapters(target, false)
                     },
                 )
                 if (eligible) {
@@ -750,10 +729,7 @@ fun BookManageScreen(
                         description = "删除${chLabel(target)}起（连续尾章）的剧本、缓存、音频与分析记录/合并账本，并逆向人物出场与合并",
                         onClick = {
                             deleteChapterTarget = null
-                            scope.launch {
-                                vm.deleteChapters(target, true)
-                                context.toastOnUi("已回滚：${chLabel(target)}起全部撤销")
-                            }
+                            vm.deleteChapters(target, true)
                         },
                     )
                 }
@@ -792,10 +768,7 @@ fun BookManageScreen(
             val b = pendingDeleteBook
             pendingDeleteBook = null
             showDeleteBookSheet = false
-            if (b != null) scope.launch {
-                vm.deleteBook(b)
-                context.toastOnUi("已删除书籍分析数据")
-            }
+            if (b != null) vm.deleteBook(b)
         },
         dismissText = "取消",
         onDismiss = { pendingDeleteBook = null },
@@ -1024,11 +997,8 @@ fun BookManageScreen(
                     }
                     val targets = (tagPanelFor ?: emptyList()).toList()
                     newCharDialog = false
-                    scope.launch {
-                        val created = vm.createCharacter(finalName, ncRole, ncGender, ncVoice, ch)
-                        if (created != null) {
-                            applySpeakerTo(targets, created.second, created.first)
-                        }
+                    vm.createCharacter(finalName, ncRole, ncGender, ncVoice, ch) { id, createdName ->
+                        applySpeakerTo(targets, createdName, id)
                     }
                 },
             )

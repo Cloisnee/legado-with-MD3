@@ -354,10 +354,16 @@ class Stage2Validator(
             val obj = o.optString("object").trim()
             val quote = o.optString("quote").trim()
             if (subject.isEmpty() || obj.isEmpty() || quote.isEmpty()) continue
-            val inMain = paragraphs.any { it.text.contains(quote) }
-            val inContext = (prevText.isNotEmpty() && prevText.contains(quote)) ||
-                (nextText.isNotEmpty() && nextText.contains(quote))
-            if (inMain || inContext) out.add(subject to obj)
+            val ch = o.optInt("ch", chapterIndex + 1)
+            val p = o.optInt("p", 0)
+            val located = when (ch) {
+                chapterIndex + 1 -> p >= 1 &&
+                    paragraphs.firstOrNull { it.index == p - 1 }?.text?.contains(quote) == true
+                prevChapter -> lineContains(prevText, p, quote)
+                nextChapter -> lineContains(nextText, p, quote)
+                else -> false
+            }
+            if (located) out.add(subject to obj)
         }
         return out
     }
@@ -498,6 +504,12 @@ class Stage2Validator(
             }
         }
         return out
+    }
+
+    private fun lineContains(text: String, p: Int, quote: String): Boolean {
+        if (p < 1) return false
+        val lines = text.split('\n').filter { it.isNotBlank() }
+        return p <= lines.size && lines[p - 1].contains(quote)
     }
 
     private fun locateInChapter(quote: String): Triple<Int, Int, Int>? {

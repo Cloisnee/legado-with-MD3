@@ -136,6 +136,9 @@ interface RaCharacterDao {
     @Query("update ra_attribute_obs set characterId = :toCharacterId, updatedAt = :updatedAt where characterId = :fromCharacterId")
     suspend fun reassignAttributes(fromCharacterId: String, toCharacterId: String, updatedAt: Long)
 
+    @Query("update ra_attribute_obs set characterId = :characterId, updatedAt = :updatedAt where id = :id")
+    suspend fun updateAttributeCharacter(id: String, characterId: String, updatedAt: Long)
+
     @Query("delete from ra_attribute_obs where characterId = :characterId")
     suspend fun deleteAttributes(characterId: String)
 
@@ -150,6 +153,9 @@ interface RaCharacterDao {
 
     @Query("update ra_relation_obs set characterId = :toCharacterId, updatedAt = :updatedAt where characterId = :fromCharacterId")
     suspend fun reassignRelations(fromCharacterId: String, toCharacterId: String, updatedAt: Long)
+
+    @Query("update ra_relation_obs set characterId = :characterId, updatedAt = :updatedAt where id = :id")
+    suspend fun updateRelationCharacter(id: String, characterId: String, updatedAt: Long)
 
     @Query("update ra_relation_obs set targetCharacterId = :toCharacterId, updatedAt = :updatedAt where targetCharacterId = :fromCharacterId")
     suspend fun reassignRelationTargets(fromCharacterId: String, toCharacterId: String, updatedAt: Long)
@@ -192,8 +198,6 @@ interface RaCharacterDao {
     @Query("delete from ra_relation_obs where bookKey = :bookKey and fromChapter in (:chapters)")
     suspend fun deleteRelationsFromChapters(bookKey: String, chapters: List<Int>)
 
-    @Query("delete from ra_character_alias where bookKey = :bookKey and source = 'ai' and firstChapter in (:chapters)")
-    suspend fun deleteAiAliasesFromChapters(bookKey: String, chapters: List<Int>)
 
     // ---------------- 裁决记录 ----------------
 
@@ -251,6 +255,9 @@ interface RaCharacterDao {
 
     @Query("update ra_voice_profile set characterId = :toCharacterId, updatedAt = :updatedAt where characterId = :fromCharacterId")
     suspend fun reassignVoiceProfiles(fromCharacterId: String, toCharacterId: String, updatedAt: Long)
+
+    @Query("update ra_voice_profile set characterId = :characterId, updatedAt = :updatedAt where id = :id")
+    suspend fun updateVoiceProfileCharacter(id: String, characterId: String, updatedAt: Long)
 
     @Query("delete from ra_voice_profile where id = :id")
     suspend fun deleteVoiceProfile(id: String)

@@ -455,7 +455,6 @@ BGM 建议缺段从值集补全。
                 resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
             )
         }
-        writeObservations(bookKey, chapterIndex, stage2, keyToCharacter, evidence)
         if (localSpeakers.isNotEmpty()) {
             val linked = resolveResult.resolutions.count { !it.value.created }
             val provisional = resolveResult.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
@@ -555,6 +554,8 @@ BGM 建议缺段从值集补全。
             evidence = evidence,
             build = build,
         )
+        // 观察写入放在章节事务之后：落库失败时不会留下孤儿观察
+        writeObservations(bookKey, chapterIndex, stage2, keyToCharacter, evidence)
         AppLog.putAnalysis(
             "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
                 (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),

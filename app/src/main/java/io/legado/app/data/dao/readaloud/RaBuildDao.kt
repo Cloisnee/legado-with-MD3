@@ -193,6 +193,35 @@ interface RaBuildDao {
     @Query("select * from ra_local_speaker where analysisId in (select id from ra_chapter_analysis where bookKey = :bookKey)")
     suspend fun localSpeakersOfBook(bookKey: String): List<RaLocalSpeakerEntity>
 
+    @Query("select * from ra_local_speaker where characterId = :characterId")
+    suspend fun localSpeakersOfCharacter(characterId: String): List<RaLocalSpeakerEntity>
+
+    @Query(
+        "select * from ra_local_speaker where analysisId in " +
+            "(select id from ra_chapter_analysis where bookKey = :bookKey and chapterIndex not in (:chapters))",
+    )
+    suspend fun localSpeakersOutsideChapters(
+        bookKey: String,
+        chapters: List<Int>,
+    ): List<RaLocalSpeakerEntity>
+
+    @Query("update ra_local_speaker set characterId = :characterId, updatedAt = :updatedAt where id in (:ids)")
+    suspend fun updateLocalSpeakerCharacterByIds(
+        ids: List<String>,
+        characterId: String,
+        updatedAt: Long,
+    )
+
+    @Query("select * from ra_segment where characterId = :characterId")
+    suspend fun segmentsOfCharacter(characterId: String): List<RaSegmentEntity>
+
+    @Query("update ra_segment set characterId = :characterId, updatedAt = :updatedAt where id in (:ids)")
+    suspend fun updateSegmentCharacterByIds(
+        ids: List<String>,
+        characterId: String,
+        updatedAt: Long,
+    )
+
     @Query("select * from ra_local_speaker where id = :id limit 1")
     suspend fun localSpeaker(id: String): RaLocalSpeakerEntity?
 

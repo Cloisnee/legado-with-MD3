@@ -1,6 +1,9 @@
 package io.legado.app.help.readaloud.analysis.v4
 
 import io.legado.app.domain.model.readaloud.v4.RaCharacterCard
+import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -36,11 +39,26 @@ class IdentityArbiterValidationTest {
             voiceProfiles = emptyList(),
             keyEvidence = emptyList(),
         )
+        val evidence = RaEvidence(
+            id = "ev1",
+            bookKey = "bk",
+            analysisId = "a",
+            sourceChapter = 1,
+            paragraphIndex = 1,
+            start = 0,
+            end = 6,
+            excerpt = "沈七即沈孤鸿",
+            type = RaEvidenceType.ALIAS_EQUAL,
+            subjectLocalId = speaker.id,
+            objectText = "沈孤鸿",
+            scope = RaEvidenceScope.MAIN_TEXT,
+            verified = true,
+        )
         return IdentityQuestion(
             key = "Q1",
             chapterLabel = "第2章",
             speaker = speaker,
-            evidence = emptyList(),
+            evidence = listOf(evidence),
             contextText = "沈七即沈孤鸿",
             candidates = listOf(card),
         )

@@ -1,6 +1,7 @@
 package io.legado.app.data.repository
 
 import androidx.room.withTransaction
+import com.google.gson.Gson
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.dao.readaloud.RaBuildDao
 import io.legado.app.data.dao.readaloud.RaCharacterDao
@@ -236,7 +237,19 @@ class RaBuildRepository(
             // 回滚/删章：清理这些章节贡献的观察与 AI 约束（用户手动编辑保留）
             characterDao.deleteAttributesFromChapters(bookKey, chapterIndexes)
             characterDao.deleteRelationsFromChapters(bookKey, chapterIndexes)
-            characterDao.deleteAiAliasesFromChapters(bookKey, chapterIndexes)
+            // 别名按“是否仍有保留章节支持”删除；firstChapter 只是首次出现，不代表唯一贡献
+            val survivingSpeakers = dao.localSpeakersOutsideChapters(bookKey, chapterIndexes)
+            characterDao.aliasesOfBook(bookKey)
+                .filter { it.source == "ai" && it.firstChapter in chapterIndexes }
+                .forEach { alias ->
+                    val supported = survivingSpeakers.any { speaker ->
+                        speaker.primaryName == alias.surface ||
+                            jsonArrayToList(speaker.surfaceNames).contains(alias.surface)
+                    }
+                    if (!supported) {
+                        characterDao.deleteAlias(alias.characterId, alias.normalized)
+                    }
+                }
             links.filter { link ->
                 val ids = jsonArrayToList(link.evidenceIds)
                 link.source == "ai" &&
@@ -250,6 +263,18 @@ class RaBuildRepository(
                     val redirect = characterDao.redirect(link.aCharacterId)
                         ?: characterDao.redirect(link.bCharacterId)
                     if (redirect != null) {
+                        val reason = redirect.reason
+                        if (reason.startsWith("ai_merge|")) {
+                            val snapshot = runCatching {
+                                Gson().fromJson(
+                                    reason.removePrefix("ai_merge|"),
+                                    MergeSnapshot::class.java,
+                                )
+                            }.getOrNull()
+                            if (snapshot != null) {
+                                restoreMergeSnapshot(redirect.fromCharacterId, snapshot)
+                            }
+                        }
                         characterDao.deleteRedirect(redirect.fromCharacterId)
                         characterDao.updateStatus(
                             redirect.fromCharacterId,
@@ -259,6 +284,30 @@ class RaBuildRepository(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun restoreMergeSnapshot(fromCharacterId: String, snapshot: MergeSnapshot) {
+        val now = System.currentTimeMillis()
+        if (snapshot.localSpeakerIds.isNotEmpty()) {
+            dao.updateLocalSpeakerCharacterByIds(snapshot.localSpeakerIds, fromCharacterId, now)
+        }
+        if (snapshot.segmentIds.isNotEmpty()) {
+            dao.updateSegmentCharacterByIds(snapshot.segmentIds, fromCharacterId, now)
+        }
+        if (snapshot.aliases.isNotEmpty()) {
+            characterDao.upsertAliases(
+                snapshot.aliases.map { it.copy(characterId = fromCharacterId, updatedAt = now) },
+            )
+        }
+        snapshot.attributes.forEach {
+            characterDao.updateAttributeCharacter(it.id, fromCharacterId, now)
+        }
+        snapshot.relations.forEach {
+            characterDao.updateRelationCharacter(it.id, fromCharacterId, now)
+        }
+        snapshot.voiceProfiles.forEach {
+            characterDao.updateVoiceProfileCharacter(it.id, fromCharacterId, now)
         }
     }
 

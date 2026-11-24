@@ -92,13 +92,16 @@ class AiIdentityArbiter(
             }
         }
         val maxTokens = cfg.maxOutputTokens.coerceIn(1024, 8192)
-        return ai.completeValidated(
+        var usedModel = ""
+        val result = ai.completeValidated(
             refs = refs,
             system = "只输出 JSON。",
             promptFactory = promptFactory,
             maxTokens = maxTokens,
             logTag = "裁决",
+            onModelUsed = { usedModel = it },
         ) { raw -> validateIdentityDecisions(raw, questions) }
+        return result?.map { if (it.modelId.isBlank()) it.copy(modelId = usedModel) else it }
     }
 }
 
@@ -139,9 +142,12 @@ fun validateIdentityDecisions(
             val ev = o.optJSONArray("evidence")
             if (ev != null) {
                 for (j in 0 until ev.length()) {
-                    val quote = ev.optJSONObject(j)?.optString("quote")?.trim()
-                        ?.takeIf { it.isNotEmpty() } ?: continue
-                    if (isVerifiableQuote(question, quote)) quotes.add(quote)
+                    val quoteObj = ev.optJSONObject(j) ?: continue
+                    val quote = quoteObj.optString("quote").trim()
+                        .takeIf { it.isNotEmpty() } ?: continue
+                    val ch = quoteObj.optInt("ch", -1)
+                    val p = quoteObj.optInt("p", -1)
+                    if (isVerifiableQuote(question, quote, ch, p)) quotes.add(quote)
                 }
             }
             if (verdict == RaVerdict.SAME && quotes.isEmpty()) {
@@ -154,7 +160,7 @@ fun validateIdentityDecisions(
                 confidence = confidence,
                 reason = o.optString("reason").trim().take(200),
                 evidenceQuotes = quotes,
-                modelId = "resolve",
+                modelId = "",
             )
         }
         val missing = questions.map { it.key }.filter { it !in out.keys }
@@ -162,9 +168,18 @@ fun validateIdentityDecisions(
         return ValidateOutcome(questions.map { out.getValue(it.key) })
     }
 
-    private fun isVerifiableQuote(question: IdentityQuestion, quote: String): Boolean {
-        if (question.contextText.isNotBlank() && question.contextText.contains(quote)) return true
-        return question.evidence.any { e ->
-            e.excerpt.contains(quote) || e.objectText.contains(quote)
+    private fun isVerifiableQuote(
+        question: IdentityQuestion,
+        quote: String,
+        ch: Int,
+        p: Int,
+    ): Boolean {
+        val byEvidence = question.evidence.any { e ->
+            e.sourceChapter == ch && e.paragraphIndex == p &&
+                (e.excerpt.contains(quote) || e.objectText.contains(quote))
         }
+        if (byEvidence) return true
+        // 无 ch/p 的旧输出：只允许在当前上下文文本中核对
+        return ch <= 0 && p <= 0 && question.contextText.isNotBlank() &&
+            question.contextText.contains(quote)
     }

@@ -79,7 +79,8 @@ class RaBuildDeletionTest {
                 listOf(
                     RaLocalSpeakerEntity(
                         id = "l$chapter", analysisId = analysisId, localKey = "L1",
-                        surfaceNames = "[\"甲\"]", primaryName = "甲", resolution = "RESOLVED",
+                        surfaceNames = if (chapter == 2) "[\"甲\",\"沈七\"]" else "[\"甲\"]",
+                        primaryName = "甲", resolution = "RESOLVED",
                     ),
                 ),
             )
@@ -188,6 +189,10 @@ class RaBuildDeletionTest {
                     bookKey = BOOK, normalized = "user-alias", characterId = "chr_test",
                     surface = "用户别名", source = "user", firstChapter = 1,
                 ),
+                RaCharacterAliasEntity(
+                    bookKey = BOOK, normalized = "沈七", characterId = "chr_test",
+                    surface = "沈七", source = "ai", firstChapter = 1,
+                ),
             ),
         )
         db.raCharacterDao.upsertLink(
@@ -247,6 +252,7 @@ class RaBuildDeletionTest {
         assertNotNull(db.raCharacterDao.relationsOfBook(BOOK).firstOrNull { it.id == "rel_2" })
         assertNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "AI别名" })
         assertNotNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "用户别名" })
+        assertNotNull(db.raCharacterDao.aliasesOfBook(BOOK).firstOrNull { it.surface == "沈七" })
         assertNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e1" })
         assertNotNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_e2" })
         assertNull(db.raCharacterDao.linksOfBook(BOOK).firstOrNull { it.id == "link_same" })

@@ -1,6 +1,7 @@
 package io.legado.app.data.repository
 
 import androidx.room.withTransaction
+import com.google.gson.Gson
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.dao.readaloud.RaBuildDao
 import io.legado.app.data.dao.readaloud.RaCharacterDao
@@ -401,19 +402,36 @@ class RaCharacterRepository(
         fromCharacterId: String,
         toCharacterId: String,
         reason: String,
-    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "user")
+    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "user", emptyList(), "")
 
     override suspend fun mergeCharactersAsAi(
         fromCharacterId: String,
         toCharacterId: String,
         reason: String,
-    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "ai")
+    ) = mergeCharactersInternal(fromCharacterId, toCharacterId, reason, "ai", emptyList(), "")
+
+    override suspend fun mergeCharactersAsAi(
+        fromCharacterId: String,
+        toCharacterId: String,
+        reason: String,
+        evidenceIds: List<String>,
+        decisionId: String,
+    ) = mergeCharactersInternal(
+        fromCharacterId,
+        toCharacterId,
+        reason,
+        "ai",
+        evidenceIds,
+        decisionId,
+    )
 
     private suspend fun mergeCharactersInternal(
         fromCharacterId: String,
         toCharacterId: String,
         reason: String,
         source: String,
+        evidenceIds: List<String>,
+        decisionId: String,
     ) = withContext(Dispatchers.IO) {
             val from = finalCharacterId(fromCharacterId)
             val to = finalCharacterId(toCharacterId)
@@ -421,6 +439,23 @@ class RaCharacterRepository(
             val fromCharacter = dao.character(from) ?: return@withContext
             val toCharacter = dao.character(to) ?: return@withContext
             val now = System.currentTimeMillis()
+            val snapshot = if (source == "ai") {
+                MergeSnapshot(
+                    localSpeakerIds = buildDao.localSpeakersOfCharacter(from).map { it.id },
+                    segmentIds = buildDao.segmentsOfCharacter(from).map { it.id },
+                    aliases = dao.aliasesOf(from),
+                    attributes = dao.attributesOf(from),
+                    relations = dao.relationsOf(from),
+                    voiceProfiles = dao.voiceProfilesOf(from),
+                )
+            } else {
+                null
+            }
+            val redirectReason = if (snapshot != null) {
+                "ai_merge|" + Gson().toJson(snapshot)
+            } else {
+                reason
+            }
             database.withTransaction {
                 // 1. 台词与章内说话人外键
                 buildDao.reassignSegmentCharacter(from, to, now)
@@ -445,7 +480,7 @@ class RaCharacterRepository(
                     RaCharacterRedirectEntity(
                         fromCharacterId = from,
                         toCharacterId = to,
-                        reason = reason,
+                        reason = redirectReason,
                         createdAt = now,
                     ),
                 )
@@ -474,6 +509,8 @@ class RaCharacterRepository(
                         bCharacterId = b,
                         kind = RaLinkKind.SAME.storageValue,
                         source = source,
+                        evidenceIds = listToJsonArray(evidenceIds),
+                        decisionId = decisionId,
                         createdAt = now,
                         updatedAt = now,
                     ),
@@ -665,6 +702,15 @@ class RaCharacterRepository(
         dao.deleteVoiceProfile(profileId)
     }
 }
+
+data class MergeSnapshot(
+    val localSpeakerIds: List<String> = emptyList(),
+    val segmentIds: List<String> = emptyList(),
+    val aliases: List<RaCharacterAliasEntity> = emptyList(),
+    val attributes: List<RaAttributeObsEntity> = emptyList(),
+    val relations: List<RaRelationObsEntity> = emptyList(),
+    val voiceProfiles: List<RaVoiceProfileEntity> = emptyList(),
+)
 
 internal fun RaCharacterEntity.toDomain() = RaCharacter(
     id = id,

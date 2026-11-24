@@ -72,6 +72,7 @@ class AiSpeechClient(
         promptFactory: (failHint: String) -> String,
         maxTokens: Int = 4096,
         logTag: String,
+        onModelUsed: ((String) -> Unit)? = null,
         validate: (String) -> ValidateOutcome<T>,
     ): T? = withContext(Dispatchers.IO) {
         val globalTimeoutMs = unifiedTimeoutMs()
@@ -103,6 +104,7 @@ class AiSpeechClient(
                 }
                 if (outcome.data != null) {
                     AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 校验通过")
+                    onModelUsed?.invoke(ref.model.name)
                     return@withContext outcome.data
                 }
                 validFails++

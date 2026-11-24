@@ -367,4 +367,66 @@ class IdentityResolverTest {
         assertEquals(1, asked)
         assertTrue(characters.linksOfBook(bookKey).any { it.kind == io.legado.app.domain.model.readaloud.v4.RaLinkKind.CANNOT && (it.aCharacterId == a.id || it.bCharacterId == a.id) })
     }
+
+    @Test
+    fun `cannot pair appearing in same chapter links each original character`() = runBlocking {
+        val bookKey = "bk_cannot_same_chapter"
+        val a = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val b = characters.ensureCharacter(
+            bookKey, "林雪儿", "核心", "女", "少女", 1, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        characters.saveCannotLink(bookKey, a.id, b.id, "user")
+        val result = resolver.resolveChapter(
+            bookKey, 2, "第3章",
+            listOf(speaker("a2", "L1", "沈孤鸿", emptyList(), 2), speaker("a2", "L2", "林雪儿", emptyList(), 2)),
+            emptyList(), emptyList(),
+        )
+        assertEquals(a.id, result.resolutions["L1"]?.characterId)
+        assertEquals(b.id, result.resolutions["L2"]?.characterId)
+    }
+
+    @Test
+    fun `second same-name speaker in one chapter stays provisional`() = runBlocking {
+        val bookKey = "bk_same_chapter_provisional"
+        val existing = characters.ensureCharacter(
+            bookKey, "沈七", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val result = resolver.resolveChapter(
+            bookKey, 1, "第2章",
+            listOf(speaker("a1", "L1", "沈七", emptyList(), 1), speaker("a1", "L2", "沈七", emptyList(), 1)),
+            emptyList(), emptyList(),
+        )
+        assertEquals(existing.id, result.resolutions["L1"]?.characterId)
+        assertEquals(RaResolution.PROVISIONAL, result.resolutions["L2"]?.resolution)
+    }
+
+    @Test
+    fun `unknown same-name group does not grow after recheck limit`() = runBlocking {
+        val bookKey = "bk_unknown_group"
+        characters.ensureCharacter(
+            bookKey, "沈七", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        characters.ensureCharacter(
+            bookKey, "沈七", "核心", "男", "男青年", 1, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val arbiter = fakeArbiter { key ->
+            IdentityAnswer(key, RaVerdict.UNKNOWN, null, 0.3f, "不确定", emptyList())
+        }
+        val withArbiter = IdentityResolver(
+            characters,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            arbiter,
+        )
+        repeat(8) { chapter ->
+            withArbiter.resolveChapter(
+                bookKey, chapter + 2, "第${chapter + 3}章",
+                listOf(speaker("a${chapter + 2}", "L1", "沈七", emptyList(), chapter + 2)),
+                emptyList(), emptyList(),
+            )
+        }
+        assertTrue(characters.provisionalCharacters(bookKey).size <= 1)
+    }
 }

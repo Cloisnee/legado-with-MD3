@@ -73,8 +73,7 @@ class IdentityResolver(
         fun isCannot(a: String, b: String): Boolean =
             cannotPairs.contains(if (a <= b) a to b else b to a)
         val linkedThisChapter = LinkedHashSet<String>()
-        fun isAllowed(targetId: String): Boolean =
-            targetId !in linkedThisChapter && linkedThisChapter.none { isCannot(targetId, it) }
+        fun isAllowed(targetId: String): Boolean = targetId !in linkedThisChapter
         val resolutions = LinkedHashMap<String, Resolution>()
         val created = ArrayList<RaCharacter>()
         val pending = ArrayList<Pending>()
@@ -120,28 +119,18 @@ class IdentityResolver(
             }
 
             // 同名已确认存在多个不同人：身份不足时建独立临时人物，不再无限新建 ACTIVE
-            if (hasAmbiguousSameName(bookKey, speaker)) {
-                // 同名多实体：每个“称呼组”复用一个独立临时人物（最多 3 次），同章不同说话人不共用
-                val reusable = findReusableProvisional(bookKey, speaker, linkedThisChapter)
-                val character = reusable ?: create(bookKey, chapterIndex, speaker, RaCharacterStatus.PROVISIONAL)
-                if (reusable == null) created.add(character)
-                charDecision(
+            // 临时人物再审达到 3 次后：保持待定并复用，不继续新建；有新的 ALIAS_EQUAL 证据才重新问模型
+            val exhausted = findExhaustedProvisional(bookKey, speaker, linkedThisChapter)
+            if (exhausted != null && aliasEqualNames.isEmpty()) {
+                val linked = link(
                     bookKey = bookKey,
+                    chapterIndex = chapterIndex,
                     speaker = speaker,
-                    candidates = emptyList(),
-                    verdict = RaVerdict.UNKNOWN,
-                    chosen = character.id,
-                    confidence = 0f,
-                    reason = "同名多实体且无区分证据",
-                    evidenceIds = verifiedMain.map { it.id },
+                    target = exhausted,
+                    candidateIds = emptyList(),
                 )
-                resolutions[speaker.localKey] = Resolution(
-                    characterId = character.id,
-                    resolution = RaResolution.PROVISIONAL,
-                    created = reusable == null,
-                    createdCharacter = if (reusable == null) character else null,
-                )
-                linkedThisChapter.add(character.id)
+                resolutions[speaker.localKey] = linked.copy(resolution = RaResolution.PROVISIONAL)
+                linkedThisChapter.add(exhausted.id)
                 return@forEach
             }
 
@@ -152,17 +141,35 @@ class IdentityResolver(
                 speaker = speaker,
                 evidence = verifiedMain,
                 exclude = linkedThisChapter + blockedByContradiction,
-            ).filter { candidate ->
-                linkedThisChapter.none { isCannot(candidate.character.id, it) }
-            }
+            )
             when {
                 candidates.isEmpty() -> {
-                    val character = create(bookKey, chapterIndex, speaker, RaCharacterStatus.ACTIVE)
+                    // 同名对象被同章占用/排除，不等于“已证实是新人”：先建临时人物待定
+                    val ambiguous = exactTargets.isNotEmpty()
+                    val character = create(
+                        bookKey,
+                        chapterIndex,
+                        speaker,
+                        if (ambiguous) RaCharacterStatus.PROVISIONAL else RaCharacterStatus.ACTIVE,
+                    )
                     created.add(character)
+                    if (ambiguous) {
+                        charDecision(
+                            bookKey = bookKey,
+                            speaker = speaker,
+                            candidates = exactTargets.map { it.id },
+                            verdict = RaVerdict.UNKNOWN,
+                            chosen = character.id,
+                            confidence = 0f,
+                            reason = "同名候选被同章占用，身份未定",
+                            evidenceIds = verifiedMain.map { it.id },
+                        )
+                    }
                     resolutions[speaker.localKey] = Resolution(
                         characterId = character.id,
-                        resolution = RaResolution.RESOLVED,
+                        resolution = if (ambiguous) RaResolution.PROVISIONAL else RaResolution.RESOLVED,
                         created = true,
+                        candidateIds = exactTargets.map { it.id },
                         createdCharacter = character,
                     )
                     linkedThisChapter.add(character.id)
@@ -186,9 +193,15 @@ class IdentityResolver(
             val answer = answers[item.speaker.localKey]
             val candidateIds = item.candidates.map { it.character.id }
             if (answer == null) {
-                // A 策略：没有裁决能力时建独立临时人物，不把暂借声写成确定身份/别名。
-                val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
-                created.add(character)
+                // A 策略：没有裁决能力时保持独立临时人物；同称呼组最多复用 3 次再审
+                val reusable = findReusableProvisional(bookKey, item.speaker, linkedThisChapter)
+                val character = reusable ?: create(
+                    bookKey,
+                    chapterIndex,
+                    item.speaker,
+                    RaCharacterStatus.PROVISIONAL,
+                )
+                if (reusable == null) created.add(character)
                 charDecision(
                     bookKey = bookKey,
                     speaker = item.speaker,
@@ -202,9 +215,9 @@ class IdentityResolver(
                 resolutions[item.speaker.localKey] = Resolution(
                     characterId = character.id,
                     resolution = RaResolution.PROVISIONAL,
-                    created = true,
+                    created = reusable == null,
                     candidateIds = candidateIds,
-                    createdCharacter = character,
+                    createdCharacter = if (reusable == null) character else null,
                 )
                 linkedThisChapter.add(character.id)
                 return@forEach
@@ -214,8 +227,22 @@ class IdentityResolver(
                     answer.confidence >= 0.75f &&
                     answer.characterId != null -> {
                     val target = characters.character(answer.characterId)
-                    if (target != null && isAllowed(target.id)) {
-                        // A 策略回溯：若同一称呼已有独立临时人物，确认同人后把临时人物并入目标
+                    val blockedByOwnConstraint = target != null &&
+                        item.speaker.characterId != null &&
+                        isCannot(item.speaker.characterId, target.id)
+                    if (target != null && isAllowed(target.id) && !blockedByOwnConstraint) {
+                        val decisionId = charDecision(
+                            bookKey = bookKey,
+                            speaker = item.speaker,
+                            candidates = candidateIds,
+                            verdict = RaVerdict.SAME,
+                            chosen = target.id,
+                            confidence = answer.confidence,
+                            reason = answer.reason,
+                            evidenceIds = item.evidence.map { it.id },
+                            modelId = answer.modelId,
+                        )
+                        // A 策略回溯：若同一称呼已有独立临时人物，确认同人后带证据链合并
                         if (target.status == RaCharacterStatus.ACTIVE) {
                             item.candidates.firstOrNull {
                                 it.character.status == RaCharacterStatus.PROVISIONAL &&
@@ -226,6 +253,8 @@ class IdentityResolver(
                                         provisional.character.id,
                                         target.id,
                                         "AI 复审确认同人",
+                                        item.evidence.map { it.id },
+                                        decisionId,
                                     )
                                 }
                             }
@@ -239,17 +268,6 @@ class IdentityResolver(
                         )
                         resolutions[item.speaker.localKey] = resolution.copy(
                             candidateIds = candidateIds,
-                        )
-                        charDecision(
-                            bookKey = bookKey,
-                            speaker = item.speaker,
-                            candidates = candidateIds,
-                            verdict = RaVerdict.SAME,
-                            chosen = target.id,
-                            confidence = answer.confidence,
-                            reason = answer.reason,
-                            evidenceIds = item.evidence.map { it.id },
-                            modelId = answer.modelId,
                         )
                         linkedThisChapter.add(target.id)
                     } else {
@@ -311,9 +329,32 @@ class IdentityResolver(
                     linkedThisChapter.add(character.id)
                 }
                 else -> {
-                    // A 策略：UNKNOWN/低置信保留独立临时身份，不复用第一个临时人物，避免永久吸附
-                    val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
-                    created.add(character)
+                    // A 策略：UNKNOWN/低置信保留临时身份；同称呼组最多复用 3 次，达到上限后保持待定
+                    val reusable = findReusableProvisional(bookKey, item.speaker, linkedThisChapter)
+                    val character = reusable ?: create(
+                        bookKey,
+                        chapterIndex,
+                        item.speaker,
+                        RaCharacterStatus.PROVISIONAL,
+                    )
+                    if (reusable == null) created.add(character)
+                    val linked = if (reusable != null) {
+                        link(
+                            bookKey = bookKey,
+                            chapterIndex = chapterIndex,
+                            speaker = item.speaker,
+                            target = reusable,
+                            candidateIds = candidateIds,
+                        ).copy(resolution = RaResolution.PROVISIONAL)
+                    } else {
+                        Resolution(
+                            characterId = character.id,
+                            resolution = RaResolution.PROVISIONAL,
+                            created = true,
+                            candidateIds = candidateIds,
+                            createdCharacter = character,
+                        )
+                    }
                     charDecision(
                         bookKey = bookKey,
                         speaker = item.speaker,
@@ -325,13 +366,7 @@ class IdentityResolver(
                         evidenceIds = item.evidence.map { it.id },
                         modelId = answer.modelId,
                     )
-                    resolutions[item.speaker.localKey] = Resolution(
-                        characterId = character.id,
-                        resolution = RaResolution.PROVISIONAL,
-                        created = true,
-                        candidateIds = candidateIds,
-                        createdCharacter = character,
-                    )
+                    resolutions[item.speaker.localKey] = linked
                     linkedThisChapter.add(character.id)
                 }
             }
@@ -474,28 +509,17 @@ class IdentityResolver(
             .minByOrNull { it.firstChapter }
     }
 
-    private suspend fun hasAmbiguousSameName(
+    private suspend fun findExhaustedProvisional(
         bookKey: String,
         speaker: RaLocalSpeaker,
-    ): Boolean {
-        val names = (speaker.surfaceNames + speaker.primaryName)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !isGeneric(it) }
-            .map(RaNameUtils::normalize)
-            .filter { it.isNotEmpty() }
-            .distinct()
-        if (names.isEmpty()) return false
-        val ids = runCatching { characters.charactersByAliases(bookKey, names) }
-            .getOrDefault(emptyList())
-            .filterNot { it.isGeneric }
-            .map { it.characterId }
-            .distinct()
-        if (ids.size < 3) return false
-        val chars = ids.mapNotNull { runCatching { characters.character(it) }.getOrNull() }
-            .filter { it.status != RaCharacterStatus.MERGED }
-        if (chars.size < 3) return false
+        used: Set<String>,
+    ): RaCharacter? {
         val key = RaNameUtils.normalize(speaker.primaryName)
-        return chars.all { RaNameUtils.normalize(it.displayName) == key }
+        if (key.isEmpty()) return null
+        return runCatching { characters.provisionalCharacters(bookKey) }.getOrDefault(emptyList())
+            .filter { it.id !in used && RaNameUtils.normalize(it.displayName) == key }
+            .filter { runCatching { characters.decisionsForCharacter(it.id).size }.getOrDefault(0) >= 3 }
+            .minByOrNull { it.firstChapter }
     }
 
     private suspend fun candidateMatchesRelation(
@@ -650,8 +674,8 @@ class IdentityResolver(
         reason: String,
         evidenceIds: List<String>,
         modelId: String = "",
-    ) {
-        runCatching {
+    ): String {
+        return runCatching {
             characters.saveDecision(
                 bookKey = bookKey,
                 localSpeaker = speaker,
@@ -663,7 +687,7 @@ class IdentityResolver(
                 modelId = modelId,
                 evidenceIds = evidenceIds,
             )
-        }
+        }.getOrDefault("")
     }
 
     private fun nameOverlap(character: RaCharacter, speaker: RaLocalSpeaker): Boolean {
