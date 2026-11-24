@@ -462,7 +462,6 @@ BGM 建议缺段从值集补全。
         } else null
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
-        val emoSeqIndex = dialogueSegs.mapIndexed { i, s -> (s.paragraphIndex to s.start) to i + 1 }.toMap()
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
             pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
         } else null

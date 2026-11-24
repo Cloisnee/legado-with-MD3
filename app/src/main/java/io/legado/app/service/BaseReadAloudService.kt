@@ -1089,7 +1089,7 @@ abstract class BaseReadAloudService : BaseService(),
             engineName = cue.voice?.displayName.orEmpty(),
             characterName = speechPlan.getOrNull(
                 cursor.cueIndex - playbackQueue.leadingTitleCueCount
-            )?.segment?.surfaceName.orEmpty(),
+            )?.characterDisplayName.orEmpty(),
             roleType = cue.roleType,
         ))
         refreshMediaSessionPlaybackState()

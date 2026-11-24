@@ -154,6 +154,7 @@ fun BookManageScreen(
     var tagSearch by remember { mutableStateOf("") }
 
     val pending = remember { mutableStateMapOf<Int, String>() }
+    val pendingIds = remember { mutableStateMapOf<Int, String>() }
     var selLines by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var tagPanelFor by remember { mutableStateOf<List<Int>?>(null) }
 
@@ -190,16 +191,27 @@ fun BookManageScreen(
                 val directionLines = analysis?.let { item ->
                     raDirection.plan(item.id, "PLAYBACK_BASE")?.let { plan -> raDirection.lines(plan.id) }
                 }.orEmpty().associateBy { it.segmentId }
+                val characters = characterRepo.charactersRaw(currentBookKey).associateBy { it.id }
+                val finalIdCache = HashMap<String, String>()
+                suspend fun displayNameOf(characterId: String?): String {
+                    if (characterId.isNullOrBlank()) return ""
+                    val finalId = finalIdCache.getOrPut(characterId) {
+                        characterRepo.finalCharacterId(characterId)
+                    }
+                    return characters[finalId]?.displayName.orEmpty()
+                }
                 lines = segments.mapIndexed { index, segment ->
+                    val displayName = if (segment.roleType == SpeechRoleType.Narrator) {
+                        "旁白"
+                    } else {
+                        displayNameOf(segment.characterId)
+                            .ifBlank { segment.surfaceName.ifBlank { "未识别" } }
+                    }
                     RaScriptLineRow(
                         segmentId = segment.id,
                         absIndex = index,
                         paragraphIndex = segment.paragraphIndex,
-                        speaker = if (segment.roleType == SpeechRoleType.Narrator) {
-                            "旁白"
-                        } else {
-                            segment.surfaceName
-                        },
+                        speaker = displayName,
                         characterId = segment.characterId,
                         text = segment.text,
                         emotion = directionLines[segment.id]?.emotionTag.orEmpty(),
@@ -207,6 +219,7 @@ fun BookManageScreen(
                 }
             }
             pending.clear()
+            pendingIds.clear()
             selLines = emptySet()
         }
     }
@@ -269,8 +282,11 @@ fun BookManageScreen(
 
     LaunchedEffect(refreshKey) { reload() }
 
-    fun applySpeakerTo(targets: List<Int>, speaker: String) {
-        targets.forEach { pending[it] = speaker }
+    fun applySpeakerTo(targets: List<Int>, speaker: String, characterId: String? = null) {
+        targets.forEach {
+            pending[it] = speaker
+            pendingIds[it] = characterId.orEmpty()
+        }
         tagPanelFor = null
         // 保留所选：多选底栏随即提供「主题色 ✓ 保存」（B10.3·U8）
     }
@@ -285,7 +301,12 @@ fun BookManageScreen(
                 val line = lines.getOrNull(lineIndex) ?: return@forEach
                 val name = speakerName.trim()
                 if (name.isBlank()) return@forEach
-                if (name == "旁白") {
+                val isNarrator = name == "旁白"
+                val newCharacterId = if (isNarrator) null else pendingIds[lineIndex]?.takeIf { it.isNotBlank() }
+                if (!isNarrator && newCharacterId.isNullOrBlank()) return@forEach
+                // 只处理用户实际改过的行；不变的行不写 override，避免误伤
+                if (name == line.speaker && newCharacterId == line.characterId) return@forEach
+                if (isNarrator) {
                     raBuild.markSegmentNarrator(line.segmentId)
                     raBuild.saveOverride(
                         bookKey = currentBookKey,
@@ -298,38 +319,14 @@ fun BookManageScreen(
                     saved++
                     return@forEach
                 }
-                val character = records.firstOrNull { view ->
-                    view.name == name || view.aliasList().any { it == name }
-                } ?: characterRepo.ensureCharacter(
-                    bookKey = currentBookKey,
-                    displayName = name,
-                    roleType = "核心",
-                    gender = "男",
-                    ageBand = "男青年",
-                    chapterIndex = ch,
-                    aliases = emptyList(),
-                    status = "ACTIVE",
-                    aliasSource = "user",
-                    attributeSource = "user",
-                ).let { created ->
-                    records = records + RaCharacterView(
-                        id = created.id,
-                        name = created.displayName,
-                        roletype = created.roleType,
-                        gender = created.gender,
-                        age = created.ageBand,
-                        appearanceChapters = listOf(ch),
-                    )
-                    records.last()
-                }
-                raBuild.updateSegmentSpeaker(line.segmentId, character.id, name)
+                raBuild.updateSegmentSpeaker(line.segmentId, newCharacterId, name)
                 raBuild.saveOverride(
                     bookKey = currentBookKey,
                     chapterIndex = ch,
                     paragraphIndex = line.paragraphIndex,
                     textHash = MD5Utils.md5Encode16(line.text),
-                    characterId = character.id,
-                    narrator = name == "旁白",
+                    characterId = newCharacterId,
+                    narrator = false,
                 )
                 saved++
             }
@@ -831,6 +828,7 @@ fun BookManageScreen(
                                 add(
                                     ActionItem("放弃修改", Icons.Default.Close) {
                                         pending.clear()
+                                        pendingIds.clear()
                                         selLines = emptySet()
                                     }
                                 )
@@ -1086,7 +1084,7 @@ fun BookManageScreen(
                 TinyClickableSettingItem(
                     title = "旁白",
                     description = "改为旁白发声（只改标记，不动文本）",
-                    onClick = { applySpeakerTo(targets, "旁白") },
+                    onClick = { applySpeakerTo(targets, "旁白", null) },
                 )
                 val thisChapter = records.filter {
                     ch in it.appearanceChapters || it.lastAppearanceChapter == ch
@@ -1105,7 +1103,7 @@ fun BookManageScreen(
                         TinyClickableSettingItem(
                             title = r.name,
                             description = "${r.roletype} · ${r.gender} · ${r.age}",
-                            onClick = { applySpeakerTo(targets, r.name) },
+                            onClick = { applySpeakerTo(targets, r.name, r.id) },
                         )
                     }
                 }
@@ -1120,7 +1118,7 @@ fun BookManageScreen(
                         TinyClickableSettingItem(
                             title = r.name,
                             description = "${r.roletype} · ${r.gender} · ${r.age}",
-                            onClick = { applySpeakerTo(targets, r.name) },
+                            onClick = { applySpeakerTo(targets, r.name, r.id) },
                         )
                     }
                 }
@@ -1232,7 +1230,7 @@ fun BookManageScreen(
                         }
                         context.toastOnUi("已新增人物：$finalName")
                         reloadRecordsOnly()
-                        applySpeakerTo(targets, finalName)
+                        applySpeakerTo(targets, finalName, created.id)
                     }
                 },
             )

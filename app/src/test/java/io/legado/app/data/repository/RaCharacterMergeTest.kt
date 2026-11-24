@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -88,6 +89,13 @@ class RaCharacterMergeTest {
             db.raCharacterDao.aliasesOf(to.id).firstOrNull { it.surface == "青衫客" }?.characterId,
         )
         assertEquals(1, db.raCharacterDao.character(to.id)?.appearanceCount)
+        val links = db.raCharacterDao.linksOfBook(BOOK)
+        assertTrue(links.any {
+            it.kind == "SAME" &&
+                it.aCharacterId == minOf(from.id, to.id) &&
+                it.bCharacterId == maxOf(from.id, to.id)
+        })
+        assertTrue(links.none { it.aCharacterId == it.bCharacterId })
     }
 
     companion object {

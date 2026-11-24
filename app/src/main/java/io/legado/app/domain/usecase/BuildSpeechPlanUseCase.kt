@@ -88,6 +88,11 @@ class BuildSpeechPlanUseCase(
                 fallbackVoices = fallbackVoices,
                 emotionTag = emotionBySegment[segment.id].orEmpty(),
                 instruction = instructionBySegment[segment.id].orEmpty(),
+                characterDisplayName = if (role == SpeechRoleType.Narrator) {
+                    ""
+                } else {
+                    character?.displayName ?: segment.surfaceName
+                },
             )
         }
     }

@@ -1,5 +1,6 @@
 package io.legado.app.help.readaloud.analysis.v4
 
+import io.legado.app.domain.gateway.GenericNameClassifier
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
@@ -117,7 +118,7 @@ class IdentityResolver(
         candidates: Map<String, RaCharacter>,
         provisional: Boolean,
     ): Resolution {
-        characters.attachAliases(bookKey, target.id, names, chapterIndex, "ai")
+        characters.attachAliasesIfAbsent(bookKey, target.id, names, chapterIndex, "ai")
         return Resolution(
             characterId = target.id,
             resolution = if (provisional) RaResolution.PROVISIONAL else RaResolution.RESOLVED,

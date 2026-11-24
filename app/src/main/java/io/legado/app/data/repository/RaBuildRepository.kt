@@ -232,10 +232,10 @@ class RaBuildRepository(
             characterDao.deleteRedirectsOfBook(bookKey)
             characterDao.deleteDecisionsOfBook(bookKey)
             dao.deleteLocalMentionsOfBook(bookKey)
-            dao.deleteAnalysesOfBook(bookKey)
-            dao.deleteSegmentsOfBook(bookKey)
             dao.deleteLocalSpeakersOfBook(bookKey)
             dao.deleteEvidenceOfBook(bookKey)
+            dao.deleteSegmentsOfBook(bookKey)
+            dao.deleteAnalysesOfBook(bookKey)
             dao.deleteOverridesOfBook(bookKey)
             characters.forEach { characterDao.deleteCharacter(it.id) }
             dao.allBuildsOf(bookKey).forEach {

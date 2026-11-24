@@ -88,6 +88,7 @@ class BuildSpeechPlanUseCaseTest {
         characters.updateDisplayName(character.id, "新名字")
         val after = useCase(BOOK, listOf(segment(character.id))).single()
         assertEquals("tagA", after.voice?.displayName)
+        assertEquals("新名字", after.characterDisplayName)
     }
 
     @Test
@@ -120,6 +121,7 @@ class BuildSpeechPlanUseCaseTest {
         characters.mergeCharacters(from.id, to.id, "test")
         val plan = useCase(BOOK, listOf(segment(from.id))).single()
         assertEquals("tagA", plan.voice?.displayName)
+        assertEquals("乙", plan.characterDisplayName)
     }
 
     companion object {

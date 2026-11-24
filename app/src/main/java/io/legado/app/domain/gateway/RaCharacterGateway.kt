@@ -47,6 +47,14 @@ interface RaCharacterGateway {
 
     suspend fun setDefaultVoice(characterId: String, voiceTag: String, voiceEntryId: String)
 
+    suspend fun attachAliasesIfAbsent(
+        bookKey: String,
+        characterId: String,
+        names: Collection<String>,
+        chapterIndex: Int,
+        source: String,
+    )
+
     suspend fun attachAliases(
         bookKey: String,
         characterId: String,

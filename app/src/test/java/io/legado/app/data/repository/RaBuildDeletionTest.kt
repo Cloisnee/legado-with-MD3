@@ -5,6 +5,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.readaloud.RaChapterAnalysisEntity
+import io.legado.app.data.entities.readaloud.RaCharacterEntity
+import io.legado.app.data.entities.readaloud.RaCharacterRedirectEntity
 import io.legado.app.data.entities.readaloud.RaChapterBuildEntity
 import io.legado.app.data.entities.readaloud.RaDirectionLineEntity
 import io.legado.app.data.entities.readaloud.RaDirectionPlanEntity
@@ -19,6 +21,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -136,6 +139,16 @@ class RaBuildDeletionTest {
                 ),
             ),
         )
+        db.raCharacterDao.upsertCharacter(
+            RaCharacterEntity(
+                id = "chr_test", bookKey = BOOK, displayName = "测试人物", status = "ACTIVE",
+            ),
+        )
+        db.raCharacterDao.upsertRedirect(
+            RaCharacterRedirectEntity(
+                fromCharacterId = "chr_test_from", toCharacterId = "chr_test",
+            ),
+        )
     }
 
     @Test
@@ -157,6 +170,18 @@ class RaBuildDeletionTest {
         assertNotNull(db.raBuildDao.getBuild(BOOK, SOURCE, 2))
         assertEquals(1, db.raBuildDao.segments("a2").size)
         assertNotNull(db.raDirectionDao.plan("a2", "PLAYBACK_BASE"))
+    }
+
+    @Test
+    fun `delete book clears speakers mentions evidence decisions and redirects`() = runBlocking {
+        repository.deleteBook(BOOK)
+        assertTrue(db.raBuildDao.allBuildsOf(BOOK).isEmpty())
+        assertTrue(db.raBuildDao.allAnalysesOf(BOOK).isEmpty())
+        assertTrue(db.raBuildDao.localSpeakersOfBook(BOOK).isEmpty())
+        assertTrue(db.raBuildDao.evidenceOfBook(BOOK).isEmpty())
+        assertTrue(db.raCharacterDao.decisionsOfBook(BOOK).isEmpty())
+        assertTrue(db.raCharacterDao.allCharacters(BOOK).isEmpty())
+        assertNull(db.raCharacterDao.redirect("chr_test_from"))
     }
 
     companion object {

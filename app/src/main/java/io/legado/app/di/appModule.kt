@@ -167,7 +167,7 @@ import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
-import io.legado.app.help.readaloud.analysis.v4.GenericNameClassifier
+import io.legado.app.domain.gateway.GenericNameClassifier
 import io.legado.app.help.readaloud.analysis.v4.IdentityResolver
 import io.legado.app.help.readaloud.analysis.v4.VoiceCastingService
 import io.legado.app.help.readaloud.playback.SpeechVoiceResolver

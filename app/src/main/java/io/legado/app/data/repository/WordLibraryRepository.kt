@@ -2,6 +2,7 @@ package io.legado.app.data.repository
 
 import android.app.Application
 import com.github.jing332.compat.fs.TtsDirProvider
+import io.legado.app.domain.gateway.GenericNameClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -12,7 +13,7 @@ import java.text.Normalizer
  * 词库（裸属词 / 特殊词）：不属于朗读分析真源，只是分类辅助；仍使用数据目录下的
  * `bare_words.json` / `special_words.json`（用户可在角色页入库）。
  */
-class WordLibraryRepository(private val app: Application) : io.legado.app.help.readaloud.analysis.v4.GenericNameClassifier {
+class WordLibraryRepository(private val app: Application) : GenericNameClassifier {
 
     companion object {
         const val BARE_WORDS_FILE = "bare_words.json"

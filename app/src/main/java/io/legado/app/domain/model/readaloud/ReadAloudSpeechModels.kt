@@ -77,6 +77,7 @@ data class SpeechPlanItem(
     val fallbackVoices: List<ReadAloudVoice>,
     val emotionTag: String = "",
     val instruction: String = "",
+    val characterDisplayName: String = "",
 )
 
 enum class SpeechRoleType(val storageValue: String) {

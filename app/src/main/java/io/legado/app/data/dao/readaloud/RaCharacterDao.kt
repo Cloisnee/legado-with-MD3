@@ -101,6 +101,9 @@ interface RaCharacterDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAliases(entities: List<RaCharacterAliasEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAliasesIgnore(entities: List<RaCharacterAliasEntity>)
+
     @Query("delete from ra_character_alias where characterId = :characterId and normalized = :normalized")
     suspend fun deleteAlias(characterId: String, normalized: String)
 
@@ -170,6 +173,9 @@ interface RaCharacterDao {
 
     @Query("update ra_identity_link set aCharacterId = :toCharacterId, updatedAt = :updatedAt where aCharacterId = :fromCharacterId")
     suspend fun reassignLinksA(fromCharacterId: String, toCharacterId: String, updatedAt: Long)
+
+    @Query("delete from ra_identity_link where bookKey = :bookKey and aCharacterId = bCharacterId")
+    suspend fun deleteSelfLinks(bookKey: String)
 
     @Query("delete from ra_identity_link where bookKey = :bookKey")
     suspend fun deleteLinksOfBook(bookKey: String)

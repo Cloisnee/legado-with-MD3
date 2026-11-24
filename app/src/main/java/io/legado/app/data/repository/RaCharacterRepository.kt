@@ -184,6 +184,35 @@ class RaCharacterRepository(
         entity.toDomain()
     }
 
+    override suspend fun attachAliasesIfAbsent(
+        bookKey: String,
+        characterId: String,
+        names: Collection<String>,
+        chapterIndex: Int,
+        source: String,
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val rows = ArrayList<RaCharacterAliasEntity>()
+        names.map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach { surface ->
+            val normalized = RaNameUtils.normalize(surface)
+            if (normalized.isEmpty()) return@forEach
+            rows.add(
+                RaCharacterAliasEntity(
+                    bookKey = bookKey,
+                    normalized = normalized,
+                    characterId = characterId,
+                    surface = surface,
+                    source = source,
+                    isGeneric = wordLibrary.isBareClassWord(surface) || surface.length <= 1,
+                    firstChapter = chapterIndex,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+        }
+        if (rows.isNotEmpty()) dao.insertAliasesIgnore(rows)
+    }
+
     override suspend fun attachAliases(
         bookKey: String,
         characterId: String,
@@ -390,7 +419,10 @@ class RaCharacterRepository(
                     ),
                 )
                 dao.bumpIdentityRevision(to, now)
-                // 6. SAME 约束 & 关联重定向
+                // 6. 先迁移 from 的其它约束，清掉迁移产生的自环，再记录本次合并的 SAME
+                dao.reassignLinksA(from, to, now)
+                dao.reassignLinksB(from, to, now)
+                dao.deleteSelfLinks(toCharacter.bookKey)
                 val a = minOf(from, to)
                 val b = maxOf(from, to)
                 dao.upsertLink(
@@ -405,8 +437,6 @@ class RaCharacterRepository(
                         updatedAt = now,
                     ),
                 )
-                dao.reassignLinksA(from, to, now)
-                dao.reassignLinksB(from, to, now)
             }
             recomputeAppearance(to)
         }

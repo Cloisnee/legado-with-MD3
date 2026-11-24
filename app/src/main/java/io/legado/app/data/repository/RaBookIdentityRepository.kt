@@ -2,6 +2,7 @@ package io.legado.app.data.repository
 
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.readaloud.RaBuildDao
+import io.legado.app.data.entities.readaloud.RaBookIdentityEntity
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBookIdentityRow
 import io.legado.app.domain.model.readaloud.v4.RaIds
@@ -37,7 +38,7 @@ class RaBookIdentityRepository(
             }
             val key = siblingIdentity?.bookKey ?: RaIds.book()
             dao.upsertIdentity(
-                io.legado.app.data.entities.readaloud.RaBookIdentityEntity(
+                RaBookIdentityEntity(
                     bookUrl = bookUrl,
                     bookKey = key,
                     sourceKey = sourceKey,
@@ -65,7 +66,7 @@ class RaBookIdentityRepository(
             val old = dao.getIdentity(oldBookUrl)
             if (old != null) {
                 dao.upsertIdentity(
-                    io.legado.app.data.entities.readaloud.RaBookIdentityEntity(
+                    RaBookIdentityEntity(
                         bookUrl = newBookUrl,
                         bookKey = old.bookKey,
                         sourceKey = newSourceKey,
@@ -76,7 +77,7 @@ class RaBookIdentityRepository(
                 val existingNew = dao.getIdentity(newBookUrl)
                 if (existingNew == null) {
                     dao.upsertIdentity(
-                        io.legado.app.data.entities.readaloud.RaBookIdentityEntity(
+                        RaBookIdentityEntity(
                             bookUrl = newBookUrl,
                             bookKey = RaIds.book(),
                             sourceKey = newSourceKey,
