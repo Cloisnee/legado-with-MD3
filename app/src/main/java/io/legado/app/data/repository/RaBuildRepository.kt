@@ -341,19 +341,27 @@ class RaBuildRepository(
         characterDao.aliasesOf(toCharacterId)
             .filter { it.normalized in movedAliasKeys && it.source != "user" }
             .forEach { characterDao.deleteAlias(toCharacterId, it.normalized) }
-        val toAliasKeysNow = characterDao.aliasesOf(toCharacterId).map { it.normalized }.toSet()
-        snapshot.aliases
-            .filter { it.normalized !in toAliasKeysNow }
-            .forEach {
-                characterDao.upsertAliases(listOf(it.copy(characterId = fromCharacterId, updatedAt = now)))
+        // from 侧始终恢复原有别名；与 to 同 normalized 不冲突（别名表按 characterId 区分）
+        val fromAliasNow = characterDao.aliasesOf(fromCharacterId).associateBy { it.normalized }
+        snapshot.aliases.forEach { original ->
+            val current = fromAliasNow[original.normalized]
+            if (current == null || current.source != "user") {
+                characterDao.upsertAliases(
+                    listOf(original.copy(characterId = fromCharacterId, updatedAt = now)),
+                )
             }
+        }
 
         // 合并时可能删除 to 的默认方案或把 from 的方案移到 to：只处理这些 id
         snapshot.voiceProfiles.forEach { profile ->
             val current = characterDao.voiceProfile(profile.id)
-            characterDao.upsertVoiceProfile(
-                (current ?: profile).copy(characterId = fromCharacterId, updatedAt = now),
-            )
+            // 合并本身可能把 DEFAULT 改成 CUSTOM（双方均锁）；source=user 才视为用户后续修订
+            val restored = if (current != null && current.source == "user" && profile.source != "user") {
+                current.copy(characterId = fromCharacterId, updatedAt = now)
+            } else {
+                profile.copy(characterId = fromCharacterId, updatedAt = now)
+            }
+            characterDao.upsertVoiceProfile(restored)
         }
         snapshot.toVoiceProfiles.forEach { profile ->
             if (characterDao.voiceProfile(profile.id) == null) {

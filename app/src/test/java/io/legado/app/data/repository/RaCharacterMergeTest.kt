@@ -288,4 +288,95 @@ class RaCharacterMergeTest {
         assertEquals("MERGED", db.raCharacterDao.character(p.id)?.status)
         assertTrue(db.raCharacterDao.aliasesOf(a.id).any { it.surface == "沈七" })
     }
+
+    @Test
+    fun `rollback restores shared alias on both sides and keeps post-merge alias`() = runBlocking {
+        val from = repository.ensureCharacter(
+            BOOK, "沈七", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val to = repository.ensureCharacter(
+            BOOK, "沈孤鸿", "核心", "男", "男青年", 1, listOf("沈七"), "ACTIVE", "user", "inferred",
+        )
+        db.raBuildDao.upsertAnalysis(
+            RaChapterAnalysisEntity(
+                id = "a2", bookKey = BOOK, sourceKey = "s", chapterIndex = 2,
+                contentHash = "h2", resolverVersion = "v4.2", status = "RESOLVED",
+            ),
+        )
+        db.raBuildDao.upsertEvidence(
+            listOf(
+                RaEvidenceEntity(
+                    id = "e1", bookKey = BOOK, analysisId = "a2",
+                    sourceChapter = 2, paragraphIndex = 0, start = 0, end = 1,
+                    excerpt = "沈七即沈孤鸿", type = "ALIAS_EQUAL",
+                ),
+            ),
+        )
+        repository.mergeCharactersAsAi(from.id, to.id, "AI 合并", listOf("e1"), "d1")
+        repository.attachAliases(BOOK, to.id, listOf("合并后新别名"), 4, "user")
+
+        RaBuildRepository(db, db.raBuildDao, db.raCharacterDao, db.raDirectionDao)
+            .deleteChapters(BOOK, "s", listOf(2))
+
+        assertTrue(db.raCharacterDao.aliasesOf(from.id).any { it.normalized == "沈七" })
+        assertTrue(db.raCharacterDao.aliasesOf(to.id).any { it.normalized == "沈七" })
+        assertTrue(db.raCharacterDao.aliasesOf(to.id).any { it.surface == "合并后新别名" })
+        assertEquals("user", db.raCharacterDao.aliasesOf(to.id).first { it.normalized == "沈七" }.source)
+    }
+
+    @Test
+    fun `rollback restores locked default profile from custom merge state`() = runBlocking {
+        val from = repository.ensureCharacter(
+            BOOK, "沈七", "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        val to = repository.ensureCharacter(
+            BOOK, "沈孤鸿", "核心", "男", "男青年", 1, emptyList(), "ACTIVE", "ai", "inferred",
+        )
+        repository.saveVoiceProfile(
+            RaVoiceProfile(
+                id = "vp_from", bookKey = BOOK, characterId = from.id,
+                kind = RaVoiceProfileKind.DEFAULT, label = "默认", voiceTag = "from-tag",
+                locked = true, createdAt = 1L,
+            ),
+        )
+        repository.saveVoiceProfile(
+            RaVoiceProfile(
+                id = "vp_to", bookKey = BOOK, characterId = to.id,
+                kind = RaVoiceProfileKind.DEFAULT, label = "默认", voiceTag = "to-tag",
+                locked = true, createdAt = 2L,
+            ),
+        )
+        db.raBuildDao.upsertAnalysis(
+            RaChapterAnalysisEntity(
+                id = "a2", bookKey = BOOK, sourceKey = "s", chapterIndex = 2,
+                contentHash = "h2", resolverVersion = "v4.2", status = "RESOLVED",
+            ),
+        )
+        db.raBuildDao.upsertEvidence(
+            listOf(
+                RaEvidenceEntity(
+                    id = "e1", bookKey = BOOK, analysisId = "a2",
+                    sourceChapter = 2, paragraphIndex = 0, start = 0, end = 1,
+                    excerpt = "沈七即沈孤鸿", type = "ALIAS_EQUAL",
+                ),
+            ),
+        )
+        repository.mergeCharactersAsAi(from.id, to.id, "AI 合并", listOf("e1"), "d1")
+        assertTrue(
+            db.raCharacterDao.voiceProfilesOf(to.id).any { it.id == "vp_from" && it.kind == "CUSTOM" },
+        )
+
+        RaBuildRepository(db, db.raBuildDao, db.raCharacterDao, db.raDirectionDao)
+            .deleteChapters(BOOK, "s", listOf(2))
+
+        val restoredFrom = db.raCharacterDao.voiceProfilesOf(from.id).single { it.id == "vp_from" }
+        assertEquals("DEFAULT", restoredFrom.kind)
+        assertEquals("默认", restoredFrom.label)
+        assertTrue(restoredFrom.locked)
+        assertTrue(
+            db.raCharacterDao.voiceProfilesOf(to.id).any {
+                it.id == "vp_to" && it.kind == "DEFAULT" && it.locked
+            },
+        )
+    }
 }
