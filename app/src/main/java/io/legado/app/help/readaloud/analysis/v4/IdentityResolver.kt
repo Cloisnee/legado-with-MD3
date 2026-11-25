@@ -123,6 +123,22 @@ class IdentityResolver(
                 return@forEach
             }
 
+            // R6：路人不参与跨章确定性快链与候选裁决。
+            // 只有原文明确的 ALIAS_EQUAL（A 即 B）才允许跨章认亲；否则一律本章新建，
+            // 避免两章各一个「弟子A」因同名被合并成同一人物（01 §4.2）。
+            if (speaker.roleType == "路人") {
+                val character = create(bookKey, chapterIndex, speaker, RaCharacterStatus.ACTIVE)
+                created.add(character)
+                resolutions[speaker.localKey] = Resolution(
+                    characterId = character.id,
+                    resolution = RaResolution.RESOLVED,
+                    created = true,
+                    createdCharacter = character,
+                )
+                linkedThisChapter.add(character.id)
+                return@forEach
+            }
+
             // ①b 非泛称称呼精确命中且唯一 ACTIVE
             val exactTargets = exactTargets(bookKey, speaker, contradictions)
             if (exactTargets.size == 1 && isAllowed(exactTargets.first().id)) {

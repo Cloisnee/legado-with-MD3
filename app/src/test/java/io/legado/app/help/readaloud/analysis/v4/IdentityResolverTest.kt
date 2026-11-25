@@ -51,13 +51,14 @@ class IdentityResolverTest {
         primary: String,
         names: List<String>,
         chapter: Int,
+        roleType: String = "核心",
     ) = RaLocalSpeaker(
         id = "$analysisId#$localKey",
         analysisId = analysisId,
         localKey = localKey,
         surfaceNames = (names + primary).distinct(),
         primaryName = primary,
-        roleType = "核心",
+        roleType = roleType,
         gender = "男",
         ageBand = "男青年",
     )
@@ -428,5 +429,36 @@ class IdentityResolverTest {
             )
         }
         assertTrue(characters.provisionalCharacters(bookKey).size <= 1)
+    }
+
+    @Test
+    fun `passerby with same name in two chapters creates two characters`() = runBlocking {
+        val bookKey = "bk_passersby"
+        val first = resolver.resolve(
+            bookKey, 0, speaker("p1", "L1", "弟子A", emptyList(), 0, roleType = "路人"),
+        )
+        val second = resolver.resolve(
+            bookKey, 1, speaker("p2", "L1", "弟子A", emptyList(), 1, roleType = "路人"),
+        )
+        assertTrue(first.characterId != second.characterId)
+        assertEquals(2, characters.characters(bookKey).size)
+    }
+
+    @Test
+    fun `passerby still links on explicit alias equal evidence`() = runBlocking {
+        val bookKey = "bk_passersby_alias"
+        val existing = characters.ensureCharacter(
+            bookKey, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val passerby = speaker("p1", "L1", "店伙计", emptyList(), 99, roleType = "路人")
+        val result = resolver.resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = 99,
+            chapterLabel = "第100章",
+            speakers = listOf(passerby),
+            mentions = emptyList(),
+            evidence = listOf(evidence(bookKey, passerby, RaEvidenceType.ALIAS_EQUAL, "青衫客")),
+        )
+        assertEquals(existing.id, result.resolutions["L1"]?.characterId)
     }
 }
