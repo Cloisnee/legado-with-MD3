@@ -114,7 +114,7 @@ class NdjsonChapterStream(
         }
         when (obj.optString("type").trim().lowercase()) {
             "entities" -> {
-                if (chapterSeen || committed.isNotEmpty()) {
+                if (chapterSeen) {
                     needsFallback = true
                     return
                 }

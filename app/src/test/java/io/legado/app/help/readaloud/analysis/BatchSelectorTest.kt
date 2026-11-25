@@ -65,7 +65,7 @@ class BatchSelectorTest {
 
     @Test
     fun `stale is analyzable`() {
-        val states = mapOf(1 to RaChapterState.STALE, 2 to RaChapterState.CACHED)
+        val states = mapOf(1 to RaChapterState.STALE, 2 to RaChapterState.IDENTITY_READY)
         assertEquals(listOf(1), BatchSelector.nextBatch(states, 0, 0..0, 5, 10))
     }
 
