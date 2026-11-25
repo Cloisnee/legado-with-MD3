@@ -434,7 +434,18 @@ class ReadAloudBuildCoordinator(
     private fun startContentWatcher(s: Session) {
         contentWatcher = scope.launch {
             ChapterContentEvents.events.collect { saved ->
-                if (saved.bookUrl == s.book.bookUrl) wake.trySend(Unit)
+                if (saved.bookUrl == s.book.bookUrl) {
+                    val build = raBuild.getBuild(s.bookKey, s.sourceKey, saved.chapterIndex)
+                    if (build?.state == RaChapterState.NO_CONTENT) {
+                        raBuild.upsertBuild(
+                            build.copy(
+                                state = RaChapterState.CACHED,
+                                updatedAt = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                    wake.trySend(Unit)
+                }
             }
         }
     }
@@ -731,9 +742,16 @@ class ReadAloudBuildCoordinator(
                 build.state == RaChapterState.EXTRACTED ||
                     build.state == RaChapterState.STALE -> build.state
                 build.state == RaChapterState.FAILED && build.attempts >= 3 -> build.state
-                build.state == RaChapterState.FAILED -> RaChapterState.CACHED
-                build.state == RaChapterState.NO_CONTENT ->
+                build.state == RaChapterState.FAILED ->
                     if (hasContent) RaChapterState.CACHED else RaChapterState.NO_CONTENT
+                build.state == RaChapterState.NO_CONTENT -> {
+                    // 跨会话补缓存：文件比 NO_CONTENT 记录新才重新纳入；同文件不反复重试。
+                    val fileUpdated = runCatching {
+                        BookHelp.getChapterContentFile(s.book, chapter).lastModified()
+                    }.getOrDefault(0L)
+                    if (hasContent && fileUpdated > build.updatedAt) RaChapterState.CACHED
+                    else RaChapterState.NO_CONTENT
+                }
                 else -> RaChapterState.CACHED
             }
             chapter.index to state

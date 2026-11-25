@@ -2,8 +2,10 @@ package io.legado.app.help.readaloud.analysis
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * 章节分析 SingleFlight（02 §5）。
@@ -40,7 +42,8 @@ class ChapterJobRegistry {
 
         suspend fun complete(outcome: Outcome) {
             result.complete(outcome)
-            registry.finish(this)
+            val ticket = this
+            withContext(NonCancellable) { registry.finish(ticket) }
         }
     }
 
