@@ -15,10 +15,6 @@ import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
-import io.legado.app.domain.model.readaloud.v4.RaEvidence
-import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
-import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
-import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import kotlinx.coroutines.runBlocking
 import org.junit.After
