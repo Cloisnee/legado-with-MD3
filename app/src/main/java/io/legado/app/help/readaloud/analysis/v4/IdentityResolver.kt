@@ -13,6 +13,7 @@ import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaNameUtils
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
+import io.legado.app.help.readaloud.analysis.AiSchedulerContext
 
 /**
  * V4-2 完整身份解析（01 §5.3）：
@@ -64,6 +65,7 @@ class IdentityResolver(
         mentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
         contextBySpeaker: Map<String, String> = emptyMap(),
+        context: AiSchedulerContext? = null,
     ): ChapterResult {
         if (speakers.isEmpty()) return ChapterResult(emptyMap(), emptyList())
         val links = runCatching { characters.linksOfBook(bookKey) }.getOrDefault(emptyList())
@@ -238,7 +240,7 @@ class IdentityResolver(
         }
 
         // ④ AI 三态裁决（每 8 个一批），失败/无队列 → PROVISIONAL
-        val answers = decideAll(bookKey, chapterIndex, chapterLabel, pending)
+        val answers = decideAll(bookKey, chapterIndex, chapterLabel, pending, context)
         pending.forEach { item ->
             val answer = answers[item.speaker.localKey]
             val candidateIds = item.candidates.map { it.character.id }
@@ -459,6 +461,7 @@ class IdentityResolver(
         chapterIndex: Int,
         chapterLabel: String,
         pending: List<Pending>,
+        context: AiSchedulerContext?,
     ): Map<String, IdentityAnswer> {
         val arbiter = arbiter ?: return emptyMap()
         if (pending.isEmpty()) return emptyMap()
@@ -474,7 +477,7 @@ class IdentityResolver(
                     candidates = buildCards(item.candidates),
                 )
             }
-            val answers = runCatching { arbiter.decide(bookKey, questions) }.getOrNull()
+            val answers = runCatching { arbiter.decide(bookKey, questions, context) }.getOrNull()
             if (answers != null) {
                 val byQuestion = answers.associateBy { it.key }
                 questions.forEachIndexed { index, question ->

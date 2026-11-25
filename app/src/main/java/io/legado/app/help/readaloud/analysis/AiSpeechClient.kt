@@ -7,7 +7,10 @@ import io.legado.app.data.repository.AiProvider
 import io.legado.app.data.repository.AiThinkingMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -39,12 +42,19 @@ import java.util.concurrent.TimeUnit
 class AiSpeechClient(
     private val aiModels: AiModelRepository,
     private val analysisConfig: AnalysisConfigStore,
+    private val scheduler: AiRequestScheduler,
 ) {
 
     data class ModelRef(val model: AiModelEntry, val provider: AiProvider)
 
     /** 单次调用结果：raw=null 时 failReason 为可读失败原因（供阶段日志一行输出） */
-    private data class CallOutcome(val raw: String?, val failReason: String = "")
+    private data class CallOutcome(
+        val raw: String?,
+        val failReason: String = "",
+        val rateLimited: Boolean = false,
+    )
+
+    private class RateLimitedException(message: String) : Exception(message)
 
     /** 统一分析超时（毫秒）：AI 分析设置 timeoutSec（30..600，默认 120） */
     private suspend fun unifiedTimeoutMs(): Long =
@@ -53,11 +63,11 @@ class AiSpeechClient(
             .coerceIn(30, 600) * 1000L
 
     /** 流式客户端：read/write 按「每次读写」计；callTimeout 按「整次请求」计（总超时） */
-    private fun streamClient(timeoutMs: Long): OkHttpClient =
+    private fun streamClient(timeoutMs: Long, totalTimeoutMs: Long = timeoutMs): OkHttpClient =
         aiModels.http().newBuilder()
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .callTimeout(totalTimeoutMs, TimeUnit.MILLISECONDS)
             .build()
 
     /**
@@ -72,6 +82,10 @@ class AiSpeechClient(
         promptFactory: (failHint: String) -> String,
         maxTokens: Int = 4096,
         logTag: String,
+        context: AiSchedulerContext? = null,
+        onChunk: ((String) -> Unit)? = null,
+        onAttemptStart: (() -> Unit)? = null,
+        totalTimeoutMs: Long? = null,
         onModelUsed: ((String) -> Unit)? = null,
         validate: (String) -> ValidateOutcome<T>,
     ): T? = withContext(Dispatchers.IO) {
@@ -87,10 +101,35 @@ class AiSpeechClient(
             var respFails = 0
             var validFails = 0
             var failHint = ""
+            var consecutive429 = 0
             while (true) {
-                val call = callOnce(ref, system, promptFactory(failHint), maxTokens, timeoutMs)
+                onAttemptStart?.invoke()
+                val call = callOnce(
+                    ref = ref,
+                    system = system,
+                    user = promptFactory(failHint),
+                    maxTokens = maxTokens,
+                    timeoutMs = timeoutMs,
+                    totalTimeoutMs = totalTimeoutMs ?: timeoutMs,
+                    context = context,
+                    onChunk = onChunk,
+                )
                 val raw = call.raw
                 if (raw == null) {
+                    if (call.rateLimited) {
+                        consecutive429++
+                        runCatching { scheduler.reportRateLimited(ref.provider.id, consecutive429) }
+                        AppLog.putAnalysis(
+                            "【AI调用·$logTag】模型 ${ref.model.name} 限流 429（连续 $consecutive429 次）",
+                        )
+                        // 前两次原模型重试（服务商暂停期内排队等待）；第三次按响应失败处理
+                        if (consecutive429 < 3) continue
+                        respFails++
+                        consecutive429 = 0
+                        if (respFails >= respMax) break
+                        continue
+                    }
+                    consecutive429 = 0
                     respFails++
                     AppLog.putAnalysis(
                         "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax，${call.failReason.ifBlank { "未知原因" }}）",
@@ -99,6 +138,7 @@ class AiSpeechClient(
                     delay(2000L * respFails)
                     continue
                 }
+                consecutive429 = 0
                 val outcome = runCatching { validate(raw) }.getOrElse {
                     ValidateOutcome(null, "解析异常：${it.localizedMessage ?: it.javaClass.simpleName}")
                 }
@@ -122,14 +162,17 @@ class AiSpeechClient(
     }
 
     /** 单次调用：stream=true 请求 + 逐行读取（SSE 优先，普通 JSON 回退） */
-    private fun callOnce(
+    private suspend fun callOnce(
         ref: ModelRef,
         system: String,
         user: String,
         maxTokens: Int,
         timeoutMs: Long,
+        totalTimeoutMs: Long,
+        context: AiSchedulerContext?,
+        onChunk: ((String) -> Unit)?,
     ): CallOutcome {
-        return runCatching {
+        return try {
             val base = ref.provider.baseUrl.trim().trimEnd('/')
             require(base.isNotBlank()) { "BaseUrl 为空" }
             val protocol = ref.provider.protocol.lowercase()
@@ -207,24 +250,60 @@ class AiSpeechClient(
                     )
                     .build()
             }
-            streamClient(timeoutMs).newCall(request).execute().use { resp ->
+            val text = executeCall(
+                ref = ref,
+                request = request,
+                protocol = protocol,
+                timeoutMs = timeoutMs,
+                totalTimeoutMs = totalTimeoutMs,
+                context = context,
+                onChunk = onChunk,
+            )
+            CallOutcome(text)
+        } catch (e: RateLimitedException) {
+            CallOutcome(null, e.message ?: "HTTP 429", rateLimited = true)
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            // 协程取消时 OkHttp 抛出 IOException("Canceled")：转成取消，不当作失败。
+            currentCoroutineContext().ensureActive()
+            val reason = if (e.isTimeoutError()) "超时 ${totalTimeoutMs / 1000}s"
+            else (e.localizedMessage ?: e.javaClass.simpleName)
+            CallOutcome(null, reason)
+        }
+    }
+
+    /** 许可 + 取消联动 + 读取；真正的网络出口。 */
+    private suspend fun executeCall(
+        ref: ModelRef,
+        request: Request,
+        protocol: String,
+        timeoutMs: Long,
+        totalTimeoutMs: Long,
+        context: AiSchedulerContext?,
+        onChunk: ((String) -> Unit)?,
+    ): String = withContext(Dispatchers.IO) {
+        val call = streamClient(timeoutMs, totalTimeoutMs).newCall(request)
+        val job = currentCoroutineContext()[Job]
+        val cancelHandle = job?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) call.cancel()
+        }
+        val perform: suspend () -> String = {
+            call.execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                    if (resp.code == 429) throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
                     error("HTTP ${resp.code}: ${errBody.take(160)}")
                 }
-                val text = readStreamBody(protocol, resp, timeoutMs)
+                val text = readStreamBody(protocol, resp, totalTimeoutMs, onChunk)
                 if (text.isNullOrBlank()) error("空响应")
                 text
             }
-        }.fold(
-            onSuccess = { CallOutcome(it) },
-            onFailure = { e ->
-                if (e is CancellationException) throw e
-                val reason = if (e.isTimeoutError()) "超时 ${timeoutMs / 1000}s"
-                else (e.localizedMessage ?: e.javaClass.simpleName)
-                CallOutcome(null, reason)
-            }
-        )
+        }
+        try {
+            if (context != null) scheduler.withPermit(ref, context) { perform() } else perform()
+        } finally {
+            cancelHandle?.dispose()
+        }
     }
 
     /** OpenAI 兼容协议的关闭思考字段：按模型设置发送，避免固定发 thinking 被新网关 400。 */
@@ -256,9 +335,14 @@ class AiSpeechClient(
      *    google=候选 parts 文本），分片持续到达即不断读（超时按片重置）；
      *  - 服务端忽略 stream 返回普通 JSON：整段文本走 [extractContent] 解析。
      */
-    private fun readStreamBody(protocol: String, resp: Response, timeoutMs: Long): String? {
+    private fun readStreamBody(
+        protocol: String,
+        resp: Response,
+        totalTimeoutMs: Long,
+        onChunk: ((String) -> Unit)? = null,
+    ): String? {
         val source = resp.body?.source() ?: return null
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = System.currentTimeMillis() + totalTimeoutMs
         var mode = -1 // -1 未知 / 0 普通JSON / 1 SSE
         val plain = StringBuilder()
         val sse = StringBuilder()
@@ -283,18 +367,27 @@ class AiSpeechClient(
                         continue
                     }
                     when (protocol) {
-                        "google" -> appendGoogleChunk(sse, chunk)
+                        "google" -> {
+                            val t = appendGoogleChunk(sse, chunk)
+                            if (t.isNotEmpty()) onChunk?.invoke(t)
+                        }
                         "claude" -> {
                             when (chunk.optString("type")) {
                                 "content_block_delta" -> {
                                     val t = chunk.optJSONObject("delta")?.optString("text").orEmpty()
-                                    if (t.isNotEmpty()) sse.append(t)
+                                    if (t.isNotEmpty()) {
+                                        sse.append(t)
+                                        onChunk?.invoke(t)
+                                    }
                                 }
                                 "error" -> errMsg = chunk.optJSONObject("error")?.optString("message")
                                     ?.takeIf { it.isNotBlank() } ?: "stream error"
                             }
                         }
-                        else -> appendOpenAiChunk(sse, chunk)
+                        else -> {
+                            val t = appendOpenAiChunk(sse, chunk)
+                            if (t.isNotEmpty()) onChunk?.invoke(t)
+                        }
                     }
                 }
                 line.startsWith("event:") -> Unit // SSE 事件名行；类型以 data JSON 内字段为准
@@ -310,32 +403,45 @@ class AiSpeechClient(
             }
             sse.toString().takeIf { it.isNotBlank() }
         } else {
-            extractContent(protocol, plain.toString())
+            extractContent(protocol, plain.toString())?.also { text ->
+                onChunk?.invoke(text)
+            }
         }
     }
 
     /** openai 风格分片：choices[0].delta.content 累加；个别网关发整段 message.content 时替换 */
-    private fun appendOpenAiChunk(acc: StringBuilder, chunk: JSONObject) {
-        val choices = chunk.optJSONArray("choices") ?: return
-        if (choices.length() == 0) return
-        val ch0 = choices.optJSONObject(0) ?: return
+    private fun appendOpenAiChunk(acc: StringBuilder, chunk: JSONObject): String {
+        val choices = chunk.optJSONArray("choices") ?: return ""
+        if (choices.length() == 0) return ""
+        val ch0 = choices.optJSONObject(0) ?: return ""
+        var appended = ""
         val msgContent = ch0.optJSONObject("message")?.optString("content").orEmpty()
         if (msgContent.isNotEmpty()) {
             acc.setLength(0)
             acc.append(msgContent)
+            appended = msgContent
         }
         val delta = ch0.optJSONObject("delta")?.optString("content").orEmpty()
-        if (delta.isNotEmpty()) acc.append(delta)
+        if (delta.isNotEmpty()) {
+            acc.append(delta)
+            appended += delta
+        }
+        return appended
     }
 
     /** google 流式分片：candidates[0].content.parts[].text 逐段拼接 */
-    private fun appendGoogleChunk(acc: StringBuilder, chunk: JSONObject) {
+    private fun appendGoogleChunk(acc: StringBuilder, chunk: JSONObject): String {
         val parts = chunk.optJSONArray("candidates")?.optJSONObject(0)
-            ?.optJSONObject("content")?.optJSONArray("parts") ?: return
+            ?.optJSONObject("content")?.optJSONArray("parts") ?: return ""
+        val out = StringBuilder()
         for (i in 0 until parts.length()) {
             val t = parts.optJSONObject(i)?.optString("text").orEmpty()
-            if (t.isNotEmpty()) acc.append(t)
+            if (t.isNotEmpty()) {
+                acc.append(t)
+                out.append(t)
+            }
         }
+        return out.toString()
     }
 
     /** 普通（非流式）响应解析：兜底路径共用 */

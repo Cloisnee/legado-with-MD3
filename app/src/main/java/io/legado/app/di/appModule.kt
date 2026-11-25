@@ -163,6 +163,7 @@ import io.legado.app.domain.usecase.GetChapterContentUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.HomeDashboardUseCase
 import io.legado.app.domain.usecase.ImportBookshelfUseCase
+import io.legado.app.help.readaloud.analysis.AiRequestScheduler
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
 import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
@@ -422,6 +423,7 @@ val appModule = module {
     // [合并0716] 上游件保留：书架封面预热
     singleOf(::BookshelfCoverPreloader)
     singleOf(::AiSpeechClient)
+    singleOf(::AiRequestScheduler)
     singleOf(::AnalysisConfigStore)
     singleOf(::SpeechAnalysisPipelineV4)
     singleOf(::AnalysisSchedulerV3)

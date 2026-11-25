@@ -5,6 +5,7 @@ import io.legado.app.domain.model.readaloud.v4.RaCharacterCard
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
+import io.legado.app.help.readaloud.analysis.AiSchedulerContext
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.queueRefs
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
@@ -34,6 +35,13 @@ data class IdentityAnswer(
 
 interface IdentityArbiter {
     suspend fun decide(bookKey: String, questions: List<IdentityQuestion>): List<IdentityAnswer>?
+
+    /** 带调度上下文的裁决入口；默认退化为无调度版本（测试桩、旧调用方）。 */
+    suspend fun decide(
+        bookKey: String,
+        questions: List<IdentityQuestion>,
+        context: AiSchedulerContext?,
+    ): List<IdentityAnswer>? = decide(bookKey, questions)
 }
 
 /**
@@ -50,6 +58,12 @@ class AiIdentityArbiter(
     override suspend fun decide(
         bookKey: String,
         questions: List<IdentityQuestion>,
+    ): List<IdentityAnswer>? = decide(bookKey, questions, null)
+
+    override suspend fun decide(
+        bookKey: String,
+        questions: List<IdentityQuestion>,
+        context: AiSchedulerContext?,
     ): List<IdentityAnswer>? {
         if (questions.isEmpty()) return emptyList()
         val refs = runCatching { aiModels.queueRefs("resolve") }.getOrDefault(emptyList())
@@ -99,6 +113,7 @@ class AiIdentityArbiter(
             promptFactory = promptFactory,
             maxTokens = maxTokens,
             logTag = "裁决",
+            context = context,
             onModelUsed = { usedModel = it },
         ) { raw -> validateIdentityDecisions(raw, questions) }
         return result?.map { if (it.modelId.isBlank()) it.copy(modelId = usedModel) else it }

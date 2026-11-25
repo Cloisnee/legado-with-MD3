@@ -303,6 +303,7 @@ BGM 建议缺段从值集补全。
         prevChapterText: String,
         nextChapterText: String,
         force: Boolean = false,
+        aiContext: AiSchedulerContext? = null,
     ): RaPipelineResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
@@ -332,7 +333,7 @@ BGM 建议缺段从值集补全。
 
         // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
         val t0 = System.currentTimeMillis()
-        val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex)
+        val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex, aiContext = aiContext)
         val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
         val directorSkipReason = when {
             directorRefs.isEmpty() -> "未设置Ai"
@@ -363,14 +364,14 @@ BGM 建议缺段从值集补全。
         val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
             val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
             pipelineScope.async {
-                callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel)
+                callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel, aiContext)
             }
         } else null
         val knownCharacters = buildKnownCharacters(bookKey, paragraphs, chapterIndex)
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
         val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel) }
+            pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel, aiContext) }
         } else null
         var usedAi2 = false
         var stage2: Stage2Payload? = null
@@ -385,6 +386,7 @@ BGM 建议缺段从值集补全。
                 refs = s2Refs,
                 chapterIndex = chapterIndex,
                 knownCharacters = knownCharacters,
+                aiContext = aiContext,
             )
             if (s2 != null) {
                 usedAi2 = true
@@ -415,6 +417,7 @@ BGM 建议缺段从值集补全。
             mentions = localMentions,
             evidence = evidence,
             contextBySpeaker = contextBySpeaker,
+            context = aiContext?.copy(kind = AiTaskKind.RESOLVE),
         )
         val keyToCharacter = HashMap<String, String>()
         val keyToResolution = HashMap<String, RaResolution>()
@@ -840,6 +843,7 @@ BGM 建议缺段从值集补全。
         paragraphs: List<CanonicalSpeechParagraph>,
         cfg: AnalysisConfigStore.Config,
         chapterIndex: Int,
+        aiContext: AiSchedulerContext? = null,
     ): List<SpRange> {
         // 本地路径：引号包裹规则 v2
         val local = ArrayList<SpRange>()
@@ -877,7 +881,14 @@ BGM 建议缺段从值集补全。
                 append("=== 待分析文本 ===\n").append(unitsText)
             }
         }
-        val sel = ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "${chapterLabel}·阶段1") { raw ->
+        val sel = ai.completeValidated(
+            refs,
+            "只输出 JSON。",
+            promptFactory,
+            cfg.maxOutputTokens,
+            logTag = "${chapterLabel}·阶段1",
+            context = aiContext?.copy(kind = AiTaskKind.STAGE1),
+        ) { raw ->
             validateSelection(raw, unitCounts)
         }
         if (sel != null) {
@@ -1141,6 +1152,7 @@ BGM 建议缺段从值集补全。
         refs: List<AiSpeechClient.ModelRef>,
         chapterIndex: Int,
         knownCharacters: String,
+        aiContext: AiSchedulerContext? = null,
     ): Stage2Payload? {
         val prev = takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
         val next = takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
@@ -1188,6 +1200,7 @@ BGM 建议缺段从值集补全。
             promptFactory,
             cfg.maxOutputTokens,
             logTag = "${chapterLabel}·阶段2",
+            context = aiContext?.copy(kind = AiTaskKind.STAGE2),
         ) { raw ->
             validator.validate(raw, expectedCount)
         }
@@ -1235,6 +1248,7 @@ BGM 建议缺段从值集补全。
         refs: List<AiSpeechClient.ModelRef>,
         chapterIndex: Int,
         label: String,
+        aiContext: AiSchedulerContext? = null,
     ): Map<Int, String>? {
         val head = cfg.emotionPrompt.ifBlank { DEFAULT_EMOTION_PROMPT }
             .replace("%VOCAB%", EMOTIONS.joinToString("/"))
@@ -1248,7 +1262,14 @@ BGM 建议缺段从值集补全。
                 append("\n=== 待分析文本 ===\n").append(numbered)
             }
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "$label·情绪") { raw ->
+        return ai.completeValidated(
+            refs,
+            "只输出 JSON。",
+            promptFactory,
+            cfg.maxOutputTokens,
+            logTag = "$label·情绪",
+            context = aiContext?.copy(kind = AiTaskKind.STAGE2),
+        ) { raw ->
             validateEmotion(raw, count)
         }
     }
@@ -1420,6 +1441,7 @@ BGM 建议缺段从值集补全。
         cfg: AnalysisConfigStore.Config,
         refs: List<AiSpeechClient.ModelRef>,
         label: String,
+        aiContext: AiSchedulerContext? = null,
     ): List<AudioDirectorContract.DirectorItem>? {
         if (refs.isEmpty() || numbered.isBlank()) return null
         val head = cfg.audioDirectorPrompt.ifBlank { DEFAULT_AUDIO_DIRECTOR_PROMPT }
@@ -1433,7 +1455,14 @@ BGM 建议缺段从值集补全。
                 append("\n=== 待规划文本 ===\n").append(numbered)
             }
         }
-        return ai.completeValidated(refs, "只输出 JSON。", promptFactory, cfg.maxOutputTokens, logTag = "$label·音频导演") { raw ->
+        return ai.completeValidated(
+            refs,
+            "只输出 JSON。",
+            promptFactory,
+            cfg.maxOutputTokens,
+            logTag = "$label·音频导演",
+            context = aiContext?.copy(kind = AiTaskKind.DIRECTOR),
+        ) { raw ->
             ai.extractJson(raw)?.let { AudioDirectorContract.validate(it, unitCounts) }
                 ?: ValidateOutcome(null, "返回不是JSON对象")
         }
