@@ -187,6 +187,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
     var veProtocol by remember { mutableStateOf("openai") }
     var veKind by remember { mutableStateOf("chat") }
     var vePlatform by remember { mutableStateOf("custom") }
+    var veMaxConcurrency by remember { mutableStateOf(1) }
 
     // 模型分配：阶段队列选择上下文
     var expandedStages by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -385,6 +386,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
         veProtocol = p?.protocol ?: "openai"
         veKind = p?.kind ?: "chat"
         vePlatform = p?.platform.orEmpty().ifBlank { "custom" }
+        veMaxConcurrency = p?.maxConcurrency?.coerceIn(1, 8) ?: 1
         vendorSheet = true
     }
 
@@ -403,6 +405,7 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
             protocol = veProtocol,
             kind = if (isAudio) "audio" else "chat",
             platform = if (isAudio) vePlatform else "",
+            maxConcurrency = veMaxConcurrency.coerceIn(1, 8),
         )
         vendorSheet = false
         scope.launch {
@@ -894,6 +897,14 @@ fun AiModelManageScreen(app: Application, onBack: () -> Unit) {
                     entryValues = arrayOf("openai", "google", "claude"),
                     description = "决定 拉取模型 / 测试 的请求方式（兼容 OpenAI / Claude / Google）",
                     onValueChange = { veProtocol = it },
+                )
+                TinyDropdownSettingItem(
+                    title = "最大并发数",
+                    selectedValue = veMaxConcurrency.toString(),
+                    displayEntries = (1..8).map { "$it 路" }.toTypedArray(),
+                    entryValues = (1..8).map(Int::toString).toTypedArray(),
+                    description = "同一服务商同时进行的 AI 请求数；前台分析会抢占后台批次",
+                    onValueChange = { veMaxConcurrency = it.toIntOrNull()?.coerceIn(1, 8) ?: 1 },
                 )
             }
             Box(

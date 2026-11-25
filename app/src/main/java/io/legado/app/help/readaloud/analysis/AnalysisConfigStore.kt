@@ -34,6 +34,10 @@ class AnalysisConfigStore(private val app: Application) {
         val timeoutSec: Int = 120,
         val waitAnalysisSec: Int = 600,
         val fallbackDefaultVoice: Boolean = false,
+        /** 后台建库总会话章数（一次朗读会话内的额度；0=关闭后台建库） */
+        val bgSessionBudget: Int = 20,
+        /** 后台单批最大章数（上限，不要求凑满） */
+        val bgBatchMaxChapters: Int = 10,
     )
 
     private fun file(): File = File(TtsDirProvider.baseDir(app), "_store/analysis_config.json")
@@ -57,6 +61,8 @@ class AnalysisConfigStore(private val app: Application) {
                 timeoutSec = o.optInt("timeoutSec", 120).coerceIn(30, 600),
                 waitAnalysisSec = o.optInt("waitAnalysisSec", 600).coerceIn(30, 600),
                 fallbackDefaultVoice = o.optBoolean("fallbackDefaultVoice", false),
+                bgSessionBudget = o.optInt("bgSessionBudget", 20).coerceIn(0, 200),
+                bgBatchMaxChapters = o.optInt("bgBatchMaxChapters", 10).coerceIn(1, 30),
             )
         }.getOrDefault(Config())
     }
@@ -80,6 +86,8 @@ class AnalysisConfigStore(private val app: Application) {
                     put("timeoutSec", cfg.timeoutSec)
                     put("waitAnalysisSec", cfg.waitAnalysisSec)
                     put("fallbackDefaultVoice", cfg.fallbackDefaultVoice)
+                    put("bgSessionBudget", cfg.bgSessionBudget)
+                    put("bgBatchMaxChapters", cfg.bgBatchMaxChapters)
                 }.toString(),
             )
             true

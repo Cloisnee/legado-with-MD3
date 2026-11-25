@@ -105,6 +105,8 @@ fun AiAnalysisSettingsScreen(
     var showNext by remember { mutableStateOf(false) }
     var showEmotionJoin by remember { mutableStateOf(false) }
     var showMaxTokens by remember { mutableStateOf(false) }
+    var showBgBudget by remember { mutableStateOf(false) }
+    var showBgBatch by remember { mutableStateOf(false) }
     var promptTarget by remember { mutableStateOf<PromptTarget?>(null) }
     var promptDraft by remember { mutableStateOf("") }
 
@@ -149,6 +151,20 @@ fun AiAnalysisSettingsScreen(
                         description = "开：分析未就绪先出声（默认声线；重进本章即切换）；关：等待分析就绪再出声（上限=上方等待秒数）",
                         checked = cfg.fallbackDefaultVoice,
                         onCheckedChange = { v -> update { it.copy(fallbackDefaultVoice = v) } },
+                    )
+                }
+            }
+            item {
+                SplicedColumnGroup(title = "后台建库") {
+                    TinyClickableSettingItem(
+                        title = "会话建库章数",
+                        description = "每次开始朗读的额度；后台只消费已缓存正文 · ${cfg.bgSessionBudget} 章（0=关闭）",
+                        onClick = { showBgBudget = true },
+                    )
+                    TinyClickableSettingItem(
+                        title = "单批最大章数",
+                        description = "后台一次批量分析的章数上限，不要求凑满 · ${cfg.bgBatchMaxChapters} 章",
+                        onClick = { showBgBatch = true },
                     )
                 }
             }
@@ -384,5 +400,25 @@ fun AiAnalysisSettingsScreen(
         valueRange = 256f..32768f,
         onValueChange = { v -> update { it.copy(maxOutputTokens = v.coerceIn(256, 32768)) } },
         onDismissRequest = { showMaxTokens = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showBgBudget,
+        title = "后台建库会话章数",
+        description = "每次开始朗读的额度；0=关闭后台建库",
+        value = cfg.bgSessionBudget,
+        defaultValue = 20,
+        valueRange = 0f..200f,
+        onValueChange = { v -> update { it.copy(bgSessionBudget = v.coerceIn(0, 200)) } },
+        onDismissRequest = { showBgBudget = false },
+    )
+    ReadAloudNumberConfigSheet(
+        show = showBgBatch,
+        title = "后台单批最大章数",
+        description = "后台一次批量分析的章数上限",
+        value = cfg.bgBatchMaxChapters,
+        defaultValue = 10,
+        valueRange = 1f..30f,
+        onValueChange = { v -> update { it.copy(bgBatchMaxChapters = v.coerceIn(1, 30)) } },
+        onDismissRequest = { showBgBatch = false },
     )
 }

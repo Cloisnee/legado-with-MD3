@@ -35,6 +35,8 @@ data class AiProvider(
     val kind: String = "chat",
     /** 音频平台类型：stepfun / senseaudio / elevenlabs / custom（kind=audio 时有值） */
     val platform: String = "",
+    /** 该服务商的最大并发请求数（1..8；AiRequestScheduler 按此控制许可池） */
+    val maxConcurrency: Int = 1,
 )
 
 /**
@@ -211,6 +213,7 @@ class AiModelRepository(private val app: Application) {
                         enabled = p.optBoolean("enabled", true),
                         kind = p.optString("kind", "chat").ifBlank { "chat" },
                         platform = p.optString("platform", ""),
+                        maxConcurrency = p.optInt("maxConcurrency", 1).coerceIn(1, 8),
                     )
                 )
             }
@@ -284,6 +287,7 @@ class AiModelRepository(private val app: Application) {
                     put("id", p.id); put("name", p.name); put("baseUrl", p.baseUrl)
                     put("apiKey", p.apiKey); put("protocol", p.protocol); put("enabled", p.enabled)
                     put("kind", p.kind); put("platform", p.platform)
+                    put("maxConcurrency", p.maxConcurrency.coerceIn(1, 8))
                 })
             }
             o.put("providers", pArr)
