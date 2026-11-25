@@ -259,6 +259,10 @@ object BookHelp {
         }
         // 保存阅读缓存文本(.nb)
         getChapterContentFile(book, bookChapter).apply { parentFile?.mkdirs() }.writeText(content)
+        io.legado.app.help.readaloud.analysis.ChapterContentEvents.saved(
+            book.bookUrl,
+            bookChapter.index,
+        )
         if (book.isOnLineTxt && readGateway.currentSettings.tocCountWords) {
             // 正文里携带的 <img src="data:base64">、内联 SVG 等富文本源码会把章节字数虚抬
             // 几倍（3 页正文显示 3000+ 字）。这里剔除标签/Base64 后按可读纯文本计数，

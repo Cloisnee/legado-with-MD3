@@ -52,7 +52,7 @@ import io.legado.app.domain.model.readaloud.SpeechPlanItem
 import io.legado.app.domain.model.readaloud.resolveReadAloudStartPosition
 import io.legado.app.domain.model.settings.ReadAloudTimerMode
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.feature.reader.core.navigation.ReaderPageNavigator
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.feature.reader.legacy.LegacyReaderChapterPaginationResult
@@ -430,7 +430,7 @@ abstract class BaseReadAloudService : BaseService(),
         isRun = false
         pause = true
         runCatching {
-            val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
+            val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
             scheduler.stopSession()
         }
         currentChapterIndex = -1
@@ -586,10 +586,10 @@ abstract class BaseReadAloudService : BaseService(),
             // B10.4.4：先启动分析调度（本会话的分析生产源），再构建播放计划——
             // 「等分析就绪再出声」模式下计划构建会阻塞等待分析结果，若调度后启动会形成自锁
             runCatching {
-                val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
-                val bookUrl: String = bookSession.book?.bookUrl.orEmpty()
-                if (bookUrl.isNotEmpty()) {
-                    scheduler.startSession(bookUrl, bookSession.chapterIndex)
+                val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
+                val book = bookSession.book
+                if (book != null && book.bookUrl.isNotEmpty()) {
+                    scheduler.startSession(book, bookSession.chapterIndex)
                 }
             }.onFailure {
                 // 批212g：会话取消是预期语义（换章/换书/停止），静默
@@ -799,6 +799,10 @@ abstract class BaseReadAloudService : BaseService(),
             wifiLock?.release()
         }
         pause = true
+        runCatching {
+            val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
+            coordinator.pauseBackground()
+        }
         if (abandonFocus) {
             abandonFocus()
         }
@@ -821,6 +825,10 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun resumeReadAloudInternal() {
         pause = false
+        runCatching {
+            val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
+            coordinator.resumeBackground()
+        }
         needResumeOnAudioFocusGain = false
         needResumeOnCallStateIdle = false
         upReadAloudNotification()
@@ -1729,7 +1737,7 @@ abstract class BaseReadAloudService : BaseService(),
     /** 通知分析调度：朗读跨章（触点2） */
     private fun notifyAnalysisChapterChanged() {
         runCatching {
-            val scheduler: AnalysisSchedulerV3 = get(AnalysisSchedulerV3::class.java)
+            val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
             val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
             if (bookUrl.isNotEmpty()) {
                 scheduler.onChapterChanged(bookUrl, ReadBook.durChapterIndex)

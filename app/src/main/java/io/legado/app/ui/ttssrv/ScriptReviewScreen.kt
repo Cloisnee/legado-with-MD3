@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.ReadAloudCatalogRepository
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.ui.widget.components.text.AppText
 import org.koin.core.context.GlobalContext
 
@@ -66,7 +66,7 @@ fun ScriptReviewScreen(
 
     // 分析调度完成 → 刷新当前栏
     LaunchedEffect(Unit) {
-        val scheduler = runCatching { GlobalContext.get().get<AnalysisSchedulerV3>() }.getOrNull()
+        val scheduler = runCatching { GlobalContext.get().get<ReadAloudBuildCoordinator>() }.getOrNull()
         if (scheduler == null) {
             AppLog.put("剧本审查页·分析调度器不可用")
             return@LaunchedEffect

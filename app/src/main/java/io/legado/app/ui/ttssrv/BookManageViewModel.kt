@@ -16,7 +16,7 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
 import io.legado.app.domain.model.readaloud.v4.RaScriptLineRow
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.utils.ChapterLabels
 import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.Dispatchers
@@ -283,8 +283,8 @@ class BookManageViewModel : ViewModel() {
                 return@launch
             }
             val ok = runCatching {
-                val scheduler: AnalysisSchedulerV3 = GlobalContext.get().get()
-                scheduler.enqueueChapter(url, chapter, force = true)
+                val scheduler: ReadAloudBuildCoordinator = GlobalContext.get().get()
+                scheduler.reanalyze(url, chapter)
             }.onFailure { AppLog.put("重析入队失败: ${it.localizedMessage}", it) }.isSuccess
             _effects.tryEmit(
                 if (ok) "已提交重新分析（${chLabel(chapter)}）" else "重析提交失败，请查看日志",

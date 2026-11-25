@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
+import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
@@ -87,8 +88,10 @@ fun AiAnalysisSettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { GlobalContext.get().get<AnalysisConfigStore>() }
+    val coordinator = remember { runCatching { GlobalContext.get().get<ReadAloudBuildCoordinator>() }.getOrNull() }
 
     var cfg by remember { mutableStateOf(AnalysisConfigStore.Config()) }
+    var buildStatus by remember { mutableStateOf<ReadAloudBuildCoordinator.BuildStatus?>(null) }
 
     fun update(transform: (AnalysisConfigStore.Config) -> AnalysisConfigStore.Config) {
         cfg = transform(cfg)
@@ -97,6 +100,17 @@ fun AiAnalysisSettingsScreen(
 
     LaunchedEffect(Unit) {
         cfg = store.load()
+    }
+    LaunchedEffect(coordinator) {
+        coordinator?.status?.collect { buildStatus = it }
+    }
+
+    fun backgroundStateLabel(state: ReadAloudBuildCoordinator.BackgroundState): String = when (state) {
+        ReadAloudBuildCoordinator.BackgroundState.RUNNING -> "建库中"
+        ReadAloudBuildCoordinator.BackgroundState.WAITING_CACHE -> "等待缓存"
+        ReadAloudBuildCoordinator.BackgroundState.BUDGET_REACHED -> "额度用尽"
+        ReadAloudBuildCoordinator.BackgroundState.PAUSED -> "已暂停"
+        ReadAloudBuildCoordinator.BackgroundState.STOPPED -> "未朗读"
     }
 
     var showTimeout by remember { mutableStateOf(false) }
@@ -156,6 +170,16 @@ fun AiAnalysisSettingsScreen(
             }
             item {
                 SplicedColumnGroup(title = "后台建库") {
+                    val status = buildStatus
+                    if (status != null && status.bookUrl.isNotBlank()) {
+                        TinyClickableSettingItem(
+                            title = "当前会话",
+                            description = "状态：${backgroundStateLabel(status.state)} · " +
+                                "已建库 ${status.builtChapters} 章 · 已缓存待建 ${status.cachedPending} 章 · " +
+                                "剩余额度 ${status.budgetLeft} 章",
+                            onClick = {},
+                        )
+                    }
                     TinyClickableSettingItem(
                         title = "会话建库章数",
                         description = "每次开始朗读的额度；后台只消费已缓存正文 · ${cfg.bgSessionBudget} 章（0=关闭）",

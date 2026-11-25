@@ -52,6 +52,7 @@ class IdentityResolverTest {
         names: List<String>,
         chapter: Int,
         roleType: String = "核心",
+        batchEntityId: String? = null,
     ) = RaLocalSpeaker(
         id = "$analysisId#$localKey",
         analysisId = analysisId,
@@ -61,6 +62,7 @@ class IdentityResolverTest {
         roleType = roleType,
         gender = "男",
         ageBand = "男青年",
+        batchEntityId = batchEntityId,
     )
 
     @Test
@@ -460,5 +462,37 @@ class IdentityResolverTest {
             evidence = listOf(evidence(bookKey, passerby, RaEvidenceType.ALIAS_EQUAL, "青衫客")),
         )
         assertEquals(existing.id, result.resolutions["L1"]?.characterId)
+    }
+
+    @Test
+    fun `batch entity links across chapters as one character`() = runBlocking {
+        val bookKey = "bk_batch_entity"
+        val first = speaker("c1", "B1", "青衫客", emptyList(), 92, batchEntityId = "B1")
+        val second = speaker("c2", "B1", "沈孤鸿", emptyList(), 93, batchEntityId = "B1")
+        val out = resolver.resolveBatch(
+            bookKey,
+            listOf(
+                IdentityResolver.BatchChapterInput(92, "第93章", listOf(first), emptyList()),
+                IdentityResolver.BatchChapterInput(93, "第94章", listOf(second), emptyList()),
+            ),
+        )
+        assertEquals(1, characters.characters(bookKey).size)
+        assertEquals(out[first.id]?.characterId, out[second.id]?.characterId)
+    }
+
+    @Test
+    fun `batch passersby with same name get separate characters`() = runBlocking {
+        val bookKey = "bk_batch_passersby"
+        val first = speaker("p1", "B1", "弟子A", emptyList(), 0, roleType = "路人", batchEntityId = "B1")
+        val second = speaker("p2", "B2", "弟子A", emptyList(), 1, roleType = "路人", batchEntityId = "B2")
+        val out = resolver.resolveBatch(
+            bookKey,
+            listOf(
+                IdentityResolver.BatchChapterInput(0, "第1章", listOf(first), emptyList()),
+                IdentityResolver.BatchChapterInput(1, "第2章", listOf(second), emptyList()),
+            ),
+        )
+        assertTrue(out[first.id]?.characterId != out[second.id]?.characterId)
+        assertEquals(2, characters.characters(bookKey).size)
     }
 }

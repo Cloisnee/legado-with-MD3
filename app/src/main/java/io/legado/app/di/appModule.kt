@@ -166,7 +166,10 @@ import io.legado.app.domain.usecase.ImportBookshelfUseCase
 import io.legado.app.help.readaloud.analysis.AiRequestScheduler
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.AnalysisSchedulerV3
+import io.legado.app.help.readaloud.analysis.v4.BatchAnalysisRunner
+import io.legado.app.help.readaloud.analysis.ChapterJobRegistry
+import io.legado.app.help.readaloud.analysis.ChapterTextProvider
+import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.domain.gateway.GenericNameClassifier
 import io.legado.app.help.readaloud.analysis.v4.AiIdentityArbiter
@@ -422,11 +425,14 @@ val appModule = module {
     singleOf(::SyncTtsServerVoicesUseCase)
     // [合并0716] 上游件保留：书架封面预热
     singleOf(::BookshelfCoverPreloader)
-    singleOf(::AiSpeechClient)
-    singleOf(::AiRequestScheduler)
     singleOf(::AnalysisConfigStore)
+    singleOf(::AiSpeechClient)
+    single { AiRequestScheduler() }
+    singleOf(::ChapterTextProvider)
+    singleOf(::ChapterJobRegistry)
     singleOf(::SpeechAnalysisPipelineV4)
-    singleOf(::AnalysisSchedulerV3)
+    singleOf(::BatchAnalysisRunner)
+    singleOf(::ReadAloudBuildCoordinator)
     singleOf(::PrepareChapterSpeechPlanUseCase)
     singleOf(::SyncReadAloudVoicesUseCase)
     singleOf(::CacheBookChaptersUseCase)

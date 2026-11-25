@@ -45,6 +45,15 @@ class IdentityResolver(
         val created: List<RaCharacter>,
     )
 
+    /** 批量收敛输入：一章的说话人/证据/裁决原文。 */
+    data class BatchChapterInput(
+        val chapterIndex: Int,
+        val chapterLabel: String,
+        val speakers: List<RaLocalSpeaker>,
+        val evidence: List<RaEvidence>,
+        val contextBySpeaker: Map<String, String> = emptyMap(),
+    )
+
     private data class Candidate(
         val character: RaCharacter,
         val score: Float,
@@ -454,6 +463,81 @@ class IdentityResolver(
         )
         return result.resolutions[speaker.localKey]
             ?: Resolution("", RaResolution.PENDING, false)
+    }
+
+    /**
+     * 批量收敛（03 §3.2 / 01 §5.3）：先把同一 `batchEntityId` 的跨章说话人聚合成一个实体，
+     * 再走单章同一套确定性规则/候选召回/AI 三态；结果回填到每个成员的 localSpeaker id。
+     */
+    suspend fun resolveBatch(
+        bookKey: String,
+        chapters: List<BatchChapterInput>,
+        context: AiSchedulerContext? = null,
+    ): Map<String, Resolution> {
+        if (chapters.isEmpty()) return emptyMap()
+        val ordered = chapters.sortedBy { it.chapterIndex }
+        val groups = LinkedHashMap<String, MutableList<Pair<Int, RaLocalSpeaker>>>()
+        ordered.forEach { chapter ->
+            chapter.speakers.forEach { speaker ->
+                val key = speaker.batchEntityId?.takeIf { it.isNotBlank() } ?: "solo:${speaker.id}"
+                groups.getOrPut(key) { ArrayList() }.add(chapter.chapterIndex to speaker)
+            }
+        }
+        val syntheticSpeakers = ArrayList<RaLocalSpeaker>()
+        val syntheticEvidence = ArrayList<RaEvidence>()
+        val contexts = HashMap<String, String>()
+        groups.forEach { (key, members) ->
+            val first = members.first().second
+            val names = members.flatMap { (_, sp) -> sp.surfaceNames + sp.primaryName }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+            // 用首个成员的真实 id 作为合成 id：证据可重映射，裁决记录也能随原章清理。
+            val syntheticId = first.id
+            syntheticSpeakers.add(
+                first.copy(
+                    localKey = key,
+                    surfaceNames = names,
+                    batchEntityId = null,
+                    characterId = null,
+                    resolution = RaResolution.PENDING,
+                ),
+            )
+            val memberIds = members.map { it.second.id }.toSet()
+            ordered.forEach { chapter ->
+                chapter.evidence
+                    .filter { it.subjectLocalId in memberIds }
+                    .forEach { e -> syntheticEvidence.add(e.copy(subjectLocalId = syntheticId)) }
+            }
+            members.forEach { (_, sp) ->
+                val text = ordered.asSequence()
+                    .mapNotNull { it.contextBySpeaker[sp.localKey] }
+                    .joinToString("\n")
+                if (text.isNotBlank()) contexts[syntheticId] = text.take(1200)
+            }
+        }
+        val chapterIndex = ordered.first().chapterIndex
+        val chapterLabel = if (ordered.size == 1) {
+            ordered.first().chapterLabel
+        } else {
+            "第${ordered.first().chapterIndex + 1}~${ordered.last().chapterIndex + 1}章"
+        }
+        val result = resolveChapter(
+            bookKey = bookKey,
+            chapterIndex = chapterIndex,
+            chapterLabel = chapterLabel,
+            speakers = syntheticSpeakers,
+            mentions = emptyList(),
+            evidence = syntheticEvidence,
+            contextBySpeaker = contexts,
+            context = context,
+        )
+        val out = LinkedHashMap<String, Resolution>()
+        groups.forEach { (key, members) ->
+            val resolution = result.resolutions[key] ?: return@forEach
+            members.forEach { (_, speaker) -> out[speaker.id] = resolution }
+        }
+        return out
     }
 
     private suspend fun decideAll(

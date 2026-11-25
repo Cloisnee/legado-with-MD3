@@ -31,6 +31,7 @@ import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.help.readaloud.analysis.v4.SpeakerBinder
+import io.legado.app.help.readaloud.analysis.v4.ObservationAssembly
 import io.legado.app.help.readaloud.analysis.v4.Stage2Evidence
 import io.legado.app.help.readaloud.analysis.v4.Stage2Payload
 import io.legado.app.help.readaloud.analysis.v4.Stage2Speaker
@@ -57,7 +58,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * 朗读分析管线 V4（单章前台模式）：
+ * 朗读分析管线 V4（单章前台模式；批量在 [io.legado.app.help.readaloud.analysis.v4.BatchAnalysisRunner]）：
  *
  *  阶段1 话语选号：所有章节统一走 AI（B31 逐项 T/F）；未配模型/失败才回退本地引号规则。
  *  阶段2 观察包：AI 输出 seqmap + speakers + mentions + evidence（V4-2 契约）。
@@ -277,9 +278,6 @@ BGM 建议缺段从值集补全。
             CoroutineExceptionHandler { _, e -> AppLog.putAnalysis("V4·后台任务异常: ${e.localizedMessage}", e) },
     )
 
-    private data class TextUnit(val start: Int, val end: Int, val text: String)
-    private data class ParaUnits(val paraIndex: Int, val units: List<TextUnit>)
-    private data class SpRange(val para: Int, val start: Int, val end: Int)
     @Volatile
     private var bareWordsCache: Set<String> = emptySet()
 
@@ -342,13 +340,13 @@ BGM 建议缺段从值集补全。
         if (ranges.isEmpty()) {
             AppLog.putAnalysis("【V4·$chapterLabel·阶段1】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
         }
-        var segments = assemble(paragraphs, ranges)
+        var segments = ObservationAssembly.assemble(paragraphs, ranges)
         AppLog.putAnalysis(
             "【V4·$chapterLabel·阶段1】完成 ${System.currentTimeMillis() - t0}ms：话语 ${segments.count { it.roleType != SpeechRoleType.Narrator }}",
         )
 
         // 音频导演（暂时保持现状；结果双写 Room 计划表，播放仍读旧存储到 V4-4）
-        val unitsByPara = buildParaUnits(paragraphs)
+        val unitsByPara = ObservationAssembly.buildParaUnits(paragraphs)
         val flatUnits = unitsByPara.flatMap { pu -> pu.units.map { it.text } }
         val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
             AudioLaneScan.suggest(flatUnits)
@@ -359,7 +357,7 @@ BGM 建议缺段从值集补全。
 
         // ===== 阶段2：对白归属（AI） =====
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
-        val numbered = renderNumbered(segments)
+        val numbered = ObservationAssembly.renderNumbered(segments)
         val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
         val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
             val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
@@ -391,7 +389,7 @@ BGM 建议缺段从值集补全。
             if (s2 != null) {
                 usedAi2 = true
                 stage2 = s2
-                segments = applyStage2(segments, s2.seqMap)
+                segments = ObservationAssembly.applyStage2(segments, s2.seqMap)
                 AppLog.putAnalysis(
                     "【V4·$chapterLabel·阶段2】完成：人物 ${s2.speakers.size} 个、" +
                         "提及 ${s2.mentions.size}、证据 ${s2.evidence.size}（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
@@ -404,11 +402,11 @@ BGM 建议缺段从值集补全。
         }
 
         // ===== 身份收敛（V4-2 完整版：候选召回 + AI 三态） =====
-        val localSpeakers = buildLocalSpeakers(analysisId, stage2?.speakers.orEmpty())
-        val localMentions = buildLocalMentions(analysisId, stage2?.mentions.orEmpty())
-        val evidence = buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
+        val localSpeakers = ObservationAssembly.buildLocalSpeakers(analysisId, stage2?.speakers.orEmpty())
+        val localMentions = ObservationAssembly.buildLocalMentions(analysisId, stage2?.mentions.orEmpty())
+        val evidence = ObservationAssembly.buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
         val seqMap = stage2?.seqMap.orEmpty()
-        val contextBySpeaker = buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
+        val contextBySpeaker = ObservationAssembly.buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
         val resolveResult = resolver.resolveChapter(
             bookKey = bookKey,
             chapterIndex = chapterIndex,
@@ -549,7 +547,7 @@ BGM 建议缺段从值集补全。
             createdAt = olderBuild?.createdAt ?: now,
             updatedAt = now,
         )
-        val (attributeObs, relationObs) = collectObservations(
+        val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
             bookKey = bookKey,
             chapterIndex = chapterIndex,
             payload = stage2,
@@ -582,203 +580,17 @@ BGM 建议缺段从值集补全。
 
     /** 本地快速分段（点击朗读 → 先出声）：引号规则 v2 → 段落装配；不落库。 */
     fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<RaSegment> {
-        val ranges = ArrayList<SpRange>()
+        val ranges = ArrayList<ObservationAssembly.SpRange>()
         paragraphs.forEach { p ->
             QuoteSpeechRules.quoteSpans(p.text).forEach { s ->
-                ranges.add(SpRange(p.index, s.first, s.last + 1))
+                ranges.add(ObservationAssembly.SpRange(p.index, s.first, s.last + 1))
             }
         }
-        val pruned = pruneSymbolOnly(paragraphs, ranges)
+        val pruned = ObservationAssembly.pruneSymbolOnly(paragraphs, ranges)
         if (pruned > 0) {
             AppLog.putAnalysis("【V4·快速链】纯符号话语过滤（转旁白）：${pruned} 段")
         }
-        return assemble(paragraphs, ranges)
-    }
-
-    private fun buildLocalSpeakers(
-        analysisId: String,
-        entries: List<Stage2Speaker>,
-    ): List<RaLocalSpeaker> = entries.map { entry ->
-        RaLocalSpeaker(
-            id = "$analysisId#${entry.key}",
-            analysisId = analysisId,
-            localKey = entry.key,
-            surfaceNames = entry.allNames,
-            primaryName = entry.name,
-            roleType = entry.roleType,
-            gender = entry.gender,
-            ageBand = entry.ageBand,
-            resolution = RaResolution.PENDING,
-        )
-    }
-
-    private fun buildLocalMentions(
-        analysisId: String,
-        entries: List<Stage2Speaker>,
-    ): List<RaLocalMention> = entries.map { entry ->
-        RaLocalMention(
-            id = "$analysisId#${entry.key}",
-            analysisId = analysisId,
-            localKey = entry.key,
-            surfaceNames = entry.allNames,
-            primaryName = entry.name,
-            roleType = entry.roleType,
-            gender = entry.gender,
-            ageBand = entry.ageBand,
-            resolution = RaResolution.PENDING,
-        )
-    }
-
-    private fun buildEvidence(
-        analysisId: String,
-        bookKey: String,
-        entries: List<Stage2Evidence>,
-    ): List<RaEvidence> = entries.map { e ->
-        val subjectLocalId = "$analysisId#${e.subjectKey}"
-        RaEvidence(
-            id = SpeechIdentity.evidenceId(
-                analysisId = analysisId,
-                sourceChapter = e.chapter,
-                paragraphIndex = e.paragraphIndex,
-                start = e.start,
-                type = e.type.storageValue,
-                subjectLocalId = subjectLocalId,
-                objectText = if (e.type == RaEvidenceType.RELATION && e.relation.isNotBlank()) {
-                    "${e.objectText}|${e.relation}|${e.objectKey.orEmpty()}"
-                } else {
-                    e.objectText
-                },
-                quote = e.quote,
-            ),
-            bookKey = bookKey,
-            analysisId = analysisId,
-            sourceChapter = e.chapter,
-            paragraphIndex = e.paragraphIndex,
-            start = e.start,
-            end = e.end,
-            excerpt = e.quote,
-            type = e.type,
-            subjectLocalId = subjectLocalId,
-            objectText = if (e.type == RaEvidenceType.RELATION && e.relation.isNotBlank()) {
-                "${e.objectText}|${e.relation}|${e.objectKey.orEmpty()}"
-            } else {
-                e.objectText
-            },
-            scope = if (e.scope == RaEvidenceScope.CONTEXT_CLUE) {
-                RaEvidenceScope.CONTEXT_CLUE
-            } else {
-                RaEvidenceScope.MAIN_TEXT
-            },
-            verified = e.verified,
-        )
-    }
-
-    /** 给裁决的“本批相关原文”：每人取首句所在段 + 前后各 1 段，≤1200 字。 */
-    private fun buildContextBySpeaker(
-        paragraphs: List<CanonicalSpeechParagraph>,
-        segments: List<RaSegment>,
-        seqMap: Map<Int, String>,
-        speakers: List<RaLocalSpeaker>,
-    ): Map<String, String> {
-        val byKey = speakers.associateBy { it.localKey }
-        val out = HashMap<String, String>()
-        segments.filter { it.seq > 0 }.forEach { segment ->
-            val key = seqMap[segment.seq] ?: return@forEach
-            if (key == "N" || out.containsKey(key)) return@forEach
-            byKey[key] ?: return@forEach
-            val index = paragraphs.indexOfFirst { it.index == segment.paragraphIndex }
-            if (index < 0) return@forEach
-            val from = (index - 1).coerceAtLeast(0)
-            val to = (index + 1).coerceAtMost(paragraphs.lastIndex)
-            out[key] = paragraphs.subList(from, to + 1)
-                .joinToString("\n") { it.text }
-                .take(1200)
-        }
-        return out
-    }
-
-    /** 属性/关系观察与章节分析同事务写入（default 来源不写）。 */
-    private fun collectObservations(
-        bookKey: String,
-        chapterIndex: Int,
-        payload: Stage2Payload?,
-        keyToCharacter: Map<String, String>,
-        evidence: List<RaEvidence>,
-    ): Pair<List<RaAttributeObservation>, List<RaRelationObservation>> {
-        val attributes = ArrayList<RaAttributeObservation>()
-        val relations = ArrayList<RaRelationObservation>()
-        if (payload == null) return attributes to relations
-        payload.speakers.forEach { speaker ->
-            val characterId = keyToCharacter[speaker.key] ?: return@forEach
-            if (speaker.genderSource != "default" && speaker.gender.isNotBlank()) {
-                attributes.add(
-                    RaAttributeObservation(
-                        id = "att_${characterId}_gender_$chapterIndex",
-                        bookKey = bookKey,
-                        characterId = characterId,
-                        key = "gender",
-                        value = speaker.gender,
-                        fromChapter = chapterIndex,
-                        source = speaker.genderSource,
-                    ),
-                )
-            }
-            if (speaker.ageSource != "default" && speaker.ageBand.isNotBlank()) {
-                attributes.add(
-                    RaAttributeObservation(
-                        id = "att_${characterId}_ageBand_$chapterIndex",
-                        bookKey = bookKey,
-                        characterId = characterId,
-                        key = "ageBand",
-                        value = speaker.ageBand,
-                        fromChapter = chapterIndex,
-                        source = speaker.ageSource,
-                    ),
-                )
-            }
-        }
-        evidence.filter { it.scope == RaEvidenceScope.MAIN_TEXT && it.verified }.forEach { e ->
-            val localKey = e.subjectLocalId.substringAfterLast('#')
-            val characterId = keyToCharacter[localKey] ?: return@forEach
-            when (e.type) {
-                RaEvidenceType.RELATION -> {
-                    if (e.objectText.isNotBlank()) {
-                        val parts = e.objectText.split('|', limit = 3)
-                        val targetKey = parts.getOrElse(2) { "" }
-                        relations.add(
-                            RaRelationObservation(
-                                id = "rel_${e.id}",
-                                bookKey = bookKey,
-                                characterId = characterId,
-                                relation = parts.getOrElse(1) { "关系" },
-                                targetCharacterId = keyToCharacter[targetKey],
-                                targetText = parts[0],
-                                fromChapter = chapterIndex,
-                                evidenceId = e.id,
-                            ),
-                        )
-                    }
-                }
-                RaEvidenceType.ATTRIBUTE -> {
-                    if (e.objectText.isNotBlank()) {
-                        attributes.add(
-                            RaAttributeObservation(
-                                id = "att_${e.id}",
-                                bookKey = bookKey,
-                                characterId = characterId,
-                                key = "identity",
-                                value = e.objectText.take(60),
-                                fromChapter = chapterIndex,
-                                evidenceId = e.id,
-                                source = "explicit",
-                            ),
-                        )
-                    }
-                }
-                else -> Unit
-            }
-        }
-        return attributes to relations
+        return ObservationAssembly.assemble(paragraphs, ranges)
     }
 
     private suspend fun saveDirectionRows(
@@ -844,16 +656,16 @@ BGM 建议缺段从值集补全。
         cfg: AnalysisConfigStore.Config,
         chapterIndex: Int,
         aiContext: AiSchedulerContext? = null,
-    ): List<SpRange> {
+    ): List<ObservationAssembly.SpRange> {
         // 本地路径：引号包裹规则 v2
-        val local = ArrayList<SpRange>()
+        val local = ArrayList<ObservationAssembly.SpRange>()
         paragraphs.forEach { p ->
             QuoteSpeechRules.quoteSpans(p.text).forEach { s ->
-                local.add(SpRange(p.index, s.first, s.last + 1))
+                local.add(ObservationAssembly.SpRange(p.index, s.first, s.last + 1))
             }
         }
         // B28：纯符号"话语"（无汉字/数字/字母）转旁白（静默，不触发重试）
-        val localPruned = pruneSymbolOnly(paragraphs, local)
+        val localPruned = ObservationAssembly.pruneSymbolOnly(paragraphs, local)
         if (localPruned > 0) {
             AppLog.putAnalysis("【V4·${chapterLabel}·阶段1】纯符号话语过滤（转旁白）：${localPruned} 段")
         }
@@ -863,11 +675,11 @@ BGM 建议缺段从值集补全。
             AppLog.putAnalysis("【V4·${chapterLabel}·阶段1】未配模型队列 → 本地规则：${local.size} 段话语")
             return local
         }
-        val cands = buildParaUnits(paragraphs)
+        val cands = ObservationAssembly.buildParaUnits(paragraphs)
         if (cands.isEmpty()) return local
         val unitCounts = cands.associate { it.paraIndex to it.units.size }.toMutableMap()
         paragraphs.forEach { p -> if (p.index !in unitCounts) unitCounts[p.index] = 0 }
-        val unitsText = buildUnitsText(cands)
+        val unitsText = ObservationAssembly.buildUnitsText(cands)
         val base = cfg.stage1Prompt.ifBlank { DEFAULT_STAGE1_PROMPT }
         val promptFactory = { failHint: String ->
             buildString {
@@ -889,7 +701,7 @@ BGM 建议缺段从值集补全。
             logTag = "${chapterLabel}·阶段1",
             context = aiContext?.copy(kind = AiTaskKind.STAGE1),
         ) { raw ->
-            validateSelection(raw, unitCounts)
+            ObservationAssembly.validateSelection(ai::extractJson, raw, unitCounts)
         }
         if (sel != null) {
             val paras = cands.map { c ->
@@ -899,7 +711,7 @@ BGM 建议缺段从值集补全。
                 )
             }
             val asm = SpeechSelectionAssembly.assemble(paras, sel)
-            val fromAi = asm.spans.map { SpRange(it.para, it.start, it.end) }
+            val fromAi = asm.spans.map { ObservationAssembly.SpRange(it.para, it.start, it.end) }
             AppLog.putAnalysis(
                 "【V4·${chapterLabel}·阶段1】AI判定：话语 ${fromAi.size} 条" +
                     "（旁白 ${asm.narratorUnits} 片；保险丝修正 ${asm.fusedColon + asm.fusedSymbol} 条）"
@@ -910,208 +722,16 @@ BGM 建议缺段从值集补全。
         return local
     }
 
-    private fun buildParaUnits(paragraphs: List<CanonicalSpeechParagraph>): List<ParaUnits> {
-        return paragraphs.mapNotNull { p ->
-            val units = QuoteSpeechRules.splitToUnits(p.text).map { u ->
-                TextUnit(u.start, u.end, p.text.substring(u.start, u.end))
-            }
-            if (units.isEmpty()) null else ParaUnits(p.index, units)
-        }
-    }
-
-    private fun buildUnitsText(cands: List<ParaUnits>): String = buildString {
-        cands.forEach { c ->
-            append("〖第").append(c.paraIndex + 1).append("段〗\n")
-            c.units.forEachIndexed { i, u ->
-                append("[").append(i + 1).append("] ").append(u.text).append("\n")
-            }
-        }
-    }
-
-    /** 判定结构校验（B31.1：段号/长度/缺段 全量收集 → 带理由 failHint 重试；宽容解析 串/数组/布尔） */
-    private fun validateSelection(
-        raw: String,
-        unitCounts: Map<Int, Int>,
-    ): ValidateOutcome<Map<Int, BooleanArray>> {
-        val root = ai.extractJson(raw) ?: return ValidateOutcome(null, "返回不是JSON对象")
-        val list = root.optJSONArray("段落") ?: root.optJSONArray("段") ?: root.optJSONArray("paragraphs")
-            ?: return ValidateOutcome(null, "缺少段落列表字段")
-        val totalParas = unitCounts.size
-        val map = HashMap<Int, BooleanArray>()
-        val seen = HashSet<Int>()
-        val errs = ArrayList<String>()
-        for (i in 0 until list.length()) {
-            val item = list.optJSONObject(i)
-            if (item == null) {
-                errs.add("存在非对象的段落条目")
-                continue
-            }
-            val nRaw: Any? = if (item.has("段号")) item.opt("段号") else item.opt("id")
-            if (nRaw == null) {
-                errs.add("存在缺少段号的条目")
-                continue
-            }
-            val n = nRaw.toString().trim().toIntOrNull()
-            if (n == null) {
-                errs.add("段号不是整数：「$nRaw」")
-                continue
-            }
-            if (n < 1 || n > totalParas) {
-                errs.add("段号越界：$n（全文共${totalParas}段）")
-                continue
-            }
-            if (n in seen) {
-                errs.add("段号重复：$n")
-                continue
-            }
-            seen.add(n)
-            val maxU = unitCounts[n - 1] ?: 0
-            val rawFlag: Any? = when {
-                item.has("判定") -> item.opt("判定")
-                item.has("flags") -> item.opt("flags")
-                item.has("标记") -> item.opt("标记")
-                else -> null
-            }
-            val flags = SpeechSelectionAssembly.parseFlags(jsonToPlainFlags(rawFlag), maxU)
-            if (flags == null) {
-                errs.add("第${n}段判定缺失或长度不符（本段共${maxU}片）")
-                continue
-            }
-            map[n - 1] = flags
-        }
-        // B31.1：缺段=校验失败——带理由打回重析（不再宽容转旁白）
-        val missing = unitCounts.filter { (para, cnt) -> cnt > 0 && para !in map }.keys.sorted()
-        if (missing.isNotEmpty()) {
-            val shown = missing.take(8).joinToString("、") { (it + 1).toString() }
-            val tail = if (missing.size > 8) "…等${missing.size}个" else ""
-            errs.add("缺少判定的段落：$shown$tail（每段都必须输出与片段数等长的判定数组）")
-        }
-        if (errs.isNotEmpty()) return ValidateOutcome(null, errs.joinToString("；"))
-        return ValidateOutcome(map)
-    }
-
-    /** JSONArray → 纯 Kotlin 结构（供 [SpeechSelectionAssembly.parseFlags] 宽容解析） */
-    private fun jsonToPlainFlags(v: Any?): Any? = when (v) {
-        is JSONArray -> (0 until v.length()).map { v.opt(it) }
-        else -> v
-    }
-
     // ---------------- 装配 ----------------
-
-    /** B28：第1阶段话语校验——仅由标点/符号构成（无任何汉字/数字/字母）的"话语"不成立 → 转旁白（原地剔除，静默不重试） */
-    private fun pruneSymbolOnly(
-        paragraphs: List<CanonicalSpeechParagraph>,
-        ranges: MutableList<SpRange>,
-    ): Int {
-        val byIdx = paragraphs.associateBy { it.index }
-        val before = ranges.size
-        ranges.removeAll { r ->
-            val pr = byIdx[r.para] ?: return@removeAll true
-            val s = pr.text
-            val st = r.start.coerceIn(0, s.length)
-            val en = r.end.coerceIn(st, s.length)
-            !(st < en && s.substring(st, en).any { it.isLetterOrDigit() })
-        }
-        return before - ranges.size
-    }
-
-    private fun assemble(
-        paragraphs: List<CanonicalSpeechParagraph>,
-        ranges: List<SpRange>,
-    ): List<RaSegment> {
-        val out = ArrayList<RaSegment>()
-        val byPara = ranges.groupBy { it.para }
-        paragraphs.forEach { p ->
-            val rs = (byPara[p.index] ?: emptyList()).sortedBy { it.start }
-            var cursor = 0
-            rs.forEach { r ->
-                if (cursor < r.start) {
-                    val t = p.text.substring(cursor, r.start)
-                    if (t.isNotBlank()) out.add(seg(p, cursor, r.start, t, SpeechRoleType.Narrator))
-                }
-                val rs2 = r.start.coerceIn(0, p.text.length)
-                val re2 = r.end.coerceIn(rs2, p.text.length)
-                val t = p.text.substring(rs2, re2)
-                if (t.isNotBlank()) {
-                    // B31：心理活动标签（Thought）注入已拔除（云链路待 B32 一并处置；枚举保留兼容老数据）
-                    out.add(seg(p, rs2, re2, t, SpeechRoleType.Character))
-                }
-                cursor = re2
-            }
-            if (cursor < p.text.length) {
-                val t = p.text.substring(cursor)
-                if (t.isNotBlank()) out.add(seg(p, cursor, p.text.length, t, SpeechRoleType.Narrator))
-            }
-        }
-        return out
-    }
-
-    private fun seg(
-        p: CanonicalSpeechParagraph,
-        start: Int,
-        end: Int,
-        text: String,
-        role: SpeechRoleType,
-    ): RaSegment = RaSegment(
-        id = "",
-        analysisId = "",
-        bookKey = "",
-        chapterIndex = 0,
-        paragraphIndex = p.index,
-        start = start,
-        end = end,
-        chapterPosition = p.chapterPosition + start,
-        text = text,
-        roleType = role,
-        surfaceName = "",
-        source = SpeechResolutionSource.Rule,
-    )
-
-    /** 编号渲染（B31：[n]〔content（外层引号已去除）〕/ [N]旁白；一行一项、段间空行）——发给第2阶段/情绪 */
-    private fun renderNumbered(segments: List<RaSegment>): String {
-        val sb = StringBuilder()
-        var n = 0
-        var lastP = -1
-        segments.forEach { s ->
-            if (lastP != -1 && s.paragraphIndex != lastP) sb.append("\n")
-            if (s.roleType == SpeechRoleType.Narrator) {
-                sb.append("[N]").append(s.text)
-            } else {
-                n++
-                sb.append("[").append(n).append("]〔").append(QuoteSpeechRules.unwrapOuterBlock(s.text)).append("〕")
-            }
-            sb.append("\n")
-            lastP = s.paragraphIndex
-        }
-        return sb.toString().trimEnd('\n')
-    }
-
-    /** 前情/后续取文：按完整段落取，累计不超过 limit（0..3000），不截断段落 */
-    private fun takeContextByParagraphs(text: String, limit: Int, fromTail: Boolean): String {
-        if (limit <= 0 || text.isBlank()) return ""
-        val paras = text.split("\n").filter { it.isNotBlank() }
-        if (paras.isEmpty()) return ""
-        val out = ArrayList<String>()
-        var total = 0
-        var i = if (fromTail) paras.size - 1 else 0
-        val step = if (fromTail) -1 else 1
-        while (i in paras.indices) {
-            val p = paras[i]
-            if (total + p.length > limit) break
-            out.add(p)
-            total += p.length
-            i += step
-        }
-        return (if (fromTail) out.reversed() else out).joinToString("\n")
-    }
 
     // ---------------- B 归属+人物 ----------------
 
     /** 本章出现非泛称别名的人物 + 上一章出场人物，最多 12 人。 */
-    private suspend fun buildKnownCharacters(
+    suspend fun buildKnownCharacters(
         bookKey: String,
         paragraphs: List<CanonicalSpeechParagraph>,
         chapterIndex: Int,
+        limit: Int = 12,
     ): String {
         val all = runCatching { raCharacters.charactersRaw(bookKey) }.getOrDefault(emptyList())
         if (all.isEmpty()) return ""
@@ -1128,7 +748,7 @@ BGM 建议缺段从值集补全。
         }
         val chosen = (hit + previous + all.sortedByDescending { it.appearanceCount })
             .distinctBy { it.id }
-            .take(12)
+            .take(limit)
         return chosen.joinToString("\n") { character ->
             val names = byId[character.id].orEmpty()
                 .filterNot { it.isGeneric }
@@ -1154,8 +774,8 @@ BGM 建议缺段从值集补全。
         knownCharacters: String,
         aiContext: AiSchedulerContext? = null,
     ): Stage2Payload? {
-        val prev = takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
-        val next = takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
+        val prev = ObservationAssembly.takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
+        val next = ObservationAssembly.takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
         val head = cfg.stage2Prompt.ifBlank { V4Prompts.DEFAULT_STAGE2_PROMPT }
         val prevLabeled = prev.lines().filter { it.isNotBlank() }
             .mapIndexed { index, line -> "[来源 ch=${chapterIndex} p=${index + 1}] $line" }
@@ -1203,39 +823,6 @@ BGM 建议缺段从值集补全。
             context = aiContext?.copy(kind = AiTaskKind.STAGE2),
         ) { raw ->
             validator.validate(raw, expectedCount)
-        }
-    }
-
-    private fun applyStage2(
-        segments: List<RaSegment>,
-        seqMap: Map<Int, String>,
-    ): List<RaSegment> {
-        var n = 0
-        return segments.map { s ->
-            if (s.roleType == SpeechRoleType.Narrator) {
-                s
-            } else {
-                n++
-                val reference = seqMap[n]
-                if (reference.isNullOrBlank() || reference == "N") {
-                    s.copy(
-                        roleType = SpeechRoleType.Narrator,
-                        surfaceName = "",
-                        characterId = null,
-                        localSpeakerId = null,
-                        source = SpeechResolutionSource.Ai,
-                        seq = 0,
-                    )
-                } else {
-                    s.copy(
-                        surfaceName = "",
-                        characterId = null,
-                        source = SpeechResolutionSource.Ai,
-                        confidence = 0.9f,
-                        seq = n,
-                    )
-                }
-            }
         }
     }
 
@@ -1330,7 +917,7 @@ BGM 建议缺段从值集补全。
 
     /** B34.2b：导演输入=第1阶段片段文本（〖第N段〗+[m] 同款）+ 本地建议标记 */
     private fun renderDirectorUnits(
-        unitsByPara: List<ParaUnits>,
+        unitsByPara: List<ObservationAssembly.ParaUnits>,
         unitSuggestions: List<List<AudioLaneScan.Suggestion>>,
     ): String {
         val sb = StringBuilder()
@@ -1351,7 +938,7 @@ BGM 建议缺段从值集补全。
     /** B34.2c：导演条目（段/片段+片内pos）→ 章节计划（剧本行锚点=segOrdinal + 句内比例） */
     private fun convertDirectorItems(
         items: List<AudioDirectorContract.DirectorItem>,
-        unitsByPara: List<ParaUnits>,
+        unitsByPara: List<ObservationAssembly.ParaUnits>,
         segments: List<RaSegment>,
     ): AudioPlan {
         val amb = ArrayList<AudioPlanItem>()
@@ -1392,7 +979,7 @@ BGM 建议缺段从值集补全。
 
     /** B34.2b：兜底计划种子——片段建议（含片内命中比）→ 剧本行锚点+句内比例 */
     private fun buildFallbackSeeds(
-        unitsByPara: List<ParaUnits>,
+        unitsByPara: List<ObservationAssembly.ParaUnits>,
         unitSuggestions: List<List<AudioLaneScan.Suggestion>>,
         segments: List<RaSegment>,
     ): List<AudioPrefill.PlanSeed> {

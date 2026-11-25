@@ -16,7 +16,9 @@ import java.io.File
  *  - prevLimit/nextLimit：前情提要/后续剧情取文上限（0..3000 字；按完整段落取，不截断段落）；
  *  - emotionJoinTimeoutMs：第4阶段完成后最多再等情绪结果多久（默认 120000，超时先落库）；
  *  - audioDirectorJoinTimeoutMs：第4阶段完成后最多再等音频导演计划多久（默认 120000；超时/失败走本地兜底）；
- *  - maxOutputTokens：单次 AI 输出上限（默认 32768）。
+ *  - maxOutputTokens：单次 AI 输出上限（默认 32768）；
+ *  - bgSessionBudget：后台建库每次朗读会话的额度（0..200，默认 20；0=关闭）；
+ *  - bgBatchMaxChapters：后台单批最大章数（1..30，默认 10）。
  */
 class AnalysisConfigStore(private val app: Application) {
 

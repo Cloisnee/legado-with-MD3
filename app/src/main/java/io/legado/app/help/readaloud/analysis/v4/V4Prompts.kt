@@ -87,6 +87,53 @@ ch 只能是本章；引用前情/后续上下文中的事实时也写其来源�
 5. 不要输出空字段以外的任何解释文字。
 """.trimIndent()
 
+    private const val STAGE1_BATCH_SPEC = """
+=== 批量模式（优先于以上单章输出格式）===
+本次输入包含多章，用 `=== ch=N ===` 分隔；每章内部仍按〖第N段〗与 [n] 编号，编号在各章内独立。
+必须对输入中的每一章、每一段输出判定，不能跨章合并段落；章节按升序输出。
+只输出纯 JSON：
+{"章节":[{"ch":92,"段落":[{"段号":1,"判定":["F","T"]}]},{"ch":93,"段落":[{"段号":1,"判定":["T"]}]}]}
+不要输出 markdown、解释或多余文字。
+"""
+
+    private const val STAGE2_BATCH_SPEC = """
+=== 批量模式（优先于以上单章输出格式）===
+本次输入包含多章，用 `=== ch=N ===` 分隔；各章 [n] 编号独立。
+输出必须是 NDJSON：每行一个完整 JSON 对象，行间只有换行，不要输出 markdown 围栏。
+第 1 行必须是批内实体表（同一人物在批内多章出现时只用一个 bkey）：
+{"type":"entities","entities":[{"bkey":"B1","name":"沈孤鸿","aliases":["青衫客"],"roletype":"核心","gender":"男","age":"男青年","genderSource":"inferred","ageSource":"inferred"}]}
+之后按章节升序，每章一行：
+{"type":"chapter","ch":92,"seqmap":{"1":"B1","2":"N"},"localSpeakers":{"B1":{"name":"青衫客","aliases":[]}},"mentions":[],"evidence":[]}
+最后一行：
+{"type":"end","chapters":[92,93]}
+localSpeakers 的 key 必须是 entities 中的 bkey；name/aliases 只写本章原文出现的称呼。seqmap 覆盖、mentions、evidence 的规则与上文单章完全相同。
+"""
+
+    /** 批量阶段1提示词：默认提示词替换掉单章输出格式；用户自定义提示词追加批量输出要求。 */
+    fun stage1BatchPrompt(base: String): String {
+        val trimmed = base.trim()
+        val body = if (trimmed == stage1Default().trim()) {
+            trimmed.substringBefore("六、输出格式").trimEnd()
+        } else {
+            trimmed
+        }
+        return body + "\n\n" + STAGE1_BATCH_SPEC.trim()
+    }
+
+    /** 批量阶段2提示词：默认提示词替换掉单章输出格式；用户自定义提示词追加批量输出要求。 */
+    fun stage2BatchPrompt(base: String): String {
+        val trimmed = base.trim()
+        val body = if (trimmed == DEFAULT_STAGE2_PROMPT.trim()) {
+            trimmed.substringBefore("=== 输出格式 ===").trimEnd()
+        } else {
+            trimmed
+        }
+        return body + "\n\n" + STAGE2_BATCH_SPEC.trim()
+    }
+
+    /** 延迟引用，避免对象初始化顺序问题。 */
+    private fun stage1Default(): String = io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4.defaultPrompt("stage1")
+
     val DEFAULT_RESOLVE_PROMPT = """
 你是一个小说人物身份裁决专家。给定若干待判定对象（本章/本批新出现或需要复核的称呼集合）和候选人物卡，判断每个对象是否与某个候选是同一人。
 
