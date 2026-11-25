@@ -452,7 +452,7 @@ class BatchAnalysisRunner(
             pipeline.buildKnownCharacters(bookKey, allParagraphs, last.chapterIndex, limit = 20)
         }.getOrDefault("")
 
-        val user = buildString {
+        fun buildUser(active: List<ChapterWork>): String = buildString {
             if (prev.isNotBlank()) {
                 append("【批次前情】\n")
                 prev.lines().filter { it.isNotBlank() }.forEachIndexed { index, line ->
@@ -461,7 +461,7 @@ class BatchAnalysisRunner(
                 append('\n')
             }
             append("【批次正文】\n")
-            ordered.forEach { work ->
+            active.forEach { work ->
                 append("=== ch=").append(work.text.chapterIndex + 1).append(" ===\n")
                 append(
                     ObservationAssembly.renderNumbered(
@@ -479,16 +479,6 @@ class BatchAnalysisRunner(
         }
         val base = cfg.stage2Prompt.ifBlank { V4Prompts.DEFAULT_STAGE2_PROMPT }
         val head = V4Prompts.stage2BatchPrompt(base)
-        val promptFactory = { failHint: String ->
-            buildString {
-                append(head)
-                if (failHint.isNotBlank()) {
-                    append("\n【重要】你上一次的输出存在以下问题：").append(failHint)
-                        .append("。请修正后重新输出。\n\n")
-                }
-                append("\n=== 待分析文本 ===\n").append(user)
-            }
-        }
         val totalTimeout = min(cfg.timeoutSec * 1000L * ordered.size, 1_800_000L)
         val byChapter = ordered.associateBy { it.text.chapterIndex }
         var modelUsed = ""
@@ -496,6 +486,18 @@ class BatchAnalysisRunner(
 
         repeat(2) { round ->
             if (pending.isEmpty()) return@repeat
+            val active = ordered.filter { it.text.chapterIndex in pending }
+            val user = buildUser(active)
+            val promptFactory = { failHint: String ->
+                buildString {
+                    append(head)
+                    if (failHint.isNotBlank()) {
+                        append("\n【重要】你上一次的输出存在以下问题：").append(failHint)
+                            .append("。请修正后重新输出。\n\n")
+                    }
+                    append("\n=== 待分析文本 ===\n").append(user)
+                }
+            }
             val commitChannel = Channel<Pair<Int, JSONObject>>(Channel.UNLIMITED)
             val entities = LinkedHashMap<String, JSONObject>()
             val parser = NdjsonChapterStream(
