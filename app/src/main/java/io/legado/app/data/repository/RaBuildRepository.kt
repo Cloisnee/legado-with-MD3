@@ -332,34 +332,33 @@ class RaBuildRepository(
         if (snapshot.segmentIds.isNotEmpty()) {
             dao.updateSegmentCharacterByIds(snapshot.segmentIds, fromCharacterId, now)
         }
-        // 先清理由本次合并迁入 to 的别名/方案，再按双方快照恢复，避免 from/to 同时持有同一别名
-        val toAliasKeys = snapshot.toAliases.map { it.normalized }.toSet()
+        // 只逆向本次合并实际移动的别名/方案；合并后新增的别名、声线、用户编辑全部保留
+        val toOriginalAliasKeys = snapshot.toAliases.map { it.normalized }.toSet()
+        val movedAliasKeys = snapshot.aliases
+            .map { it.normalized }
+            .filter { it !in toOriginalAliasKeys }
+            .toSet()
         characterDao.aliasesOf(toCharacterId)
-            .filter { it.normalized !in toAliasKeys }
+            .filter { it.normalized in movedAliasKeys && it.source != "user" }
             .forEach { characterDao.deleteAlias(toCharacterId, it.normalized) }
-        snapshot.toAliases.forEach {
-            characterDao.upsertAliases(listOf(it.copy(characterId = toCharacterId, updatedAt = now)))
+        val toAliasKeysNow = characterDao.aliasesOf(toCharacterId).map { it.normalized }.toSet()
+        snapshot.aliases
+            .filter { it.normalized !in toAliasKeysNow }
+            .forEach {
+                characterDao.upsertAliases(listOf(it.copy(characterId = fromCharacterId, updatedAt = now)))
+            }
+
+        // 合并时可能删除 to 的默认方案或把 from 的方案移到 to：只处理这些 id
+        snapshot.voiceProfiles.forEach { profile ->
+            val current = characterDao.voiceProfile(profile.id)
+            characterDao.upsertVoiceProfile(
+                (current ?: profile).copy(characterId = fromCharacterId, updatedAt = now),
+            )
         }
-        val toVoiceIds = snapshot.toVoiceProfiles.map { it.id }.toSet()
-        characterDao.voiceProfilesOf(toCharacterId)
-            .filter { it.id !in toVoiceIds }
-            .forEach { characterDao.deleteVoiceProfile(it.id) }
-        snapshot.toVoiceProfiles.forEach {
-            characterDao.upsertVoiceProfile(it.copy(characterId = toCharacterId, updatedAt = now))
-        }
-        val fromAliasKeys = snapshot.aliases.map { it.normalized }.toSet()
-        characterDao.aliasesOf(fromCharacterId)
-            .filter { it.normalized !in fromAliasKeys }
-            .forEach { characterDao.deleteAlias(fromCharacterId, it.normalized) }
-        snapshot.aliases.forEach {
-            characterDao.upsertAliases(listOf(it.copy(characterId = fromCharacterId, updatedAt = now)))
-        }
-        val fromVoiceIds = snapshot.voiceProfiles.map { it.id }.toSet()
-        characterDao.voiceProfilesOf(fromCharacterId)
-            .filter { it.id !in fromVoiceIds }
-            .forEach { characterDao.deleteVoiceProfile(it.id) }
-        snapshot.voiceProfiles.forEach {
-            characterDao.upsertVoiceProfile(it.copy(characterId = fromCharacterId, updatedAt = now))
+        snapshot.toVoiceProfiles.forEach { profile ->
+            if (characterDao.voiceProfile(profile.id) == null) {
+                characterDao.upsertVoiceProfile(profile.copy(characterId = toCharacterId, updatedAt = now))
+            }
         }
         snapshot.attributes.forEach {
             characterDao.updateAttributeCharacter(it.id, fromCharacterId, now)

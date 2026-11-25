@@ -658,11 +658,7 @@ class IdentityResolver(
                 .filter { it.isNotEmpty() }
                 .toSet()
             if (provisionalNames.intersect(names).isEmpty()) return@forEach
-            // 必须有可追踪的候选依据：旧临时人物的裁决候选里出现过当前目标
-            val relatedByCandidate = runCatching { characters.decisionsForCharacter(provisional.id) }
-                .getOrDefault(emptyList())
-                .any { target.id in it.candidateIds }
-            if (!relatedByCandidate) return@forEach
+            // 已核验的 MAIN_TEXT ALIAS_EQUAL 是确定性证据：不再要求目标曾进入旧候选集合
             runCatching {
                 characters.mergeCharactersAsAi(
                     provisional.id,

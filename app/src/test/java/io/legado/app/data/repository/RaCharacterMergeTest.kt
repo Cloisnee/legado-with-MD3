@@ -183,6 +183,14 @@ class RaCharacterMergeTest {
         assertTrue(db.raCharacterDao.linksOfBook(BOOK).any {
             it.kind == "SAME" && it.decisionId == "d1" && it.evidenceIds.contains("e1")
         })
+        // 合并后新增的用户别名/声线，回滚不得删除
+        repository.attachAliases(BOOK, to.id, listOf("合并后新别名"), 4, "user")
+        repository.saveVoiceProfile(
+            RaVoiceProfile(
+                id = "vp_user", bookKey = BOOK, characterId = to.id,
+                kind = RaVoiceProfileKind.DEFAULT, label = "用户新声线", voiceTag = "user-tag",
+            ),
+        )
 
         RaBuildRepository(db, db.raBuildDao, db.raCharacterDao, db.raDirectionDao)
             .deleteChapters(BOOK, "s", listOf(2))
@@ -200,6 +208,8 @@ class RaCharacterMergeTest {
             "to-tag",
             db.raCharacterDao.voiceProfilesOf(to.id).firstOrNull { it.kind == "DEFAULT" }?.voiceTag,
         )
+        assertTrue(db.raCharacterDao.aliasesOf(to.id).any { it.surface == "合并后新别名" })
+        assertTrue(db.raCharacterDao.voiceProfilesOf(to.id).any { it.id == "vp_user" })
     }
 
     companion object {
@@ -207,7 +217,7 @@ class RaCharacterMergeTest {
     }
 
     @Test
-    fun `new alias evidence merges old provisional and moves old lines`() = runBlocking {
+    fun `new alias evidence outside old candidates merges provisional and moves old lines`() = runBlocking {
         val a = repository.ensureCharacter(
             BOOK, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
         )
@@ -248,7 +258,8 @@ class RaCharacterMergeTest {
         db.raCharacterDao.insertDecision(
             RaIdentityDecisionEntity(
                 id = "dP", bookKey = BOOK, localSpeakerId = "ls3",
-                candidateIds = "[\"${a.id}\"]", verdict = "UNKNOWN",
+                // 目标 A 不在旧候选集合中：当前 ALIAS_EQUAL 是更强的新证据
+                candidateIds = "[\"chr_other\"]", verdict = "UNKNOWN",
                 chosenCharacterId = p.id,
             ),
         )
