@@ -441,6 +441,13 @@ class RaCharacterRepository(
                     attributes = dao.attributesOf(from),
                     relations = dao.relationsOf(from),
                     voiceProfiles = dao.voiceProfilesOf(from),
+                    toAliases = dao.aliasesOf(to),
+                    toVoiceProfiles = dao.voiceProfilesOf(to),
+                    toFirstChapter = toCharacter.firstChapter,
+                    toLastChapter = toCharacter.lastChapter,
+                    toAppearanceCount = toCharacter.appearanceCount,
+                    toUserEdited = toCharacter.userEdited,
+                    toIdentityRevision = toCharacter.identityRevision,
                 )
             } else {
                 null
@@ -704,6 +711,13 @@ data class MergeSnapshot(
     val attributes: List<RaAttributeObsEntity> = emptyList(),
     val relations: List<RaRelationObsEntity> = emptyList(),
     val voiceProfiles: List<RaVoiceProfileEntity> = emptyList(),
+    val toAliases: List<RaCharacterAliasEntity> = emptyList(),
+    val toVoiceProfiles: List<RaVoiceProfileEntity> = emptyList(),
+    val toFirstChapter: Int = 0,
+    val toLastChapter: Int = 0,
+    val toAppearanceCount: Int = 0,
+    val toUserEdited: Boolean = false,
+    val toIdentityRevision: Long = 0L,
 )
 
 internal fun RaCharacterEntity.toDomain() = RaCharacter(

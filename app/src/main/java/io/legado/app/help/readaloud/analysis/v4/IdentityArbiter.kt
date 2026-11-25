@@ -174,13 +174,8 @@ fun validateIdentityDecisions(
         ch: Int,
         p: Int,
     ): Boolean {
-        val byEvidence = question.evidence.any { e ->
-            val paragraphMatches = e.paragraphIndex == p - 1 || e.paragraphIndex == p
-            e.sourceChapter == ch && paragraphMatches &&
+        return question.evidence.any { e ->
+            e.sourceChapter == ch && e.paragraphIndex == p - 1 &&
                 (e.excerpt.contains(quote) || e.objectText.contains(quote))
         }
-        if (byEvidence) return true
-        // 无 ch/p 的旧输出：只允许在当前上下文文本中核对
-        return ch <= 0 && p <= 0 && question.contextText.isNotBlank() &&
-            question.contextText.contains(quote)
     }

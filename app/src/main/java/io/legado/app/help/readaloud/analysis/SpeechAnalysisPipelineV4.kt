@@ -546,16 +546,23 @@ BGM 建议缺段从值集补全。
             createdAt = olderBuild?.createdAt ?: now,
             updatedAt = now,
         )
-        raBuild.saveAnalysisBundle(
+        val (attributeObs, relationObs) = collectObservations(
+            bookKey = bookKey,
+            chapterIndex = chapterIndex,
+            payload = stage2,
+            keyToCharacter = keyToCharacter,
+            evidence = evidence,
+        )
+        raBuild.saveAnalysisBundleWithObservations(
             analysis = analysis,
             segments = bound,
             localSpeakers = updatedSpeakers,
             localMentions = localMentions,
             evidence = evidence,
             build = build,
+            attributes = attributeObs,
+            relations = relationObs,
         )
-        // 观察写入放在章节事务之后：落库失败时不会留下孤儿观察
-        writeObservations(bookKey, chapterIndex, stage2, keyToCharacter, evidence)
         AppLog.putAnalysis(
             "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
                 (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
@@ -687,19 +694,21 @@ BGM 建议缺段从值集补全。
         return out
     }
 
-    /** 属性/关系观察落库（default 来源不写；identityRevision 由 ensureCharacter 负责）。 */
-    private suspend fun writeObservations(
+    /** 属性/关系观察与章节分析同事务写入（default 来源不写）。 */
+    private fun collectObservations(
         bookKey: String,
         chapterIndex: Int,
         payload: Stage2Payload?,
         keyToCharacter: Map<String, String>,
         evidence: List<RaEvidence>,
-    ) {
-        payload ?: return
+    ): Pair<List<RaAttributeObservation>, List<RaRelationObservation>> {
+        val attributes = ArrayList<RaAttributeObservation>()
+        val relations = ArrayList<RaRelationObservation>()
+        if (payload == null) return attributes to relations
         payload.speakers.forEach { speaker ->
             val characterId = keyToCharacter[speaker.key] ?: return@forEach
             if (speaker.genderSource != "default" && speaker.gender.isNotBlank()) {
-                raCharacters.saveAttribute(
+                attributes.add(
                     RaAttributeObservation(
                         id = "att_${characterId}_gender_$chapterIndex",
                         bookKey = bookKey,
@@ -712,7 +721,7 @@ BGM 建议缺段从值集补全。
                 )
             }
             if (speaker.ageSource != "default" && speaker.ageBand.isNotBlank()) {
-                raCharacters.saveAttribute(
+                attributes.add(
                     RaAttributeObservation(
                         id = "att_${characterId}_ageBand_$chapterIndex",
                         bookKey = bookKey,
@@ -733,7 +742,7 @@ BGM 建议缺段从值集补全。
                     if (e.objectText.isNotBlank()) {
                         val parts = e.objectText.split('|', limit = 3)
                         val targetKey = parts.getOrElse(2) { "" }
-                        raCharacters.saveRelation(
+                        relations.add(
                             RaRelationObservation(
                                 id = "rel_${e.id}",
                                 bookKey = bookKey,
@@ -749,7 +758,7 @@ BGM 建议缺段从值集补全。
                 }
                 RaEvidenceType.ATTRIBUTE -> {
                     if (e.objectText.isNotBlank()) {
-                        raCharacters.saveAttribute(
+                        attributes.add(
                             RaAttributeObservation(
                                 id = "att_${e.id}",
                                 bookKey = bookKey,
@@ -766,6 +775,7 @@ BGM 建议缺段从值集补全。
                 else -> Unit
             }
         }
+        return attributes to relations
     }
 
     private suspend fun saveDirectionRows(

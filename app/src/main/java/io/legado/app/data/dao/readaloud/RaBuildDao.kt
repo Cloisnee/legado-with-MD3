@@ -197,8 +197,8 @@ interface RaBuildDao {
     suspend fun localSpeakersOfCharacter(characterId: String): List<RaLocalSpeakerEntity>
 
     @Query(
-        "select * from ra_local_speaker where analysisId in " +
-            "(select id from ra_chapter_analysis where bookKey = :bookKey and chapterIndex not in (:chapters))",
+        "select s.* from ra_local_speaker s inner join ra_chapter_build b on b.analysisId = s.analysisId " +
+            "where b.bookKey = :bookKey and b.chapterIndex not in (:chapters)",
     )
     suspend fun localSpeakersOutsideChapters(
         bookKey: String,

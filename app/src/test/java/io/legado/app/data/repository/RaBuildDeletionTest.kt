@@ -81,6 +81,7 @@ class RaBuildDeletionTest {
                         id = "l$chapter", analysisId = analysisId, localKey = "L1",
                         surfaceNames = if (chapter == 2) "[\"甲\",\"沈七\"]" else "[\"甲\"]",
                         primaryName = "甲", resolution = "RESOLVED",
+                        characterId = "chr_test",
                     ),
                 ),
             )

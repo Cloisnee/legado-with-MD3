@@ -20,6 +20,7 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
+import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
@@ -27,6 +28,7 @@ import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
@@ -84,6 +86,34 @@ class RaBuildRepository(
         localMentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
         build: RaChapterBuild?,
+    ) = saveBundleInternal(
+        analysis, segments, localSpeakers, localMentions, evidence, build,
+        emptyList(), emptyList(),
+    )
+
+    override suspend fun saveAnalysisBundleWithObservations(
+        analysis: RaAnalysis,
+        segments: List<RaSegment>,
+        localSpeakers: List<RaLocalSpeaker>,
+        localMentions: List<RaLocalMention>,
+        evidence: List<RaEvidence>,
+        build: RaChapterBuild?,
+        attributes: List<RaAttributeObservation>,
+        relations: List<RaRelationObservation>,
+    ) = saveBundleInternal(
+        analysis, segments, localSpeakers, localMentions, evidence, build,
+        attributes, relations,
+    )
+
+    private suspend fun saveBundleInternal(
+        analysis: RaAnalysis,
+        segments: List<RaSegment>,
+        localSpeakers: List<RaLocalSpeaker>,
+        localMentions: List<RaLocalMention>,
+        evidence: List<RaEvidence>,
+        build: RaChapterBuild?,
+        attributes: List<RaAttributeObservation>,
+        relations: List<RaRelationObservation>,
     ) = withContext(Dispatchers.IO) {
         database.withTransaction {
             dao.saveAnalysisBundle(
@@ -94,6 +124,8 @@ class RaBuildRepository(
                 evidence = evidence.map(RaEvidence::toEntity),
             )
             build?.let { dao.upsertBuild(it.toEntity()) }
+            attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
+            relations.forEach { characterDao.insertRelation(it.toEntity()) }
             Unit
         }
     }
@@ -243,8 +275,9 @@ class RaBuildRepository(
                 .filter { it.source == "ai" && it.firstChapter in chapterIndexes }
                 .forEach { alias ->
                     val supported = survivingSpeakers.any { speaker ->
-                        speaker.primaryName == alias.surface ||
-                            jsonArrayToList(speaker.surfaceNames).contains(alias.surface)
+                        speaker.characterId == alias.characterId &&
+                            (speaker.primaryName == alias.surface ||
+                                jsonArrayToList(speaker.surfaceNames).contains(alias.surface))
                     }
                     if (!supported) {
                         characterDao.deleteAlias(alias.characterId, alias.normalized)
@@ -259,7 +292,7 @@ class RaBuildRepository(
                 characterDao.deleteLink(link.id)
                 if (link.kind == "SAME") {
                     // 回滚区证据支撑的 AI 合并：撤销 redirect 并恢复 from 的 ACTIVE 状态。
-                    // 已迁移的段/别名仍留在 to，需用户确认后手动拆分（V4-5 提供拆分 UI）。
+                    // 按 ai_merge 快照恢复段/章内键/别名/观察/方案；旧快照缺失时才仅恢复状态。
                     val redirect = characterDao.redirect(link.aCharacterId)
                         ?: characterDao.redirect(link.bCharacterId)
                     if (redirect != null) {
@@ -272,7 +305,7 @@ class RaBuildRepository(
                                 )
                             }.getOrNull()
                             if (snapshot != null) {
-                                restoreMergeSnapshot(redirect.fromCharacterId, snapshot)
+                                restoreMergeSnapshot(redirect.fromCharacterId, redirect.toCharacterId, snapshot)
                             }
                         }
                         characterDao.deleteRedirect(redirect.fromCharacterId)
@@ -287,7 +320,11 @@ class RaBuildRepository(
         }
     }
 
-    private suspend fun restoreMergeSnapshot(fromCharacterId: String, snapshot: MergeSnapshot) {
+    private suspend fun restoreMergeSnapshot(
+        fromCharacterId: String,
+        toCharacterId: String,
+        snapshot: MergeSnapshot,
+    ) {
         val now = System.currentTimeMillis()
         if (snapshot.localSpeakerIds.isNotEmpty()) {
             dao.updateLocalSpeakerCharacterByIds(snapshot.localSpeakerIds, fromCharacterId, now)
@@ -295,10 +332,34 @@ class RaBuildRepository(
         if (snapshot.segmentIds.isNotEmpty()) {
             dao.updateSegmentCharacterByIds(snapshot.segmentIds, fromCharacterId, now)
         }
-        if (snapshot.aliases.isNotEmpty()) {
-            characterDao.upsertAliases(
-                snapshot.aliases.map { it.copy(characterId = fromCharacterId, updatedAt = now) },
-            )
+        // 先清理由本次合并迁入 to 的别名/方案，再按双方快照恢复，避免 from/to 同时持有同一别名
+        val toAliasKeys = snapshot.toAliases.map { it.normalized }.toSet()
+        characterDao.aliasesOf(toCharacterId)
+            .filter { it.normalized !in toAliasKeys }
+            .forEach { characterDao.deleteAlias(toCharacterId, it.normalized) }
+        snapshot.toAliases.forEach {
+            characterDao.upsertAliases(listOf(it.copy(characterId = toCharacterId, updatedAt = now)))
+        }
+        val toVoiceIds = snapshot.toVoiceProfiles.map { it.id }.toSet()
+        characterDao.voiceProfilesOf(toCharacterId)
+            .filter { it.id !in toVoiceIds }
+            .forEach { characterDao.deleteVoiceProfile(it.id) }
+        snapshot.toVoiceProfiles.forEach {
+            characterDao.upsertVoiceProfile(it.copy(characterId = toCharacterId, updatedAt = now))
+        }
+        val fromAliasKeys = snapshot.aliases.map { it.normalized }.toSet()
+        characterDao.aliasesOf(fromCharacterId)
+            .filter { it.normalized !in fromAliasKeys }
+            .forEach { characterDao.deleteAlias(fromCharacterId, it.normalized) }
+        snapshot.aliases.forEach {
+            characterDao.upsertAliases(listOf(it.copy(characterId = fromCharacterId, updatedAt = now)))
+        }
+        val fromVoiceIds = snapshot.voiceProfiles.map { it.id }.toSet()
+        characterDao.voiceProfilesOf(fromCharacterId)
+            .filter { it.id !in fromVoiceIds }
+            .forEach { characterDao.deleteVoiceProfile(it.id) }
+        snapshot.voiceProfiles.forEach {
+            characterDao.upsertVoiceProfile(it.copy(characterId = fromCharacterId, updatedAt = now))
         }
         snapshot.attributes.forEach {
             characterDao.updateAttributeCharacter(it.id, fromCharacterId, now)
@@ -306,9 +367,18 @@ class RaBuildRepository(
         snapshot.relations.forEach {
             characterDao.updateRelationCharacter(it.id, fromCharacterId, now)
         }
-        snapshot.voiceProfiles.forEach {
-            // 合并时可能删除/移动了方案；按快照恢复归属，id 相同会覆盖 to 上的同一行
-            characterDao.upsertVoiceProfile(it.copy(characterId = fromCharacterId, updatedAt = now))
+        // 目标人物被合并改写的资料字段恢复
+        characterDao.character(toCharacterId)?.let { target ->
+            characterDao.upsertCharacter(
+                target.copy(
+                    firstChapter = snapshot.toFirstChapter,
+                    lastChapter = snapshot.toLastChapter,
+                    appearanceCount = snapshot.toAppearanceCount,
+                    userEdited = snapshot.toUserEdited,
+                    identityRevision = snapshot.toIdentityRevision,
+                    updatedAt = now,
+                ),
+            )
         }
     }
 

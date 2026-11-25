@@ -1,10 +1,12 @@
 package io.legado.app.domain.gateway
 
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
+import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 
@@ -36,6 +38,20 @@ interface RaBuildGateway {
         evidence: List<RaEvidence>,
         build: RaChapterBuild?,
     )
+
+    /** 同一事务写入章节分析与属性/关系观察；默认退化为普通 bundle。 */
+    suspend fun saveAnalysisBundleWithObservations(
+        analysis: RaAnalysis,
+        segments: List<RaSegment>,
+        localSpeakers: List<RaLocalSpeaker>,
+        localMentions: List<RaLocalMention>,
+        evidence: List<RaEvidence>,
+        build: RaChapterBuild?,
+        attributes: List<RaAttributeObservation>,
+        relations: List<RaRelationObservation>,
+    ) {
+        saveAnalysisBundle(analysis, segments, localSpeakers, localMentions, evidence, build)
+    }
 
     suspend fun segments(analysisId: String): List<RaSegment>
 

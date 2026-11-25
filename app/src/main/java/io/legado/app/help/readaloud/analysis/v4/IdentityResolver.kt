@@ -92,6 +92,26 @@ class IdentityResolver(
             // ①a ALIAS_EQUAL：把当前称呼与已有人物的非泛称别名连起来
             val aliasEqualTarget = uniqueAliasTarget(bookKey, aliasEqualNames, contradictions)
             if (aliasEqualTarget != null && isAllowed(aliasEqualTarget.id)) {
+                val evidenceIds = verifiedMain.map { it.id }
+                val decisionId = charDecision(
+                    bookKey = bookKey,
+                    speaker = speaker,
+                    candidates = listOf(aliasEqualTarget.id),
+                    verdict = RaVerdict.SAME,
+                    chosen = aliasEqualTarget.id,
+                    confidence = 1f,
+                    reason = "ALIAS_EQUAL 确定性链接",
+                    evidenceIds = evidenceIds,
+                )
+                // 新证据命中正式人物：回溯合并此前同称呼的临时人物
+                mergeRelatedProvisionals(
+                    bookKey = bookKey,
+                    speaker = speaker,
+                    target = aliasEqualTarget,
+                    evidenceIds = evidenceIds,
+                    decisionId = decisionId,
+                    cannotPairs = cannotPairs,
+                )
                 resolutions[speaker.localKey] = link(
                     bookKey = bookKey,
                     chapterIndex = chapterIndex,
@@ -118,22 +138,6 @@ class IdentityResolver(
                 return@forEach
             }
 
-            // 同名已确认存在多个不同人：身份不足时建独立临时人物，不再无限新建 ACTIVE
-            // 临时人物再审达到 3 次后：保持待定并复用，不继续新建；有新的 ALIAS_EQUAL 证据才重新问模型
-            val exhausted = findExhaustedProvisional(bookKey, speaker, linkedThisChapter)
-            if (exhausted != null && aliasEqualNames.isEmpty()) {
-                val linked = link(
-                    bookKey = bookKey,
-                    chapterIndex = chapterIndex,
-                    speaker = speaker,
-                    target = exhausted,
-                    candidateIds = emptyList(),
-                )
-                resolutions[speaker.localKey] = linked.copy(resolution = RaResolution.PROVISIONAL)
-                linkedThisChapter.add(exhausted.id)
-                return@forEach
-            }
-
             // ② 候选召回；排除同场已链接人物、本章明确反证的人物
             val blockedByContradiction = contradictionIds(bookKey, contradictions)
             val candidates = recallCandidates(
@@ -146,9 +150,10 @@ class IdentityResolver(
                 RaNameUtils.normalize(it.character.displayName) == RaNameUtils.normalize(speaker.primaryName)
             }
             if (sameNameCount >= 3) {
-                // 同名已出现多个 ACTIVE：身份不足，不再新建 ACTIVE，也不再无限问裁决
-                val reusable = findReusableProvisional(bookKey, speaker, linkedThisChapter)
-                    ?: findExhaustedProvisional(bookKey, speaker, linkedThisChapter)
+                // 同名已出现多个 ACTIVE：身份不足，不再新建 ACTIVE；
+                // 仅当旧临时人物的候选集合与本章候选有交集时才复用（可追踪依据，不按名字硬并）
+                val candidateIds = candidates.map { it.character.id }
+                val reusable = findReusableProvisional(bookKey, speaker, candidateIds, linkedThisChapter)
                 val character = reusable ?: create(bookKey, chapterIndex, speaker, RaCharacterStatus.PROVISIONAL)
                 if (reusable == null) created.add(character)
                 charDecision(
@@ -165,7 +170,7 @@ class IdentityResolver(
                     characterId = character.id,
                     resolution = RaResolution.PROVISIONAL,
                     created = reusable == null,
-                    candidateIds = candidates.map { it.character.id },
+                    candidateIds = candidateIds,
                     createdCharacter = if (reusable == null) character else null,
                 )
                 linkedThisChapter.add(character.id)
@@ -222,15 +227,14 @@ class IdentityResolver(
             val answer = answers[item.speaker.localKey]
             val candidateIds = item.candidates.map { it.character.id }
             if (answer == null) {
-                // A 策略：没有裁决能力时保持独立临时人物；同称呼组最多复用 3 次再审
-                val reusable = findReusableProvisional(bookKey, item.speaker, linkedThisChapter)
-                val character = reusable ?: create(
+                // A 策略：没有裁决能力时保持独立临时人物；不以同名强行复用
+                val character = create(
                     bookKey,
                     chapterIndex,
                     item.speaker,
                     RaCharacterStatus.PROVISIONAL,
                 )
-                if (reusable == null) created.add(character)
+                created.add(character)
                 charDecision(
                     bookKey = bookKey,
                     speaker = item.speaker,
@@ -244,9 +248,9 @@ class IdentityResolver(
                 resolutions[item.speaker.localKey] = Resolution(
                     characterId = character.id,
                     resolution = RaResolution.PROVISIONAL,
-                    created = reusable == null,
+                    created = true,
                     candidateIds = candidateIds,
-                    createdCharacter = if (reusable == null) character else null,
+                    createdCharacter = character,
                 )
                 linkedThisChapter.add(character.id)
                 return@forEach
@@ -364,31 +368,20 @@ class IdentityResolver(
                 }
                 else -> {
                     // A 策略：UNKNOWN/低置信保留临时身份；同称呼组最多复用 3 次，达到上限后保持待定
-                    val reusable = findReusableProvisional(bookKey, item.speaker, linkedThisChapter)
-                    val character = reusable ?: create(
+                    val character = create(
                         bookKey,
                         chapterIndex,
                         item.speaker,
                         RaCharacterStatus.PROVISIONAL,
                     )
-                    if (reusable == null) created.add(character)
-                    val linked = if (reusable != null) {
-                        link(
-                            bookKey = bookKey,
-                            chapterIndex = chapterIndex,
-                            speaker = item.speaker,
-                            target = reusable,
-                            candidateIds = candidateIds,
-                        ).copy(resolution = RaResolution.PROVISIONAL)
-                    } else {
-                        Resolution(
-                            characterId = character.id,
-                            resolution = RaResolution.PROVISIONAL,
-                            created = true,
-                            candidateIds = candidateIds,
-                            createdCharacter = character,
-                        )
-                    }
+                    created.add(character)
+                    val linked = Resolution(
+                        characterId = character.id,
+                        resolution = RaResolution.PROVISIONAL,
+                        created = true,
+                        candidateIds = candidateIds,
+                        createdCharacter = character,
+                    )
                     charDecision(
                         bookKey = bookKey,
                         speaker = item.speaker,
@@ -530,32 +523,6 @@ class IdentityResolver(
             }
     }
 
-    private suspend fun findReusableProvisional(
-        bookKey: String,
-        speaker: RaLocalSpeaker,
-        used: Set<String>,
-    ): RaCharacter? {
-        val key = RaNameUtils.normalize(speaker.primaryName)
-        if (key.isEmpty()) return null
-        return runCatching { characters.provisionalCharacters(bookKey) }.getOrDefault(emptyList())
-            .filter { it.id !in used && RaNameUtils.normalize(it.displayName) == key }
-            .filter { runCatching { characters.decisionsForCharacter(it.id).size }.getOrDefault(0) < 3 }
-            .minByOrNull { it.firstChapter }
-    }
-
-    private suspend fun findExhaustedProvisional(
-        bookKey: String,
-        speaker: RaLocalSpeaker,
-        used: Set<String>,
-    ): RaCharacter? {
-        val key = RaNameUtils.normalize(speaker.primaryName)
-        if (key.isEmpty()) return null
-        return runCatching { characters.provisionalCharacters(bookKey) }.getOrDefault(emptyList())
-            .filter { it.id !in used && RaNameUtils.normalize(it.displayName) == key }
-            .filter { runCatching { characters.decisionsForCharacter(it.id).size }.getOrDefault(0) >= 3 }
-            .minByOrNull { it.firstChapter }
-    }
-
     private suspend fun candidateMatchesRelation(
         candidateId: String,
         relationTargets: List<String>,
@@ -641,6 +608,71 @@ class IdentityResolver(
                     .thenBy { it.character.id },
             )
             .take(5)
+    }
+
+    private suspend fun findReusableProvisional(
+        bookKey: String,
+        speaker: RaLocalSpeaker,
+        candidateIds: List<String>,
+        used: Set<String>,
+    ): RaCharacter? {
+        if (candidateIds.isEmpty()) return null
+        val key = RaNameUtils.normalize(speaker.primaryName)
+        if (key.isEmpty()) return null
+        return runCatching { characters.provisionalCharacters(bookKey) }.getOrDefault(emptyList())
+            .filter { it.id !in used && RaNameUtils.normalize(it.displayName) == key }
+            .filter { provisional ->
+                runCatching { characters.decisionsForCharacter(provisional.id) }
+                    .getOrDefault(emptyList())
+                    .any { decision -> decision.candidateIds.any { it in candidateIds } }
+            }
+            .minByOrNull { it.firstChapter }
+    }
+
+    private suspend fun mergeRelatedProvisionals(
+        bookKey: String,
+        speaker: RaLocalSpeaker,
+        target: RaCharacter,
+        evidenceIds: List<String>,
+        decisionId: String,
+        cannotPairs: Set<Pair<String, String>>,
+    ) {
+        val names = (speaker.surfaceNames + speaker.primaryName)
+            .map(RaNameUtils::normalize)
+            .filter { it.isNotEmpty() }
+            .toSet()
+        if (names.isEmpty()) return
+        val provisionals = runCatching { characters.provisionalCharacters(bookKey) }
+            .getOrDefault(emptyList())
+        provisionals.forEach { provisional ->
+            if (provisional.id == target.id) return@forEach
+            val pair = if (provisional.id <= target.id) {
+                provisional.id to target.id
+            } else {
+                target.id to provisional.id
+            }
+            if (pair in cannotPairs) return@forEach
+            val provisionalNames = (listOf(provisional.displayName) +
+                runCatching { characters.aliasesOf(provisional.id) }.getOrDefault(emptyList()).map { it.surface })
+                .map(RaNameUtils::normalize)
+                .filter { it.isNotEmpty() }
+                .toSet()
+            if (provisionalNames.intersect(names).isEmpty()) return@forEach
+            // 必须有可追踪的候选依据：旧临时人物的裁决候选里出现过当前目标
+            val relatedByCandidate = runCatching { characters.decisionsForCharacter(provisional.id) }
+                .getOrDefault(emptyList())
+                .any { target.id in it.candidateIds }
+            if (!relatedByCandidate) return@forEach
+            runCatching {
+                characters.mergeCharactersAsAi(
+                    provisional.id,
+                    target.id,
+                    "新证据确认同人，回溯合并临时人物",
+                    evidenceIds,
+                    decisionId,
+                )
+            }
+        }
     }
 
     private suspend fun link(

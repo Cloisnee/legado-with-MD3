@@ -7,9 +7,18 @@ import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.readaloud.RaChapterAnalysisEntity
 import io.legado.app.data.entities.readaloud.RaChapterBuildEntity
 import io.legado.app.data.entities.readaloud.RaEvidenceEntity
+import io.legado.app.data.entities.readaloud.RaIdentityDecisionEntity
 import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
+import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
+import io.legado.app.domain.model.readaloud.v4.RaEvidence
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -108,6 +117,20 @@ class RaCharacterMergeTest {
         val to = repository.ensureCharacter(
             BOOK, "沈孤鸿", "核心", "男", "男青年", 1, emptyList(), "ACTIVE", "ai", "inferred",
         )
+        repository.saveVoiceProfile(
+            RaVoiceProfile(
+                id = "vp_from", bookKey = BOOK, characterId = from.id,
+                kind = RaVoiceProfileKind.DEFAULT, label = "默认", voiceTag = "from-tag",
+                createdAt = 1L,
+            ),
+        )
+        repository.saveVoiceProfile(
+            RaVoiceProfile(
+                id = "vp_to", bookKey = BOOK, characterId = to.id,
+                kind = RaVoiceProfileKind.DEFAULT, label = "默认", voiceTag = "to-tag",
+                createdAt = 2L,
+            ),
+        )
         // 保留章节 3 的台词/章内键：合并后应能按快照恢复
         db.raBuildDao.upsertBuild(
             RaChapterBuildEntity(
@@ -172,9 +195,90 @@ class RaCharacterMergeTest {
         assertEquals(from.id, db.raBuildDao.localSpeakers("a3").single().characterId)
         assertEquals("ACTIVE", db.raCharacterDao.character(from.id)?.status)
         assertTrue(db.raCharacterDao.aliasesOf(from.id).any { it.surface == "青衫客" })
+        assertTrue(db.raCharacterDao.aliasesOf(to.id).none { it.surface == "青衫客" })
+        assertEquals(
+            "from-tag",
+            db.raCharacterDao.voiceProfilesOf(from.id).firstOrNull { it.kind == "DEFAULT" }?.voiceTag,
+        )
+        assertEquals(
+            "to-tag",
+            db.raCharacterDao.voiceProfilesOf(to.id).firstOrNull { it.kind == "DEFAULT" }?.voiceTag,
+        )
     }
 
     companion object {
         private const val BOOK = "bk_merge"
+    }
+
+    @Test
+    fun `new alias evidence merges old provisional and moves old lines`() = runBlocking {
+        val a = repository.ensureCharacter(
+            BOOK, "沈孤鸿", "核心", "男", "男青年", 0, listOf("青衫客"), "ACTIVE", "ai", "inferred",
+        )
+        val p = repository.ensureCharacter(
+            BOOK, "沈七", "核心", "男", "男青年", 3, emptyList(), "PROVISIONAL", "ai", "inferred",
+        )
+        db.raBuildDao.upsertBuild(
+            RaChapterBuildEntity(
+                bookKey = BOOK, sourceKey = "s", chapterIndex = 3, contentHash = "h3",
+                state = "IDENTITY_READY", analysisId = "a3",
+            ),
+        )
+        db.raBuildDao.upsertAnalysis(
+            RaChapterAnalysisEntity(
+                id = "a3", bookKey = BOOK, sourceKey = "s", chapterIndex = 3,
+                contentHash = "h3", resolverVersion = "v4.2", status = "RESOLVED",
+            ),
+        )
+        db.raBuildDao.upsertSegments(
+            listOf(
+                RaSegmentEntity(
+                    id = "seg3", analysisId = "a3", bookKey = BOOK, chapterIndex = 3,
+                    paragraphIndex = 0, start = 0, end = 2, chapterPosition = 0,
+                    text = "原文", roleType = "character", characterId = p.id,
+                    localSpeakerId = "ls3",
+                ),
+            ),
+        )
+        db.raBuildDao.upsertLocalSpeakers(
+            listOf(
+                RaLocalSpeakerEntity(
+                    id = "ls3", analysisId = "a3", localKey = "L1",
+                    surfaceNames = "[\"沈七\"]", primaryName = "沈七",
+                    resolution = "PROVISIONAL", characterId = p.id,
+                ),
+            ),
+        )
+        db.raCharacterDao.insertDecision(
+            RaIdentityDecisionEntity(
+                id = "dP", bookKey = BOOK, localSpeakerId = "ls3",
+                candidateIds = "[\"${a.id}\"]", verdict = "UNKNOWN",
+                chosenCharacterId = p.id,
+            ),
+        )
+        val speaker = RaLocalSpeaker(
+            id = "a9#L1", analysisId = "a9", localKey = "L1",
+            surfaceNames = listOf("沈七"), primaryName = "沈七",
+        )
+        val resolver = io.legado.app.help.readaloud.analysis.v4.IdentityResolver(
+            repository,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+            null,
+            null,
+        )
+        val evidence = RaEvidence(
+            id = "e9", bookKey = BOOK, analysisId = "a9", sourceChapter = 9,
+            paragraphIndex = 0, start = 0, end = 1, excerpt = "青衫客即沈七",
+            type = RaEvidenceType.ALIAS_EQUAL, subjectLocalId = "a9#L1",
+            objectText = "青衫客", scope = RaEvidenceScope.MAIN_TEXT, verified = true,
+        )
+        val result = resolver.resolveChapter(
+            BOOK, 9, "第10章", listOf(speaker), emptyList(), listOf(evidence),
+        )
+        assertEquals(a.id, result.resolutions["L1"]?.characterId)
+        assertEquals(a.id, db.raBuildDao.segments("a3").single().characterId)
+        assertEquals(a.id, db.raBuildDao.localSpeakers("a3").single().characterId)
+        assertEquals("MERGED", db.raCharacterDao.character(p.id)?.status)
+        assertTrue(db.raCharacterDao.aliasesOf(a.id).any { it.surface == "沈七" })
     }
 }
