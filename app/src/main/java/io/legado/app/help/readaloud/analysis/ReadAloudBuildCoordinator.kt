@@ -473,10 +473,15 @@ class ReadAloudBuildCoordinator(
                     val texts = extracted.mapNotNull { chapter ->
                         textProvider.load(s.book, chapter, allowDownload = false)?.toBatchText(chapter)
                     }
-                    val outcome = try {
+                    val outcome: BatchAnalysisRunner.Outcome = try {
                         kotlinx.coroutines.coroutineScope {
                             this.async {
-                                batch.convergeExisting(s.bookKey, s.sourceKey, texts)
+                                batch.convergeExisting(
+                                    s.bookKey,
+                                    s.sourceKey,
+                                    texts,
+                                    AiPriority.P3_BACKGROUND,
+                                )
                             }.await()
                         }
                     } catch (e: CancellationException) {

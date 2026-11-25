@@ -14,6 +14,7 @@ import io.legado.app.domain.model.readaloud.v4.RaNameUtils
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import io.legado.app.help.readaloud.analysis.AiSchedulerContext
+import kotlinx.coroutines.CancellationException
 
 /**
  * V4-2 完整身份解析（01 §5.3）：
@@ -561,7 +562,13 @@ class IdentityResolver(
                     candidates = buildCards(item.candidates),
                 )
             }
-            val answers = runCatching { arbiter.decide(bookKey, questions, context) }.getOrNull()
+            val answers = try {
+                arbiter.decide(bookKey, questions, context)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                null
+            }
             if (answers != null) {
                 val byQuestion = answers.associateBy { it.key }
                 questions.forEachIndexed { index, question ->

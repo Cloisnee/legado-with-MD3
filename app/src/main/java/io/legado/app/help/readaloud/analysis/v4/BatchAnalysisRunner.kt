@@ -184,7 +184,7 @@ class BatchAnalysisRunner(
         }
 
         // 批内收敛
-        val convergeResult = converge(bookKey, extracted.values.toList())
+        val convergeResult = converge(bookKey, extracted.values.toList(), priority)
         return Outcome(
             ready = (directReady + convergeResult.first).distinct().sorted(),
             failed = failed.keys.toList().sorted(),
@@ -266,6 +266,7 @@ class BatchAnalysisRunner(
         bookKey: String,
         sourceKey: String,
         chapters: List<ChapterText>,
+        priority: AiPriority = AiPriority.P3_BACKGROUND,
     ): Outcome {
         val items = chapters.mapNotNull { text ->
             val build = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
@@ -284,7 +285,7 @@ class BatchAnalysisRunner(
             )
         }
         if (items.isEmpty()) return Outcome()
-        val (ready, extracted) = converge(bookKey, items)
+        val (ready, extracted) = converge(bookKey, items, priority)
         return Outcome(ready = ready, extracted = extracted)
     }
 
@@ -731,7 +732,11 @@ class BatchAnalysisRunner(
 
     // ---------------- 批内收敛 ----------------
 
-    private suspend fun converge(bookKey: String, extracted: List<Extracted>): Pair<List<Int>, List<Int>> {
+    private suspend fun converge(
+        bookKey: String,
+        extracted: List<Extracted>,
+        priority: AiPriority,
+    ): Pair<List<Int>, List<Int>> {
         if (extracted.isEmpty()) return emptyList<Int>() to emptyList()
         val inputs = extracted.map { item ->
             IdentityResolver.BatchChapterInput(
@@ -742,7 +747,19 @@ class BatchAnalysisRunner(
                 contextBySpeaker = item.contextBySpeaker,
             )
         }
-        val resolutions = runCatching { resolver.resolveBatch(bookKey, inputs) }.getOrElse { e ->
+        val resolutions = runCatching {
+            resolver.resolveBatch(
+                bookKey,
+                inputs,
+                AiSchedulerContext(
+                    kind = AiTaskKind.RESOLVE,
+                    priority = priority,
+                    bookKey = bookKey,
+                    chapters = extracted.map { it.text.chapterIndex },
+                    preemptible = true,
+                ),
+            )
+        }.getOrElse { e ->
             if (e is CancellationException) throw e
             AppLog.putAnalysis("【V4·后台·收敛】失败：${e.localizedMessage}，章节保留 EXTRACTED", e)
             return emptyList<Int>() to extracted.map { it.text.chapterIndex }
