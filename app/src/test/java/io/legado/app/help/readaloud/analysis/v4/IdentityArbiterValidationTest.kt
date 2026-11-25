@@ -44,7 +44,7 @@ class IdentityArbiterValidationTest {
             bookKey = "bk",
             analysisId = "a",
             sourceChapter = 1,
-            paragraphIndex = 1,
+            paragraphIndex = 0,
             start = 0,
             end = 6,
             excerpt = "沈七即沈孤鸿",
