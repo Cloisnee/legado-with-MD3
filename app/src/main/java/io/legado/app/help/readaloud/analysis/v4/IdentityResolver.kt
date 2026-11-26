@@ -100,6 +100,8 @@ class IdentityResolver(
             chapter: Int,
             speaker: RaLocalSpeaker,
             status: RaCharacterStatus,
+            reuseConcurrent: Boolean = false,
+            blocked: Set<String> = emptySet(),
         ): RaCharacter {
             val names = (speaker.surfaceNames + speaker.primaryName)
                 .map { it.trim() }
@@ -107,9 +109,11 @@ class IdentityResolver(
                 .distinct()
             return bookLock(bookKey).withLock {
                 val lookup = speaker.copy(surfaceNames = names)
-                val reused = exactTargets(bookKey, lookup, emptyList())
-                    .filterNot { it.id in linkedThisChapter }
-                    .singleOrNull()
+                val reused = if (reuseConcurrent && speaker.roleType != "路人") {
+                    exactTargets(bookKey, lookup, emptyList())
+                        .filterNot { it.id in linkedThisChapter || it.id in blocked }
+                        .singleOrNull()
+                } else null
                 if (reused != null) {
                     val finalId = runCatching { characters.finalCharacterId(reused.id) }
                         .getOrDefault(reused.id)
@@ -250,7 +254,12 @@ class IdentityResolver(
                 candidates.isEmpty() -> {
                     // 同名对象被同章占用/排除，不等于“已证实是新人”：先建临时人物待定
                     val ambiguous = exactTargets.isNotEmpty()
-                    val character = createCharacter(chapterIndex, speaker, if (ambiguous) RaCharacterStatus.PROVISIONAL else RaCharacterStatus.ACTIVE)
+                    val character = createCharacter(
+                        currentChapter, speaker,
+                        if (ambiguous) RaCharacterStatus.PROVISIONAL else RaCharacterStatus.ACTIVE,
+                        reuseConcurrent = !ambiguous,
+                        blocked = blockedByContradiction,
+                    )
                     created.add(character)
                     if (ambiguous) {
                         charDecision(
@@ -522,7 +531,14 @@ class IdentityResolver(
         val syntheticSpeakers = ArrayList<RaLocalSpeaker>()
         val syntheticEvidence = ArrayList<RaEvidence>()
         val contexts = HashMap<String, String>()
+        val alreadyResolved = HashMap<String, Resolution>()
         groups.forEach { (key, members) ->
+            val linkedIds = members.mapNotNull { it.second.characterId }.distinct()
+            if (linkedIds.size == 1) {
+                val id = characters.finalCharacterId(linkedIds.single())
+                alreadyResolved[key] = Resolution(id, RaResolution.RESOLVED, false)
+                return@forEach
+            }
             val first = members.first().second
             val names = members.flatMap { (_, sp) -> sp.surfaceNames + sp.primaryName }
                 .map { it.trim() }
@@ -545,12 +561,10 @@ class IdentityResolver(
                     .filter { it.subjectLocalId in memberIds }
                     .forEach { e -> syntheticEvidence.add(e.copy(subjectLocalId = syntheticId)) }
             }
-            members.forEach { (_, sp) ->
-                val text = ordered.asSequence()
-                    .mapNotNull { it.contextBySpeaker[sp.localKey] }
-                    .joinToString("\n")
-                if (text.isNotBlank()) contexts[key] = text.take(1200)
-            }
+            val text = members.mapNotNull { (chapterIndex, sp) ->
+                ordered.firstOrNull { it.chapterIndex == chapterIndex }?.contextBySpeaker?.get(sp.localKey)
+            }.joinToString("\n")
+            if (text.isNotBlank()) contexts[key] = text.take(1200)
         }
         val chapterIndex = ordered.first().chapterIndex
         val chapterLabel = if (ordered.size == 1) {
@@ -571,7 +585,7 @@ class IdentityResolver(
         )
         val out = LinkedHashMap<String, Resolution>()
         groups.forEach { (key, members) ->
-            val resolution = result.resolutions[key] ?: return@forEach
+            val resolution = alreadyResolved[key] ?: result.resolutions[key] ?: return@forEach
             members.forEach { (_, speaker) -> out[speaker.id] = resolution }
         }
         return out

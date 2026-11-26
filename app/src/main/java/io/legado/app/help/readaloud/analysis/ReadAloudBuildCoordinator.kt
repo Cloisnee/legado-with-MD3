@@ -16,6 +16,7 @@ import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.readaloud.analysis.v4.BatchAnalysisRunner
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.utils.ChapterLabels
@@ -34,7 +35,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 朗读建库总调度（02 §1/§6/§7）：替代 AnalysisSchedulerV3。
+ * 朗读建库总调度（02 §1/§6/§7）：统一前后台建库。
  *
  * 前台：当前章 + 预加载章，允许触发阅读器既有下载；P0/P1/P2。
  * 后台：只消费已缓存正文，按锚点选批、有会话额度；缓存落盘事件唤醒。
@@ -95,6 +96,8 @@ class ReadAloudBuildCoordinator(
         var fgFrom: Int,
         var fgCount: Int,
         var generation: Long,
+        val charged: MutableSet<Int> = HashSet(),
+        val foregroundClaims: MutableSet<Int> = HashSet(),
     )
 
     private data class ForegroundTask(
@@ -114,18 +117,20 @@ class ReadAloudBuildCoordinator(
     private val queued = HashSet<String>()
     private var foregroundWorker: Job? = null
     private var activeForegroundJob: Job? = null
+    @Volatile private var activeForegroundChapter: Int? = null
     private var backgroundWorker: Job? = null
     private var contentWatcher: Job? = null
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
     // ---------------- 生命周期 ----------------
 
-    fun startSession(book: Book, chapterIndex: Int) {
+    fun startSession(book: Book, chapterIndex: Int, paused: Boolean = false) {
         val snapshot = book.copy()
         val existing = synchronized(lock) { session }
         if (existing != null && !existing.stopping && existing.book.bookUrl == book.bookUrl) {
             // 同一朗读会话内的重新准备（curPageChanged/newReadAloud）不重置额度和锚点。
             onChapterChanged(book.bookUrl, chapterIndex)
+            if (paused) pauseBackground() else resumeBackground()
             return
         }
         val request = synchronized(lock) { ++sessionRequest }
@@ -135,7 +140,7 @@ class ReadAloudBuildCoordinator(
             synchronized(lock) {
                 if (request != sessionRequest) return@launch
             }
-            beginSession(snapshot, bookKey, sourceKey, chapterIndex, request)
+            beginSession(snapshot, bookKey, sourceKey, chapterIndex, request, paused)
         }
     }
 
@@ -145,6 +150,7 @@ class ReadAloudBuildCoordinator(
         sourceKey: String,
         chapterIndex: Int,
         request: Long,
+        paused: Boolean,
     ) {
         val cfg = runCatching { analysisConfig.load() }.getOrDefault(AnalysisConfigStore.Config())
         val preload = runCatching { readAloudSettings.currentSettings.audioPreDownloadNum }
@@ -156,36 +162,36 @@ class ReadAloudBuildCoordinator(
             anchor = chapterIndex,
             lastChapter = chapterIndex,
             budgetLeft = cfg.bgSessionBudget,
-            paused = false,
+            paused = paused,
             stopping = false,
             fgFrom = chapterIndex,
             fgCount = preload + 1,
             generation = 0L,
         )
+        resetInterruptedStates(s)
         val old: Session?
         synchronized(lock) {
             // 读配置期间可能已经停止/换书：旧启动不得发布状态。
             if (request != sessionRequest) return
             old = session
             session = s
-        }
-        backgroundWorker?.cancel()
-        contentWatcher?.cancel()
-        foregroundWorker?.cancel()
-        activeForegroundJob?.cancel()
-        drainForeground()
-        resetInterruptedStates(s)
-        startContentWatcher(s)
-        startForegroundWorker()
-        enqueueWindow(s)
-        if (cfg.bgSessionBudget > 0) {
-            startBackgroundWorker(s)
-            setStatus(BackgroundState.RUNNING, s)
-        } else {
-            setStatus(BackgroundState.BUDGET_REACHED, s)
-        }
-        if (old != null && old.book.bookUrl != book.bookUrl) {
-            AppLog.putAnalysis("【V4·后台】切换书籍：${book.name}")
+            backgroundWorker?.cancel()
+            contentWatcher?.cancel()
+            foregroundWorker?.cancel()
+            activeForegroundJob?.cancel()
+            drainForeground()
+            startContentWatcher(s)
+            startForegroundWorker()
+            enqueueWindow(s)
+            if (cfg.bgSessionBudget > 0) {
+                startBackgroundWorker(s)
+                setStatus(if (paused) BackgroundState.PAUSED else BackgroundState.RUNNING, s)
+            } else {
+                setStatus(BackgroundState.BUDGET_REACHED, s)
+            }
+            if (old != null && old.book.bookUrl != book.bookUrl) {
+                AppLog.putAnalysis("【V4·后台】切换书籍：${book.name}")
+            }
         }
     }
 
@@ -196,6 +202,7 @@ class ReadAloudBuildCoordinator(
             return
         }
         if (s.stopping) return
+        if (chapterIndex == s.lastChapter) return
         val preload = runCatching { readAloudSettings.currentSettings.audioPreDownloadNum }
             .getOrDefault(2).coerceIn(0, 10)
         synchronized(lock) {
@@ -206,7 +213,10 @@ class ReadAloudBuildCoordinator(
             s.fgCount = preload + 1
             s.generation++
         }
-        activeForegroundJob?.cancel()
+        val activeChapter = activeForegroundChapter
+        if (activeChapter == null || activeChapter !in s.fgFrom until (s.fgFrom + s.fgCount)) {
+            activeForegroundJob?.cancel()
+        }
         drainForeground()
         enqueueWindow(s)
         wake.trySend(Unit)
@@ -229,18 +239,18 @@ class ReadAloudBuildCoordinator(
     }
 
     fun stopSession() {
-        val s = synchronized(lock) {
+        synchronized(lock) {
             sessionRequest++
             val current = session
             current?.stopping = true
-            current
+            // 与新会话安装使用同一锁，不能误取消停止之后刚启动的新 worker。
+            backgroundWorker?.cancel()
+            backgroundWorker = null
+            contentWatcher?.cancel()
+            contentWatcher = null
+            setStatus(BackgroundState.STOPPED, current)
         }
-        backgroundWorker?.cancel()
-        backgroundWorker = null
-        contentWatcher?.cancel()
-        contentWatcher = null
         // 已入队的前台预加载继续跑完；不再领新的后台批次。
-        setStatus(BackgroundState.STOPPED, s)
     }
 
     fun reanalyze(bookUrl: String, chapterIndex: Int) {
@@ -278,14 +288,18 @@ class ReadAloudBuildCoordinator(
                 if (task.generation >= 0 && task.generation != current.generation) continue
                 val job = launch { processForeground(task) }
                 activeForegroundJob = job
-                job.join()
-                activeForegroundJob = null
+                activeForegroundChapter = task.chapterIndex
+                try { job.join() } finally {
+                    activeForegroundJob = null
+                    activeForegroundChapter = null
+                }
             }
         }
     }
 
     private fun enqueueWindow(s: Session) {
         val from = s.fgFrom
+        synchronized(lock) { s.foregroundClaims.addAll(from until from + s.fgCount) }
         for (offset in 0 until s.fgCount.coerceAtMost(11)) {
             val priority = when (offset) {
                 0 -> AiPriority.P0_CURRENT
@@ -318,7 +332,7 @@ class ReadAloudBuildCoordinator(
 
     private fun drainForeground() {
         synchronized(lock) { queued.clear() }
-        while (foregroundQueue.tryReceive().isSuccess) Unit
+        while (foregroundQueue.tryReceive().isSuccess) { /* 清除上一窗口的未领取任务。 */ }
     }
 
     private suspend fun processForeground(task: ForegroundTask) {
@@ -330,6 +344,15 @@ class ReadAloudBuildCoordinator(
         }
         // 正文读取完成后的时刻作为本任务版本：旧任务晚归时不会覆盖新指针。
         val taskStartedAt = System.currentTimeMillis()
+        val key = ChapterJobRegistry.Key(
+            bookKey = task.bookKey,
+            sourceKey = task.sourceKey,
+            chapterIndex = task.chapterIndex,
+            contentHash = text.contentHash,
+            resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
+            stage = if (task.force) "REANALYZE-${System.nanoTime()}" else "EXTRACT",
+        )
+        jobs.requestForeground(key)
         val build = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
         if (!task.force && build?.state == RaChapterState.IDENTITY_READY &&
             build.contentHash == text.contentHash
@@ -356,14 +379,6 @@ class ReadAloudBuildCoordinator(
             emitReady(task, message = "换源复用", usedAi = false)
             return
         }
-        val key = ChapterJobRegistry.Key(
-            bookKey = task.bookKey,
-            sourceKey = task.sourceKey,
-            chapterIndex = task.chapterIndex,
-            contentHash = text.contentHash,
-            resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
-            stage = if (task.force) "REANALYZE-${System.nanoTime()}" else "EXTRACT",
-        )
         repeat(2) {
             when (val acquire = jobs.acquire(key)) {
                 is ChapterJobRegistry.Acquire.Join -> {
@@ -419,7 +434,7 @@ class ReadAloudBuildCoordinator(
                         if (ok) {
                             emitReady(
                                 task,
-                                message = result!!.analysis.status.storageValue,
+                                message = result.analysis.status.storageValue,
                                 usedAi = result.segments.any { it.source.storageValue == "ai" },
                             )
                         }
@@ -522,6 +537,7 @@ class ReadAloudBuildCoordinator(
                 status = RaAnalysisStatus.RESOLVED,
                 origin = RaAnalysisOrigin.FOREGROUND,
                 modelId = old.modelId,
+                observationJson = old.observationJson,
                 createdAt = now,
                 updatedAt = now,
             ),
@@ -660,8 +676,11 @@ class ReadAloudBuildCoordinator(
                 val cfg = runCatching { analysisConfig.load() }
                     .getOrDefault(AnalysisConfigStore.Config())
                 val states = computeStates(s)
+                val recoveryOccupied = jobs.occupiedChapters(s.bookKey, s.sourceKey)
+                val recoveryWindow = s.fgFrom until s.fgFrom + s.fgCount
                 val extracted = states.filterValues { it == RaChapterState.EXTRACTED }.keys
-                    .take(s.budgetLeft.coerceAtLeast(0))
+                    .filterNot { it in recoveryWindow || it in recoveryOccupied }
+                    .take(minOf(s.budgetLeft.coerceAtLeast(0), cfg.bgBatchMaxChapters))
                     .toSet()
                 if (extracted.isNotEmpty()) {
                     val texts = extracted.mapNotNull { chapter ->
@@ -694,11 +713,9 @@ class ReadAloudBuildCoordinator(
                         AppLog.putAnalysis("【V4·后台】收敛恢复失败：${e.localizedMessage}", e)
                         BatchAnalysisRunner.Outcome()
                     }
-                    s.budgetLeft -= outcome.ready.size + outcome.failed.size
+                    charge(s, outcome.ready + outcome.failed)
                     setStatus(BackgroundState.RUNNING, s, computeStates(s))
-                    if (outcome.ready.isEmpty() && outcome.failed.isEmpty() &&
-                        outcome.extracted.isEmpty()
-                    ) {
+                    if (outcome.ready.isEmpty() && outcome.failed.isEmpty()) {
                         // 恢复异常或正文版本不符：受控退避，避免满速重扫。
                         kotlinx.coroutines.delay(15_000L)
                     }
@@ -748,7 +765,7 @@ class ReadAloudBuildCoordinator(
                 }
                 val started = System.currentTimeMillis()
                 val outcome = runBatchDegraded(s, texts)
-                s.budgetLeft -= outcome.ready.size + outcome.failed.size
+                charge(s, outcome.ready + outcome.failed)
                 setStatus(BackgroundState.RUNNING, s, computeStates(s))
                 AppLog.putAnalysis(
                     "【V4·后台】批次 ${texts.first().chapterIndex + 1}~${texts.last().chapterIndex + 1} " +
@@ -809,7 +826,10 @@ class ReadAloudBuildCoordinator(
                 )
             }
         }
-        return BatchAnalysisRunner.Outcome(ready.distinct(), failed.toList(), extracted.distinct())
+        return BatchAnalysisRunner.Outcome(
+            ready.distinct(), failed.filterNot { it in ready },
+            extracted.distinct().filterNot { it in ready || it in failed },
+        )
     }
 
     private suspend fun runBatchOnce(
@@ -820,6 +840,8 @@ class ReadAloudBuildCoordinator(
         val earlyReady = java.util.concurrent.ConcurrentLinkedQueue<Int>()
         val earlyExtracted = java.util.concurrent.ConcurrentLinkedQueue<Int>()
         val runnable = ArrayList<BatchAnalysisRunner.ChapterText>()
+        val control = AiRequestControl()
+        val controlKeys = ArrayList<ChapterJobRegistry.Key>()
         texts.forEach { text ->
             val key = ChapterJobRegistry.Key(
                 bookKey = s.bookKey,
@@ -831,6 +853,8 @@ class ReadAloudBuildCoordinator(
             )
             when (val acquire = jobs.acquire(key)) {
                 is ChapterJobRegistry.Acquire.Owner -> {
+                    acquire.ticket.bindControl(control)
+                    controlKeys.add(key)
                     owned[text.chapterIndex] = acquire.ticket
                     runnable.add(text)
                 }
@@ -854,6 +878,7 @@ class ReadAloudBuildCoordinator(
             // 用子协程承载批次：前台抢占只会取消这个子 Job，不会杀死后台 worker。
             outcome = kotlinx.coroutines.coroutineScope {
                 this.async {
+                    control.bind(kotlinx.coroutines.currentCoroutineContext()[Job])
                     batch.run(
                         bookKey = s.bookKey,
                         sourceKey = s.sourceKey,
@@ -861,6 +886,7 @@ class ReadAloudBuildCoordinator(
                         batchId = "bg_${System.currentTimeMillis()}",
                         priority = AiPriority.P3_BACKGROUND,
                         onChapterReady = onChapterReady,
+                        control = control,
                     )
                 }.await()
             }
@@ -872,12 +898,13 @@ class ReadAloudBuildCoordinator(
             AppLog.putAnalysis("【V4·后台】批次被前台抢占，已提交章节保留")
             return BatchAnalysisRunner.Outcome(
                 ready = earlyReady.toList().distinct(),
-                extracted = earlyExtracted.toList().distinct(),
+                extracted = earlyExtracted.toList().distinct().filterNot { it in earlyReady },
             )
         } catch (e: Throwable) {
             AppLog.putAnalysis("【V4·后台】批次异常：${e.localizedMessage}", e)
             outcome = BatchAnalysisRunner.Outcome(failed = runnable.map { it.chapterIndex })
         } finally {
+            controlKeys.forEach { jobs.releaseControl(it, control) }
             owned.forEach { (chapter, ticket) ->
                 if (!ticket.result.isCompleted) {
                     val state = when {
@@ -893,13 +920,27 @@ class ReadAloudBuildCoordinator(
         }
         return BatchAnalysisRunner.Outcome(
             ready = (earlyReady.toList() + outcome.ready).distinct(),
-            failed = outcome.failed,
-            extracted = (earlyExtracted.toList() + outcome.extracted).distinct(),
+            failed = outcome.failed.filterNot {
+                it in earlyReady || it in earlyExtracted || it in outcome.ready || it in outcome.extracted
+            },
+            extracted = (earlyExtracted.toList() + outcome.extracted).distinct()
+                .filterNot { it in earlyReady || it in outcome.ready || it in outcome.failed },
         )
+    }
+
+    private fun charge(s: Session, chapters: Collection<Int>) = synchronized(lock) {
+        chapters.distinct().forEach { chapter ->
+            if (chapter !in s.foregroundClaims && s.charged.add(chapter)) {
+                s.budgetLeft = (s.budgetLeft - 1).coerceAtLeast(0)
+            }
+        }
     }
 
     private suspend fun markFailed(s: Session, chapterIndex: Int, contentHash: String) {
         val existing = raBuild.getBuild(s.bookKey, s.sourceKey, chapterIndex)
+        if (existing?.state == RaChapterState.IDENTITY_READY ||
+            (existing != null && existing.contentHash.isNotBlank() && existing.contentHash != contentHash)
+        ) return
         val now = System.currentTimeMillis()
         raBuild.upsertBuild(
             RaChapterBuild(
@@ -940,6 +981,11 @@ class ReadAloudBuildCoordinator(
             ticket.complete(ChapterJobRegistry.Outcome.FAILED)
             return false
         }
+        val attemptsBefore = raBuild.getBuild(s.bookKey, s.sourceKey, text.chapterIndex)?.attempts ?: 0
+        suspend fun recordFailureIfNeeded() {
+            val nowAttempts = raBuild.getBuild(s.bookKey, s.sourceKey, text.chapterIndex)?.attempts ?: 0
+            if (nowAttempts <= attemptsBefore) markFailed(s, text.chapterIndex, text.contentHash)
+        }
         return try {
             val result: RaPipelineResult? = kotlinx.coroutines.coroutineScope {
                 this.async {
@@ -959,12 +1005,13 @@ class ReadAloudBuildCoordinator(
                             chapters = listOf(text.chapterIndex),
                             preemptible = true,
                         ),
-                        taskStartedAt = System.currentTimeMillis(),
+                        taskStartedAt = text.loadedAt,
                         skipLegacyAudio = true,
                     )
                 }.await()
             }
             val ok = result != null && result.analysis.status != RaAnalysisStatus.FAILED
+            if (!ok) recordFailureIfNeeded()
             ticket.complete(
                 if (ok) ChapterJobRegistry.Outcome.SUCCESS
                 else ChapterJobRegistry.Outcome.FAILED,
@@ -976,6 +1023,7 @@ class ReadAloudBuildCoordinator(
             null
         } catch (e: Throwable) {
             AppLog.putAnalysis("【V4·后台】单章重试失败：${e.localizedMessage}", e)
+            recordFailureIfNeeded()
             ticket.complete(ChapterJobRegistry.Outcome.FAILED)
             false
         }
@@ -999,8 +1047,12 @@ class ReadAloudBuildCoordinator(
             .associateBy { it.chapterIndex }
         return chapters.associate { chapter ->
             val build = builds[chapter.index]
-            val hasContent = BookHelp.hasContent(s.book, chapter)
+            val hasContent = s.book.isLocal || BookHelp.hasContent(s.book, chapter)
+            val fileUpdated = runCatching { BookHelp.getChapterContentFile(s.book, chapter).lastModified() }
+                .getOrDefault(0L)
             val state = when {
+                build?.state == RaChapterState.IDENTITY_READY && hasContent &&
+                    fileUpdated > build.updatedAt -> RaChapterState.STALE
                 build == null -> if (hasContent) RaChapterState.CACHED else RaChapterState.NO_CONTENT
                 build.state == RaChapterState.IDENTITY_READY ||
                     build.state == RaChapterState.SKIPPED_EMPTY -> build.state
@@ -1028,6 +1080,7 @@ class ReadAloudBuildCoordinator(
         s: Session?,
         states: Map<Int, RaChapterState>? = null,
     ) {
+        if (s != null && synchronized(lock) { session !== s }) return
         val previous = _status.value
         val sameBook = s?.book?.bookUrl == previous.bookUrl
         val built = states?.values?.count { it == RaChapterState.IDENTITY_READY }
@@ -1035,8 +1088,14 @@ class ReadAloudBuildCoordinator(
         val pending = states?.values?.count {
             it == RaChapterState.CACHED || it == RaChapterState.STALE
         } ?: if (sameBook) previous.cachedPending else 0
+        val actualState = when {
+            state == BackgroundState.STOPPED || s?.stopping == true -> BackgroundState.STOPPED
+            s != null && s.budgetLeft <= 0 -> BackgroundState.BUDGET_REACHED
+            s?.paused == true -> BackgroundState.PAUSED
+            else -> state
+        }
         val next = BuildStatus(
-            state = state,
+            state = actualState,
             budgetLeft = s?.budgetLeft ?: 0,
             builtChapters = built,
             cachedPending = pending,

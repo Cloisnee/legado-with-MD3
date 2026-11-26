@@ -18,6 +18,7 @@ class NdjsonChapterStream(
     private val requestedChapters: Set<Int> = emptySet(),
     private val onEntities: (JSONObject) -> Unit = {},
     private val onChapter: (Int, JSONObject) -> Unit = { _, _ -> },
+    private val autoAcknowledge: Boolean = true,
 ) {
 
     data class Result(
@@ -27,17 +28,23 @@ class NdjsonChapterStream(
         val needsFallback: Boolean,
         val badLines: Int,
         val raw: String,
+        val received: Set<Int> = emptySet(),
     )
 
     private val buf = StringBuilder()
     private val whole = StringBuilder()
     private val committed = LinkedHashSet<Int>()
+    private val seenThisAttempt = LinkedHashSet<Int>()
+
+    /** 仅在该章事务真正成功之后调用。 */
+    @Synchronized fun acknowledge(ch: Int) { committed.add(ch) }
     private var sawEntities = false
     private var sawEnd = false
     private var needsFallback = false
     private var badLines = 0
     private var chapterSeen = false
 
+    @Synchronized
     fun feed(delta: String) {
         if (delta.isEmpty()) return
         whole.append(delta)
@@ -52,6 +59,7 @@ class NdjsonChapterStream(
     }
 
     /** 每次模型尝试开始前调用；已提交章节跨尝试保留。 */
+    @Synchronized
     fun resetAttempt() {
         buf.clear()
         whole.clear()
@@ -59,8 +67,10 @@ class NdjsonChapterStream(
         sawEnd = false
         needsFallback = false
         chapterSeen = false
+        seenThisAttempt.clear()
     }
 
+    @Synchronized
     fun finish(): Result {
         if (buf.isNotBlank()) {
             val line = buf.toString()
@@ -75,6 +85,7 @@ class NdjsonChapterStream(
             needsFallback = needsFallback,
             badLines = badLines,
             raw = whole.toString(),
+            received = seenThisAttempt.toSet(),
         )
     }
 
@@ -82,12 +93,13 @@ class NdjsonChapterStream(
      * 整体 JSON 回退（03 §3.3）：`{"entities":[...],"chapters":[...]}`。
      * 已提交章节跳过；成功解析返回 true。
      */
+    @Synchronized
     fun consumeWholeJson(raw: String): Boolean {
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
         if (start < 0 || end <= start) return false
         val root = runCatching { JSONObject(raw.substring(start, end + 1)) }.getOrNull() ?: return false
-        root.optJSONArray("entities")?.let { arr ->
+        root.optJSONArray("entities")?.let {
             // 与流式协议保持一致：回调整个 entities 包装对象，而不是单个实体。
             onEntities(root)
             sawEntities = true
@@ -96,8 +108,9 @@ class NdjsonChapterStream(
         for (i in 0 until chapters.length()) {
             val obj = chapters.optJSONObject(i) ?: continue
             val ch = obj.optInt("ch", -1)
-            if (ch <= 0 || ch in committed) continue
-            if (commit(ch, obj)) committed.add(ch)
+            if (!acceptChapter(ch)) continue
+            seenThisAttempt.add(ch)
+            if (commit(ch, obj) && autoAcknowledge) committed.add(ch)
         }
         return true
     }
@@ -127,13 +140,17 @@ class NdjsonChapterStream(
                     return
                 }
                 val ch = obj.optInt("ch", -1)
-                if (ch <= 0 || ch in committed) return
-                if (commit(ch, obj)) committed.add(ch)
+                if (!acceptChapter(ch)) return
+                seenThisAttempt.add(ch)
+                if (commit(ch, obj) && autoAcknowledge) committed.add(ch)
             }
             "end" -> sawEnd = true
             else -> badLines++
         }
     }
+
+    private fun acceptChapter(ch: Int): Boolean = ch > 0 && ch !in committed &&
+        ch !in seenThisAttempt && (requestedChapters.isEmpty() || ch in requestedChapters)
 
     private fun commit(ch: Int, obj: JSONObject): Boolean = runCatching {
         onChapter(ch, obj)

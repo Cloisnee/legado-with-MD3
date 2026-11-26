@@ -14,6 +14,7 @@ import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -495,4 +496,44 @@ class IdentityResolverTest {
         assertTrue(out[first.id]?.characterId != out[second.id]?.characterId)
         assertEquals(2, characters.characters(bookKey).size)
     }
+    @Test
+    fun `parallel chapters publish one core identity and one default profile`() = runBlocking {
+        val bookKey = "bk_concurrent"
+        val results = kotlinx.coroutines.coroutineScope {
+            (0..3).map { chapter ->
+                async(kotlinx.coroutines.Dispatchers.Default) {
+                    resolver.resolve(bookKey, chapter,
+                        speaker("parallel$chapter", "L1", "沈孤鸿", emptyList(), chapter))
+                }
+            }.map { it.await() }
+        }
+        assertEquals(1, results.map { it.characterId }.distinct().size)
+        assertEquals(1, characters.characters(bookKey).size)
+        val casting = VoiceCastingService(
+            io.legado.app.data.repository.ReadAloudVoicePoolRepository(ApplicationProvider.getApplicationContext()),
+            characters,
+        )
+        kotlinx.coroutines.coroutineScope {
+            results.map { result ->
+                async(kotlinx.coroutines.Dispatchers.Default) {
+                    casting.ensureDefaultProfiles(bookKey, listOf(characters.character(result.characterId)!!), "并发章")
+                }
+            }.forEach { it.await() }
+        }
+        assertEquals(1, characters.voiceProfiles(bookKey).size)
+    }
+
+    @Test
+    fun `same bkey in same response never merges passersby across chapters`() = runBlocking {
+        val first = speaker("p1", "B1", "弟子A", emptyList(), 2, "路人", "response#B1")
+        val second = speaker("p2", "B1", "弟子A", emptyList(), 5, "路人", "response#B1")
+        val out = resolver.resolveBatch("bk_road_same_key", listOf(
+            IdentityResolver.BatchChapterInput(2, "第3章", listOf(first), emptyList()),
+            IdentityResolver.BatchChapterInput(5, "第6章", listOf(second), emptyList()),
+        ))
+        assertTrue(out[first.id]?.characterId != out[second.id]?.characterId)
+        val names = characters.charactersRaw("bk_road_same_key").map { it.displayName }.toSet()
+        assertEquals(setOf("弟子A【第3章】", "弟子A【第6章】"), names)
+    }
+
 }

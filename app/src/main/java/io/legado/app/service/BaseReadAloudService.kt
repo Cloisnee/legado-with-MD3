@@ -589,7 +589,7 @@ abstract class BaseReadAloudService : BaseService(),
                 val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
                 val book = bookSession.book
                 if (book != null && book.bookUrl.isNotEmpty()) {
-                    scheduler.startSession(book, bookSession.chapterIndex)
+                    scheduler.startSession(book, input.chapter.index, paused = !play)
                 }
             }.onFailure {
                 // 批212g：会话取消是预期语义（换章/换书/停止），静默

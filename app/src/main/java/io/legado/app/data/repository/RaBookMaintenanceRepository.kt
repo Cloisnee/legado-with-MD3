@@ -41,7 +41,7 @@ class RaBookMaintenanceRepository(
 ) {
 
     data class ExportPackage(
-        val schemaVersion: Int = 2,
+        val schemaVersion: Int = 3,
         val books: List<BookData> = emptyList(),
     )
 
@@ -113,7 +113,7 @@ class RaBookMaintenanceRepository(
             val text = input.bufferedReader().use { it.readText() }
             val packageData = Gson().fromJson(text, ExportPackage::class.java)
                 ?: return@runCatching false to "JSON 为空"
-            if (packageData.schemaVersion != 2) {
+            if (packageData.schemaVersion != 3) {
                 return@runCatching false to "不支持的 schemaVersion=${packageData.schemaVersion}"
             }
             var imported = 0

@@ -42,6 +42,15 @@ class ChapterJobRegistry {
         private val registry: ChapterJobRegistry,
     ) {
         internal val result = CompletableDeferred<Outcome>()
+        var control: AiRequestControl? = null
+            private set
+        suspend fun bindControl(value: AiRequestControl) {
+            control = value
+            registry.lock.withLock {
+                registry.controls[key] = value
+                if (key in registry.foregroundRequested) value.foreground()
+            }
+        }
 
         suspend fun complete(outcome: Outcome) {
             result.complete(outcome)
@@ -52,6 +61,8 @@ class ChapterJobRegistry {
 
     private val lock = Mutex()
     private val jobs = HashMap<Key, Ticket>()
+    private val controls = HashMap<Key, AiRequestControl>()
+    private val foregroundRequested = HashSet<Key>()
 
     suspend fun acquire(key: Key): Acquire = lock.withLock {
         val existing = jobs[key]
@@ -61,6 +72,20 @@ class ChapterJobRegistry {
             val ticket = Ticket(key, this)
             jobs[key] = ticket
             Acquire.Owner(ticket)
+        }
+    }
+
+    suspend fun requestForeground(key: Key) {
+        lock.withLock {
+            if (key in jobs || key in controls) foregroundRequested.add(key)
+            (jobs[key]?.control ?: controls[key])?.foreground()
+        }
+    }
+
+    suspend fun releaseControl(key: Key, control: AiRequestControl) = withContext(NonCancellable) {
+        lock.withLock {
+            if (controls[key] === control) controls.remove(key)
+            foregroundRequested.remove(key)
         }
     }
 

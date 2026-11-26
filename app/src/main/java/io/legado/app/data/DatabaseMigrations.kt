@@ -22,8 +22,17 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_82_83, migration_98_99, migration_99_100,
             migration_102_103, migration_105_106, migration_106_107, migration_107_108,
-            migration_108_109, migration_109_110, migration_110_111,
+            migration_108_109, migration_109_110, migration_110_111, migration_111_112,
         )
+    }
+
+    // V4-3：观察包与章节事务一起保存，断流恢复保留 explicit/inferred/default 与裁决原文。
+    val migration_111_112 = object : Migration(111, 112) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `ra_chapter_analysis` ADD COLUMN `observationJson` TEXT NOT NULL DEFAULT ''")
+            db.execSQL("DROP INDEX IF EXISTS `index_ra_chapter_analysis_bookKey_sourceKey_chapterIndex_contentHash_resolverVersion`")
+            db.execSQL("CREATE INDEX `index_ra_chapter_analysis_bookKey_sourceKey_chapterIndex_contentHash_resolverVersion` ON `ra_chapter_analysis` (`bookKey`, `sourceKey`, `chapterIndex`, `contentHash`, `resolverVersion`)")
+        }
     }
 
     private val migration_10_11 = object : Migration(10, 11) {

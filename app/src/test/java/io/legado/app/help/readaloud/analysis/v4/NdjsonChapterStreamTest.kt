@@ -94,4 +94,23 @@ class NdjsonChapterStreamTest {
         assertFalse(parser.finish().raw.isEmpty())
         assertEquals(listOf(92, 93), committed)
     }
+    @Test
+    fun `out of range chapter is rejected in streaming and whole json`() {
+        val seen = mutableListOf<Int>()
+        val parser = stream(chapters = setOf(1), onChapter = { ch, _ -> seen.add(ch) })
+        parser.feed("{\"type\":\"entities\",\"entities\":[]}\n{\"type\":\"chapter\",\"ch\":2}\n")
+        parser.consumeWholeJson("{\"entities\":[],\"chapters\":[{\"ch\":3},{\"ch\":1}]}")
+        assertEquals(listOf(1), seen)
+    }
+
+    @Test
+    fun `production commit only counts after explicit transaction acknowledgement`() {
+        val parser = NdjsonChapterStream(setOf(1), onChapter = { _, _ -> }, autoAcknowledge = false)
+        parser.feed("{\"type\":\"entities\",\"entities\":[]}\n{\"type\":\"chapter\",\"ch\":1}\n")
+        assertTrue(parser.finish().committed.isEmpty())
+        parser.acknowledge(1)
+        assertEquals(setOf(1), parser.finish().committed)
+        assertTrue(parser.finish().missing.isEmpty())
+    }
+
 }

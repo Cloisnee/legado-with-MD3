@@ -1,5 +1,7 @@
 package io.legado.app.di
 
+import io.legado.app.feature.readaloud.settings.AiAnalysisStatusViewModel
+
 import android.os.Build
 import coil3.ImageLoader
 import coil3.gif.AnimatedImageDecoder
@@ -433,6 +435,7 @@ val appModule = module {
     singleOf(::SpeechAnalysisPipelineV4)
     singleOf(::BatchAnalysisRunner)
     singleOf(::ReadAloudBuildCoordinator)
+    viewModelOf(::AiAnalysisStatusViewModel)
     singleOf(::PrepareChapterSpeechPlanUseCase)
     singleOf(::SyncReadAloudVoicesUseCase)
     singleOf(::CacheBookChaptersUseCase)

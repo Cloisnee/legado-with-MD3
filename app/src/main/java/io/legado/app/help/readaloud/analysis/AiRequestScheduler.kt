@@ -15,7 +15,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.PriorityQueue
 import java.util.concurrent.atomic.AtomicLong
 
 /** AI 任务类型：决定日志与后续可能的差异化策略。 */
@@ -39,6 +38,35 @@ enum class AiPriority(val level: Int) {
         get() = level <= P2_PRELOAD.level
 }
 
+/** 同一批次跨阶段共用：前台接管后后续请求也保持前台优先级。 */
+class AiRequestControl {
+    @Volatile var priority: AiPriority? = null
+        private set
+    @Volatile var protected: Boolean = false
+        private set
+    @Volatile var running: Boolean = false
+        private set
+    @Volatile private var owner: Job? = null
+    @Volatile private var takeQueued: Boolean = false
+
+    @Synchronized fun bind(job: Job?) {
+        owner = job
+        if (takeQueued) job?.cancel(CancellationException("foreground takes queued batch"))
+    }
+    @Synchronized fun started() { running = true }
+    @Synchronized fun finished() { running = false }
+    @Synchronized fun foreground() {
+        priority = AiPriority.P0_CURRENT
+        if (protected) return
+        protected = true
+        // 还未发网的批次让出目标章，前台重取；已经读流的批次继续逐章提交。
+        if (!running) {
+            takeQueued = true
+            owner?.cancel(CancellationException("foreground takes queued batch"))
+        }
+    }
+}
+
 /** 一次 AI 请求的调度上下文（阶段、优先级、书籍/章节范围、是否可被前台抢占）。 */
 data class AiSchedulerContext(
     val kind: AiTaskKind,
@@ -46,7 +74,11 @@ data class AiSchedulerContext(
     val bookKey: String,
     val chapters: List<Int>,
     val preemptible: Boolean,
-)
+    val control: AiRequestControl? = null,
+) {
+    val effectivePriority: AiPriority get() = control?.priority ?: priority
+    val canPreempt: Boolean get() = preemptible && control?.protected != true
+}
 
 /**
  * AI 请求调度器（02 §4）：所有分析请求的唯一出口。
@@ -71,15 +103,14 @@ class AiRequestScheduler(
         var limit = 1
         var active = 0
         var pausedUntil = 0L
-        val waiting = PriorityQueue<Waiter>(compareBy<Waiter>({ it.priority.level }, { it.seq }))
+        val waiting = ArrayList<Waiter>()
         val running = HashMap<Long, Running>()
     }
 
     private class Waiter(
         val id: Long,
-        val priority: AiPriority,
+        val context: AiSchedulerContext,
         val seq: Long,
-        val preemptible: Boolean,
         val job: Job?,
     ) {
         val wake = Channel<Unit>(Channel.CONFLATED)
@@ -91,9 +122,8 @@ class AiRequestScheduler(
     }
 
     private class Running(
-        val priority: AiPriority,
+        val context: AiSchedulerContext,
         val startedAt: Long,
-        val preemptible: Boolean,
         val job: Job?,
     )
 
@@ -114,6 +144,7 @@ class AiRequestScheduler(
             return block()
         } finally {
             release(lane, id)
+            context.control?.finished()
         }
     }
 
@@ -139,71 +170,31 @@ class AiRequestScheduler(
         context: AiSchedulerContext,
         id: Long,
     ) {
-        val waiter = Waiter(
-            id = id,
-            priority = context.priority,
-            seq = seq.incrementAndGet(),
-            preemptible = context.preemptible,
-            job = currentCoroutineContext()[Job],
-        )
+        val waiter = Waiter(id, context, seq.incrementAndGet(), currentCoroutineContext()[Job])
+        context.control?.bind(waiter.job)
         try {
-            while (true) {
-                var pauseMs = 0L
-                var acquired = false
-                lane.lock.withLock {
-                    lane.limit = provider.maxConcurrency.coerceIn(1, 8)
-                    val now = clock()
-                    if (lane.pausedUntil > now) {
-                        pauseMs = lane.pausedUntil - now
-                        return@withLock
-                    }
-                    // 先把空出的许可交给已在排队的请求，再考虑新请求。
-                    grantWaitersLocked(lane)
-                    if (waiter.granted) {
-                        acquired = true
-                        return@withLock
-                    }
-                    if (lane.active < lane.limit && lane.waiting.none { !it.cancelled }) {
-                        lane.active++
-                        lane.running[id] = Running(
-                            priority = context.priority,
-                            startedAt = now,
-                            preemptible = context.preemptible,
-                            job = currentCoroutineContext()[Job],
-                        )
-                        acquired = true
-                        return@withLock
-                    }
-                    if (context.priority.foreground) {
-                        val victim = lane.running.values
-                            .filter { it.preemptible }
-                            .maxWithOrNull(compareBy<Running>({ it.priority.level }, { it.startedAt }))
-                        victim?.job?.cancel(CancellationException("preempted by foreground"))
-                    }
-                    if (waiter !in lane.waiting) lane.waiting.add(waiter)
+            lane.lock.withLock {
+                lane.limit = provider.maxConcurrency.coerceIn(1, 8)
+                // 暂停期也入队，恢复时优先级/FIFO 不受唤醒时序影响。
+                lane.waiting.add(waiter)
+                grantWaitersLocked(lane)
+                if (!waiter.granted && context.effectivePriority.foreground) {
+                    lane.running.values.filter { it.context.canPreempt }
+                        .maxWithOrNull(compareBy<Running>(
+                            { it.context.effectivePriority.level }, { it.startedAt },
+                        ))?.job?.cancel(CancellationException("preempted by foreground"))
                 }
-                if (acquired) return
-                if (pauseMs > 0L) {
-                    delay(pauseMs)
-                    continue
-                }
-                try {
-                    waiter.wake.receive()
-                } catch (e: CancellationException) {
-                    waiter.cancelled = true
-                    throw e
-                }
-                currentCoroutineContext().ensureActive()
             }
+            waiter.wake.receive()
+            currentCoroutineContext().ensureActive()
+            context.control?.started()
         } catch (e: CancellationException) {
             waiter.cancelled = true
             withContext(NonCancellable) {
                 lane.lock.withLock {
                     lane.waiting.remove(waiter)
-                    if (waiter.granted && lane.running.remove(waiter.id) != null) {
-                        lane.active = (lane.active - 1).coerceAtLeast(0)
-                        grantWaitersLocked(lane)
-                    }
+                    if (lane.running.remove(waiter.id) != null) lane.active--
+                    grantWaitersLocked(lane)
                 }
             }
             throw e
@@ -214,8 +205,7 @@ class AiRequestScheduler(
         // 取消中的协程也必须能归还许可：释放路径不可取消。
         withContext(NonCancellable) {
             lane.lock.withLock {
-                lane.running.remove(id)
-                lane.active = (lane.active - 1).coerceAtLeast(0)
+                if (lane.running.remove(id) != null) lane.active--
                 grantWaitersLocked(lane)
             }
         }
@@ -225,14 +215,16 @@ class AiRequestScheduler(
     private fun grantWaitersLocked(lane: Lane) {
         if (lane.pausedUntil > clock()) return
         while (lane.active < lane.limit && lane.waiting.isNotEmpty()) {
-            val waiter = lane.waiting.poll() ?: break
+            val waiter = lane.waiting.minWithOrNull(
+                compareBy<Waiter>({ it.context.effectivePriority.level }, { it.seq }),
+            ) ?: break
+            lane.waiting.remove(waiter)
             if (waiter.cancelled) continue
             waiter.granted = true
             lane.active++
             lane.running[waiter.id] = Running(
-                priority = waiter.priority,
+                context = waiter.context,
                 startedAt = clock(),
-                preemptible = waiter.preemptible,
                 job = waiter.job,
             )
             waiter.wake.trySend(Unit)

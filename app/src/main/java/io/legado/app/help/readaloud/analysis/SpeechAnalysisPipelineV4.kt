@@ -52,7 +52,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -274,19 +274,6 @@ BGM 建议缺段从值集补全。
 """.trimIndent()
     }
 
-    // ---------------- 数据小结构 ----------------
-
-    @Volatile
-    private var bareWordsCache: Set<String> = emptySet()
-
-    @Volatile
-    private var specialWordsCache: Set<String> = emptySet()
-
-    /** B19：当前 run 的章节显示名（标题截到章；run 由调度器串行调用，用实例字段免逐层透传） */
-    @Volatile
-    private var chapterLabel: String = ""
-
-
     // ---------------- 主流程 ----------------
 
     suspend fun run(
@@ -305,7 +292,7 @@ BGM 建议缺段从值集补全。
     ): RaPipelineResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
-        chapterLabel = runCatching { catalog.chapterLabel(bookUrl, chapterIndex) }
+        val chapterLabel = runCatching { catalog.chapterLabel(bookUrl, chapterIndex) }
             .getOrDefault("第${chapterIndex + 1}章")
         val existing = runCatching {
             raBuild.getAnalysis(bookKey, sourceKey, chapterIndex, contentHash, RESOLVER_VERSION)
@@ -325,268 +312,275 @@ BGM 建议缺段从值集补全。
                     AppLog.putAnalysis("V4·后台任务异常: ${e.localizedMessage}", e)
                 },
         )
-        bareWordsCache = runCatching { wordLibrary.bareWords() }.getOrDefault(emptySet())
-        specialWordsCache = runCatching { wordLibrary.specialWords() }.getOrDefault(emptySet())
-        val analysisId = SpeechIdentity.analysisId(
-            bookKey = bookKey,
-            sourceKey = sourceKey,
-            chapterIndex = chapterIndex,
-            contentHash = contentHash,
-            resolverVersion = RESOLVER_VERSION,
-        )
-        AppLog.putAnalysis("【V4·$chapterLabel·阶段1】开始：段数=${paragraphs.size}")
-
-        // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
-        val t0 = System.currentTimeMillis()
-        val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex, aiContext = aiContext)
-        val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
-        val directorSkipReason = when {
-            directorRefs.isEmpty() -> "未设置Ai"
-            else -> ""
-        }
-        if (ranges.isEmpty()) {
-            AppLog.putAnalysis("【V4·$chapterLabel·阶段1】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
-        }
-        var segments = ObservationAssembly.assemble(paragraphs, ranges)
-        AppLog.putAnalysis(
-            "【V4·$chapterLabel·阶段1】完成 ${System.currentTimeMillis() - t0}ms：话语 ${segments.count { it.roleType != SpeechRoleType.Narrator }}",
-        )
-
-        // 音频导演（暂时保持现状；结果双写 Room 计划表，播放仍读旧存储到 V4-4）
-        val unitsByPara = ObservationAssembly.buildParaUnits(paragraphs)
-        val flatUnits = unitsByPara.flatMap { pu -> pu.units.map { it.text } }
-        val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
-            AudioLaneScan.suggest(flatUnits)
-        }.getOrNull() ?: List(flatUnits.size) { emptyList() }
-        if (directorSkipReason.isNotEmpty()) {
-            logLaneFallbackSuggestions(directorSkipReason, unitSuggestions)
-        }
-
-        // ===== 阶段2：对白归属（AI） =====
-        val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
-        val numbered = ObservationAssembly.renderNumbered(segments)
-        val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
-        val directorJob = if (!skipLegacyAudio && directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
-            val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
-            legacyScope.async {
-                callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel, aiContext)
-            }
-        } else null
-        val knownCharacters = buildKnownCharacters(bookKey, paragraphs, chapterIndex)
-        val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
-        val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
-        val emoJob = if (!skipLegacyAudio && emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            legacyScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel, aiContext) }
-        } else null
-        var usedAi2 = false
-        var stage2: Stage2Payload? = null
-        if (s2Refs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            val s2 = callStage2(
-                numbered = numbered,
-                paragraphs = paragraphs,
-                prevText = prevChapterText,
-                nextText = nextChapterText,
-                cfg = cfg,
-                expectedCount = dialogueSegs.size,
-                refs = s2Refs,
+        try {
+            val bareWordsCache = runCatching { wordLibrary.bareWords() }.getOrDefault(emptySet())
+            val specialWordsCache = runCatching { wordLibrary.specialWords() }.getOrDefault(emptySet())
+            val analysisId = SpeechIdentity.analysisId(
+                bookKey = bookKey,
+                sourceKey = sourceKey,
                 chapterIndex = chapterIndex,
-                knownCharacters = knownCharacters,
-                aiContext = aiContext,
-            )
-            if (s2 != null) {
-                usedAi2 = true
-                stage2 = s2
-                segments = ObservationAssembly.applyStage2(segments, s2.seqMap)
-                AppLog.putAnalysis(
-                    "【V4·$chapterLabel·阶段2】完成：人物 ${s2.speakers.size} 个、" +
-                        "提及 ${s2.mentions.size}、证据 ${s2.evidence.size}（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
-                )
-            } else {
-                AppLog.putAnalysis("【V4·$chapterLabel·阶段2】失败：话语改用默认对话(duihuaA/duihuaB)发声")
-            }
-        } else if (dialogueSegs.isNotEmpty()) {
-            AppLog.putAnalysis("【V4·$chapterLabel·阶段2】跳过：未配模型队列 → 话语改用默认对话发声")
-        }
+                contentHash = contentHash,
+                resolverVersion = RESOLVER_VERSION,
+            ) + if (force) ":user_${java.util.UUID.randomUUID()}" else ""
 
-        // ===== 身份收敛（V4-2 完整版：候选召回 + AI 三态） =====
-        val localSpeakers = ObservationAssembly.buildLocalSpeakers(analysisId, stage2?.speakers.orEmpty())
-        val localMentions = ObservationAssembly.buildLocalMentions(analysisId, stage2?.mentions.orEmpty())
-        val evidence = ObservationAssembly.buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
-        val seqMap = stage2?.seqMap.orEmpty()
-        val contextBySpeaker = ObservationAssembly.buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
-        val resolveResult = resolver.resolveChapter(
-            bookKey = bookKey,
-            chapterIndex = chapterIndex,
-            chapterLabel = chapterLabel,
-            speakers = localSpeakers,
-            mentions = localMentions,
-            evidence = evidence,
-            contextBySpeaker = contextBySpeaker,
-            context = aiContext?.copy(kind = AiTaskKind.RESOLVE),
-        )
-        val keyToCharacter = HashMap<String, String>()
-        val keyToResolution = HashMap<String, RaResolution>()
-        val resolvedCharacters = ArrayList<RaCharacter>()
-        localSpeakers.forEach { speaker ->
-            val resolution = resolveResult.resolutions[speaker.localKey]
-            if (resolution != null) {
-                keyToCharacter[speaker.localKey] = resolution.characterId
-                keyToResolution[speaker.localKey] = resolution.resolution
-                raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
+            AppLog.putAnalysis("【V4·$chapterLabel·阶段1】开始：段数=${paragraphs.size}")
+
+            // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
+            val t0 = System.currentTimeMillis()
+            val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex, aiContext = aiContext, chapterLabel = chapterLabel)
+            val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
+            val directorSkipReason = when {
+                directorRefs.isEmpty() -> "未设置Ai"
+                else -> ""
             }
-        }
-        segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
-        // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
-        val overrides = runCatching { raBuild.overrides(bookKey, chapterIndex) }
-            .getOrDefault(emptyList())
-            .associateBy { it.paragraphIndex to it.textHash }
-        if (overrides.isNotEmpty()) {
-            segments = segments.map { segment ->
-                val override = overrides[segment.paragraphIndex to MD5Utils.md5Encode16(segment.text)]
-                    ?: return@map segment
-                if (override.narrator) {
-                    segment.copy(
-                        roleType = SpeechRoleType.Narrator,
-                        characterId = null,
-                        localSpeakerId = null,
-                        surfaceName = "",
-                        seq = 0,
+            if (ranges.isEmpty()) {
+                AppLog.putAnalysis("【V4·$chapterLabel·阶段1】未检出话语（${System.currentTimeMillis() - t0}ms）→ 全旁白")
+            }
+            var segments = ObservationAssembly.assemble(paragraphs, ranges)
+            AppLog.putAnalysis(
+                "【V4·$chapterLabel·阶段1】完成 ${System.currentTimeMillis() - t0}ms：话语 ${segments.count { it.roleType != SpeechRoleType.Narrator }}",
+            )
+
+            // 音频导演（暂时保持现状；结果双写 Room 计划表，播放仍读旧存储到 V4-4）
+            val unitsByPara = ObservationAssembly.buildParaUnits(paragraphs)
+            val flatUnits = unitsByPara.flatMap { pu -> pu.units.map { it.text } }
+            val unitSuggestions: List<List<AudioLaneScan.Suggestion>> = runCatching {
+                AudioLaneScan.suggest(flatUnits)
+            }.getOrNull() ?: List(flatUnits.size) { emptyList() }
+            if (directorSkipReason.isNotEmpty()) {
+                logLaneFallbackSuggestions(directorSkipReason, unitSuggestions, chapterLabel)
+            }
+
+            // ===== 阶段2：对白归属（AI） =====
+            val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
+            val numbered = ObservationAssembly.renderNumbered(segments)
+            val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
+            val directorJob = if (!skipLegacyAudio && directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
+                val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
+                legacyScope.async {
+                    callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel, aiContext)
+                }
+            } else null
+            val knownCharacters = buildKnownCharacters(bookKey, paragraphs, chapterIndex)
+            val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
+            val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
+            val emoJob = if (!skipLegacyAudio && emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
+                legacyScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel, aiContext) }
+            } else null
+            var usedAi2 = false
+            var stage2: Stage2Payload? = null
+            if (s2Refs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
+                val s2 = callStage2(
+                    numbered = numbered,
+                    paragraphs = paragraphs,
+                    prevText = prevChapterText,
+                    nextText = nextChapterText,
+                    cfg = cfg,
+                    expectedCount = dialogueSegs.size,
+                    refs = s2Refs,
+                    chapterIndex = chapterIndex,
+                    knownCharacters = knownCharacters,
+                    aiContext = aiContext,
+                    chapterLabel = chapterLabel,
+                    bareWords = bareWordsCache,
+                    specialWords = specialWordsCache,
+                )
+                if (s2 != null) {
+                    usedAi2 = true
+                    stage2 = s2
+                    segments = ObservationAssembly.applyStage2(segments, s2.seqMap)
+                    AppLog.putAnalysis(
+                        "【V4·$chapterLabel·阶段2】完成：人物 ${s2.speakers.size} 个、" +
+                            "提及 ${s2.mentions.size}、证据 ${s2.evidence.size}（seq ${s2.seqMap.size}/${dialogueSegs.size}）",
                     )
                 } else {
-                    segment.copy(characterId = override.characterId ?: segment.characterId)
+                    AppLog.putAnalysis("【V4·$chapterLabel·阶段2】失败：话语改用默认对话(duihuaA/duihuaB)发声")
                 }
+            } else if (dialogueSegs.isNotEmpty()) {
+                AppLog.putAnalysis("【V4·$chapterLabel·阶段2】跳过：未配模型队列 → 话语改用默认对话发声")
             }
-        }
-        val updatedSpeakers = localSpeakers.map { speaker ->
-            speaker.copy(
-                characterId = keyToCharacter[speaker.localKey],
-                resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
-            )
-        }
-        if (localSpeakers.isNotEmpty()) {
-            val linked = resolveResult.resolutions.count { !it.value.created }
-            val provisional = resolveResult.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
-            AppLog.putAnalysis(
-                "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}" +
-                    "（新建 ${resolveResult.created.size}、链接 $linked、临时 $provisional）",
-            )
-        }
-        casting.ensureDefaultProfiles(bookKey, resolvedCharacters.distinctBy { it.id }, chapterLabel)
 
-        // ===== 情绪（V4-1 仍用旧提示词；结果写 ra_direction_line） =====
-        val emotionBySeq = HashMap<Int, String>()
-        if (emoJob != null) {
-            val emo = withTimeoutOrNull(cfg.emotionJoinTimeoutMs) { emoJob.await() }
-            if (emo != null && emo.isNotEmpty()) {
-                emotionBySeq.putAll(emo)
-                AppLog.putAnalysis("【V4·$chapterLabel·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
-            } else if (emo == null && emoJob.isActive) {
-                AppLog.putAnalysis("【V4·$chapterLabel·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库")
-                emoJob.cancel()
-            }
-        }
-
-        // ===== 音频导演 join（暂时保留时域兜底） =====
-        var audioPlan: AudioPlan? = null
-        if (directorJob != null) {
-            val items = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
-            when {
-                items != null -> {
-                    val plan = convertDirectorItems(items, unitsByPara, segments)
-                        .copy(scriptHash = contentHash)
-                    audioPlan = plan
-                    AppLog.putAnalysis(
-                        "【V4·$chapterLabel·音效与背景音】Ai导演：${plan.countsText()}。",
-                    )
-                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
-                }
-                directorJob.isActive -> {
-                    logLaneFallback("Ai超时", paragraphs)
-                    directorJob.cancel()
-                }
-                else -> logLaneFallback("Ai失败", paragraphs)
-            }
-        } else {
-            val rulesPlan = AudioPrefill.buildRulesPlan(
-                buildFallbackSeeds(unitsByPara, unitSuggestions, segments),
-            )
-            if (rulesPlan.itemCount > 0) {
-                audioPlan = rulesPlan.copy(scriptHash = contentHash)
-                AppLog.putAnalysis(
-                    "【V4·$chapterLabel·音效与背景音】本地计划已写入：${rulesPlan.countsText()}。",
-                )
-                runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
-            }
-        }
-
-        // ===== 落库（一个事务：analysis + segments + localSpeakers + evidence + build） =====
-        val stage2Failed = dialogueSegs.isNotEmpty() && !usedAi2
-        val now = System.currentTimeMillis()
-        val analysis = RaAnalysis(
-            id = analysisId,
-            bookKey = bookKey,
-            sourceKey = sourceKey,
-            chapterIndex = chapterIndex,
-            contentHash = contentHash,
-            resolverVersion = RESOLVER_VERSION,
-            status = if (stage2Failed) RaAnalysisStatus.FAILED else RaAnalysisStatus.RESOLVED,
-            origin = if (force) RaAnalysisOrigin.USER_REANALYZE else RaAnalysisOrigin.FOREGROUND,
-            modelId = "",
-            createdAt = now,
-            updatedAt = now,
-        )
-        val bound = segments.map { segment ->
-            segment.copy(
-                id = SpeechIdentity.segmentId(analysisId, segment.paragraphIndex, segment.start, segment.end),
-                analysisId = analysisId,
+            // ===== 身份收敛（V4-2 完整版：候选召回 + AI 三态） =====
+            val localSpeakers = ObservationAssembly.buildLocalSpeakers(analysisId, stage2?.speakers.orEmpty())
+            val localMentions = ObservationAssembly.buildLocalMentions(analysisId, stage2?.mentions.orEmpty())
+            val evidence = ObservationAssembly.buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
+            val seqMap = stage2?.seqMap.orEmpty()
+            val contextBySpeaker = ObservationAssembly.buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
+            val resolveResult = resolver.resolveChapter(
                 bookKey = bookKey,
                 chapterIndex = chapterIndex,
+                chapterLabel = chapterLabel,
+                speakers = localSpeakers,
+                mentions = localMentions,
+                evidence = evidence,
+                contextBySpeaker = contextBySpeaker,
+                context = aiContext?.copy(kind = AiTaskKind.RESOLVE),
+            )
+            val keyToCharacter = HashMap<String, String>()
+            val keyToResolution = HashMap<String, RaResolution>()
+            val resolvedCharacters = ArrayList<RaCharacter>()
+            localSpeakers.forEach { speaker ->
+                val resolution = resolveResult.resolutions[speaker.localKey]
+                if (resolution != null) {
+                    keyToCharacter[speaker.localKey] = resolution.characterId
+                    keyToResolution[speaker.localKey] = resolution.resolution
+                    raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
+                }
+            }
+            segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
+            // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
+            val overrides = runCatching { raBuild.overrides(bookKey, chapterIndex) }
+                .getOrDefault(emptyList())
+                .associateBy { it.paragraphIndex to it.textHash }
+            if (overrides.isNotEmpty()) {
+                segments = segments.map { segment ->
+                    val override = overrides[segment.paragraphIndex to MD5Utils.md5Encode16(segment.text)]
+                        ?: return@map segment
+                    if (override.narrator) {
+                        segment.copy(
+                            roleType = SpeechRoleType.Narrator,
+                            characterId = null,
+                            localSpeakerId = null,
+                            surfaceName = "",
+                            seq = 0,
+                        )
+                    } else {
+                        segment.copy(characterId = override.characterId ?: segment.characterId)
+                    }
+                }
+            }
+            val updatedSpeakers = localSpeakers.map { speaker ->
+                speaker.copy(
+                    characterId = keyToCharacter[speaker.localKey],
+                    resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
+                )
+            }
+            if (localSpeakers.isNotEmpty()) {
+                val linked = resolveResult.resolutions.count { !it.value.created }
+                val provisional = resolveResult.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
+                AppLog.putAnalysis(
+                    "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}" +
+                        "（新建 ${resolveResult.created.size}、链接 $linked、临时 $provisional）",
+                )
+            }
+            casting.ensureDefaultProfiles(bookKey, resolvedCharacters.distinctBy { it.id }, chapterLabel)
+
+            // ===== 情绪（V4-1 仍用旧提示词；结果写 ra_direction_line） =====
+            val emotionBySeq = HashMap<Int, String>()
+            if (emoJob != null) {
+                val emo = withTimeoutOrNull(cfg.emotionJoinTimeoutMs) { emoJob.await() }
+                if (emo != null && emo.isNotEmpty()) {
+                    emotionBySeq.putAll(emo)
+                    AppLog.putAnalysis("【V4·$chapterLabel·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
+                } else if (emo == null && emoJob.isActive) {
+                    AppLog.putAnalysis("【V4·$chapterLabel·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库")
+                    emoJob.cancel()
+                }
+            }
+
+            // ===== 音频导演 join（暂时保留时域兜底） =====
+            var audioPlan: AudioPlan? = null
+            if (directorJob != null) {
+                val items = withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) { directorJob.await() }
+                when {
+                    items != null -> {
+                        val plan = convertDirectorItems(items, unitsByPara, segments)
+                            .copy(scriptHash = contentHash)
+                        audioPlan = plan
+                        AppLog.putAnalysis(
+                            "【V4·$chapterLabel·音效与背景音】Ai导演：${plan.countsText()}。",
+                        )
+                        runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
+                    }
+                    directorJob.isActive -> {
+                        logLaneFallback("Ai超时", paragraphs, chapterLabel)
+                        directorJob.cancel()
+                    }
+                    else -> logLaneFallback("Ai失败", paragraphs, chapterLabel)
+                }
+            } else {
+                val rulesPlan = AudioPrefill.buildRulesPlan(
+                    buildFallbackSeeds(unitsByPara, unitSuggestions, segments),
+                )
+                if (rulesPlan.itemCount > 0) {
+                    audioPlan = rulesPlan.copy(scriptHash = contentHash)
+                    AppLog.putAnalysis(
+                        "【V4·$chapterLabel·音效与背景音】本地计划已写入：${rulesPlan.countsText()}。",
+                    )
+                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
+                }
+            }
+
+            // ===== 落库（一个事务：analysis + segments + localSpeakers + evidence + build） =====
+            val stage2Failed = dialogueSegs.isNotEmpty() && !usedAi2
+            val now = System.currentTimeMillis()
+            val analysis = RaAnalysis(
+                id = analysisId,
+                bookKey = bookKey,
+                sourceKey = sourceKey,
+                chapterIndex = chapterIndex,
+                contentHash = contentHash,
+                resolverVersion = RESOLVER_VERSION,
+                status = if (stage2Failed) RaAnalysisStatus.FAILED else RaAnalysisStatus.RESOLVED,
+                origin = if (force) RaAnalysisOrigin.USER_REANALYZE else RaAnalysisOrigin.FOREGROUND,
+                modelId = "",
                 createdAt = now,
                 updatedAt = now,
             )
-        }
-        val olderBuild = raBuild.getBuild(bookKey, sourceKey, chapterIndex)
-        val build = RaChapterBuild(
-            bookKey = bookKey,
-            sourceKey = sourceKey,
-            chapterIndex = chapterIndex,
-            contentHash = contentHash,
-            state = if (stage2Failed) RaChapterState.FAILED else RaChapterState.IDENTITY_READY,
-            analysisId = analysisId,
-            failReason = if (stage2Failed) "阶段2未完成：未配置模型或调用失败" else "",
-            attempts = (olderBuild?.attempts ?: 0) + if (stage2Failed) 1 else 0,
-            createdAt = olderBuild?.createdAt ?: now,
-            updatedAt = taskStartedAt,
-        )
-        val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
-            bookKey = bookKey,
-            chapterIndex = chapterIndex,
-            payload = stage2,
-            keyToCharacter = keyToCharacter,
-            evidence = evidence,
-        )
-        raBuild.saveAnalysisBundleWithObservations(
-            analysis = analysis,
-            segments = bound,
-            localSpeakers = updatedSpeakers,
-            localMentions = localMentions,
-            evidence = evidence,
-            build = build,
-            attributes = attributeObs,
-            relations = relationObs,
-        )
-        AppLog.putAnalysis(
-            "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
-                (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
-        )
-        resolvedCharacters.distinctBy { it.id }.forEach { character ->
-            runCatching { raCharacters.recomputeAppearance(character.id) }
-        }
+            val bound = segments.map { segment ->
+                segment.copy(
+                    id = SpeechIdentity.segmentId(analysisId, segment.paragraphIndex, segment.start, segment.end),
+                    analysisId = analysisId,
+                    bookKey = bookKey,
+                    chapterIndex = chapterIndex,
+                    createdAt = now,
+                    updatedAt = now,
+                )
+            }
+            val olderBuild = raBuild.getBuild(bookKey, sourceKey, chapterIndex)
+            val build = RaChapterBuild(
+                bookKey = bookKey,
+                sourceKey = sourceKey,
+                chapterIndex = chapterIndex,
+                contentHash = contentHash,
+                state = if (stage2Failed) RaChapterState.FAILED else RaChapterState.IDENTITY_READY,
+                analysisId = analysisId,
+                failReason = if (stage2Failed) "阶段2未完成：未配置模型或调用失败" else "",
+                attempts = (olderBuild?.attempts ?: 0) + if (stage2Failed) 1 else 0,
+                createdAt = olderBuild?.createdAt ?: now,
+                updatedAt = taskStartedAt,
+            )
+            val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
+                bookKey = bookKey,
+                chapterIndex = chapterIndex,
+                payload = stage2,
+                keyToCharacter = keyToCharacter,
+                evidence = evidence,
+            )
+            raBuild.saveAnalysisBundleWithObservations(
+                analysis = analysis,
+                segments = bound,
+                localSpeakers = updatedSpeakers,
+                localMentions = localMentions,
+                evidence = evidence,
+                build = build,
+                attributes = attributeObs,
+                relations = relationObs,
+            )
+            AppLog.putAnalysis(
+                "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
+                    (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
+            )
+            resolvedCharacters.distinctBy { it.id }.forEach { character ->
+                runCatching { raCharacters.recomputeAppearance(character.id) }
+            }
 
-        // ===== 导演行（情绪）与音频条目双写 Room =====
-        saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
-        legacyScope.coroutineContext.cancelChildren()
-        RaPipelineResult(analysis, bound, false)
+            // ===== 导演行（情绪）与音频条目双写 Room =====
+            saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
+            RaPipelineResult(analysis, bound, false)
+        } finally {
+            legacyScope.cancel()
+        }
     }
 
 
@@ -668,6 +662,7 @@ BGM 建议缺段从值集补全。
         cfg: AnalysisConfigStore.Config,
         chapterIndex: Int,
         aiContext: AiSchedulerContext? = null,
+        chapterLabel: String,
     ): List<ObservationAssembly.SpRange> {
         // 本地路径：引号包裹规则 v2
         val local = ArrayList<ObservationAssembly.SpRange>()
@@ -785,6 +780,9 @@ BGM 建议缺段从值集补全。
         chapterIndex: Int,
         knownCharacters: String,
         aiContext: AiSchedulerContext? = null,
+        chapterLabel: String,
+        bareWords: Set<String>,
+        specialWords: Set<String>,
     ): Stage2Payload? {
         val prev = ObservationAssembly.takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
         val next = ObservationAssembly.takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
@@ -822,8 +820,8 @@ BGM 建议缺段从值集补全。
             nextText = next,
             prevChapter = if (prev.isNotBlank()) chapterIndex else null,
             nextChapter = if (next.isNotBlank()) chapterIndex + 2 else null,
-            isBareClassWord = { word -> this.isBareClassWord(word) },
-            isSpecialClassWord = { word -> this.isSpecialClassWord(word) },
+            isBareClassWord = { word -> word.trim().let { it.isNotEmpty() && (it.length <= 1 || it in bareWords) } },
+            isSpecialClassWord = { word -> word.trim() in specialWords },
             log = { message -> AppLog.putAnalysis("【V4·$chapterLabel·阶段2】$message") },
         )
         return ai.completeValidated(
@@ -902,7 +900,7 @@ BGM 建议缺段从值集补全。
     // ---------------- B33.4b 音频导演 ----------------
 
     /** Ai 失败/超时兜底行：本地规则层快扫（播放侧后续回退同源扫描，口径一致） */
-    private suspend fun logLaneFallback(reason: String, paragraphs: List<CanonicalSpeechParagraph>) {
+    private suspend fun logLaneFallback(reason: String, paragraphs: List<CanonicalSpeechParagraph>, chapterLabel: String) {
         runCatching {
             val laneSummary = AudioLaneScan.summaryText(paragraphs.map { it.text })
             if (laneSummary != null) {
@@ -917,6 +915,7 @@ BGM 建议缺段从值集补全。
     private fun logLaneFallbackSuggestions(
         reason: String,
         suggestions: List<List<AudioLaneScan.Suggestion>>,
+        chapterLabel: String,
     ) {
         val uniq = suggestions.flatten().distinctBy { it.lane to it.label }
         val bgm = uniq.count { it.lane == SynthLane.BGM }
@@ -1076,15 +1075,5 @@ BGM 建议缺段从值集补全。
         } else {
             items.take(max).joinToString("；") + "；…等 ${items.size} 项"
         }
-
-    // ---------------- 工具 ----------------
-
-    private fun isBareClassWord(w: String): Boolean {
-        val t = w.trim()
-        return t.isNotEmpty() && (t.length <= 1 || t in bareWordsCache)
-    }
-
-    private fun isSpecialClassWord(w: String): Boolean = w.trim() in specialWordsCache
-
 
 }

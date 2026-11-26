@@ -28,7 +28,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.legado.app.R
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
-import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.legado.app.feature.readaloud.settings.AiAnalysisBuildUiState
+import io.legado.app.feature.readaloud.settings.AiAnalysisStatusViewModel
+import org.koin.androidx.compose.koinViewModel
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
 import io.legado.app.ui.theme.LegadoTheme
@@ -60,7 +63,9 @@ import org.koin.core.context.GlobalContext
  */
 @Composable
 fun AiAnalysisSettingsRouteScreen(onBackClick: () -> Unit) {
-    AiAnalysisSettingsScreen(onBack = onBackClick)
+    val viewModel: AiAnalysisStatusViewModel = koinViewModel()
+    val status by viewModel.state.collectAsStateWithLifecycle()
+    AiAnalysisSettingsScreen(onBack = onBackClick, buildStatus = status)
 }
 
 private enum class PromptTarget(val title: String, val key: String) {
@@ -84,14 +89,13 @@ private fun AnalysisConfigStore.Config.withPrompt(key: String, value: String): A
 @Composable
 fun AiAnalysisSettingsScreen(
     onBack: () -> Unit,
+    buildStatus: AiAnalysisBuildUiState = AiAnalysisBuildUiState(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { GlobalContext.get().get<AnalysisConfigStore>() }
-    val coordinator = remember { runCatching { GlobalContext.get().get<ReadAloudBuildCoordinator>() }.getOrNull() }
 
     var cfg by remember { mutableStateOf(AnalysisConfigStore.Config()) }
-    var buildStatus by remember { mutableStateOf<ReadAloudBuildCoordinator.BuildStatus?>(null) }
 
     fun update(transform: (AnalysisConfigStore.Config) -> AnalysisConfigStore.Config) {
         cfg = transform(cfg)
@@ -101,18 +105,6 @@ fun AiAnalysisSettingsScreen(
     LaunchedEffect(Unit) {
         cfg = store.load()
     }
-    LaunchedEffect(coordinator) {
-        coordinator?.status?.collect { buildStatus = it }
-    }
-
-    fun backgroundStateLabel(state: ReadAloudBuildCoordinator.BackgroundState): String = when (state) {
-        ReadAloudBuildCoordinator.BackgroundState.RUNNING -> "建库中"
-        ReadAloudBuildCoordinator.BackgroundState.WAITING_CACHE -> "等待缓存"
-        ReadAloudBuildCoordinator.BackgroundState.BUDGET_REACHED -> "额度用尽"
-        ReadAloudBuildCoordinator.BackgroundState.PAUSED -> "已暂停"
-        ReadAloudBuildCoordinator.BackgroundState.STOPPED -> "未朗读"
-    }
-
     var showTimeout by remember { mutableStateOf(false) }
     var showWait by remember { mutableStateOf(false) }
     var showPrev by remember { mutableStateOf(false) }
@@ -171,10 +163,10 @@ fun AiAnalysisSettingsScreen(
             item {
                 SplicedColumnGroup(title = "后台建库") {
                     val status = buildStatus
-                    if (status != null && status.bookUrl.isNotBlank()) {
+                    if (status.bookUrl.isNotBlank()) {
                         TinyClickableSettingItem(
                             title = "当前会话",
-                            description = "状态：${backgroundStateLabel(status.state)} · " +
+                            description = "状态：${status.label} · " +
                                 "已建库 ${status.builtChapters} 章 · 已缓存待建 ${status.cachedPending} 章 · " +
                                 "剩余额度 ${status.budgetLeft} 章",
                             onClick = {},

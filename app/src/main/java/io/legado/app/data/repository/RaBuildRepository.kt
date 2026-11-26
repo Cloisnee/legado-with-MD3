@@ -64,7 +64,14 @@ class RaBuildRepository(
         contentHash: String,
         resolverVersion: String,
     ): RaAnalysis? = withContext(Dispatchers.IO) {
-        dao.getAnalysis(bookKey, sourceKey, chapterIndex, contentHash, resolverVersion)?.toDomain()
+        val build = dao.getBuild(bookKey, sourceKey, chapterIndex)
+        val current = build?.analysisId?.let { dao.getAnalysisById(it) }
+        when {
+            current != null && current.contentHash == contentHash &&
+                current.resolverVersion == resolverVersion -> current.toDomain()
+            build != null && build.contentHash != contentHash -> null
+            else -> dao.getAnalysis(bookKey, sourceKey, chapterIndex, contentHash, resolverVersion)?.toDomain()
+        }
     }
 
     override suspend fun analysisById(id: String): RaAnalysis? = withContext(Dispatchers.IO) {
@@ -125,6 +132,11 @@ class RaBuildRepository(
         relations: List<RaRelationObservation>,
     ) = withContext(Dispatchers.IO) {
         database.withTransaction {
+            // 同 analysisId 的阶段2迟到重复包不得把已收敛的段/人重新清空。
+            val persisted = dao.getAnalysisById(analysis.id)
+            if (persisted?.status == "RESOLVED" && analysis.status == RaAnalysisStatus.EXTRACTED) {
+                return@withTransaction
+            }
             dao.saveAnalysisBundle(
                 analysis = analysis.toEntity(),
                 segments = segments.map(RaSegment::toEntity),
@@ -136,7 +148,6 @@ class RaBuildRepository(
                 // 旧任务晚归时不得覆盖新正文的有效指针：以任务读取正文的时间做版本比较。
                 val current = dao.getBuild(incoming.bookKey, incoming.sourceKey, incoming.chapterIndex)
                 val canWrite = current == null ||
-                    current.contentHash == incoming.contentHash ||
                     incoming.updatedAt >= current.updatedAt
                 if (canWrite) dao.upsertBuild(incoming.toEntity())
             }
@@ -474,6 +485,7 @@ internal fun RaChapterAnalysisEntity.toDomain() = RaAnalysis(
     origin = RaAnalysisOrigin.fromStorage(origin),
     batchId = batchId,
     modelId = modelId,
+    observationJson = observationJson,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )
@@ -489,6 +501,7 @@ internal fun RaAnalysis.toEntity() = RaChapterAnalysisEntity(
     origin = origin.storageValue,
     batchId = batchId,
     modelId = modelId,
+    observationJson = observationJson,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )

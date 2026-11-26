@@ -66,7 +66,6 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaBookSummary
 import io.legado.app.domain.model.readaloud.v4.RaCharacterView
 import io.legado.app.domain.model.readaloud.v4.RaScriptLineRow
-import io.legado.app.help.readaloud.analysis.ReadAloudBuildCoordinator
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.adaptiveContentPadding

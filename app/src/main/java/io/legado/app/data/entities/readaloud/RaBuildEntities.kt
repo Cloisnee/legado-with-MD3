@@ -49,7 +49,7 @@ data class RaChapterBuildEntity(
     indices = [
         Index(
             value = ["bookKey", "sourceKey", "chapterIndex", "contentHash", "resolverVersion"],
-            unique = true,
+            unique = false,
         ),
         Index(value = ["bookKey", "chapterIndex", "updatedAt"]),
     ],
@@ -69,6 +69,8 @@ data class RaChapterAnalysisEntity(
     val modelId: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "")
+    val observationJson: String = "",
 )
 
 @Entity(

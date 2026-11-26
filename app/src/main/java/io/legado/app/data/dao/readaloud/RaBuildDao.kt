@@ -88,7 +88,7 @@ interface RaBuildDao {
     @Query(
         "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
             "and chapterIndex = :chapterIndex and contentHash = :contentHash " +
-            "and resolverVersion = :resolverVersion limit 1"
+            "and resolverVersion = :resolverVersion order by updatedAt desc limit 1"
     )
     suspend fun getAnalysis(
         bookKey: String,

@@ -7,7 +7,6 @@ import io.legado.app.data.repository.AiProvider
 import io.legado.app.data.repository.AiThinkingMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -88,11 +87,13 @@ class AiSpeechClient(
         context: AiSchedulerContext? = null,
         onChunk: ((String) -> Unit)? = null,
         onAttemptStart: (() -> Unit)? = null,
+        onAttemptModel: ((ModelRef) -> Unit)? = null,
         totalTimeoutMs: Long? = null,
         onModelUsed: ((String) -> Unit)? = null,
         validate: (String) -> ValidateOutcome<T>,
     ): T? = withContext(Dispatchers.IO) {
         val globalTimeoutMs = unifiedTimeoutMs()
+        val summaries = ArrayList<String>()
         for (ref in refs) {
             // 模型设置里的「超时」与全局「统一超时」取更短者：模型级真正生效，全局仍作硬上限。
             val timeoutMs = minOf(
@@ -105,8 +106,11 @@ class AiSpeechClient(
             var validFails = 0
             var failHint = ""
             var consecutive429 = 0
+            var rateLimits = 0
+            var lastReason = ""
             while (true) {
                 onAttemptStart?.invoke()
+                onAttemptModel?.invoke(ref)
                 val call = callOnce(
                     ref = ref,
                     system = system,
@@ -122,9 +126,8 @@ class AiSpeechClient(
                     if (call.rateLimited) {
                         consecutive429++
                         runCatching { scheduler.reportRateLimited(ref.provider.id, consecutive429) }
-                        AppLog.putAnalysis(
-                            "【AI调用·$logTag】模型 ${ref.model.name} 限流 429（连续 $consecutive429 次）",
-                        )
+                        rateLimits++
+                        lastReason = "429 限流"
                         // 前两次原模型重试（服务商暂停期内排队等待）；第三次按响应失败处理
                         if (consecutive429 < 3) continue
                         respFails++
@@ -134,9 +137,7 @@ class AiSpeechClient(
                     }
                     consecutive429 = 0
                     respFails++
-                    AppLog.putAnalysis(
-                        "【AI调用·$logTag】模型 ${ref.model.name} 响应失败（$respFails/$respMax，${call.failReason.ifBlank { "未知原因" }}）",
-                    )
+                    lastReason = call.failReason.ifBlank { "未知原因" }
                     if (respFails >= respMax) break
                     delay(2000L * respFails)
                     continue
@@ -146,21 +147,20 @@ class AiSpeechClient(
                     ValidateOutcome(null, "解析异常：${it.localizedMessage ?: it.javaClass.simpleName}")
                 }
                 if (outcome.data != null) {
-                    AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 校验通过")
+                    summaries.add("${ref.model.name} 通过（响应重试 $respFails、校验重试 $validFails、限流 $rateLimits）")
+                    AppLog.putAnalysis("【AI·$logTag】${summaries.joinToString(" → ")}")
                     onModelUsed?.invoke(ref.model.name)
                     return@withContext outcome.data
                 }
                 validFails++
-                AppLog.putAnalysis(
-                    "【AI调用·$logTag】模型 ${ref.model.name} 校验失败（$validFails/$validMax）：${outcome.failReason}",
-                )
+                lastReason = outcome.failReason
                 if (validFails >= validMax) break
                 failHint = outcome.failReason
                 delay(1000)
             }
-            AppLog.putAnalysis("【AI调用·$logTag】模型 ${ref.model.name} 额度耗尽，切换下一模型")
+            summaries.add("${ref.model.name} 失败（响应 $respFails、校验 $validFails、限流 $rateLimits）：${lastReason.take(160)}")
         }
-        AppLog.putAnalysis("【AI调用·$logTag】所有模型响应/校验额度均已耗尽")
+        AppLog.putAnalysis("【AI·$logTag】${summaries.joinToString(" → ")}，队列耗尽")
         null
     }
 
@@ -294,15 +294,15 @@ class AiSpeechClient(
                     try {
                         val text = call.execute().use { resp ->
                             if (!resp.isSuccessful) {
-                                val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                                val errBody = runCatching { resp.body.string() }.getOrDefault("")
                                 if (resp.code == 429) {
-                                    // 先暂停服务商许可池，再释放本请求的许可，避免下一笔同商请求插空。
-                                    runCatching { scheduler.reportRateLimited(ref.provider.id, 1) }
                                     throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
                                 }
                                 error("HTTP ${resp.code}: ${errBody.take(160)}")
                             }
-                            val text = readStreamBody(protocol, resp, totalTimeoutMs, onChunk)
+                            val text = readStreamBody(protocol, resp, totalTimeoutMs) { delta ->
+                                if (cont.isActive) onChunk?.invoke(delta)
+                            }
                             if (text.isNullOrBlank()) error("空响应")
                             text
                         }
@@ -315,7 +315,18 @@ class AiSpeechClient(
                 thread.start()
             }
         }
-        return if (context != null) scheduler.withPermit(ref, context) { perform() } else perform()
+        val scheduled = context ?: AiSchedulerContext(
+            AiTaskKind.STAGE2, AiPriority.P0_CURRENT, "", emptyList(), false,
+        )
+        return scheduler.withPermit(ref, scheduled) {
+            try {
+                perform()
+            } catch (e: RateLimitedException) {
+                // 在许可仍属于本请求时暂停；finally 交接许可前退避已经生效。
+                scheduler.reportRateLimited(ref.provider.id, 1)
+                throw e
+            }
+        }
     }
 
     /** OpenAI 兼容协议的关闭思考字段：按模型设置发送，避免固定发 thinking 被新网关 400。 */
@@ -353,7 +364,7 @@ class AiSpeechClient(
         totalTimeoutMs: Long,
         onChunk: ((String) -> Unit)? = null,
     ): String? {
-        val source = resp.body?.source() ?: return null
+        val source = resp.body.source()
         val deadline = System.currentTimeMillis() + totalTimeoutMs
         var mode = -1 // -1 未知 / 0 普通JSON / 1 SSE
         val plain = StringBuilder()
@@ -375,7 +386,7 @@ class AiSpeechClient(
                     val chunk = runCatching { JSONObject(payload) }.getOrNull() ?: continue
                     if (chunk.has("error")) {
                         errMsg = chunk.optJSONObject("error")?.optString("message")
-                            ?.takeIf { it.isNotBlank() } ?: chunk.opt("error").toString()
+                            ?.takeIf { it.isNotBlank() } ?: chunk.opt("error")?.toString().orEmpty()
                         continue
                     }
                     when (protocol) {
