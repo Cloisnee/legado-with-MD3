@@ -338,6 +338,21 @@ class ReadAloudBuildCoordinator(
             emitReady(task, message = "已就绪", usedAi = true)
             return
         }
+        if (!task.force && build?.state == RaChapterState.EXTRACTED &&
+            build.contentHash == text.contentHash
+        ) {
+            // 批次已逐章提交但尚未收敛（或 ticket 刚被移除）：直接做本章局部收敛。
+            val local = batch.convergeExisting(
+                bookKey = task.bookKey,
+                sourceKey = task.sourceKey,
+                chapters = listOf(text.toBatchText(task.chapterIndex)),
+                priority = AiPriority.P0_CURRENT,
+            )
+            if (local.ready.contains(task.chapterIndex)) {
+                emitReady(task, message = "已就绪", usedAi = true)
+                return
+            }
+        }
         if (!task.force && tryReuseFromOtherSource(task.bookKey, task.sourceKey, text, task.chapterIndex)) {
             emitReady(task, message = "换源复用", usedAi = false)
             return
