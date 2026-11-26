@@ -472,8 +472,8 @@ class IdentityResolverTest {
         val out = resolver.resolveBatch(
             bookKey,
             listOf(
-                IdentityResolver.BatchChapterInput(92, "第93章", listOf(first), emptyList()),
-                IdentityResolver.BatchChapterInput(93, "第94章", listOf(second), emptyList()),
+                IdentityResolver.BatchChapterInput(92, "第93章", listOf(first), emptyList(), batchId = "batch-1"),
+                IdentityResolver.BatchChapterInput(93, "第94章", listOf(second), emptyList(), batchId = "batch-1"),
             ),
         )
         assertEquals(1, characters.characters(bookKey).size)

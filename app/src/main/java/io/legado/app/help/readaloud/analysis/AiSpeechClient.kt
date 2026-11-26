@@ -296,6 +296,8 @@ class AiSpeechClient(
                             if (!resp.isSuccessful) {
                                 val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
                                 if (resp.code == 429) {
+                                    // 先暂停服务商许可池，再释放本请求的许可，避免下一笔同商请求插空。
+                                    runCatching { scheduler.reportRateLimited(ref.provider.id, 1) }
                                     throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
                                 }
                                 error("HTTP ${resp.code}: ${errBody.take(160)}")
