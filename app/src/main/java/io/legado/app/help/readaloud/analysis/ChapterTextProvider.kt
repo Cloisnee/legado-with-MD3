@@ -59,7 +59,8 @@ class ChapterTextProvider(
         }
 
     private fun String.looksLikeError(): Boolean =
-        startsWith("获取正文失败") || startsWith("加载正文失败") || this == "download canceled"
+        startsWith("获取正文失败") || startsWith("加载正文失败") ||
+            startsWith("获取本地书籍内容失败") || this == "download canceled"
 
     private fun contextText(book: Book, chapterIndex: Int): String {
         if (chapterIndex < 0) return ""
