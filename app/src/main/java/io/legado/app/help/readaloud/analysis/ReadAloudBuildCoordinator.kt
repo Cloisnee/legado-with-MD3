@@ -694,7 +694,7 @@ class ReadAloudBuildCoordinator(
                 val fgWindow = s.fgFrom until (s.fgFrom + s.fgCount)
                 val chapters = bookChapterDao.getChapterList(s.book.bookUrl)
                 val tokenEstimates = chapters.associate { chapter ->
-                    chapter.index to estimateChapterTokens(chapter.wordCount.orEmpty())
+                    chapter.index to estimateChapterTokens(s.book, chapter)
                 }
                 val batchIndices = BatchSelector.nextBatch(
                     states = states,
@@ -969,16 +969,12 @@ class ReadAloudBuildCoordinator(
 
     // ---------------- 状态 ----------------
 
-    private fun estimateChapterTokens(wordCount: String): Int {
-        val match = Regex("([0-9]+(?:\\.[0-9]+)?)\\s*([万千]?)")
-            .find(wordCount.trim()) ?: return 2_000
-        val value = match.groupValues[1].toDoubleOrNull() ?: return 2_000
-        val chars = when (match.groupValues[2]) {
-            "万" -> value * 10_000
-            "千" -> value * 1_000
-            else -> value
-        }
-        val dialogues = (chars / 40.0).toInt().coerceAtLeast(1)
+    private fun estimateChapterTokens(book: Book, chapter: io.legado.app.data.entities.BookChapter): Int {
+        val bytes = runCatching {
+            BookHelp.getChapterContentFile(book, chapter).length()
+        }.getOrDefault(0L)
+        val chars = if (bytes > 0L) (bytes / 3L).coerceAtLeast(1L) else 2_000L
+        val dialogues = (chars / 40L).toInt().coerceAtLeast(1)
         return (dialogues * 60 + 800).coerceIn(400, 30_000)
     }
 
