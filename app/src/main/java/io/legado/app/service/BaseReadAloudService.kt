@@ -1738,9 +1738,9 @@ abstract class BaseReadAloudService : BaseService(),
     private fun notifyAnalysisChapterChanged() {
         runCatching {
             val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-            val bookUrl: String = ReadBook.book?.bookUrl.orEmpty()
+            val bookUrl: String = bookSession.book?.bookUrl.orEmpty()
             if (bookUrl.isNotEmpty()) {
-                scheduler.onChapterChanged(bookUrl, ReadBook.durChapterIndex)
+                scheduler.onChapterChanged(bookUrl, bookSession.chapterIndex)
             }
         }.onFailure {
             AppLog.putAnalysis("分析调度换章通知失败: ${it.localizedMessage}", it)

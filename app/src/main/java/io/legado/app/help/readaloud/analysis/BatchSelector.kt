@@ -79,6 +79,10 @@ object BatchSelector {
                 total += tokens
                 allowed.add(chapter)
             }
+            if (allowed.isEmpty() && ordered.isNotEmpty()) {
+                // B7：合法低 maxOutputTokens 下仍允许单章建库，超限原因由调用方日志观察。
+                allowed.add(ordered.first())
+            }
             if (allowed.isEmpty()) return null
             limited = if (keepTail) allowed.asReversed() else allowed
         }

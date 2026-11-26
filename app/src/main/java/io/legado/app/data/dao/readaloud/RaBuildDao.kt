@@ -99,6 +99,18 @@ interface RaBuildDao {
     ): RaChapterAnalysisEntity?
 
     @Query(
+        "select * from ra_chapter_analysis where bookKey = :bookKey and chapterIndex = :chapterIndex " +
+            "and contentHash = :contentHash and resolverVersion = :resolverVersion and status = 'RESOLVED' " +
+            "order by updatedAt desc limit 1"
+    )
+    suspend fun analysisByContentHash(
+        bookKey: String,
+        chapterIndex: Int,
+        contentHash: String,
+        resolverVersion: String,
+    ): RaChapterAnalysisEntity?
+
+    @Query(
         "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
             "and chapterIndex = :chapterIndex order by updatedAt desc limit 1"
     )

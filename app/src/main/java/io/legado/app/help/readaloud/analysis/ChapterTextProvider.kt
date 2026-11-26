@@ -45,7 +45,7 @@ class ChapterTextProvider(
                     CacheBook.getOrCreate(book.bookUrl)?.downloadAwait(chapter)
                 }.getOrNull()?.takeUnless { it.looksLikeError() }
             }
-            if (content.isNullOrBlank()) return@withContext null
+            if (content.isNullOrBlank() || content!!.looksLikeError()) return@withContext null
             val paragraphs = buildReaderParagraphs(book, chapterIndex, content)
             if (paragraphs.isEmpty()) return@withContext null
             Text(

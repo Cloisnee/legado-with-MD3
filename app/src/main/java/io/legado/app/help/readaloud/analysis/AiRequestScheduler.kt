@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -13,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.PriorityQueue
 import java.util.concurrent.atomic.AtomicLong
 
@@ -49,13 +51,11 @@ data class AiSchedulerContext(
 /**
  * AI 请求调度器（02 §4）：所有分析请求的唯一出口。
  *
- * - 按服务商（[AiProvider.id]）维护独立许可池，容量 = [AiProvider.maxConcurrency]（1..8）；
- * - 请求按优先级排队，同优先级 FIFO；
+ * - 按服务商维护独立许可池，容量 = [AiProvider.maxConcurrency]（1..8）；
+ * - 许可在锁内直接交接给队首，避免新请求插队；同优先级 FIFO；
  * - 前台（P0~P2）到达且许可池已满时，取消优先级最低、启动最晚的可抢占后台请求；
- * - 429：该服务商暂停 min(60s, 2^n·5s)，期间请求排队等待而不是换模型；
+ * - 429：该服务商暂停 min(60s, 2^n·5s)，期间排队等待而不是换模型；
  * - 取消联动由 [AiSpeechClient] 在协程取消时调用 OkHttp `Call.cancel()` 完成。
- *
- * 纯 JVM 实现（可在单测中注入 [clock]），不依赖 Android。
  */
 class AiRequestScheduler(
     private val clock: () -> Long = System::currentTimeMillis,
@@ -75,10 +75,19 @@ class AiRequestScheduler(
         val running = HashMap<Long, Running>()
     }
 
-    private class Waiter(val priority: AiPriority, val seq: Long) {
+    private class Waiter(
+        val id: Long,
+        val priority: AiPriority,
+        val seq: Long,
+        val preemptible: Boolean,
+        val job: Job?,
+    ) {
         val wake = Channel<Unit>(Channel.CONFLATED)
         @Volatile
         var cancelled = false
+
+        @Volatile
+        var granted = false
     }
 
     private class Running(
@@ -92,10 +101,7 @@ class AiRequestScheduler(
         lanes.getOrPut(providerId) { Lane() }
     }
 
-    /**
-     * 取得服务商许可后执行 [block]；block 内是真正的网络请求。
-     * 取消会传播到 block；许可在 finally 释放。
-     */
+    /** 取得服务商许可后执行 [block]；block 内是真正的网络请求。 */
     suspend fun <T> withPermit(
         ref: AiSpeechClient.ModelRef,
         context: AiSchedulerContext,
@@ -122,7 +128,7 @@ class AiRequestScheduler(
         scope.launch {
             delay(backoff + 50L)
             lane.lock.withLock {
-                if (lane.pausedUntil <= clock()) wakeWaitersLocked(lane)
+                if (lane.pausedUntil <= clock()) grantWaitersLocked(lane)
             }
         }
     }
@@ -133,66 +139,102 @@ class AiRequestScheduler(
         context: AiSchedulerContext,
         id: Long,
     ) {
-        val waiter = Waiter(context.priority, seq.incrementAndGet())
-        while (true) {
-            var acquired = false
-            var pauseMs = 0L
-            lane.lock.withLock {
-                lane.limit = provider.maxConcurrency.coerceIn(1, 8)
-                val now = clock()
-                if (lane.pausedUntil > now) {
-                    pauseMs = lane.pausedUntil - now
-                    return@withLock
+        val waiter = Waiter(
+            id = id,
+            priority = context.priority,
+            seq = seq.incrementAndGet(),
+            preemptible = context.preemptible,
+            job = currentCoroutineContext()[Job],
+        )
+        try {
+            while (true) {
+                var pauseMs = 0L
+                var acquired = false
+                lane.lock.withLock {
+                    lane.limit = provider.maxConcurrency.coerceIn(1, 8)
+                    val now = clock()
+                    if (lane.pausedUntil > now) {
+                        pauseMs = lane.pausedUntil - now
+                        return@withLock
+                    }
+                    // 先把空出的许可交给已在排队的请求，再考虑新请求。
+                    grantWaitersLocked(lane)
+                    if (waiter.granted) {
+                        acquired = true
+                        return@withLock
+                    }
+                    if (lane.active < lane.limit && lane.waiting.none { !it.cancelled }) {
+                        lane.active++
+                        lane.running[id] = Running(
+                            priority = context.priority,
+                            startedAt = now,
+                            preemptible = context.preemptible,
+                            job = currentCoroutineContext()[Job],
+                        )
+                        acquired = true
+                        return@withLock
+                    }
+                    if (context.priority.foreground) {
+                        val victim = lane.running.values
+                            .filter { it.preemptible }
+                            .maxWithOrNull(compareBy<Running>({ it.priority.level }, { it.startedAt }))
+                        victim?.job?.cancel(CancellationException("preempted by foreground"))
+                    }
+                    if (waiter !in lane.waiting) lane.waiting.add(waiter)
                 }
-                if (lane.active < lane.limit) {
-                    lane.active++
-                    lane.running[id] = Running(
-                        priority = context.priority,
-                        startedAt = now,
-                        preemptible = context.preemptible,
-                        job = currentCoroutineContext()[Job],
-                    )
-                    acquired = true
-                    return@withLock
+                if (acquired) return
+                if (pauseMs > 0L) {
+                    delay(pauseMs)
+                    continue
                 }
-                if (context.priority.foreground) {
-                    // 取消优先级最低、启动最晚的后台请求；其 finally 会释放许可并唤醒队首。
-                    val victim = lane.running.values
-                        .filter { it.preemptible }
-                        .maxWithOrNull(compareBy<Running>({ it.priority.level }, { it.startedAt }))
-                    victim?.job?.cancel(CancellationException("preempted by foreground"))
+                try {
+                    waiter.wake.receive()
+                } catch (e: CancellationException) {
+                    waiter.cancelled = true
+                    throw e
                 }
-                if (waiter !in lane.waiting) lane.waiting.add(waiter)
+                currentCoroutineContext().ensureActive()
             }
-            if (acquired) return
-            if (pauseMs > 0L) {
-                delay(pauseMs)
-                continue
+        } catch (e: CancellationException) {
+            waiter.cancelled = true
+            withContext(NonCancellable) {
+                lane.lock.withLock {
+                    lane.waiting.remove(waiter)
+                    if (waiter.granted && lane.running.remove(waiter.id) != null) {
+                        lane.active = (lane.active - 1).coerceAtLeast(0)
+                        grantWaitersLocked(lane)
+                    }
+                }
             }
-            try {
-                waiter.wake.receive()
-            } catch (e: CancellationException) {
-                waiter.cancelled = true
-                throw e
-            }
-            currentCoroutineContext().ensureActive()
+            throw e
         }
     }
 
     private suspend fun release(lane: Lane, id: Long) {
-        lane.lock.withLock {
-            lane.running.remove(id)
-            lane.active = (lane.active - 1).coerceAtLeast(0)
-            wakeWaitersLocked(lane)
+        // 取消中的协程也必须能归还许可：释放路径不可取消。
+        withContext(NonCancellable) {
+            lane.lock.withLock {
+                lane.running.remove(id)
+                lane.active = (lane.active - 1).coerceAtLeast(0)
+                grantWaitersLocked(lane)
+            }
         }
     }
 
-    /** 在持有 lane.lock 时调用：按空闲许可数唤醒队首等待者。 */
-    private fun wakeWaitersLocked(lane: Lane) {
+    /** 在持有 lane.lock 时调用：把空闲许可直接分配给队首（按优先级/FIFO）。 */
+    private fun grantWaitersLocked(lane: Lane) {
         if (lane.pausedUntil > clock()) return
         while (lane.active < lane.limit && lane.waiting.isNotEmpty()) {
             val waiter = lane.waiting.poll() ?: break
             if (waiter.cancelled) continue
+            waiter.granted = true
+            lane.active++
+            lane.running[waiter.id] = Running(
+                priority = waiter.priority,
+                startedAt = clock(),
+                preemptible = waiter.preemptible,
+                job = waiter.job,
+            )
             waiter.wake.trySend(Unit)
         }
     }

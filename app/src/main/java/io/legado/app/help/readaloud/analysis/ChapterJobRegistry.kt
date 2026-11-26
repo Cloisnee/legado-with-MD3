@@ -18,6 +18,7 @@ class ChapterJobRegistry {
 
     enum class Outcome {
         SUCCESS,
+        EXTRACTED,
         FAILED,
         CANCELLED,
     }
@@ -27,6 +28,8 @@ class ChapterJobRegistry {
         val sourceKey: String,
         val chapterIndex: Int,
         val contentHash: String,
+        val resolverVersion: String = "",
+        val stage: String = "EXTRACT",
     )
 
     sealed class Acquire {

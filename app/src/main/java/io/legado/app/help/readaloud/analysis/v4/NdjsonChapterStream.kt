@@ -88,9 +88,8 @@ class NdjsonChapterStream(
         if (start < 0 || end <= start) return false
         val root = runCatching { JSONObject(raw.substring(start, end + 1)) }.getOrNull() ?: return false
         root.optJSONArray("entities")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                arr.optJSONObject(i)?.let(onEntities)
-            }
+            // 与流式协议保持一致：回调整个 entities 包装对象，而不是单个实体。
+            onEntities(root)
             sawEntities = true
         }
         val chapters = root.optJSONArray("chapters") ?: return false

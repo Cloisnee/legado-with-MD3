@@ -11,7 +11,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -281,29 +284,36 @@ class AiSpeechClient(
         totalTimeoutMs: Long,
         context: AiSchedulerContext?,
         onChunk: ((String) -> Unit)?,
-    ): String = withContext(Dispatchers.IO) {
+    ): String {
         val call = streamClient(timeoutMs, totalTimeoutMs).newCall(request)
-        val job = currentCoroutineContext()[Job]
-        val cancelHandle = job?.invokeOnCompletion { cause ->
-            if (cause is CancellationException) call.cancel()
-        }
         val perform: suspend () -> String = {
-            call.execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
-                    if (resp.code == 429) throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
-                    error("HTTP ${resp.code}: ${errBody.take(160)}")
-                }
-                val text = readStreamBody(protocol, resp, totalTimeoutMs, onChunk)
-                if (text.isNullOrBlank()) error("空响应")
-                text
+            // 阻塞 execute/读流放到独立线程：协程取消时立刻 call.cancel()，不必等 Job 结束回调
+            // （旧实现把 cancel 挂在 invokeOnCompletion 上，读流卡住时回调永远不会触发）。
+            suspendCancellableCoroutine { cont ->
+                val thread = Thread({
+                    try {
+                        val text = call.execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                                if (resp.code == 429) {
+                                    throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
+                                }
+                                error("HTTP ${resp.code}: ${errBody.take(160)}")
+                            }
+                            val text = readStreamBody(protocol, resp, totalTimeoutMs, onChunk)
+                            if (text.isNullOrBlank()) error("空响应")
+                            text
+                        }
+                        if (cont.isActive) cont.resume(text)
+                    } catch (e: Throwable) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }, "ai-http-${ref.provider.id}")
+                cont.invokeOnCancellation { call.cancel() }
+                thread.start()
             }
         }
-        try {
-            if (context != null) scheduler.withPermit(ref, context) { perform() } else perform()
-        } finally {
-            cancelHandle?.dispose()
-        }
+        return if (context != null) scheduler.withPermit(ref, context) { perform() } else perform()
     }
 
     /** OpenAI 兼容协议的关闭思考字段：按模型设置发送，避免固定发 thinking 被新网关 400。 */

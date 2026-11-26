@@ -9,6 +9,9 @@ import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaIds
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfile
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 从“声线池”为人物创建默认发声方案（原 V3 assignVoices 算法整体迁移）。
@@ -19,8 +22,22 @@ class VoiceCastingService(
     private val characters: RaCharacterGateway,
 ) {
 
+    private val bookLocks = ConcurrentHashMap<String, Mutex>()
+
     /** 为一批人物补齐 DEFAULT 方案；只为没有方案的人物选音。 */
     suspend fun ensureDefaultProfiles(
+        bookKey: String,
+        charactersInChapter: Collection<RaCharacter>,
+        chapterLabel: String,
+    ) {
+        if (charactersInChapter.isEmpty()) return
+        // 同书“查方案 + 写方案”串行化，避免前后台并发各建一个 DEFAULT。
+        bookLocks.getOrPut(bookKey) { Mutex() }.withLock {
+            ensureDefaultProfilesLocked(bookKey, charactersInChapter, chapterLabel)
+        }
+    }
+
+    private suspend fun ensureDefaultProfilesLocked(
         bookKey: String,
         charactersInChapter: Collection<RaCharacter>,
         chapterLabel: String,

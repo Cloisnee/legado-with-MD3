@@ -161,6 +161,7 @@ object ObservationAssembly {
         analysisId: String,
         entries: List<Stage2Speaker>,
         batchEntityIdFromKey: Boolean = false,
+        batchScope: String? = null,
     ): List<RaLocalSpeaker> = entries.map { entry ->
         RaLocalSpeaker(
             id = "$analysisId#${entry.key}",
@@ -171,7 +172,9 @@ object ObservationAssembly {
             roleType = entry.roleType,
             gender = entry.gender,
             ageBand = entry.ageBand,
-            batchEntityId = if (batchEntityIdFromKey) entry.key else null,
+            batchEntityId = if (batchEntityIdFromKey) {
+                batchScope?.takeIf { it.isNotBlank() }?.let { "$it#${entry.key}" } ?: entry.key
+            } else null,
             resolution = RaResolution.PENDING,
         )
     }
@@ -180,6 +183,7 @@ object ObservationAssembly {
         analysisId: String,
         entries: List<Stage2Speaker>,
         batchEntityIdFromKey: Boolean = false,
+        batchScope: String? = null,
     ): List<RaLocalMention> = entries.map { entry ->
         RaLocalMention(
             id = "$analysisId#${entry.key}",
@@ -190,7 +194,9 @@ object ObservationAssembly {
             roleType = entry.roleType,
             gender = entry.gender,
             ageBand = entry.ageBand,
-            batchEntityId = if (batchEntityIdFromKey) entry.key else null,
+            batchEntityId = if (batchEntityIdFromKey) {
+                batchScope?.takeIf { it.isNotBlank() }?.let { "$it#${entry.key}" } ?: entry.key
+            } else null,
             resolution = RaResolution.PENDING,
         )
     }

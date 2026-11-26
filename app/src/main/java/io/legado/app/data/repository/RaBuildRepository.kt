@@ -71,6 +71,15 @@ class RaBuildRepository(
         dao.getAnalysisById(id)?.toDomain()
     }
 
+    override suspend fun analysisByContentHash(
+        bookKey: String,
+        chapterIndex: Int,
+        contentHash: String,
+        resolverVersion: String,
+    ): RaAnalysis? = withContext(Dispatchers.IO) {
+        dao.analysisByContentHash(bookKey, chapterIndex, contentHash, resolverVersion)?.toDomain()
+    }
+
     override suspend fun latestAnalysisForSource(
         bookKey: String,
         sourceKey: String,
@@ -123,7 +132,14 @@ class RaBuildRepository(
                 localMentions = localMentions.map(RaLocalMention::toEntity),
                 evidence = evidence.map(RaEvidence::toEntity),
             )
-            build?.let { dao.upsertBuild(it.toEntity()) }
+            build?.let { incoming ->
+                // 旧任务晚归时不得覆盖新正文的有效指针：以任务读取正文的时间做版本比较。
+                val current = dao.getBuild(incoming.bookKey, incoming.sourceKey, incoming.chapterIndex)
+                val canWrite = current == null ||
+                    current.contentHash == incoming.contentHash ||
+                    incoming.updatedAt >= current.updatedAt
+                if (canWrite) dao.upsertBuild(incoming.toEntity())
+            }
             attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
             relations.forEach { characterDao.insertRelation(it.toEntity()) }
             Unit

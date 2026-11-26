@@ -15,6 +15,9 @@ import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
 import io.legado.app.help.readaloud.analysis.AiSchedulerContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * V4-2 完整身份解析（01 §5.3）：
@@ -53,6 +56,7 @@ class IdentityResolver(
         val speakers: List<RaLocalSpeaker>,
         val evidence: List<RaEvidence>,
         val contextBySpeaker: Map<String, String> = emptyMap(),
+        val batchId: String? = null,
     )
 
     private data class Candidate(
@@ -65,6 +69,7 @@ class IdentityResolver(
         val evidence: List<RaEvidence>,
         val candidates: List<Candidate>,
         val contextText: String,
+        val chapterIndex: Int,
     )
 
     suspend fun resolveChapter(
@@ -76,6 +81,7 @@ class IdentityResolver(
         evidence: List<RaEvidence>,
         contextBySpeaker: Map<String, String> = emptyMap(),
         context: AiSchedulerContext? = null,
+        speakerChapterIndex: Map<String, Int> = emptyMap(),
     ): ChapterResult {
         if (speakers.isEmpty()) return ChapterResult(emptyMap(), emptyList())
         val links = runCatching { characters.linksOfBook(bookKey) }.getOrDefault(emptyList())
@@ -90,8 +96,44 @@ class IdentityResolver(
         val created = ArrayList<RaCharacter>()
         val pending = ArrayList<Pending>()
 
+        suspend fun createCharacter(
+            chapter: Int,
+            speaker: RaLocalSpeaker,
+            status: RaCharacterStatus,
+        ): RaCharacter {
+            val names = (speaker.surfaceNames + speaker.primaryName)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+            return bookLock(bookKey).withLock {
+                val lookup = speaker.copy(surfaceNames = names)
+                val reused = exactTargets(bookKey, lookup, emptyList())
+                    .filterNot { it.id in linkedThisChapter }
+                    .singleOrNull()
+                if (reused != null) {
+                    val finalId = runCatching { characters.finalCharacterId(reused.id) }
+                        .getOrDefault(reused.id)
+                    characters.character(finalId) ?: reused
+                } else {
+                    characters.ensureCharacter(
+                        bookKey = bookKey,
+                        displayName = speaker.primaryName.ifBlank { names.firstOrNull().orEmpty() },
+                        roleType = speaker.roleType.ifBlank { "核心" },
+                        gender = speaker.gender.ifBlank { "男" },
+                        ageBand = speaker.ageBand.ifBlank { "男青年" },
+                        chapterIndex = chapter,
+                        aliases = names,
+                        status = status.storageValue,
+                        aliasSource = "ai",
+                        attributeSource = "default",
+                    )
+                }
+            }
+        }
+
         // 按出场顺序处理；确定性链接优先于候选召回
         speakers.forEach { speaker ->
+            val currentChapter = speakerChapterIndex[speaker.localKey] ?: chapterIndex
             val speakerEvidence = evidence.filter { it.subjectLocalId == speaker.id }
             val verifiedMain = speakerEvidence.filter { it.scope.storageValue == "MAIN_TEXT" && it.verified }
             val contradictions = verifiedMain
@@ -126,7 +168,7 @@ class IdentityResolver(
                 )
                 resolutions[speaker.localKey] = link(
                     bookKey = bookKey,
-                    chapterIndex = chapterIndex,
+                    chapterIndex = currentChapter,
                     speaker = speaker,
                     target = aliasEqualTarget,
                     candidateIds = listOf(aliasEqualTarget.id),
@@ -139,7 +181,7 @@ class IdentityResolver(
             // 只有原文明确的 ALIAS_EQUAL（A 即 B）才允许跨章认亲；否则一律本章新建，
             // 避免两章各一个「弟子A」因同名被合并成同一人物（01 §4.2）。
             if (speaker.roleType == "路人") {
-                val character = create(bookKey, chapterIndex, speaker, RaCharacterStatus.ACTIVE)
+                val character = createCharacter(currentChapter, speaker, RaCharacterStatus.ACTIVE)
                 created.add(character)
                 resolutions[speaker.localKey] = Resolution(
                     characterId = character.id,
@@ -157,7 +199,7 @@ class IdentityResolver(
                 val target = exactTargets.first()
                 resolutions[speaker.localKey] = link(
                     bookKey = bookKey,
-                    chapterIndex = chapterIndex,
+                    chapterIndex = currentChapter,
                     speaker = speaker,
                     target = target,
                     candidateIds = listOf(target.id),
@@ -182,7 +224,7 @@ class IdentityResolver(
                 // 仅当旧临时人物的候选集合与本章候选有交集时才复用（可追踪依据，不按名字硬并）
                 val candidateIds = candidates.map { it.character.id }
                 val reusable = findReusableProvisional(bookKey, speaker, candidateIds, linkedThisChapter)
-                val character = reusable ?: create(bookKey, chapterIndex, speaker, RaCharacterStatus.PROVISIONAL)
+                val character = reusable ?: createCharacter(currentChapter, speaker, RaCharacterStatus.PROVISIONAL)
                 if (reusable == null) created.add(character)
                 charDecision(
                     bookKey = bookKey,
@@ -208,12 +250,7 @@ class IdentityResolver(
                 candidates.isEmpty() -> {
                     // 同名对象被同章占用/排除，不等于“已证实是新人”：先建临时人物待定
                     val ambiguous = exactTargets.isNotEmpty()
-                    val character = create(
-                        bookKey,
-                        chapterIndex,
-                        speaker,
-                        if (ambiguous) RaCharacterStatus.PROVISIONAL else RaCharacterStatus.ACTIVE,
-                    )
+                    val character = createCharacter(chapterIndex, speaker, if (ambiguous) RaCharacterStatus.PROVISIONAL else RaCharacterStatus.ACTIVE)
                     created.add(character)
                     if (ambiguous) {
                         charDecision(
@@ -243,6 +280,7 @@ class IdentityResolver(
                             evidence = verifiedMain,
                             candidates = candidates,
                             contextText = contextBySpeaker[speaker.localKey].orEmpty(),
+                            chapterIndex = currentChapter,
                         ),
                     )
                 }
@@ -256,12 +294,7 @@ class IdentityResolver(
             val candidateIds = item.candidates.map { it.character.id }
             if (answer == null) {
                 // A 策略：没有裁决能力时保持独立临时人物；不以同名强行复用
-                val character = create(
-                    bookKey,
-                    chapterIndex,
-                    item.speaker,
-                    RaCharacterStatus.PROVISIONAL,
-                )
+                val character = createCharacter(item.chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
                 created.add(character)
                 charDecision(
                     bookKey = bookKey,
@@ -327,7 +360,7 @@ class IdentityResolver(
                         }
                         val resolution = link(
                             bookKey = bookKey,
-                            chapterIndex = chapterIndex,
+                            chapterIndex = item.chapterIndex,
                             speaker = item.speaker,
                             target = target,
                             candidateIds = candidateIds,
@@ -337,7 +370,7 @@ class IdentityResolver(
                         )
                         linkedThisChapter.add(target.id)
                     } else {
-                        val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
+                        val character = createCharacter(item.chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
                         created.add(character)
                         charDecision(
                             bookKey = bookKey,
@@ -362,7 +395,7 @@ class IdentityResolver(
                 }
                 answer.verdict == RaVerdict.DIFFERENT -> {
                     val evidenceIds = item.evidence.map { it.id }
-                    val character = create(bookKey, chapterIndex, item.speaker, RaCharacterStatus.ACTIVE)
+                    val character = createCharacter(item.chapterIndex, item.speaker, RaCharacterStatus.ACTIVE)
                     created.add(character)
                     // 新建人物与每个被否定候选建立 CANNOT
                     item.candidates.forEach { candidate ->
@@ -396,12 +429,7 @@ class IdentityResolver(
                 }
                 else -> {
                     // A 策略：UNKNOWN/低置信保留临时身份；同称呼组最多复用 3 次，达到上限后保持待定
-                    val character = create(
-                        bookKey,
-                        chapterIndex,
-                        item.speaker,
-                        RaCharacterStatus.PROVISIONAL,
-                    )
+                    val character = createCharacter(item.chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
                     created.add(character)
                     val linked = Resolution(
                         characterId = character.id,
@@ -480,7 +508,14 @@ class IdentityResolver(
         val groups = LinkedHashMap<String, MutableList<Pair<Int, RaLocalSpeaker>>>()
         ordered.forEach { chapter ->
             chapter.speakers.forEach { speaker ->
-                val key = speaker.batchEntityId?.takeIf { it.isNotBlank() } ?: "solo:${speaker.id}"
+                val rawKey = speaker.batchEntityId?.takeIf { it.isNotBlank() }
+                val key = when {
+                    // R6：路人默认不跨章聚合；只有单章内显式 ALIAS_EQUAL 才认亲。
+                    speaker.roleType == "路人" -> "solo:${speaker.id}"
+                    rawKey == null -> "solo:${speaker.id}"
+                    rawKey.contains('#') -> rawKey
+                    else -> "${chapter.batchId ?: speaker.analysisId}#$rawKey"
+                }
                 groups.getOrPut(key) { ArrayList() }.add(chapter.chapterIndex to speaker)
             }
         }
@@ -514,7 +549,7 @@ class IdentityResolver(
                 val text = ordered.asSequence()
                     .mapNotNull { it.contextBySpeaker[sp.localKey] }
                     .joinToString("\n")
-                if (text.isNotBlank()) contexts[syntheticId] = text.take(1200)
+                if (text.isNotBlank()) contexts[key] = text.take(1200)
             }
         }
         val chapterIndex = ordered.first().chapterIndex
@@ -532,6 +567,7 @@ class IdentityResolver(
             evidence = syntheticEvidence,
             contextBySpeaker = contexts,
             context = context,
+            speakerChapterIndex = groups.mapValues { it.value.first().first },
         )
         val out = LinkedHashMap<String, Resolution>()
         groups.forEach { (key, members) ->
@@ -812,29 +848,9 @@ class IdentityResolver(
         )
     }
 
-    private suspend fun create(
-        bookKey: String,
-        chapterIndex: Int,
-        speaker: RaLocalSpeaker,
-        status: RaCharacterStatus,
-    ): RaCharacter {
-        val names = (speaker.surfaceNames + speaker.primaryName)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-        return characters.ensureCharacter(
-            bookKey = bookKey,
-            displayName = speaker.primaryName.ifBlank { names.firstOrNull().orEmpty() },
-            roleType = speaker.roleType.ifBlank { "核心" },
-            gender = speaker.gender.ifBlank { "男" },
-            ageBand = speaker.ageBand.ifBlank { "男青年" },
-            chapterIndex = chapterIndex,
-            aliases = names,
-            status = status.storageValue,
-            aliasSource = "ai",
-            attributeSource = "default",
-        )
-    }
+    private val bookLocks = ConcurrentHashMap<String, Mutex>()
+
+    private fun bookLock(bookKey: String): Mutex = bookLocks.getOrPut(bookKey) { Mutex() }
 
     private suspend fun charDecision(
         bookKey: String,

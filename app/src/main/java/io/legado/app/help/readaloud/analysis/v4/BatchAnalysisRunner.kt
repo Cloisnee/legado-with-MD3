@@ -61,6 +61,7 @@ class BatchAnalysisRunner(
         val prevText: String,
         val nextText: String,
         val contentHash: String,
+        val loadedAt: Long = System.currentTimeMillis(),
     )
 
     data class Outcome(
@@ -73,7 +74,6 @@ class BatchAnalysisRunner(
         val text: ChapterText,
         val units: List<ObservationAssembly.ParaUnits>,
         val unitCounts: Map<Int, Int>,
-        var segments: List<RaSegment> = emptyList(),
     )
 
     private data class Extracted(
@@ -84,6 +84,7 @@ class BatchAnalysisRunner(
         val mentions: List<RaLocalMention>,
         val evidence: List<RaEvidence>,
         val contextBySpeaker: Map<String, String> = emptyMap(),
+        val batchId: String? = null,
     )
 
     private data class Stage1Result(
@@ -97,6 +98,7 @@ class BatchAnalysisRunner(
         chapters: List<ChapterText>,
         batchId: String,
         priority: AiPriority = AiPriority.P3_BACKGROUND,
+        onChapterReady: (suspend (chapterIndex: Int, identityReady: Boolean) -> Unit)? = null,
     ): Outcome {
         if (chapters.isEmpty()) return Outcome()
         val cfg = runCatching { configStore.load() }.getOrDefault(AnalysisConfigStore.Config())
@@ -158,6 +160,7 @@ class BatchAnalysisRunner(
         noDialogue.forEach { work ->
             if (commitNoDialogue(bookKey, sourceKey, work, segmentsByChapter[work.text.chapterIndex].orEmpty(), batchId)) {
                 directReady.add(work.text.chapterIndex)
+                onChapterReady?.invoke(work.text.chapterIndex, true)
             } else {
                 failed[work.text.chapterIndex] = "落库失败"
             }
@@ -179,6 +182,7 @@ class BatchAnalysisRunner(
                     batchId = batchId,
                     failed = failed,
                     extracted = extracted,
+                    onChapterReady = onChapterReady,
                 )
             }
         }
@@ -253,7 +257,7 @@ class BatchAnalysisRunner(
                 failReason = "",
                 attempts = older?.attempts ?: 0,
                 createdAt = older?.createdAt ?: now,
-                updatedAt = now,
+                updatedAt = text.loadedAt,
             ),
         )
         true
@@ -275,13 +279,70 @@ class BatchAnalysisRunner(
             val analysisId = build.analysisId ?: return@mapNotNull null
             val analysis = raBuild.analysisById(analysisId) ?: return@mapNotNull null
             if (analysis.status != RaAnalysisStatus.EXTRACTED) return@mapNotNull null
+            // 恢复必须对照当前正文与解析版本；不一致时把旧记录标 STALE，等重新分析。
+            if (build.contentHash != text.contentHash || analysis.contentHash != text.contentHash) {
+                val now = System.currentTimeMillis()
+                raBuild.upsertBuild(
+                    build.copy(
+                        state = RaChapterState.STALE,
+                        failReason = "正文或解析版本已变化",
+                        updatedAt = now,
+                    ),
+                )
+                return@mapNotNull null
+            }
+            val speakers = raBuild.localSpeakers(analysisId)
+            val mentions = raBuild.localMentions(analysisId)
+            val evidence = raBuild.evidence(analysisId)
+            val segments = raBuild.segments(analysisId)
+            val seqMap = segments.mapNotNull { segment ->
+                if (segment.seq <= 0 || segment.localSpeakerId == null) return@mapNotNull null
+                val localKey = speakers.firstOrNull { it.id == segment.localSpeakerId }?.localKey
+                    ?: return@mapNotNull null
+                segment.seq to localKey
+            }.toMap()
+            val payload = Stage2Payload(
+                seqMap = seqMap,
+                speakers = speakers.map { speaker ->
+                    Stage2Speaker(
+                        key = speaker.localKey,
+                        name = speaker.primaryName,
+                        aliases = speaker.surfaceNames.filterNot { it == speaker.primaryName },
+                        roleType = speaker.roleType,
+                        gender = speaker.gender,
+                        ageBand = speaker.ageBand,
+                        genderSource = if (speaker.gender.isBlank()) "default" else "inferred",
+                        ageSource = if (speaker.ageBand.isBlank()) "default" else "inferred",
+                    )
+                },
+                mentions = mentions.map { mention ->
+                    Stage2Speaker(
+                        key = mention.localKey,
+                        name = mention.primaryName,
+                        aliases = mention.surfaceNames.filterNot { it == mention.primaryName },
+                        roleType = mention.roleType,
+                        gender = mention.gender,
+                        ageBand = mention.ageBand,
+                        genderSource = if (mention.gender.isBlank()) "default" else "inferred",
+                        ageSource = if (mention.ageBand.isBlank()) "default" else "inferred",
+                    )
+                },
+                evidence = emptyList(),
+            )
             Extracted(
                 text = text,
                 analysisId = analysisId,
-                segments = raBuild.segments(analysisId),
-                payload = null,
-                mentions = raBuild.localMentions(analysisId),
-                evidence = raBuild.evidence(analysisId),
+                segments = segments,
+                payload = payload,
+                mentions = mentions,
+                evidence = evidence,
+                contextBySpeaker = ObservationAssembly.buildContextBySpeaker(
+                    text.paragraphs,
+                    segments,
+                    seqMap,
+                    speakers,
+                ),
+                batchId = analysis.batchId,
             )
         }
         if (items.isEmpty()) return Outcome()
@@ -442,6 +503,7 @@ class BatchAnalysisRunner(
         batchId: String,
         failed: MutableMap<Int, String>,
         extracted: MutableMap<Int, Extracted>,
+        onChapterReady: (suspend (chapterIndex: Int, identityReady: Boolean) -> Unit)? = null,
     ) {
         val ordered = works.sortedBy { it.text.chapterIndex }
         val first = ordered.first().text
@@ -499,10 +561,12 @@ class BatchAnalysisRunner(
                     append("\n=== 待分析文本 ===\n").append(user)
                 }
             }
-            val commitChannel = Channel<Pair<Int, JSONObject>>(Channel.UNLIMITED)
+            val commitChannel =
+                Channel<Triple<Int, JSONObject, Map<String, JSONObject>>>(Channel.UNLIMITED)
             val entities = LinkedHashMap<String, JSONObject>()
             val parser = NdjsonChapterStream(
-                requestedChapters = pending,
+                // 解析器使用 1 基显示章号；宿主索引只在回调入口转换一次。
+                requestedChapters = pending.map { it + 1 }.toSet(),
                 onEntities = { obj ->
                     val arr = obj.optJSONArray("entities") ?: JSONArray()
                     for (i in 0 until arr.length()) {
@@ -511,11 +575,17 @@ class BatchAnalysisRunner(
                         if (key.isNotEmpty()) entities[key] = e
                     }
                 },
-                onChapter = { ch, obj -> commitChannel.trySend(ch to obj) },
+                onChapter = { displayCh, obj ->
+                    val ch = displayCh - 1
+                    if (ch in pending) {
+                        // 快照实体表：后续模型重试改写 entities 不影响本章提交。
+                        commitChannel.trySend(Triple(ch, obj, entities.toMap()))
+                    }
+                },
             )
             coroutineScope {
                 val commitJob = launch {
-                    for ((ch, obj) in commitChannel) {
+                    for ((ch, obj, chapterEntities) in commitChannel) {
                         val work = byChapter[ch] ?: continue
                         val result = commitChapter(
                             bookKey = bookKey,
@@ -523,7 +593,7 @@ class BatchAnalysisRunner(
                             work = work,
                             segments = segmentsByChapter[ch].orEmpty(),
                             obj = obj,
-                            entities = entities,
+                            entities = chapterEntities,
                             cfg = cfg,
                             bareWords = bareWords,
                             specialWords = specialWords,
@@ -532,6 +602,8 @@ class BatchAnalysisRunner(
                         )
                         if (result != null) {
                             extracted[ch] = result
+                            failed.remove(ch)
+                            onChapterReady?.invoke(ch, false)
                         } else {
                             failed[ch] = "阶段2校验失败"
                         }
@@ -570,7 +642,7 @@ class BatchAnalysisRunner(
                 )
             }
         }
-        pending.forEach { failed[it] = "阶段2失败" }
+        pending.forEach { if (it !in extracted) failed[it] = "阶段2失败" }
     }
 
     private suspend fun commitChapter(
@@ -595,6 +667,10 @@ class BatchAnalysisRunner(
             resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
         )
         val json = batchChapterJson(obj, entities)
+        if (!batchKeysDeclared(obj, entities)) {
+            AppLog.putAnalysis("【V4·${text.chapterLabel}·阶段2】引用了实体表未定义的 bkey，丢弃该章")
+            return null
+        }
         val expected = segments.count { it.roleType != SpeechRoleType.Narrator }
         val validator = Stage2Validator(
             paragraphs = text.paragraphs,
@@ -605,8 +681,8 @@ class BatchAnalysisRunner(
             nextText = ObservationAssembly.takeContextByParagraphs(
                 text.nextText, cfg.nextLimit, fromTail = false,
             ),
-            prevChapter = if (text.prevText.isNotBlank()) text.chapterIndex - 1 else null,
-            nextChapter = if (text.nextText.isNotBlank()) text.chapterIndex + 1 else null,
+            prevChapter = if (text.prevText.isNotBlank()) text.chapterIndex else null,
+            nextChapter = if (text.nextText.isNotBlank()) text.chapterIndex + 2 else null,
             isBareClassWord = { word ->
                 val w = word.trim()
                 w.isNotEmpty() && (w.length <= 1 || w in bareWords)
@@ -619,9 +695,18 @@ class BatchAnalysisRunner(
             AppLog.putAnalysis("【V4·${text.chapterLabel}·阶段2】校验失败：${outcome.failReason.take(160)}")
             return null
         }
-        val speakers = ObservationAssembly.buildLocalSpeakers(analysisId, payload.speakers, true)
-        val bound = SpeakerBinder.bind(segments, speakers, emptyMap(), payload.seqMap)
-        val mentions = ObservationAssembly.buildLocalMentions(analysisId, payload.mentions, true)
+        val speakers = ObservationAssembly.buildLocalSpeakers(
+            analysisId, payload.speakers, true, batchId,
+        )
+        val bound = SpeakerBinder.bind(
+            ObservationAssembly.applyStage2(segments, payload.seqMap),
+            speakers,
+            emptyMap(),
+            payload.seqMap,
+        )
+        val mentions = ObservationAssembly.buildLocalMentions(
+            analysisId, payload.mentions, true, batchId,
+        )
         val evidence = ObservationAssembly.buildEvidence(analysisId, bookKey, payload.evidence)
         val now = System.currentTimeMillis()
         val older = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
@@ -668,7 +753,7 @@ class BatchAnalysisRunner(
                 failReason = "",
                 attempts = older?.attempts ?: 0,
                 createdAt = older?.createdAt ?: now,
-                updatedAt = now,
+                updatedAt = text.loadedAt,
             ),
         )
         AppLog.putAnalysis(
@@ -687,7 +772,24 @@ class BatchAnalysisRunner(
                 payload.seqMap,
                 speakers,
             ),
+            batchId = batchId,
         )
+    }
+
+    /** 本章 seqmap 引用的每个说话人键都必须在本次响应的实体表中定义。 */
+    private fun batchKeysDeclared(obj: JSONObject, entities: Map<String, JSONObject>): Boolean {
+        val sm = obj.optJSONObject("seqmap") ?: return false
+        val keys = sm.keys()
+        var declared = true
+        while (keys.hasNext()) {
+            val key = sm.optString(keys.next()).trim()
+            if (key.isEmpty() || key == "N") continue
+            if (!entities.containsKey(key)) {
+                declared = false
+                break
+            }
+        }
+        return declared
     }
 
     /** 把批量 chapter 行转换成单章阶段2可校验的 JSON（bkey 原样保留）。 */
@@ -739,12 +841,14 @@ class BatchAnalysisRunner(
     ): Pair<List<Int>, List<Int>> {
         if (extracted.isEmpty()) return emptyList<Int>() to emptyList()
         val inputs = extracted.map { item ->
+            val analysis = raBuild.analysisById(item.analysisId)
             IdentityResolver.BatchChapterInput(
                 chapterIndex = item.text.chapterIndex,
                 chapterLabel = item.text.chapterLabel,
                 speakers = raBuild.localSpeakers(item.analysisId),
                 evidence = raBuild.evidence(item.analysisId),
                 contextBySpeaker = item.contextBySpeaker,
+                batchId = analysis?.batchId ?: item.batchId,
             )
         }
         val resolutions = runCatching {
@@ -765,6 +869,10 @@ class BatchAnalysisRunner(
             return emptyList<Int>() to extracted.map { it.text.chapterIndex }
         }
         val ready = ArrayList<Int>()
+        // 先确保默认发声方案就绪，再发布 IDENTITY_READY，避免开播拿到“无方案”的章节。
+        val characters = resolutions.values.map { it.characterId }.distinct()
+            .mapNotNull { raCharacters.character(it) }
+        if (characters.isNotEmpty()) casting.ensureDefaultProfiles(bookKey, characters, "后台")
         extracted.forEach { item ->
             val speakers = raBuild.localSpeakers(item.analysisId).map { speaker ->
                 val resolution = resolutions[speaker.id]
@@ -798,42 +906,39 @@ class BatchAnalysisRunner(
             val (attributes, relations) = observations
             val now = System.currentTimeMillis()
             val analysis = raBuild.analysisById(item.analysisId)
-            if (analysis != null) {
+            val saved = if (analysis != null) {
                 val older = raBuild.getBuild(bookKey, analysis.sourceKey, item.text.chapterIndex)
-                raBuild.saveAnalysisBundleWithObservations(
-                    analysis = analysis.copy(
-                        status = RaAnalysisStatus.RESOLVED,
-                        updatedAt = now,
-                    ),
-                    segments = segments,
-                    localSpeakers = speakers,
-                    localMentions = item.mentions,
-                    evidence = item.evidence,
-                    build = RaChapterBuild(
-                        bookKey = bookKey,
-                        sourceKey = analysis.sourceKey,
-                        chapterIndex = item.text.chapterIndex,
-                        contentHash = analysis.contentHash,
-                        state = RaChapterState.IDENTITY_READY,
-                        analysisId = item.analysisId,
-                        failReason = "",
-                        attempts = older?.attempts ?: 0,
-                        createdAt = older?.createdAt ?: now,
-                        updatedAt = now,
-                    ),
-                    attributes = attributes,
-                    relations = relations,
-                )
-            }
-            ready.add(item.text.chapterIndex)
+                runCatching {
+                    raBuild.saveAnalysisBundleWithObservations(
+                        analysis = analysis.copy(
+                            status = RaAnalysisStatus.RESOLVED,
+                            updatedAt = now,
+                        ),
+                        segments = segments,
+                        localSpeakers = speakers,
+                        localMentions = item.mentions,
+                        evidence = item.evidence,
+                        build = RaChapterBuild(
+                            bookKey = bookKey,
+                            sourceKey = analysis.sourceKey,
+                            chapterIndex = item.text.chapterIndex,
+                            contentHash = analysis.contentHash,
+                            state = RaChapterState.IDENTITY_READY,
+                            analysisId = item.analysisId,
+                            failReason = "",
+                            attempts = older?.attempts ?: 0,
+                            createdAt = older?.createdAt ?: now,
+                            updatedAt = item.text.loadedAt,
+                        ),
+                        attributes = attributes,
+                        relations = relations,
+                    )
+                }.isSuccess
+            } else false
+            if (saved) ready.add(item.text.chapterIndex)
         }
-        val characters = resolutions.values.map { it.characterId }.distinct()
-            .mapNotNull { raCharacters.character(it) }
-        if (characters.isNotEmpty()) {
-            casting.ensureDefaultProfiles(bookKey, characters, "后台")
-            characters.forEach { character ->
-                runCatching { raCharacters.recomputeAppearance(character.id) }
-            }
+        characters.forEach { character ->
+            runCatching { raCharacters.recomputeAppearance(character.id) }
         }
         AppLog.putAnalysis("【V4·后台·收敛】完成：${ready.size} 章 → IDENTITY_READY")
         return ready to emptyList()

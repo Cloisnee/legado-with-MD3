@@ -28,6 +28,14 @@ interface RaBuildGateway {
 
     suspend fun analysisById(id: String): RaAnalysis?
 
+    /** 换源复用：同一 bookKey + 正文哈希 + 解析版本的已收敛分析（可来自任意 sourceKey）。 */
+    suspend fun analysisByContentHash(
+        bookKey: String,
+        chapterIndex: Int,
+        contentHash: String,
+        resolverVersion: String,
+    ): RaAnalysis?
+
     suspend fun latestAnalysisForSource(bookKey: String, sourceKey: String, chapterIndex: Int): RaAnalysis?
 
     suspend fun saveAnalysisBundle(

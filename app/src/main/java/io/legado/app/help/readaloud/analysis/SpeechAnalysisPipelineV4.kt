@@ -49,8 +49,11 @@ import io.legado.app.help.readaloud.audio.SynthLane
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -273,11 +276,6 @@ BGM 建议缺段从值集补全。
 
     // ---------------- 数据小结构 ----------------
 
-    private val pipelineScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.IO +
-            CoroutineExceptionHandler { _, e -> AppLog.putAnalysis("V4·后台任务异常: ${e.localizedMessage}", e) },
-    )
-
     @Volatile
     private var bareWordsCache: Set<String> = emptySet()
 
@@ -302,6 +300,8 @@ BGM 建议缺段从值集补全。
         nextChapterText: String,
         force: Boolean = false,
         aiContext: AiSchedulerContext? = null,
+        taskStartedAt: Long = System.currentTimeMillis(),
+        skipLegacyAudio: Boolean = false,
     ): RaPipelineResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
@@ -318,6 +318,13 @@ BGM 建议缺段从值集补全。
         }
 
         val cfg = configStore.load()
+        // 旧情绪/音频导演仍是异步子任务：挂到本次 run 的 Job 下，章节取消时一并取消。
+        val legacyScope = CoroutineScope(
+            SupervisorJob(currentCoroutineContext()[Job]) + Dispatchers.IO +
+                CoroutineExceptionHandler { _, e ->
+                    AppLog.putAnalysis("V4·后台任务异常: ${e.localizedMessage}", e)
+                },
+        )
         bareWordsCache = runCatching { wordLibrary.bareWords() }.getOrDefault(emptySet())
         specialWordsCache = runCatching { wordLibrary.specialWords() }.getOrDefault(emptySet())
         val analysisId = SpeechIdentity.analysisId(
@@ -359,17 +366,17 @@ BGM 建议缺段从值集补全。
         val dialogueSegs = segments.filter { it.roleType != SpeechRoleType.Narrator }
         val numbered = ObservationAssembly.renderNumbered(segments)
         val unitCounts: Map<Int, Int> = unitsByPara.associate { it.paraIndex + 1 to it.units.size }
-        val directorJob = if (directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
+        val directorJob = if (!skipLegacyAudio && directorSkipReason.isEmpty() && unitsByPara.isNotEmpty()) {
             val directorText = renderDirectorUnits(unitsByPara, unitSuggestions)
-            pipelineScope.async {
+            legacyScope.async {
                 callAudioDirector(directorText, unitCounts, cfg, directorRefs, chapterLabel, aiContext)
             }
         } else null
         val knownCharacters = buildKnownCharacters(bookKey, paragraphs, chapterIndex)
         val s2Refs = runCatching { aiModels.queueRefs("stage2") }.getOrDefault(emptyList())
         val emoRefs = runCatching { aiModels.queueRefs("emotion") }.getOrDefault(emptyList())
-        val emoJob = if (emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
-            pipelineScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel, aiContext) }
+        val emoJob = if (!skipLegacyAudio && emoRefs.isNotEmpty() && dialogueSegs.isNotEmpty()) {
+            legacyScope.async { callEmotion(numbered, dialogueSegs.size, cfg, emoRefs, chapterIndex, chapterLabel, aiContext) }
         } else null
         var usedAi2 = false
         var stage2: Stage2Payload? = null
@@ -475,6 +482,7 @@ BGM 建议缺段从值集补全。
                 AppLog.putAnalysis("【V4·$chapterLabel·情绪】覆盖 ${emo.size}/${dialogueSegs.size} 条")
             } else if (emo == null && emoJob.isActive) {
                 AppLog.putAnalysis("【V4·$chapterLabel·情绪】${cfg.emotionJoinTimeoutMs}ms 内未返回，先落库")
+                emoJob.cancel()
             }
         }
 
@@ -492,7 +500,10 @@ BGM 建议缺段从值集补全。
                     )
                     runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
                 }
-                directorJob.isActive -> logLaneFallback("Ai超时", paragraphs)
+                directorJob.isActive -> {
+                    logLaneFallback("Ai超时", paragraphs)
+                    directorJob.cancel()
+                }
                 else -> logLaneFallback("Ai失败", paragraphs)
             }
         } else {
@@ -545,7 +556,7 @@ BGM 建议缺段从值集补全。
             failReason = if (stage2Failed) "阶段2未完成：未配置模型或调用失败" else "",
             attempts = (olderBuild?.attempts ?: 0) + if (stage2Failed) 1 else 0,
             createdAt = olderBuild?.createdAt ?: now,
-            updatedAt = now,
+            updatedAt = taskStartedAt,
         )
         val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
             bookKey = bookKey,
@@ -574,6 +585,7 @@ BGM 建议缺段从值集补全。
 
         // ===== 导演行（情绪）与音频条目双写 Room =====
         saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
+        legacyScope.coroutineContext.cancelChildren()
         RaPipelineResult(analysis, bound, false)
     }
 
