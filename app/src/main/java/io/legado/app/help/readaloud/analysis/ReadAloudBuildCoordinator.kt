@@ -233,7 +233,6 @@ class ReadAloudBuildCoordinator(
             sessionRequest++
             val current = session
             current?.stopping = true
-            current?.generation = (current?.generation ?: 0L) + 1
             current
         }
         backgroundWorker?.cancel()
