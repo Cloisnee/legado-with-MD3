@@ -42,63 +42,64 @@ class ChapterJobRegistry {
         private val registry: ChapterJobRegistry,
     ) {
         internal val result = CompletableDeferred<Outcome>()
-        var control: AiRequestControl? = null
-            private set
-        suspend fun bindControl(value: AiRequestControl) {
-            control = value
-            registry.lock.withLock {
-                registry.controls[key] = value
-                if (key in registry.foregroundRequested) value.foreground()
-            }
+        suspend fun bindControl(value: AiRequestControl) = registry.lock.withLock {
+            registry.controls[key] = value
+            if (key in registry.foreground) value.foreground()
         }
 
         suspend fun complete(outcome: Outcome) {
-            result.complete(outcome)
-            val ticket = this
-            withContext(NonCancellable) { registry.finish(ticket) }
+            withContext(NonCancellable) { registry.finish(this@Ticket, outcome) }
         }
     }
 
     private val lock = Mutex()
     private val jobs = HashMap<Key, Ticket>()
     private val controls = HashMap<Key, AiRequestControl>()
-    private val foregroundRequested = HashSet<Key>()
+    private val foreground = HashMap<Key, Int>()
 
     suspend fun acquire(key: Key): Acquire = lock.withLock {
-        val existing = jobs[key]
-        if (existing != null) {
-            Acquire.Join(existing.result)
-        } else {
-            val ticket = Ticket(key, this)
-            jobs[key] = ticket
-            Acquire.Owner(ticket)
-        }
+        jobs[key]?.let { Acquire.Join(it.result) }
+            ?: Acquire.Owner(Ticket(key, this).also { jobs[key] = it })
     }
 
-    suspend fun requestForeground(key: Key) {
+    suspend fun acquireBackground(key: Key): Ticket? = lock.withLock {
+        if (key in jobs || key in foreground) return@withLock null
+        Ticket(key, this).also { jobs[key] = it }
+    }
+
+    suspend fun <T> withForeground(key: Key, block: suspend () -> T): T {
         lock.withLock {
-            if (key in jobs || key in controls) foregroundRequested.add(key)
-            (jobs[key]?.control ?: controls[key])?.foreground()
+            foreground[key] = foreground.getOrDefault(key, 0) + 1
+            controls[key]?.foreground()
+        }
+        try {
+            return block()
+        } finally {
+            withContext(NonCancellable) {
+                lock.withLock {
+                    val count = foreground.getValue(key)
+                    if (count == 1) foreground.remove(key) else foreground[key] = count - 1
+                }
+            }
         }
     }
 
     suspend fun releaseControl(key: Key, control: AiRequestControl) = withContext(NonCancellable) {
         lock.withLock {
             if (controls[key] === control) controls.remove(key)
-            foregroundRequested.remove(key)
+            Unit
         }
     }
 
     suspend fun occupiedChapters(bookKey: String, sourceKey: String): Set<Int> = lock.withLock {
-        jobs.keys
+        (jobs.keys + foreground.keys)
             .filter { it.bookKey == bookKey && it.sourceKey == sourceKey }
             .map { it.chapterIndex }
             .toSet()
     }
 
-    private suspend fun finish(ticket: Ticket) {
-        lock.withLock {
-            if (jobs[ticket.key] === ticket) jobs.remove(ticket.key)
-        }
+    private suspend fun finish(ticket: Ticket, outcome: Outcome) = lock.withLock {
+        if (jobs[ticket.key] === ticket) jobs.remove(ticket.key)
+        ticket.result.complete(outcome)
     }
 }

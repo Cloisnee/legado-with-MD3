@@ -4,7 +4,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.data.repository.WordLibraryRepository
-import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.gateway.RaDirectionAudio
 import io.legado.app.domain.gateway.RaDirectionGateway
@@ -37,7 +37,6 @@ import io.legado.app.help.readaloud.analysis.v4.Stage2Payload
 import io.legado.app.help.readaloud.analysis.v4.Stage2Speaker
 import io.legado.app.help.readaloud.analysis.v4.Stage2Validator
 import io.legado.app.help.readaloud.analysis.v4.V4Prompts
-import io.legado.app.utils.MD5Utils
 import io.legado.app.help.readaloud.audio.AudioLaneScan
 import io.legado.app.help.readaloud.audio.AudioPlan
 import io.legado.app.help.readaloud.audio.AudioPlanItem
@@ -46,14 +45,20 @@ import io.legado.app.help.readaloud.audio.AudioPositions
 import io.legado.app.help.readaloud.audio.AudioPrefill
 import io.legado.app.help.readaloud.audio.AudioTagCodec
 import io.legado.app.help.readaloud.audio.SynthLane
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -289,6 +294,7 @@ BGM 建议缺段从值集补全。
         aiContext: AiSchedulerContext? = null,
         taskStartedAt: Long = System.currentTimeMillis(),
         skipLegacyAudio: Boolean = false,
+        onPublished: ((RaAnalysisStatus) -> Unit)? = null,
     ): RaPipelineResult? = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
@@ -328,7 +334,7 @@ BGM 建议缺段从值集补全。
             // ===== 阶段1：话语选号（D4：所有章节统一走 AI；失败回退本地引号规则） =====
             val t0 = System.currentTimeMillis()
             val ranges = stageA(paragraphs, cfg, chapterIndex = chapterIndex, aiContext = aiContext, chapterLabel = chapterLabel)
-            val directorRefs = runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
+            val directorRefs = if (skipLegacyAudio) emptyList() else runCatching { aiModels.queueRefs("audioDirector") }.getOrDefault(emptyList())
             val directorSkipReason = when {
                 directorRefs.isEmpty() -> "未设置Ai"
                 else -> ""
@@ -428,27 +434,6 @@ BGM 建议缺段从值集补全。
                 }
             }
             segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
-            // 用户台词级覆盖：重析后按 (段号, 文本哈希) 重新套用
-            val overrides = runCatching { raBuild.overrides(bookKey, chapterIndex) }
-                .getOrDefault(emptyList())
-                .associateBy { it.paragraphIndex to it.textHash }
-            if (overrides.isNotEmpty()) {
-                segments = segments.map { segment ->
-                    val override = overrides[segment.paragraphIndex to MD5Utils.md5Encode16(segment.text)]
-                        ?: return@map segment
-                    if (override.narrator) {
-                        segment.copy(
-                            roleType = SpeechRoleType.Narrator,
-                            characterId = null,
-                            localSpeakerId = null,
-                            surfaceName = "",
-                            seq = 0,
-                        )
-                    } else {
-                        segment.copy(characterId = override.characterId ?: segment.characterId)
-                    }
-                }
-            }
             val updatedSpeakers = localSpeakers.map { speaker ->
                 speaker.copy(
                     characterId = keyToCharacter[speaker.localKey],
@@ -490,7 +475,6 @@ BGM 建议缺段从值集补全。
                         AppLog.putAnalysis(
                             "【V4·$chapterLabel·音效与背景音】Ai导演：${plan.countsText()}。",
                         )
-                        runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, plan) }
                     }
                     directorJob.isActive -> {
                         logLaneFallback("Ai超时", paragraphs, chapterLabel)
@@ -498,7 +482,7 @@ BGM 建议缺段从值集补全。
                     }
                     else -> logLaneFallback("Ai失败", paragraphs, chapterLabel)
                 }
-            } else {
+            } else if (!skipLegacyAudio) {
                 val rulesPlan = AudioPrefill.buildRulesPlan(
                     buildFallbackSeeds(unitsByPara, unitSuggestions, segments),
                 )
@@ -507,7 +491,6 @@ BGM 建议缺段从值集补全。
                     AppLog.putAnalysis(
                         "【V4·$chapterLabel·音效与背景音】本地计划已写入：${rulesPlan.countsText()}。",
                     )
-                    runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, audioPlan) }
                 }
             }
 
@@ -522,7 +505,11 @@ BGM 建议缺段从值集补全。
                 contentHash = contentHash,
                 resolverVersion = RESOLVER_VERSION,
                 status = if (stage2Failed) RaAnalysisStatus.FAILED else RaAnalysisStatus.RESOLVED,
-                origin = if (force) RaAnalysisOrigin.USER_REANALYZE else RaAnalysisOrigin.FOREGROUND,
+                origin = when {
+                    force -> RaAnalysisOrigin.USER_REANALYZE
+                    skipLegacyAudio -> RaAnalysisOrigin.BACKGROUND_BATCH
+                    else -> RaAnalysisOrigin.FOREGROUND
+                },
                 modelId = "",
                 createdAt = now,
                 updatedAt = now,
@@ -557,16 +544,21 @@ BGM 建议缺段从值集补全。
                 keyToCharacter = keyToCharacter,
                 evidence = evidence,
             )
-            raBuild.saveAnalysisBundleWithObservations(
-                analysis = analysis,
-                segments = bound,
-                localSpeakers = updatedSpeakers,
-                localMentions = localMentions,
-                evidence = evidence,
-                build = build,
-                attributes = attributeObs,
-                relations = relationObs,
-            )
+            currentCoroutineContext().ensureActive()
+            val publication = withContext(NonCancellable) {
+                raBuild.saveAnalysisBundle(
+                    analysis = analysis,
+                    segments = bound,
+                    localSpeakers = updatedSpeakers,
+                    localMentions = localMentions,
+                    evidence = evidence,
+                    build = build,
+                    attributes = attributeObs,
+                    relations = relationObs,
+                ).also { if (it == RaBuildPublication.PUBLISHED) onPublished?.invoke(analysis.status) }
+            }
+            if (publication != RaBuildPublication.PUBLISHED) return@withContext null
+            val publishedSegments = raBuild.segments(analysisId)
             AppLog.putAnalysis(
                 "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
                     (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
@@ -576,13 +568,74 @@ BGM 建议缺段从值集补全。
             }
 
             // ===== 导演行（情绪）与音频条目双写 Room =====
-            saveDirectionRows(analysisId, bookKey, chapterIndex, bound, emotionBySeq, audioPlan, now)
-            RaPipelineResult(analysis, bound, false)
+            if (!skipLegacyAudio) {
+                audioPlan?.let { runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, it) } }
+                saveDirectionRows(analysisId, bookKey, chapterIndex, publishedSegments, emotionBySeq, audioPlan)
+            }
+            RaPipelineResult(analysis, publishedSegments, false)
         } finally {
             legacyScope.cancel()
         }
     }
 
+
+    private val legacyLocks = ConcurrentHashMap<String, Mutex>()
+
+    /** 后台只建身份；首次前台消费时补齐本批仍使用的旧情绪/导演产物。 */
+    suspend fun ensureLegacyForReady(
+        bookUrl: String,
+        bookName: String,
+        analysis: RaAnalysis,
+        paragraphs: List<CanonicalSpeechParagraph>,
+        aiContext: AiSchedulerContext? = null,
+    ) {
+        if (analysis.status != RaAnalysisStatus.RESOLVED || analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH) return
+        legacyLocks.getOrPut(analysis.id) { Mutex() }.withLock {
+            if (raDirection.plan(analysis.id, "PLAYBACK_BASE")?.status == "READY") return@withLock
+            val segments = raBuild.segments(analysis.id)
+            if (segments.isEmpty()) return@withLock
+            val cfg = configStore.load()
+            val label = catalog.chapterLabel(bookUrl, analysis.chapterIndex)
+            val context = aiContext ?: AiSchedulerContext(
+                AiTaskKind.DIRECTOR, AiPriority.P0_CURRENT, analysis.bookKey, listOf(analysis.chapterIndex), false,
+            )
+            val units = ObservationAssembly.buildParaUnits(paragraphs)
+            val flatUnits = units.flatMap { p -> p.units.map { it.text } }
+            val suggestions = AudioLaneScan.suggest(flatUnits) ?: List(flatUnits.size) { emptyList() }
+            val spoken = segments.filter { it.roleType != SpeechRoleType.Narrator }
+            val emotionRefs = aiModels.queueRefs("emotion")
+            val directorRefs = aiModels.queueRefs("audioDirector")
+            val (emotions, items) = kotlinx.coroutines.coroutineScope {
+                val emotionJob = async {
+                    if (emotionRefs.isEmpty() || spoken.isEmpty()) return@async emptyMap()
+                    withTimeoutOrNull(cfg.emotionJoinTimeoutMs) {
+                        callEmotion(ObservationAssembly.renderNumbered(segments), spoken.size,
+                            cfg, emotionRefs, analysis.chapterIndex, label, context)
+                    }.orEmpty().mapNotNull { (index, tag) ->
+                        // 编号重新从 1 连排，映射回原序号（用户改成旁白可能留下断号）。
+                        spoken.getOrNull(index - 1)?.seq?.takeIf { it > 0 }?.let { it to tag }
+                    }.toMap()
+                }
+                val directorJob = async {
+                    if (directorRefs.isEmpty() || units.isEmpty()) return@async null
+                    withTimeoutOrNull(cfg.audioDirectorJoinTimeoutMs) {
+                        callAudioDirector(renderDirectorUnits(units, suggestions),
+                            units.associate { it.paraIndex + 1 to it.units.size }, cfg, directorRefs, label, context)
+                    }
+                }
+                emotionJob.await() to directorJob.await()
+            }
+            val audioPlan = (if (items != null) convertDirectorItems(items, units, segments)
+                else AudioPrefill.buildRulesPlan(buildFallbackSeeds(units, suggestions, segments)))
+                .copy(scriptHash = analysis.contentHash)
+            // 生成期间正文可能换版；只给仍有效的分析挂计划。
+            val current = raBuild.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
+            if (current?.analysisId != analysis.id || current.state != RaChapterState.IDENTITY_READY) return@withLock
+            AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, audioPlan)
+            saveDirectionRows(analysis.id, analysis.bookKey, analysis.chapterIndex, segments, emotions, audioPlan)
+            AppLog.putAnalysis("【V4·$label·前台补做】完成：情绪 ${emotions.size}、${audioPlan.countsText()}")
+        }
+    }
 
     /** 本地快速分段（点击朗读 → 先出声）：引号规则 v2 → 段落装配；不落库。 */
     fun quickLocalSegments(paragraphs: List<CanonicalSpeechParagraph>): List<RaSegment> {
@@ -606,7 +659,6 @@ BGM 建议缺段从值集补全。
         segments: List<RaSegment>,
         emotionBySeq: Map<Int, String>,
         audioPlan: AudioPlan?,
-        now: Long,
     ) {
         val planId = "dp_${analysisId}_PLAYBACK_BASE"
         val lines = ArrayList<RaDirectionLine>()
@@ -639,7 +691,6 @@ BGM 建议缺段从值集补全。
                 )
             }
         }
-        if (lines.isEmpty() && audio.isEmpty()) return
         raDirection.savePlan(
             plan = RaDirectionPlan(
                 id = planId,

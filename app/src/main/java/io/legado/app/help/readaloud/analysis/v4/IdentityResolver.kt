@@ -81,7 +81,9 @@ class IdentityResolver(
         evidence: List<RaEvidence>,
         contextBySpeaker: Map<String, String> = emptyMap(),
         context: AiSchedulerContext? = null,
-        speakerChapterIndex: Map<String, Int> = emptyMap(),
+        speakerChapters: Map<String, Set<Int>> = emptyMap(),
+        initialOccupancy: Map<Int, Set<String>> = emptyMap(),
+        rejectedAnchors: Map<String, Set<String>> = emptyMap(),
     ): ChapterResult {
         if (speakers.isEmpty()) return ChapterResult(emptyMap(), emptyList())
         val links = runCatching { characters.linksOfBook(bookKey) }.getOrDefault(emptyList())
@@ -90,8 +92,16 @@ class IdentityResolver(
             .toSet()
         fun isCannot(a: String, b: String): Boolean =
             cannotPairs.contains(if (a <= b) a to b else b to a)
-        val linkedThisChapter = LinkedHashSet<String>()
-        fun isAllowed(targetId: String): Boolean = targetId !in linkedThisChapter
+        val occupancy = initialOccupancy.mapValuesTo(HashMap()) { it.value.toMutableSet() }
+        fun chaptersOf(speaker: RaLocalSpeaker): Set<Int> = speakerChapters[speaker.localKey] ?: setOf(chapterIndex)
+        fun occupied(speaker: RaLocalSpeaker): Set<String> =
+            chaptersOf(speaker).flatMap { occupancy[it].orEmpty() }.toSet()
+        fun blocked(speaker: RaLocalSpeaker): Set<String> = rejectedAnchors[speaker.localKey].orEmpty()
+        fun isAllowed(speaker: RaLocalSpeaker, targetId: String): Boolean =
+            targetId !in blocked(speaker) && chaptersOf(speaker).none { targetId in occupancy[it].orEmpty() }
+        fun claim(speaker: RaLocalSpeaker, targetId: String) {
+            chaptersOf(speaker).forEach { occupancy.getOrPut(it) { HashSet() }.add(targetId) }
+        }
         val resolutions = LinkedHashMap<String, Resolution>()
         val created = ArrayList<RaCharacter>()
         val pending = ArrayList<Pending>()
@@ -111,7 +121,7 @@ class IdentityResolver(
                 val lookup = speaker.copy(surfaceNames = names)
                 val reused = if (reuseConcurrent && speaker.roleType != "路人") {
                     exactTargets(bookKey, lookup, emptyList())
-                        .filterNot { it.id in linkedThisChapter || it.id in blocked }
+                        .filter { isAllowed(speaker, it.id) && it.id !in blocked }
                         .singleOrNull()
                 } else null
                 if (reused != null) {
@@ -137,7 +147,7 @@ class IdentityResolver(
 
         // 按出场顺序处理；确定性链接优先于候选召回
         speakers.forEach { speaker ->
-            val currentChapter = speakerChapterIndex[speaker.localKey] ?: chapterIndex
+            val currentChapter = chaptersOf(speaker).minOrNull() ?: chapterIndex
             val speakerEvidence = evidence.filter { it.subjectLocalId == speaker.id }
             val verifiedMain = speakerEvidence.filter { it.scope.storageValue == "MAIN_TEXT" && it.verified }
             val contradictions = verifiedMain
@@ -149,7 +159,7 @@ class IdentityResolver(
 
             // ①a ALIAS_EQUAL：把当前称呼与已有人物的非泛称别名连起来
             val aliasEqualTarget = uniqueAliasTarget(bookKey, aliasEqualNames, contradictions)
-            if (aliasEqualTarget != null && isAllowed(aliasEqualTarget.id)) {
+            if (aliasEqualTarget != null && isAllowed(speaker, aliasEqualTarget.id)) {
                 val evidenceIds = verifiedMain.map { it.id }
                 val decisionId = charDecision(
                     bookKey = bookKey,
@@ -177,7 +187,7 @@ class IdentityResolver(
                     target = aliasEqualTarget,
                     candidateIds = listOf(aliasEqualTarget.id),
                 )
-                linkedThisChapter.add(aliasEqualTarget.id)
+                claim(speaker, aliasEqualTarget.id)
                 return@forEach
             }
 
@@ -193,13 +203,13 @@ class IdentityResolver(
                     created = true,
                     createdCharacter = character,
                 )
-                linkedThisChapter.add(character.id)
+                claim(speaker, character.id)
                 return@forEach
             }
 
             // ①b 非泛称称呼精确命中且唯一 ACTIVE
             val exactTargets = exactTargets(bookKey, speaker, contradictions)
-            if (exactTargets.size == 1 && isAllowed(exactTargets.first().id)) {
+            if (exactTargets.size == 1 && isAllowed(speaker, exactTargets.first().id)) {
                 val target = exactTargets.first()
                 resolutions[speaker.localKey] = link(
                     bookKey = bookKey,
@@ -208,24 +218,24 @@ class IdentityResolver(
                     target = target,
                     candidateIds = listOf(target.id),
                 )
-                linkedThisChapter.add(target.id)
+                claim(speaker, target.id)
                 return@forEach
             }
 
             // ② 候选召回；排除同场已链接人物、本章明确反证的人物
-            val blockedByContradiction = contradictionIds(bookKey, contradictions)
+            val blockedByContradiction = contradictionIds(bookKey, contradictions) + blocked(speaker)
             val candidates = recallCandidates(
                 bookKey = bookKey,
                 speaker = speaker,
                 evidence = verifiedMain,
-                exclude = linkedThisChapter + blockedByContradiction,
+                exclude = occupied(speaker) + blockedByContradiction,
             )
             // 首次快链与候选召回之间，另一章可能刚发布了同一人物。
             // 只复核“原来无精确命中”的窄时序，沿用全部快链/反证/同章占用条件。
             if (exactTargets.isEmpty() && candidates.isNotEmpty()) {
                 val published = bookLock(bookKey).withLock {
                     exactTargets(bookKey, speaker, contradictions).singleOrNull()?.takeIf { target ->
-                        isAllowed(target.id) && target.id !in blockedByContradiction &&
+                        isAllowed(speaker, target.id) && target.id !in blockedByContradiction &&
                             (speaker.characterId == null || !isCannot(speaker.characterId, target.id))
                     }
                 }
@@ -237,7 +247,7 @@ class IdentityResolver(
                         target = published,
                         candidateIds = listOf(published.id),
                     )
-                    linkedThisChapter.add(published.id)
+                    claim(speaker, published.id)
                     return@forEach
                 }
             }
@@ -248,7 +258,7 @@ class IdentityResolver(
                 // 同名已出现多个 ACTIVE：身份不足，不再新建 ACTIVE；
                 // 仅当旧临时人物的候选集合与本章候选有交集时才复用（可追踪依据，不按名字硬并）
                 val candidateIds = candidates.map { it.character.id }
-                val reusable = findReusableProvisional(bookKey, speaker, candidateIds, linkedThisChapter)
+                val reusable = findReusableProvisional(bookKey, speaker, candidateIds, occupied(speaker))
                 val character = reusable ?: createCharacter(currentChapter, speaker, RaCharacterStatus.PROVISIONAL)
                 if (reusable == null) created.add(character)
                 charDecision(
@@ -268,7 +278,7 @@ class IdentityResolver(
                     candidateIds = candidateIds,
                     createdCharacter = if (reusable == null) character else null,
                 )
-                linkedThisChapter.add(character.id)
+                claim(speaker, character.id)
                 return@forEach
             }
             when {
@@ -301,7 +311,7 @@ class IdentityResolver(
                         candidateIds = exactTargets.map { it.id },
                         createdCharacter = character,
                     )
-                    linkedThisChapter.add(character.id)
+                    claim(speaker, character.id)
                 }
                 else -> {
                     pending.add(
@@ -343,7 +353,7 @@ class IdentityResolver(
                     candidateIds = candidateIds,
                     createdCharacter = character,
                 )
-                linkedThisChapter.add(character.id)
+                claim(item.speaker, character.id)
                 return@forEach
             }
             when {
@@ -355,10 +365,10 @@ class IdentityResolver(
                         item.speaker.characterId != null &&
                         isCannot(item.speaker.characterId, target.id)
                     val linkedSameWithEvidence = target != null &&
-                        target.id in linkedThisChapter &&
+                        target.id in occupied(item.speaker) &&
                         answer.evidenceQuotes.isNotEmpty()
-                    if (target != null && (isAllowed(target.id) || linkedSameWithEvidence) &&
-                        !blockedByOwnConstraint
+                    if (target != null && (isAllowed(item.speaker, target.id) || linkedSameWithEvidence) &&
+                        target.id in candidateIds && target.id !in blocked(item.speaker) && !blockedByOwnConstraint
                     ) {
                         val decisionId = charDecision(
                             bookKey = bookKey,
@@ -398,7 +408,7 @@ class IdentityResolver(
                         resolutions[item.speaker.localKey] = resolution.copy(
                             candidateIds = candidateIds,
                         )
-                        linkedThisChapter.add(target.id)
+                        claim(item.speaker, target.id)
                     } else {
                         val character = createCharacter(item.chapterIndex, item.speaker, RaCharacterStatus.PROVISIONAL)
                         created.add(character)
@@ -420,7 +430,7 @@ class IdentityResolver(
                             candidateIds = candidateIds,
                             createdCharacter = character,
                         )
-                        linkedThisChapter.add(character.id)
+                        claim(item.speaker, character.id)
                     }
                 }
                 answer.verdict == RaVerdict.DIFFERENT -> {
@@ -455,7 +465,7 @@ class IdentityResolver(
                         candidateIds = candidateIds,
                         createdCharacter = character,
                     )
-                    linkedThisChapter.add(character.id)
+                    claim(item.speaker, character.id)
                 }
                 else -> {
                     // A 策略：UNKNOWN/低置信保留临时身份；同称呼组最多复用 3 次，达到上限后保持待定
@@ -480,7 +490,7 @@ class IdentityResolver(
                         modelId = answer.modelId,
                     )
                     resolutions[item.speaker.localKey] = linked
-                    linkedThisChapter.add(character.id)
+                    claim(item.speaker, character.id)
                 }
             }
         }
@@ -491,7 +501,7 @@ class IdentityResolver(
                 bookKey = bookKey,
                 speaker = mention.toSpeakerForLookup(),
                 contradictions = emptyList(),
-            ).singleOrNull { isAllowed(it.id) }
+            ).singleOrNull { it.id !in occupancy[chapterIndex].orEmpty() }
             if (target != null) {
                 characters.attachAliasesIfAbsent(
                     bookKey = bookKey,
@@ -543,8 +553,7 @@ class IdentityResolver(
                     // R6：路人默认不跨章聚合；只有单章内显式 ALIAS_EQUAL 才认亲。
                     speaker.roleType == "路人" -> "solo:${speaker.id}"
                     rawKey == null -> "solo:${speaker.id}"
-                    rawKey.contains('#') -> rawKey
-                    else -> "${chapter.batchId ?: speaker.analysisId}#$rawKey"
+                    else -> "${chapter.batchId ?: speaker.analysisId}#${speaker.localKey}"
                 }
                 groups.getOrPut(key) { ArrayList() }.add(chapter.chapterIndex to speaker)
             }
@@ -552,16 +561,52 @@ class IdentityResolver(
         val syntheticSpeakers = ArrayList<RaLocalSpeaker>()
         val syntheticEvidence = ArrayList<RaEvidence>()
         val contexts = HashMap<String, String>()
-        val alreadyResolved = HashMap<String, Resolution>()
+        val out = LinkedHashMap<String, Resolution>()
+        val groupsToResolve = LinkedHashMap<String, List<Pair<Int, RaLocalSpeaker>>>()
+        val evidenceBySpeaker = ordered.flatMap { it.evidence }.groupBy { it.subjectLocalId }
+        val byChapter = ordered.associateBy { it.chapterIndex }
+        val finalIds = ordered.flatMap { it.speakers }.mapNotNull { it.characterId }.distinct()
+            .associateWith { characters.finalCharacterId(it) }
+        val occupied = HashMap<Int, MutableSet<String>>()
+        val rejected = HashMap<String, Set<String>>()
+        val cannotLinks = if (finalIds.isEmpty()) emptyList() else characters.linksOfBook(bookKey)
+            .filter { it.kind == io.legado.app.domain.model.readaloud.v4.RaLinkKind.CANNOT }
+
+        groups.values.flatten().forEach { (chapter, speaker) ->
+            val id = speaker.characterId?.let(finalIds::get) ?: return@forEach
+            out[speaker.id] = Resolution(id, speaker.resolution, false)
+            occupied.getOrPut(chapter) { HashSet() }.add(id)
+        }
         groups.forEach { (key, members) ->
-            val linkedIds = members.mapNotNull { it.second.characterId }.distinct()
-            if (linkedIds.size == 1) {
-                val id = characters.finalCharacterId(linkedIds.single())
-                alreadyResolved[key] = Resolution(id, RaResolution.RESOLVED, false)
-                return@forEach
+            val pending = members.filter { it.second.id !in out }
+            if (pending.isEmpty()) return@forEach
+            val anchorIds = members.mapNotNull { out[it.second.id]?.characterId }.toSet()
+            val candidate = anchorIds.singleOrNull()?.let { characters.character(it) }
+            if (candidate != null) {
+                val contradictions = pending.flatMap { (_, speaker) -> evidenceBySpeaker[speaker.id].orEmpty() }
+                    .filter { it.type == RaEvidenceType.CONTRADICTION && it.verified && it.scope.storageValue == "MAIN_TEXT" }
+                    .map { it.objectText }
+                val forbidden = candidate.id in contradictionIds(bookKey, contradictions) ||
+                    contradictions.any { matchesText(candidate, it) } || pending.any { (_, speaker) ->
+                        val other = exactTargets(bookKey, speaker, emptyList()).singleOrNull()?.id
+                        other != null && cannotLinks.any { link ->
+                            (link.aCharacterId == candidate.id && link.bCharacterId == other) ||
+                                (link.bCharacterId == candidate.id && link.aCharacterId == other)
+                        }
+                    }
+                if (!forbidden && pending.none { (chapter, _) -> candidate.id in occupied[chapter].orEmpty() }) {
+                    pending.forEach { (chapter, speaker) ->
+                        out[speaker.id] = link(bookKey, chapter, speaker, candidate, listOf(candidate.id))
+                        occupied.getOrPut(chapter) { HashSet() }.add(candidate.id)
+                    }
+                    return@forEach
+                }
             }
-            val first = members.first().second
-            val names = members.flatMap { (_, sp) -> sp.surfaceNames + sp.primaryName }
+            // 拒绝的锚点不再从称呼快链重新进入。
+            if (anchorIds.isNotEmpty()) rejected[key] = anchorIds
+            groupsToResolve[key] = pending
+            val first = pending.first().second
+            val names = pending.flatMap { (_, sp) -> sp.surfaceNames + sp.primaryName }
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .distinct()
@@ -576,14 +621,13 @@ class IdentityResolver(
                     resolution = RaResolution.PENDING,
                 ),
             )
-            val memberIds = members.map { it.second.id }.toSet()
-            ordered.forEach { chapter ->
-                chapter.evidence
-                    .filter { it.subjectLocalId in memberIds }
-                    .forEach { e -> syntheticEvidence.add(e.copy(subjectLocalId = syntheticId)) }
+            pending.forEach { (_, speaker) ->
+                evidenceBySpeaker[speaker.id].orEmpty().forEach { e ->
+                    syntheticEvidence.add(e.copy(subjectLocalId = syntheticId))
+                }
             }
-            val text = members.mapNotNull { (chapterIndex, sp) ->
-                ordered.firstOrNull { it.chapterIndex == chapterIndex }?.contextBySpeaker?.get(sp.localKey)
+            val text = pending.mapNotNull { (chapterIndex, sp) ->
+                byChapter[chapterIndex]?.contextBySpeaker?.get(sp.localKey)
             }.joinToString("\n")
             if (text.isNotBlank()) contexts[key] = text.take(1200)
         }
@@ -602,11 +646,12 @@ class IdentityResolver(
             evidence = syntheticEvidence,
             contextBySpeaker = contexts,
             context = context,
-            speakerChapterIndex = groups.mapValues { it.value.first().first },
+            speakerChapters = groupsToResolve.mapValues { (_, members) -> members.map { it.first }.toSet() },
+            initialOccupancy = occupied,
+            rejectedAnchors = rejected,
         )
-        val out = LinkedHashMap<String, Resolution>()
-        groups.forEach { (key, members) ->
-            val resolution = alreadyResolved[key] ?: result.resolutions[key] ?: return@forEach
+        groupsToResolve.forEach { (key, members) ->
+            val resolution = result.resolutions[key] ?: return@forEach
             members.forEach { (_, speaker) -> out[speaker.id] = resolution }
         }
         return out

@@ -39,7 +39,7 @@ enum class AiPriority(val level: Int) {
 }
 
 /** 同一批次跨阶段共用：前台接管后后续请求也保持前台优先级。 */
-class AiRequestControl {
+class AiRequestControl(private val incremental: Boolean = true) {
     @Volatile var priority: AiPriority? = null
         private set
     @Volatile var protected: Boolean = false
@@ -48,22 +48,25 @@ class AiRequestControl {
         private set
     @Volatile private var owner: Job? = null
     @Volatile private var takeQueued: Boolean = false
+    @Volatile private var runningKind: AiTaskKind? = null
 
     @Synchronized fun bind(job: Job?) {
-        owner = job
+        if (owner?.isActive != true) owner = job
         if (takeQueued) job?.cancel(CancellationException("foreground takes queued batch"))
     }
-    @Synchronized fun started() { running = true }
+    @Synchronized fun started(kind: AiTaskKind) { running = true; runningKind = kind }
     @Synchronized fun finished() { running = false }
     @Synchronized fun foreground() {
         priority = AiPriority.P0_CURRENT
-        if (protected) return
         protected = true
         // 还未发网的批次让出目标章，前台重取；已经读流的批次继续逐章提交。
-        if (!running) {
+        if (!running || !incremental || runningKind != AiTaskKind.STAGE2) {
             takeQueued = true
             owner?.cancel(CancellationException("foreground takes queued batch"))
         }
+    }
+    @Synchronized fun yieldToForeground() {
+        owner?.cancel(CancellationException("foreground needs batch provider for identity resolution"))
     }
 }
 
@@ -75,6 +78,7 @@ data class AiSchedulerContext(
     val chapters: List<Int>,
     val preemptible: Boolean,
     val control: AiRequestControl? = null,
+    val sourceKey: String = "",
 ) {
     val effectivePriority: AiPriority get() = control?.priority ?: priority
     val canPreempt: Boolean get() = preemptible && control?.protected != true
@@ -143,8 +147,8 @@ class AiRequestScheduler(
         try {
             return block()
         } finally {
-            release(lane, id)
             context.control?.finished()
+            release(lane, id)
         }
     }
 
@@ -179,15 +183,24 @@ class AiRequestScheduler(
                 lane.waiting.add(waiter)
                 grantWaitersLocked(lane)
                 if (!waiter.granted && context.effectivePriority.foreground) {
-                    lane.running.values.filter { it.context.canPreempt }
+                    lane.running.values.filter { running ->
+                        val active = running.context
+                        active.canPreempt || (context.kind == AiTaskKind.RESOLVE &&
+                            active.kind == AiTaskKind.STAGE2 && active.preemptible &&
+                            active.bookKey == context.bookKey && active.sourceKey == context.sourceKey &&
+                            active.chapters.any { it in context.chapters })
+                    }
                         .maxWithOrNull(compareBy<Running>(
                             { it.context.effectivePriority.level }, { it.startedAt },
-                        ))?.job?.cancel(CancellationException("preempted by foreground"))
+                        ))?.let { running ->
+                            running.context.control?.yieldToForeground()
+                            running.job?.cancel(CancellationException("preempted by foreground"))
+                        }
                 }
             }
             waiter.wake.receive()
             currentCoroutineContext().ensureActive()
-            context.control?.started()
+            context.control?.started(context.kind)
         } catch (e: CancellationException) {
             waiter.cancelled = true
             withContext(NonCancellable) {

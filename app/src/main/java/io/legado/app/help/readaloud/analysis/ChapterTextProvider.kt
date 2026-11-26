@@ -12,6 +12,7 @@ import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
 import io.legado.app.model.CacheBook
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -34,18 +35,24 @@ class ChapterTextProvider(
         val contentHash: String,
         val prevText: String,
         val nextText: String,
+        val loadedAt: Long,
     )
 
     suspend fun load(book: Book, chapterIndex: Int, allowDownload: Boolean): Text? =
         withContext(Dispatchers.IO) {
+            var loadedAt = System.currentTimeMillis()
             val chapter = bookChapterDao.getChapter(book.bookUrl, chapterIndex) ?: return@withContext null
             var content = BookHelp.getContent(book, chapter)
             if (content.isNullOrBlank() && allowDownload && !book.isLocal) {
                 content = runCatching {
                     CacheBook.getOrCreate(book.bookUrl)?.downloadAwait(chapter)
-                }.getOrNull()?.takeUnless { it.looksLikeError() }
+                }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    null
+                }
+                loadedAt = System.currentTimeMillis()
             }
-            if (content.isNullOrBlank() || content!!.looksLikeError()) return@withContext null
+            if (content.isNullOrBlank() || content.looksLikeError()) return@withContext null
             val paragraphs = buildReaderParagraphs(book, chapterIndex, content)
             if (paragraphs.isEmpty()) return@withContext null
             Text(
@@ -55,6 +62,7 @@ class ChapterTextProvider(
                 contentHash = SpeechIdentity.chapterContentHash(paragraphs),
                 prevText = contextText(book, chapterIndex - 1),
                 nextText = contextText(book, chapterIndex + 1),
+                loadedAt = loadedAt,
             )
         }
 

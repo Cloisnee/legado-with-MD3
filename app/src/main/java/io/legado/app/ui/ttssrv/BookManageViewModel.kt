@@ -211,29 +211,15 @@ class BookManageViewModel : ViewModel() {
             val newCharacterId = if (isNarrator) null else pendingIds[lineIndex]?.takeIf { it.isNotBlank() }
             if (!isNarrator && newCharacterId.isNullOrBlank()) return@forEach
             if (name == line.speaker && newCharacterId == line.characterId) return@forEach
-            if (isNarrator) {
-                raBuild.markSegmentNarrator(line.segmentId)
-                raBuild.saveOverride(
-                    bookKey = state.currentBookKey,
-                    chapterIndex = ch,
-                    paragraphIndex = line.paragraphIndex,
-                    textHash = MD5Utils.md5Encode16(line.text),
-                    characterId = null,
-                    narrator = true,
-                )
-                saved++
-            } else {
-                raBuild.updateSegmentSpeaker(line.segmentId, newCharacterId, name)
-                raBuild.saveOverride(
-                    bookKey = state.currentBookKey,
-                    chapterIndex = ch,
-                    paragraphIndex = line.paragraphIndex,
-                    textHash = MD5Utils.md5Encode16(line.text),
-                    characterId = newCharacterId,
-                    narrator = false,
-                )
-                saved++
-            }
+            raBuild.saveOverride(
+                bookKey = state.currentBookKey,
+                chapterIndex = ch,
+                paragraphIndex = line.paragraphIndex,
+                textHash = MD5Utils.md5Encode16(line.text),
+                characterId = newCharacterId,
+                narrator = isNarrator,
+            )
+            saved++
         }
         raBuild.getBuild(state.currentBookKey, state.currentSourceKey, ch)?.analysisId
             ?.let { raDirection.markPlaybackStale(it) }

@@ -6,7 +6,9 @@ import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.AiProvider
 import io.legado.app.data.repository.AiThinkingMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -120,12 +122,12 @@ class AiSpeechClient(
                     totalTimeoutMs = totalTimeoutMs ?: timeoutMs,
                     context = context,
                     onChunk = onChunk,
+                    rateLimitAttempt = consecutive429 + 1,
                 )
                 val raw = call.raw
                 if (raw == null) {
                     if (call.rateLimited) {
                         consecutive429++
-                        runCatching { scheduler.reportRateLimited(ref.provider.id, consecutive429) }
                         rateLimits++
                         lastReason = "429 限流"
                         // 前两次原模型重试（服务商暂停期内排队等待）；第三次按响应失败处理
@@ -174,6 +176,7 @@ class AiSpeechClient(
         totalTimeoutMs: Long,
         context: AiSchedulerContext?,
         onChunk: ((String) -> Unit)?,
+        rateLimitAttempt: Int,
     ): CallOutcome {
         return try {
             val base = ref.provider.baseUrl.trim().trimEnd('/')
@@ -261,6 +264,7 @@ class AiSpeechClient(
                 totalTimeoutMs = totalTimeoutMs,
                 context = context,
                 onChunk = onChunk,
+                rateLimitAttempt = rateLimitAttempt,
             )
             CallOutcome(text)
         } catch (e: RateLimitedException) {
@@ -284,35 +288,40 @@ class AiSpeechClient(
         totalTimeoutMs: Long,
         context: AiSchedulerContext?,
         onChunk: ((String) -> Unit)?,
+        rateLimitAttempt: Int,
     ): String {
         val call = streamClient(timeoutMs, totalTimeoutMs).newCall(request)
         val perform: suspend () -> String = {
-            // 阻塞 execute/读流放到独立线程：协程取消时立刻 call.cancel()，不必等 Job 结束回调
-            // （旧实现把 cancel 挂在 invokeOnCompletion 上，读流卡住时回调永远不会触发）。
-            suspendCancellableCoroutine { cont ->
-                val thread = Thread({
-                    try {
-                        val text = call.execute().use { resp ->
-                            if (!resp.isSuccessful) {
-                                val errBody = runCatching { resp.body.string() }.getOrDefault("")
-                                if (resp.code == 429) {
-                                    throw RateLimitedException("HTTP 429: ${errBody.take(160)}")
-                                }
-                                error("HTTP ${resp.code}: ${errBody.take(160)}")
+            val readerExited = CompletableDeferred<Unit>()
+            try {
+                suspendCancellableCoroutine { cont ->
+                    val thread = Thread({
+                        try {
+                            val text = call.execute().use { resp ->
+                                if (resp.code == 429) throw RateLimitedException("HTTP 429")
+                                if (!resp.isSuccessful) error("HTTP ${resp.code}")
+                                readStreamBody(protocol, resp, totalTimeoutMs) { delta ->
+                                    if (cont.isActive) onChunk?.invoke(delta)
+                                }?.takeIf { it.isNotBlank() } ?: error("空响应")
                             }
-                            val text = readStreamBody(protocol, resp, totalTimeoutMs) { delta ->
-                                if (cont.isActive) onChunk?.invoke(delta)
-                            }
-                            if (text.isNullOrBlank()) error("空响应")
-                            text
+                            if (cont.isActive) cont.resume(text)
+                        } catch (e: Throwable) {
+                            if (cont.isActive) cont.resumeWithException(e)
+                        } finally {
+                            readerExited.complete(Unit)
                         }
-                        if (cont.isActive) cont.resume(text)
-                    } catch (e: Throwable) {
-                        if (cont.isActive) cont.resumeWithException(e)
+                    }, "ai-http-${ref.provider.id}")
+                    cont.invokeOnCancellation { call.cancel() }
+                    try {
+                        thread.start()
+                    } catch (error: Throwable) {
+                        readerExited.complete(Unit)
+                        if (cont.isActive) cont.resumeWithException(error)
                     }
-                }, "ai-http-${ref.provider.id}")
-                cont.invokeOnCancellation { call.cancel() }
-                thread.start()
+                }
+            } finally {
+                // 先取消网络，再等响应体关闭，最后由调度器归还同一服务商的许可。
+                withContext(NonCancellable) { readerExited.await() }
             }
         }
         val scheduled = context ?: AiSchedulerContext(
@@ -323,7 +332,7 @@ class AiSpeechClient(
                 perform()
             } catch (e: RateLimitedException) {
                 // 在许可仍属于本请求时暂停；finally 交接许可前退避已经生效。
-                scheduler.reportRateLimited(ref.provider.id, 1)
+                scheduler.reportRateLimited(ref.provider.id, rateLimitAttempt)
                 throw e
             }
         }
@@ -385,6 +394,12 @@ class AiSpeechClient(
                     if (payload.isEmpty() || payload == "[DONE]") continue
                     val chunk = runCatching { JSONObject(payload) }.getOrNull() ?: continue
                     if (chunk.has("error")) {
+                        val detail = chunk.optJSONObject("error")
+                        val errorCode = listOf(detail?.optString("code"), detail?.optString("type"),
+                            detail?.optString("status"), detail?.optString("message")).joinToString(" ").lowercase()
+                        if (detail?.optInt("code") == 429 || detail?.optInt("status") == 429 ||
+                            listOf("rate_limit", "rate limit", "resource_exhausted", "too many requests").any { it in errorCode }
+                        ) throw RateLimitedException("流式限流: ${errorCode.take(160)}")
                         errMsg = chunk.optJSONObject("error")?.optString("message")
                             ?.takeIf { it.isNotBlank() } ?: chunk.opt("error")?.toString().orEmpty()
                         continue

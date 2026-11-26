@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.legado.app.data.AppDatabase
+import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.*
 import io.legado.app.help.readaloud.analysis.v4.ObservationAssembly
@@ -14,7 +15,10 @@ import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.usecase.BuildSpeechPlanUseCase
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.help.readaloud.playback.SpeechVoiceSource
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -55,6 +59,70 @@ class RaBuildPublicationTest {
         assertEquals("newhash", builds.getBuild("bk", "src", 0)?.contentHash)
         assertNotNull(builds.analysisById("old"))
     }
+    @Test fun `late status transitions and bundle cannot republish an older chapter in Room`() = runBlocking {
+        val old = analysis("old", "oldhash")
+        assertEquals(RaBuildPublication.PUBLISHED, save(old, 100))
+        val suspended = CompletableDeferred<RaChapterBuild>()
+        val resume = CompletableDeferred<Unit>()
+        val late = async {
+            val expected = builds.getBuild("bk", "src", 0)!!
+            suspended.complete(expected)
+            resume.await()
+            val stale = builds.transitionBuild(expected, expected.copy(state = RaChapterState.STALE, updatedAt = 300))
+            val missing = builds.transitionBuild(expected, expected.copy(state = RaChapterState.NO_CONTENT, updatedAt = 301))
+            val oldResolution = builds.saveAnalysisBundle(
+                old.copy(status = RaAnalysisStatus.RESOLVED), emptyList(), emptyList(), emptyList(), emptyList(),
+                expected.copy(state = RaChapterState.IDENTITY_READY),
+                attributes = listOf(RaAttributeObservation("attr", "bk", "chr", "gender", "男", 0, source = "explicit")),
+                relations = listOf(RaRelationObservation("rel", "bk", "chr", "旧关系")),
+                expectedExtraction = expected,
+            )
+            Triple(stale, missing, oldResolution)
+        }
+        val snapshot = withTimeout(2_000) { suspended.await() }
+        try {
+            val noContent = snapshot.copy(state = RaChapterState.NO_CONTENT, updatedAt = 110)
+            assertTrue(builds.transitionBuild(snapshot, noContent))
+            val new = analysis("new", "newhash", RaAnalysisStatus.RESOLVED)
+            val current = build(new, 200)
+            val voices = object : SpeechVoiceSource {
+                override suspend fun byTag(tag: String) = ReadAloudVoice(tag, "tts_server", "e", tag, tag)
+                override suspend fun narrator() = ReadAloudVoice("n", "tts_server", "e", "n", "旁白")
+                override suspend fun defaultDialog(gender: String, seed: Int) = null
+            }
+            val characters = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao,
+                WordLibraryRepository(ApplicationProvider.getApplicationContext()))
+            val chosen = characters.ensureCharacter("bk", "张三", "核心", "女", "女青年", 0,
+                emptyList(), "ACTIVE", "ai", "default")
+            characters.saveVoiceProfile(RaVoiceProfile(RaIds.voiceProfile(), "bk", chosen.id,
+                RaVoiceProfileKind.DEFAULT, "默认", voiceTag = "new-voice"))
+            val line = RaSegment("s-new", new.id, "bk", 0, 0, 0, 2, 0, "新文", SpeechRoleType.Character,
+                seq = 1, characterId = chosen.id)
+            val attr = RaAttributeObservation("attr", "bk", chosen.id, "gender", "女", 0, source = "explicit")
+            val relation = RaRelationObservation("rel", "bk", chosen.id, "新关系")
+            assertEquals(RaBuildPublication.PUBLISHED, builds.saveAnalysisBundle(new, listOf(line), emptyList(),
+                emptyList(), emptyList(), current, listOf(attr), listOf(relation)))
+            assertFalse(builds.transitionBuild(noContent, noContent.copy(state = RaChapterState.CACHED, updatedAt = 310)))
+            resume.complete(Unit)
+            assertEquals(Triple(false, false, RaBuildPublication.IGNORED), withTimeout(2_000) { late.await() })
+            val historical = analysis("historical", "older", RaAnalysisStatus.RESOLVED)
+            assertEquals(RaBuildPublication.HISTORY_ONLY, builds.saveAnalysisBundle(historical, emptyList(),
+                emptyList(), emptyList(), emptyList(), build(historical, 90),
+                listOf(attr.copy(value = "男")), listOf(relation.copy(relation = "更早关系"))))
+            assertEquals(current, builds.getBuild("bk", "src", 0))
+            assertNull(builds.getAnalysis("bk", "src", 0, "oldhash", "v4.2"))
+            assertEquals(new.id, builds.getAnalysis("bk", "src", 0, "newhash", "v4.2")?.id)
+            assertNotNull(builds.analysisById(old.id))
+            assertNotNull(builds.analysisById(historical.id))
+            assertEquals("女", db.raCharacterDao.attributesOfBook("bk").single { it.id == "attr" }.value)
+            assertEquals("新关系", db.raCharacterDao.relationsOfBook("bk").single { it.id == "rel" }.relation)
+            assertEquals("new-voice", BuildSpeechPlanUseCase(characters, voices)("bk",
+                builds.segmentsOfChapter("bk", "src", 0)).single().voice?.displayName)
+        } finally {
+            resume.complete(Unit)
+        }
+    }
+
     @Test fun `exact snapshot survives database reopen-style read`() = runBlocking {
         val a = analysis("a", "h")
         save(a, 100)

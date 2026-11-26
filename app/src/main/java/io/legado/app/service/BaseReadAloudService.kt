@@ -39,6 +39,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.data.repository.HighlightRuleRepository
 import io.legado.app.data.repository.ReadAloudCatalogRepository
+import io.legado.app.data.entities.Book
 import io.legado.app.data.repository.sourceKeyOf
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
@@ -92,6 +93,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.koin.java.KoinJavaComponent.get
 import splitties.init.appCtx
 import splitties.systemservices.audioManager
@@ -273,7 +275,9 @@ abstract class BaseReadAloudService : BaseService(),
      */
     private var chapterQuota: Int? = null
     private var prepareReadAloudJob: Coroutine<*>? = null
-    private var prepareReadAloudGeneration = 0L
+    @Volatile private var prepareReadAloudGeneration = 0L
+    @Volatile private var prepareShouldPlay = false
+    private val analysisOwner = Any()
 
     // 追更216b：分页快照等待窗口已下线（「自排版」取代——快照缺失时直接跑分页器得真页表）。
 
@@ -429,10 +433,7 @@ abstract class BaseReadAloudService : BaseService(),
         }
         isRun = false
         pause = true
-        runCatching {
-            val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-            scheduler.stopSession()
-        }
+        stopAnalysisSession()
         currentChapterIndex = -1
         currentProgress = 0
         currentChapterProvisional = false
@@ -488,7 +489,14 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun stopReadAloudService() {
         requestStop()
+        prepareReadAloudGeneration++
+        prepareReadAloudJob?.cancel()
+        stopAnalysisSession()
         stopSelf()
+    }
+
+    private fun stopAnalysisSession() {
+        runCatching { get<ReadAloudBuildCoordinator>(ReadAloudBuildCoordinator::class.java).stopSession(analysisOwner) }
     }
 
     // ---- M4：待命启动（防误触；点「开始朗读」先进待命，再点一次才走全套）----
@@ -548,7 +556,9 @@ abstract class BaseReadAloudService : BaseService(),
         requestedStartPos: Int,
         requestedChapterPosition: Int?,
     ) {
+        if (stopRequested) return
         sessionPrepared = true
+        prepareShouldPlay = play
         // 每次"从指定位置开始朗读"都是新会话：恢复页面跟随朗读（手动脱离后点"从此处朗读"等）
         sessionStore.restoreReadAloudFollow()
         clearFinishChapterTimerIfChapterChanged(bookSession.chapterIndex)
@@ -557,6 +567,10 @@ abstract class BaseReadAloudService : BaseService(),
         playStop()
         prepareReadAloudJob = execute(executeContext = IO) {
             val prepared = bookSession.prepareChapter()
+            val book = requireNotNull(prepared.book)
+            fun currentPreparation(): Boolean = generation == prepareReadAloudGeneration && !stopRequested &&
+                prepared.generation == bookSession.state.value.generation
+            if (!currentPreparation()) return@execute
             val input = requireNotNull(prepared.input)
             val pagination = requireNotNull(prepared.pagination)
             val preparedChapter = ReaderReadAloudChapter.create(
@@ -583,46 +597,31 @@ abstract class BaseReadAloudService : BaseService(),
                 .map { it.text }
             var preparedContentChapterPositions: List<Int?> =
                 preparedParagraphs.map { it.chapterPosition }
-            // B10.4.4：先启动分析调度（本会话的分析生产源），再构建播放计划——
-            // 「等分析就绪再出声」模式下计划构建会阻塞等待分析结果，若调度后启动会形成自锁
-            runCatching {
-                val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-                val book = bookSession.book
-                if (book != null && book.bookUrl.isNotEmpty()) {
-                    scheduler.startSession(book, input.chapter.index, paused = !play)
+            // 先安装本章分析会话，随后等待同一份书籍快照的播放计划。
+            val installed = withContext(Main.immediate) {
+                if (!currentPreparation()) return@withContext false
+                if (book.bookUrl.isNotEmpty()) {
+                    val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
+                    coordinator.startSession(book, input.chapter.index, paused = !prepareShouldPlay, owner = analysisOwner)
                 }
-            }.onFailure {
-                // 批212g：会话取消是预期语义（换章/换书/停止），静默
-                if (it !is io.legado.app.help.coroutine.ActivelyCancelException &&
-                    it !is kotlinx.coroutines.CancellationException
-                ) {
-                    AppLog.putAnalysis("分析调度会话启动失败: ${it.localizedMessage}", it)
-                }
+                true
             }
-            // B10.5·Q4：记录「最近朗读的书」（非嵌入入口的书籍管理/角色管理自动切换用；cunfang 由入口 switchBook 同步）
-            // 批212g：会话取消（换章/换书/停止时旧 prepareJob 被 cancel）是预期语义，静默；
-            // 仅真实失败记日志（此前取消噪音会刷满分析日志）。
+            if (!installed) return@execute
             runCatching {
-                val book = bookSession.book
-                if (book != null) {
-                    val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
-                    val bookKey = identity.keyOf(book.bookUrl, sourceKeyOf(book))
+                val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
+                val bookKey = identity.keyOf(book.bookUrl, sourceKeyOf(book))
+                if (currentPreparation()) {
                     val catalog: ReadAloudCatalogRepository = get(ReadAloudCatalogRepository::class.java)
                     catalog.setCurrentBookKey(bookKey)
                 }
             }.onFailure {
-                if (it !is io.legado.app.help.coroutine.ActivelyCancelException &&
-                    it !is kotlinx.coroutines.CancellationException
-                ) {
+                if (it is CancellationException) throw it
+                if (it !is io.legado.app.help.coroutine.ActivelyCancelException) {
                     AppLog.putAnalysis("记录最近朗读书名失败: ${it.localizedMessage}", it)
                 }
             }
-            val preparedSpeechPlan = buildSpeechPlan(
-                bookUrl = prepared.book?.bookUrl.orEmpty(),
-                chapterIndex = input.chapter.index,
-                paragraphs = preparedChapter.canonicalSpeechParagraphs(),
-            )
-            if (generation != prepareReadAloudGeneration) return@execute
+            val preparedSpeechPlan = buildSpeechPlan(book, input.chapter.index, preparedChapter.canonicalSpeechParagraphs())
+            if (!currentPreparation()) return@execute
             var preparedPlaybackQueue = runCatching {
                 ReadAloudPlaybackQueue.from(preparedSpeechPlan)
             }.onFailure {
@@ -688,26 +687,25 @@ abstract class BaseReadAloudService : BaseService(),
             } else if (usePreparedPlaybackQueue) {
                 preparedContentChapterPositions = preparedPlaybackQueue.cues.map { it.chapterStart }
             }
-            if (generation != prepareReadAloudGeneration) return@execute
-            this@BaseReadAloudService.pageIndex = pageIndex
-            readerReadAloudChapter = preparedChapter
-            contentList = preparedContentList
-            contentChapterPositions = preparedContentChapterPositions
-            speechPlan = preparedSpeechPlan
-            playbackQueue = preparedPlaybackQueue
-            playbackCursor = preparedPlaybackCursor
-            nowSpeak = preparedNowSpeak
-            readAloudNumber = preparedReadAloudNumber
-            paragraphStartPos = preparedParagraphStartPos
-            updateReadAloudProgressSnapshot(preparedReadAloudNumber + preparedParagraphStartPos + 1)
-            onPlaybackStateReplaced()
-            if (moveToLast) toLast = false
-            preparedPlaybackCursor?.takeIf { hasSpeechPlaybackQueue }?.let(::publishPlaybackInfo)
-            launch(Main) {
-                if (generation != prepareReadAloudGeneration) return@launch
+            withContext(Main.immediate) {
+                if (!currentPreparation()) return@withContext
+                this@BaseReadAloudService.pageIndex = pageIndex
+                readerReadAloudChapter = preparedChapter
+                contentList = preparedContentList
+                contentChapterPositions = preparedContentChapterPositions
+                speechPlan = preparedSpeechPlan
+                playbackQueue = preparedPlaybackQueue
+                playbackCursor = preparedPlaybackCursor
+                nowSpeak = preparedNowSpeak
+                readAloudNumber = preparedReadAloudNumber
+                paragraphStartPos = preparedParagraphStartPos
+                updateReadAloudProgressSnapshot(preparedReadAloudNumber + preparedParagraphStartPos + 1)
+                onPlaybackStateReplaced()
+                if (moveToLast) toLast = false
+                preparedPlaybackCursor?.takeIf { hasSpeechPlaybackQueue }?.let(::publishPlaybackInfo)
                 syncReaderToPlaybackPage()
                 upMediaMetadata()
-                if (play) play() else pageChanged = true
+                if (prepareShouldPlay) play() else pageChanged = true
             }
         }.onError {
             AppLog.putAnalysis("启动朗读出错\n${it.localizedMessage}", it, toast = true)
@@ -715,16 +713,16 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     protected suspend fun buildSpeechPlan(
-        bookUrl: String,
+        book: Book,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
     ): List<SpeechPlanItem> {
+        val bookUrl = book.bookUrl
         if (bookUrl.isEmpty()) return emptyList()
         val multiSpeakerOn = ReadConfig.useMultiSpeaker
         // 「多角色朗读」是唯一的发声开关：关掉就没有任何计划，整章回到用户在朗读设置里
         // 选的默认引擎。
         if (!multiSpeakerOn) return emptyList()
-        val book = bookSession.book ?: return emptyList()
         val sourceKey = sourceKeyOf(book)
         val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
         val bookKey = runCatching { identity.keyOf(book.bookUrl, sourceKey) }.getOrNull()
@@ -799,9 +797,10 @@ abstract class BaseReadAloudService : BaseService(),
             wifiLock?.release()
         }
         pause = true
+        prepareShouldPlay = false
         runCatching {
             val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-            coordinator.pauseBackground()
+            coordinator.pauseBackground(analysisOwner)
         }
         if (abandonFocus) {
             abandonFocus()
@@ -824,10 +823,12 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     private fun resumeReadAloudInternal() {
+        if (stopRequested) return
+        prepareShouldPlay = true
         pause = false
         runCatching {
             val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-            coordinator.resumeBackground()
+            coordinator.resumeBackground(analysisOwner)
         }
         needResumeOnAudioFocusGain = false
         needResumeOnCallStateIdle = false
@@ -1738,9 +1739,10 @@ abstract class BaseReadAloudService : BaseService(),
     private fun notifyAnalysisChapterChanged() {
         runCatching {
             val scheduler: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-            val bookUrl: String = bookSession.book?.bookUrl.orEmpty()
-            if (bookUrl.isNotEmpty()) {
-                scheduler.onChapterChanged(bookUrl, bookSession.chapterIndex)
+            val snapshot = bookSession.state.value
+            val book = snapshot.book ?: return
+            if (book.bookUrl.isNotEmpty()) {
+                scheduler.onChapterChanged(book.bookUrl, snapshot.chapterIndex, analysisOwner, sourceKeyOf(book))
             }
         }.onFailure {
             AppLog.putAnalysis("分析调度换章通知失败: ${it.localizedMessage}", it)

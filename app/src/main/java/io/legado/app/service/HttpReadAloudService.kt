@@ -840,22 +840,15 @@ class HttpReadAloudService : BaseReadAloudService(),
         )
         // 等该章朗读分析就绪再预合成：分析未就绪时会退化成「本地规则 + 默认声线」，
         // 白合成且污染缓存（用户实测：新章立刻用 duihuaA01 合成）
-        if (!waitForChapterAnalysis(
-                bookUrl = book.bookUrl,
-                chapterIndex = chapter.index,
-                paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
-            )
+        val paragraphs = readAloudChapter.canonicalSpeechParagraphs()
+        if (!waitForChapterAnalysis(book, chapter.index, paragraphs)
         ) {
             AppLog.putAudio(
                 "【音频缓存·${ChapterLabels.of(displayTitle, chapter.index)}】跳过预合成（朗读分析未就绪）"
             )
             return null
         }
-        val plan = buildSpeechPlan(
-            bookUrl = book.bookUrl,
-            chapterIndex = chapter.index,
-            paragraphs = readAloudChapter.canonicalSpeechParagraphs(),
-        )
+        val plan = buildSpeechPlan(book, chapter.index, paragraphs)
         val queue = runCatching {
             ReadAloudPlaybackQueue.from(plan)
                 .withChapterTitle(displayTitle, ReadAloudPlaybackQueue.narratorVoiceOf(plan))
@@ -870,25 +863,17 @@ class HttpReadAloudService : BaseReadAloudService(),
         return PreDownloadChapter(book.name, chapter.index, displayTitle, queue, contentList)
     }
 
-    /**
-     * 等该章朗读分析就绪（DB 里有同 contentHash 的 V3 分析），最长「AI 分析设置」的等待时长。
-     * 就绪前预合成会用「默认声线」产出无用缓存，故宁可等。
-     * B8.3：先尝试本地剧本文件回填（清应用数据后免重析）；命中即视为就绪。
-     * B10.4·A4：等待时长可配（默认 180s）。
-     */
+    /** 预合成只消费所传书籍快照对应的已解析正文。 */
     private suspend fun waitForChapterAnalysis(
-        bookUrl: String,
+        book: Book,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
     ): Boolean {
-        if (bookUrl.isEmpty() || paragraphs.isEmpty()) return false
+        if (book.bookUrl.isEmpty() || paragraphs.isEmpty()) return false
         val timeoutMs = runCatching { analysisConfig.load().waitAnalysisSec * 1000L }
             .getOrDefault(180_000L)
-        val book = ReadBook.book ?: return false
-        val bookKey = runCatching {
-            bookIdentity.keyOf(bookUrl, sourceKeyOf(book))
-        }.getOrNull() ?: return false
         val sourceKey = sourceKeyOf(book)
+        val bookKey = runCatching { bookIdentity.keyOf(book.bookUrl, sourceKey) }.getOrNull() ?: return false
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {

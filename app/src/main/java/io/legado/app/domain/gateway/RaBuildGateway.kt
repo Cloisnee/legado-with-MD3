@@ -10,13 +10,20 @@ import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 
+/** 当前版本发布、只保留历史，或同 ID 已有更新结果。 */
+enum class RaBuildPublication { PUBLISHED, HISTORY_ONLY, IGNORED }
+
 interface RaBuildGateway {
 
     suspend fun getBuild(bookKey: String, sourceKey: String, chapterIndex: Int): RaChapterBuild?
 
     suspend fun builds(bookKey: String, sourceKey: String): List<RaChapterBuild>
 
-    suspend fun upsertBuild(build: RaChapterBuild)
+    /** 只替换读取时的同一条状态（expected=null 表示尚无记录）。 */
+    suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild): Boolean
+
+    /** 只载入同次模型响应里仍是当前版本的已就绪章，供分次收敛复用。 */
+    suspend fun readyBatchAnalyses(bookKey: String, sourceKey: String, batchIds: Set<String>): List<RaAnalysis>
 
     suspend fun getAnalysis(
         bookKey: String,
@@ -38,28 +45,18 @@ interface RaBuildGateway {
 
     suspend fun latestAnalysisForSource(bookKey: String, sourceKey: String, chapterIndex: Int): RaAnalysis?
 
+    /** 分析包、有效指针、用户覆盖和观察在同一事务中发布。 */
     suspend fun saveAnalysisBundle(
         analysis: RaAnalysis,
         segments: List<RaSegment>,
         localSpeakers: List<RaLocalSpeaker>,
         localMentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
-        build: RaChapterBuild?,
-    )
-
-    /** 同一事务写入章节分析与属性/关系观察；默认退化为普通 bundle。 */
-    suspend fun saveAnalysisBundleWithObservations(
-        analysis: RaAnalysis,
-        segments: List<RaSegment>,
-        localSpeakers: List<RaLocalSpeaker>,
-        localMentions: List<RaLocalMention>,
-        evidence: List<RaEvidence>,
-        build: RaChapterBuild?,
-        attributes: List<RaAttributeObservation>,
-        relations: List<RaRelationObservation>,
-    ) {
-        saveAnalysisBundle(analysis, segments, localSpeakers, localMentions, evidence, build)
-    }
+        build: RaChapterBuild,
+        attributes: List<RaAttributeObservation> = emptyList(),
+        relations: List<RaRelationObservation> = emptyList(),
+        expectedExtraction: RaChapterBuild? = null,
+    ): RaBuildPublication
 
     suspend fun segments(analysisId: String): List<RaSegment>
 
@@ -82,10 +79,6 @@ interface RaBuildGateway {
         characterId: String?,
         resolution: String,
     )
-
-    suspend fun updateSegmentSpeaker(segmentId: String, characterId: String?, surfaceName: String)
-
-    suspend fun markSegmentNarrator(segmentId: String)
 
     suspend fun saveOverride(
         bookKey: String,

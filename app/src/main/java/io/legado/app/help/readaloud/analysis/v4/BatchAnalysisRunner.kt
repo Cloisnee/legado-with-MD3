@@ -5,6 +5,7 @@ import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.help.readaloud.analysis.queueRefs
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.SpeechIdentity
@@ -30,6 +31,8 @@ import io.legado.app.help.readaloud.analysis.ValidateOutcome
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.NonCancellable
@@ -75,6 +78,11 @@ class BatchAnalysisRunner(
         val extracted: List<Int> = emptyList(),
     )
 
+    private data class Convergence(
+        val ready: List<Int> = emptyList(),
+        val extracted: List<Int> = emptyList(),
+    )
+
     private data class ChapterWork(
         val text: ChapterText,
         val units: List<ObservationAssembly.ParaUnits>,
@@ -84,12 +92,12 @@ class BatchAnalysisRunner(
     private data class Extracted(
         val text: ChapterText,
         val analysisId: String,
-        val segments: List<RaSegment>,
-        val payload: Stage2Payload?,
+        val payload: Stage2Payload,
         val mentions: List<RaLocalMention>,
         val evidence: List<RaEvidence>,
         val contextBySpeaker: Map<String, String> = emptyMap(),
         val batchId: String? = null,
+        val build: RaChapterBuild,
     )
 
     private data class ChapterSubmission(
@@ -135,6 +143,7 @@ class BatchAnalysisRunner(
             chapters = chapters.map { it.chapterIndex },
             preemptible = !priority.foreground,
             control = control,
+            sourceKey = sourceKey,
         )
         val s2Context = s1Context.copy(kind = AiTaskKind.STAGE2)
 
@@ -164,17 +173,27 @@ class BatchAnalysisRunner(
             work.text.chapterIndex !in failed && work.text.chapterIndex in segmentsByChapter
         }
         val directReady = ArrayList<Int>()
+        val superseded = HashSet<Int>()
         val stage2WithDialogue = stage2Chapters.filter { work ->
             segmentsByChapter[work.text.chapterIndex].orEmpty()
                 .any { it.roleType != SpeechRoleType.Narrator }
         }
         val noDialogue = stage2Chapters.filterNot { it in stage2WithDialogue }
         noDialogue.forEach { work ->
-            if (commitNoDialogue(bookKey, sourceKey, work, segmentsByChapter[work.text.chapterIndex].orEmpty(), batchId)) {
-                directReady.add(work.text.chapterIndex)
-                onChapterReady?.invoke(work.text.chapterIndex, true)
-            } else {
-                failed[work.text.chapterIndex] = "落库失败"
+            val chapter = work.text.chapterIndex
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) {
+                try {
+                    if (commitNoDialogue(bookKey, sourceKey, work, segmentsByChapter[chapter].orEmpty(), batchId) ==
+                        RaBuildPublication.PUBLISHED
+                    ) {
+                        directReady.add(chapter)
+                        onChapterReady?.invoke(chapter, true)
+                    } else superseded.add(chapter)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    failed[chapter] = "落库失败"
+                }
             }
         }
         if (stage2WithDialogue.isNotEmpty()) {
@@ -194,17 +213,18 @@ class BatchAnalysisRunner(
                     batchId = batchId,
                     failed = failed,
                     extracted = extracted,
+                    superseded = superseded,
                     onChapterReady = onChapterReady,
                 )
             }
         }
 
         // 批内收敛
-        val convergeResult = converge(bookKey, extracted.values.toList(), control?.priority ?: priority, onChapterReady)
+        val convergeResult = converge(bookKey, extracted.values.toList(), priority, onChapterReady, control)
         return Outcome(
-            ready = (directReady + convergeResult.first).distinct().sorted(),
-            failed = failed.keys.filterNot { it in directReady || it in convergeResult.first || it in convergeResult.second }.sorted(),
-            extracted = convergeResult.second,
+            ready = (directReady + convergeResult.ready).distinct().sorted(),
+            failed = failed.keys.filterNot { it in superseded || extracted.containsKey(it) || it in directReady }.sorted(),
+            extracted = convergeResult.extracted,
         )
     }
 
@@ -215,7 +235,7 @@ class BatchAnalysisRunner(
         work: ChapterWork,
         segments: List<RaSegment>,
         batchId: String,
-    ): Boolean = runCatching {
+    ): RaBuildPublication {
         val text = work.text
         val analysisId = SpeechIdentity.analysisId(
             bookKey = bookKey,
@@ -226,7 +246,7 @@ class BatchAnalysisRunner(
         )
         val now = System.currentTimeMillis()
         val older = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
-        raBuild.saveAnalysisBundle(
+        return raBuild.saveAnalysisBundle(
             analysis = RaAnalysis(
                 id = analysisId,
                 bookKey = bookKey,
@@ -272,8 +292,7 @@ class BatchAnalysisRunner(
                 updatedAt = text.loadedAt,
             ),
         )
-        true
-    }.getOrDefault(false)
+    }
 
     /**
      * 收敛已 EXTRACTED 的章节（批次中断/收敛异常后的恢复路径），不重新调用 AI。
@@ -283,29 +302,24 @@ class BatchAnalysisRunner(
         sourceKey: String,
         chapters: List<ChapterText>,
         priority: AiPriority = AiPriority.P3_BACKGROUND,
+        onChapterReady: (suspend (Int, Boolean) -> Unit)? = null,
+        control: AiRequestControl? = null,
     ): Outcome {
         val items = chapters.mapNotNull { text ->
             val build = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
                 ?: return@mapNotNull null
             if (build.state != RaChapterState.EXTRACTED) return@mapNotNull null
-            val analysisId = build.analysisId ?: return@mapNotNull null
-            val analysis = raBuild.analysisById(analysisId) ?: return@mapNotNull null
-            if (analysis.status != RaAnalysisStatus.EXTRACTED) return@mapNotNull null
-            // 恢复必须对照当前正文与解析版本；不一致时把旧记录标 STALE，等重新分析。
-            if (build.contentHash != text.contentHash || analysis.contentHash != text.contentHash ||
+            val analysis = build.analysisId?.let { raBuild.analysisById(it) }
+            if (analysis == null || analysis.status != RaAnalysisStatus.EXTRACTED ||
+                build.contentHash != text.contentHash || analysis.contentHash != text.contentHash ||
                 analysis.resolverVersion != SpeechAnalysisPipelineV4.RESOLVER_VERSION ||
                 analysis.observationJson.isBlank()
             ) {
-                val now = System.currentTimeMillis()
-                raBuild.upsertBuild(
-                    build.copy(
-                        state = RaChapterState.STALE,
-                        failReason = "正文或解析版本已变化",
-                        updatedAt = now,
-                    ),
-                )
+                raBuild.transitionBuild(build, build.copy(state = RaChapterState.STALE,
+                    failReason = "正文或解析版本已变化", updatedAt = text.loadedAt))
                 return@mapNotNull null
             }
+            val analysisId = analysis.id
             val speakers = raBuild.localSpeakers(analysisId)
             val mentions = raBuild.localMentions(analysisId)
             val evidence = raBuild.evidence(analysisId)
@@ -316,38 +330,47 @@ class BatchAnalysisRunner(
                     ?: return@mapNotNull null
                 segment.seq to localKey
             }.toMap()
-            val snapshot = JSONObject(analysis.observationJson)
-            fun restoredEntries(key: String): List<Stage2Speaker> {
-                val entries = snapshot.getJSONArray(key)
-                return (0 until entries.length()).map { index ->
-                    val entry = entries.getJSONObject(index)
-                    val aliases = entry.getJSONArray("aliases")
-                    Stage2Speaker(
-                        key = entry.getString("key"), name = entry.getString("name"),
-                        aliases = (0 until aliases.length()).map(aliases::getString),
-                        roleType = entry.getString("roletype"), gender = entry.getString("gender"),
-                        ageBand = entry.getString("age"), genderSource = entry.getString("genderSource"),
-                        ageSource = entry.getString("ageSource"),
-                    )
+            val restored = runCatching {
+                val snapshot = JSONObject(analysis.observationJson)
+                fun restoredEntries(key: String): List<Stage2Speaker> {
+                    val entries = snapshot.getJSONArray(key)
+                    return (0 until entries.length()).map { index ->
+                        val entry = entries.getJSONObject(index)
+                        val aliases = entry.getJSONArray("aliases")
+                        Stage2Speaker(
+                            key = entry.getString("key"), name = entry.getString("name"),
+                            aliases = (0 until aliases.length()).map(aliases::getString),
+                            roleType = entry.getString("roletype"), gender = entry.getString("gender"),
+                            ageBand = entry.getString("age"), genderSource = entry.getString("genderSource"),
+                            ageSource = entry.getString("ageSource"),
+                        )
+                    }
                 }
+                val payload = Stage2Payload(seqMap, restoredEntries("speakers"), restoredEntries("mentions"), emptyList())
+                val savedContexts = snapshot.getJSONObject("contexts")
+                val contexts = savedContexts.keys().asSequence().associateWith(savedContexts::getString)
+                payload to contexts
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                raBuild.transitionBuild(build, build.copy(state = RaChapterState.STALE,
+                    failReason = "观察包无法恢复", updatedAt = text.loadedAt))
+                return@mapNotNull null
             }
-            val payload = Stage2Payload(seqMap, restoredEntries("speakers"), restoredEntries("mentions"), emptyList())
-            val savedContexts = snapshot.getJSONObject("contexts")
-            val contexts = savedContexts.keys().asSequence().associateWith(savedContexts::getString)
+            val (payload, contexts) = restored
             Extracted(
                 text = text,
                 analysisId = analysisId,
-                segments = segments,
                 payload = payload,
                 mentions = mentions,
                 evidence = evidence,
                 contextBySpeaker = contexts,
                 batchId = analysis.batchId,
+                build = build,
             )
         }
         if (items.isEmpty()) return Outcome()
-        val (ready, extracted) = converge(bookKey, items, priority)
-        return Outcome(ready = ready, extracted = extracted)
+        val result = converge(bookKey, items, priority, onChapterReady, control)
+        return Outcome(ready = result.ready, extracted = result.extracted)
     }
 
     // ---------------- 阶段1 ----------------
@@ -503,6 +526,7 @@ class BatchAnalysisRunner(
         batchId: String,
         failed: MutableMap<Int, String>,
         extracted: MutableMap<Int, Extracted>,
+        superseded: MutableSet<Int>,
         onChapterReady: (suspend (chapterIndex: Int, identityReady: Boolean) -> Unit)? = null,
     ) {
         val estimatedOutput = works.sumOf { work ->
@@ -515,7 +539,7 @@ class BatchAnalysisRunner(
             works.chunked((works.size + 1) / 2).forEach { part ->
                 runStage2(bookKey, sourceKey, cfg, part, segmentsByChapter, refs,
                     context.copy(chapters = part.map { it.text.chapterIndex }), bareWords, specialWords,
-                    batchId, failed, extracted, onChapterReady)
+                    batchId, failed, extracted, superseded, onChapterReady)
             }
             return
         }
@@ -603,7 +627,7 @@ class BatchAnalysisRunner(
                 val commitJob = launch {
                     for (submission in commitChannel) {
                         val ch = submission.chapter
-                        if (ch in extracted) continue
+                        if (ch in extracted || ch in superseded) continue
                         val work = byChapter[ch] ?: continue
                         val result = try { commitChapter(
                             bookKey = bookKey,
@@ -617,18 +641,27 @@ class BatchAnalysisRunner(
                             specialWords = specialWords,
                             batchId = submission.responseId,
                             modelId = submission.modelId,
+                            contextPrev = prev,
+                            contextNext = next,
+                            contextPrevChapter = first.chapterIndex,
+                            contextNextChapter = last.chapterIndex + 2,
                         ) } catch (e: CancellationException) {
                             throw e
                         } catch (e: Throwable) {
                             null
                         }
-                        if (result != null) {
-                            extracted[ch] = result
-                            failed.remove(ch)
-                            parser.acknowledge(ch + 1)
-                            onChapterReady?.invoke(ch, false)
-                        } else {
-                            failed[ch] = "阶段2校验失败"
+                        when (result) {
+                            is ChapterCommit.Published -> {
+                                extracted[ch] = result.extraction
+                                failed.remove(ch)
+                                parser.acknowledge(ch + 1)
+                                onChapterReady?.invoke(ch, false)
+                            }
+                            ChapterCommit.Superseded -> {
+                                superseded.add(ch)
+                                failed.remove(ch)
+                            }
+                            null -> failed[ch] = "阶段2校验或提交失败"
                         }
                     }
                 }
@@ -662,7 +695,7 @@ class BatchAnalysisRunner(
                     commitJob.join()
                 }
             }
-            pending = pending.filter { it !in extracted }.toSet()
+            pending = pending.filter { it !in extracted && it !in superseded }.toSet()
             if (pending.isNotEmpty()) {
                 AppLog.putAnalysis(
                     "【V4·后台·阶段2】第${round + 1}轮缺 ${pending.size} 章（${pending.sorted().joinToString(",")}）",
@@ -670,6 +703,11 @@ class BatchAnalysisRunner(
             }
         }
         pending.forEach { if (it !in extracted) failed[it] = "阶段2失败" }
+    }
+
+    private sealed interface ChapterCommit {
+        data class Published(val extraction: Extracted) : ChapterCommit
+        data object Superseded : ChapterCommit
     }
 
     private suspend fun commitChapter(
@@ -684,7 +722,11 @@ class BatchAnalysisRunner(
         specialWords: Set<String>,
         batchId: String,
         modelId: String,
-    ): Extracted? {
+        contextPrev: String,
+        contextNext: String,
+        contextPrevChapter: Int,
+        contextNextChapter: Int,
+    ): ChapterCommit? {
         val text = work.text
         val analysisId = SpeechIdentity.analysisId(
             bookKey = bookKey,
@@ -702,14 +744,10 @@ class BatchAnalysisRunner(
         val validator = Stage2Validator(
             paragraphs = text.paragraphs,
             chapterIndex = text.chapterIndex,
-            prevText = ObservationAssembly.takeContextByParagraphs(
-                text.prevText, cfg.prevLimit, fromTail = true,
-            ),
-            nextText = ObservationAssembly.takeContextByParagraphs(
-                text.nextText, cfg.nextLimit, fromTail = false,
-            ),
-            prevChapter = if (text.prevText.isNotBlank()) text.chapterIndex else null,
-            nextChapter = if (text.nextText.isNotBlank()) text.chapterIndex + 2 else null,
+            prevText = contextPrev,
+            nextText = contextNext,
+            prevChapter = contextPrevChapter.takeIf { contextPrev.isNotBlank() },
+            nextChapter = contextNextChapter.takeIf { contextNext.isNotBlank() },
             isBareClassWord = { word ->
                 val w = word.trim()
                 w.isNotEmpty() && (w.length <= 1 || w in bareWords)
@@ -720,6 +758,14 @@ class BatchAnalysisRunner(
         val outcome = validator.validate(json, expected)
         val payload = outcome.data ?: run {
             AppLog.putAnalysis("【V4·${text.chapterLabel}·阶段2】校验失败：${outcome.failReason.take(160)}")
+            return null
+        }
+        val body = text.paragraphs.joinToString("\n") { it.text }
+        if ((payload.speakers + payload.mentions).any { entry ->
+                (entry.roleType != "路人" && !body.contains(entry.name)) ||
+                    entry.aliases.any { !body.contains(it) }
+            }) {
+            AppLog.putAnalysis("【V4·${text.chapterLabel}·阶段2】校验失败：主名或别名缺少本章来源")
             return null
         }
         val speakers = ObservationAssembly.buildLocalSpeakers(
@@ -752,7 +798,19 @@ class BatchAnalysisRunner(
         }.toString()
         val now = System.currentTimeMillis()
         val older = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
-        raBuild.saveAnalysisBundle(
+        val extractionBuild = RaChapterBuild(
+            bookKey = bookKey,
+            sourceKey = sourceKey,
+            chapterIndex = text.chapterIndex,
+            contentHash = text.contentHash,
+            state = RaChapterState.EXTRACTED,
+            analysisId = analysisId,
+            failReason = "",
+            attempts = older?.attempts ?: 0,
+            createdAt = older?.createdAt ?: now,
+            updatedAt = text.loadedAt,
+        )
+        val publication = raBuild.saveAnalysisBundle(
             analysis = RaAnalysis(
                 id = analysisId,
                 bookKey = bookKey,
@@ -786,37 +844,22 @@ class BatchAnalysisRunner(
             localSpeakers = speakers,
             localMentions = mentions,
             evidence = evidence,
-            build = RaChapterBuild(
-                bookKey = bookKey,
-                sourceKey = sourceKey,
-                chapterIndex = text.chapterIndex,
-                contentHash = text.contentHash,
-                state = RaChapterState.EXTRACTED,
-                analysisId = analysisId,
-                failReason = "",
-                attempts = older?.attempts ?: 0,
-                createdAt = older?.createdAt ?: now,
-                updatedAt = text.loadedAt,
-            ),
+            build = extractionBuild,
         )
+        if (publication != RaBuildPublication.PUBLISHED) return ChapterCommit.Superseded
         AppLog.putAnalysis(
             "【V4·${text.chapterLabel}·阶段2】完成：话语 $expected、人物 ${speakers.size}、证据 ${evidence.size}",
         )
-        return Extracted(
+        return ChapterCommit.Published(Extracted(
             text = text,
             analysisId = analysisId,
-            segments = bound,
             payload = payload,
             mentions = mentions,
             evidence = evidence,
-            contextBySpeaker = ObservationAssembly.buildContextBySpeaker(
-                text.paragraphs,
-                bound,
-                payload.seqMap,
-                speakers,
-            ),
+            contextBySpeaker = contexts,
             batchId = batchId,
-        )
+            build = extractionBuild,
+        ))
     }
 
     /** 本章 seqmap 引用的每个说话人键都必须在本次响应的实体表中定义。 */
@@ -885,28 +928,29 @@ class BatchAnalysisRunner(
         bookKey: String,
         extracted: List<Extracted>,
         priority: AiPriority,
-        onChapterReady: (suspend (Int, Boolean) -> Unit)? = null,
-    ): Pair<List<Int>, List<Int>> {
+        onChapterReady: (suspend (Int, Boolean) -> Unit)?,
+        control: AiRequestControl?,
+    ): Convergence {
         val locked = ArrayList<Mutex>()
         try {
-            // 同一分析只能收敛一次；不同章不持有书级锁等网络。
-            extracted.map { it.analysisId }.distinct().sorted().forEach { id ->
+            // 同响应的不同章节分次收敛时，也要先看到上一次提交的身份锚点。
+            extracted.map { it.batchId?.let { batchId -> "batch:$batchId" } ?: it.analysisId }
+                .distinct().sorted().forEach { id ->
                 val mutex = resolutionLocks.getOrPut(id) { Mutex() }
                 mutex.lock()
                 locked.add(mutex)
             }
-            val eligible = extracted.filter { item ->
-                val analysis = raBuild.analysisById(item.analysisId)
-                val current = analysis?.let { raBuild.getBuild(bookKey, it.sourceKey, item.text.chapterIndex) }
-                current?.analysisId == item.analysisId && current.contentHash == item.text.contentHash
+            val ready = ArrayList<Int>()
+            val pending = extracted.filter { item ->
+                val current = raBuild.getBuild(bookKey, item.build.sourceKey, item.text.chapterIndex)
+                if (current?.analysisId != item.analysisId || current.contentHash != item.text.contentHash) {
+                    return@filter false
+                }
+                if (current.state == RaChapterState.IDENTITY_READY) ready.add(item.text.chapterIndex)
+                current == item.build && current.state == RaChapterState.EXTRACTED
             }
-            val existingReady = eligible.filter {
-                raBuild.analysisById(it.analysisId)?.status == RaAnalysisStatus.RESOLVED
-            }.map { it.text.chapterIndex }
-            val pending = eligible.filterNot { it.text.chapterIndex in existingReady }
-            val result = convergeLocked(bookKey, pending, priority, onChapterReady)
-            existingReady.forEach { onChapterReady?.invoke(it, true) }
-            return (existingReady + result.first).distinct() to result.second
+            val result = convergeLocked(bookKey, pending, priority, onChapterReady, control)
+            return result.copy(ready = (ready + result.ready).distinct().sorted())
         } finally {
             withContext(NonCancellable) { locked.asReversed().forEach { it.unlock() } }
         }
@@ -916,36 +960,48 @@ class BatchAnalysisRunner(
         bookKey: String,
         extracted: List<Extracted>,
         priority: AiPriority,
-        onChapterReady: (suspend (Int, Boolean) -> Unit)? = null,
-    ): Pair<List<Int>, List<Int>> {
-        if (extracted.isEmpty()) return emptyList<Int>() to emptyList()
+        onChapterReady: (suspend (Int, Boolean) -> Unit)?,
+        control: AiRequestControl?,
+    ): Convergence {
+        if (extracted.isEmpty()) return Convergence()
+        val scopes = extracted.mapNotNull { it.batchId }.toSet()
+        val sourceKey = extracted.first().build.sourceKey
+        val historicalAnchors = raBuild.readyBatchAnalyses(bookKey, sourceKey, scopes)
         val inputs = extracted.map { item ->
-            val analysis = raBuild.analysisById(item.analysisId)
             IdentityResolver.BatchChapterInput(
                 chapterIndex = item.text.chapterIndex,
                 chapterLabel = item.text.chapterLabel,
                 speakers = raBuild.localSpeakers(item.analysisId),
                 evidence = raBuild.evidence(item.analysisId),
                 contextBySpeaker = item.contextBySpeaker,
-                batchId = analysis?.batchId ?: item.batchId,
+                batchId = item.batchId,
             )
         }
+        val allInputs = inputs + historicalAnchors.filter { a ->
+            a.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION && inputs.none { it.chapterIndex == a.chapterIndex }
+        }
+            .map { a -> IdentityResolver.BatchChapterInput(
+                a.chapterIndex, "第${a.chapterIndex + 1}章", raBuild.localSpeakers(a.id),
+                raBuild.evidence(a.id), batchId = a.batchId,
+            ) }
         val resolutions = runCatching {
             resolver.resolveBatch(
                 bookKey,
-                inputs,
+                allInputs,
                 AiSchedulerContext(
                     kind = AiTaskKind.RESOLVE,
                     priority = priority,
                     bookKey = bookKey,
                     chapters = extracted.map { it.text.chapterIndex },
                     preemptible = !priority.foreground,
+                    control = control,
+                    sourceKey = sourceKey,
                 ),
             )
         }.getOrElse { e ->
             if (e is CancellationException) throw e
             AppLog.putAnalysis("【V4·后台·收敛】失败：${e.localizedMessage}，章节保留 EXTRACTED", e)
-            return emptyList<Int>() to extracted.map { it.text.chapterIndex }
+            return Convergence(extracted = extracted.map { it.text.chapterIndex })
         }
         val ready = ArrayList<Int>()
         // 先确保默认发声方案就绪，再发布 IDENTITY_READY，避免开播拿到“无方案”的章节。
@@ -976,62 +1032,34 @@ class BatchAnalysisRunner(
             val keyToCharacter = speakers.associate { it.localKey to it.characterId }
                 .filterValues { it != null }
                 .mapValues { it.value!! }
-            val observations = item.payload?.let { payload ->
-                ObservationAssembly.collectObservations(
-                    bookKey = bookKey,
-                    chapterIndex = item.text.chapterIndex,
-                    payload = payload,
-                    keyToCharacter = keyToCharacter,
-                    evidence = item.evidence,
-                )
-            } ?: (emptyList<io.legado.app.domain.model.readaloud.v4.RaAttributeObservation>() to
-                emptyList<io.legado.app.domain.model.readaloud.v4.RaRelationObservation>())
-            val (attributes, relations) = observations
-            val now = System.currentTimeMillis()
-            val analysis = raBuild.analysisById(item.analysisId)
-            val saved = if (analysis != null) {
-                val older = raBuild.getBuild(bookKey, analysis.sourceKey, item.text.chapterIndex)
-                runCatching {
-                    raBuild.saveAnalysisBundleWithObservations(
-                        analysis = analysis.copy(
-                            status = RaAnalysisStatus.RESOLVED,
-                            updatedAt = now,
-                        ),
-                        segments = segments,
-                        localSpeakers = speakers,
-                        localMentions = item.mentions,
-                        evidence = item.evidence,
-                        build = RaChapterBuild(
-                            bookKey = bookKey,
-                            sourceKey = analysis.sourceKey,
-                            chapterIndex = item.text.chapterIndex,
-                            contentHash = analysis.contentHash,
-                            state = RaChapterState.IDENTITY_READY,
-                            analysisId = item.analysisId,
-                            failReason = "",
-                            attempts = older?.attempts ?: 0,
-                            createdAt = older?.createdAt ?: now,
-                            updatedAt = item.text.loadedAt,
-                        ),
-                        attributes = attributes,
-                        relations = relations,
+            val (attributes, relations) = ObservationAssembly.collectObservations(
+                bookKey = bookKey, chapterIndex = item.text.chapterIndex, payload = item.payload,
+                keyToCharacter = keyToCharacter, evidence = item.evidence,
+            )
+            val analysis = raBuild.analysisById(item.analysisId) ?: return@forEach
+            currentCoroutineContext().ensureActive()
+            try {
+                withContext(NonCancellable) {
+                    val publication = raBuild.saveAnalysisBundle(
+                        analysis = analysis.copy(status = RaAnalysisStatus.RESOLVED, updatedAt = System.currentTimeMillis()),
+                        segments = segments, localSpeakers = speakers, localMentions = item.mentions, evidence = item.evidence,
+                        build = item.build.copy(state = RaChapterState.IDENTITY_READY, failReason = ""),
+                        attributes = attributes, relations = relations, expectedExtraction = item.build,
                     )
-                }.isSuccess
-            } else false
-            if (saved) {
-                val current = analysis?.let { raBuild.getBuild(bookKey, it.sourceKey, item.text.chapterIndex) }
-                if (current?.analysisId == item.analysisId && current.state == RaChapterState.IDENTITY_READY &&
-                    current.contentHash == item.text.contentHash
-                ) {
-                    ready.add(item.text.chapterIndex)
-                    onChapterReady?.invoke(item.text.chapterIndex, true)
+                    if (publication == RaBuildPublication.PUBLISHED) {
+                        ready.add(item.text.chapterIndex)
+                        onChapterReady?.invoke(item.text.chapterIndex, true)
+                    }
                 }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                AppLog.putAnalysis("【V4·${item.text.chapterLabel}·收敛】提交失败：${error.localizedMessage}", error)
             }
         }
         characters.forEach { character ->
             runCatching { raCharacters.recomputeAppearance(character.id) }
         }
         AppLog.putAnalysis("【V4·后台·收敛】完成：${ready.size} 章 → IDENTITY_READY")
-        return ready to extracted.map { it.text.chapterIndex }.filterNot { it in ready }
+        return Convergence(ready, extracted.map { it.text.chapterIndex }.filterNot { it in ready })
     }
 }

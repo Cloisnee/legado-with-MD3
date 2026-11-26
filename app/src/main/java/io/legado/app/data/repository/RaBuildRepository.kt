@@ -15,6 +15,7 @@ import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
 import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
@@ -32,6 +33,7 @@ import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
+import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -53,9 +55,23 @@ class RaBuildRepository(
             dao.builds(bookKey, sourceKey).map(RaChapterBuildEntity::toDomain)
         }
 
-    override suspend fun upsertBuild(build: RaChapterBuild) = withContext(Dispatchers.IO) {
-        dao.upsertBuild(build.toEntity())
-    }
+    override suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild): Boolean =
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                val current = dao.getBuild(next.bookKey, next.sourceKey, next.chapterIndex)
+                if (current != expected?.toEntity() || (current != null && next.updatedAt < current.updatedAt)) {
+                    return@withTransaction false
+                }
+                dao.upsertBuild(next.toEntity())
+                true
+            }
+        }
+
+    override suspend fun readyBatchAnalyses(bookKey: String, sourceKey: String, batchIds: Set<String>): List<RaAnalysis> =
+        withContext(Dispatchers.IO) {
+            if (batchIds.isEmpty()) emptyList()
+            else dao.readyBatchAnalyses(bookKey, sourceKey, batchIds).map(RaChapterAnalysisEntity::toDomain)
+        }
 
     override suspend fun getAnalysis(
         bookKey: String,
@@ -64,13 +80,14 @@ class RaBuildRepository(
         contentHash: String,
         resolverVersion: String,
     ): RaAnalysis? = withContext(Dispatchers.IO) {
-        val build = dao.getBuild(bookKey, sourceKey, chapterIndex)
-        val current = build?.analysisId?.let { dao.getAnalysisById(it) }
-        when {
-            current != null && current.contentHash == contentHash &&
-                current.resolverVersion == resolverVersion -> current.toDomain()
-            build != null && build.contentHash != contentHash -> null
-            else -> dao.getAnalysis(bookKey, sourceKey, chapterIndex, contentHash, resolverVersion)?.toDomain()
+        database.withTransaction {
+            val build = dao.getBuild(bookKey, sourceKey, chapterIndex)
+                ?: return@withTransaction null
+            if (build.contentHash != contentHash || build.state !in publishedStates) return@withTransaction null
+            build.analysisId?.let { dao.getAnalysisById(it) }?.takeIf {
+                it.contentHash == contentHash && it.resolverVersion == resolverVersion &&
+                    (build.state != RaChapterState.FAILED.storageValue || it.status == RaAnalysisStatus.FAILED.storageValue)
+            }?.toDomain()
         }
     }
 
@@ -101,60 +118,68 @@ class RaBuildRepository(
         localSpeakers: List<RaLocalSpeaker>,
         localMentions: List<RaLocalMention>,
         evidence: List<RaEvidence>,
-        build: RaChapterBuild?,
-    ) = saveBundleInternal(
-        analysis, segments, localSpeakers, localMentions, evidence, build,
-        emptyList(), emptyList(),
-    )
-
-    override suspend fun saveAnalysisBundleWithObservations(
-        analysis: RaAnalysis,
-        segments: List<RaSegment>,
-        localSpeakers: List<RaLocalSpeaker>,
-        localMentions: List<RaLocalMention>,
-        evidence: List<RaEvidence>,
-        build: RaChapterBuild?,
+        build: RaChapterBuild,
         attributes: List<RaAttributeObservation>,
         relations: List<RaRelationObservation>,
-    ) = saveBundleInternal(
-        analysis, segments, localSpeakers, localMentions, evidence, build,
-        attributes, relations,
-    )
-
-    private suspend fun saveBundleInternal(
-        analysis: RaAnalysis,
-        segments: List<RaSegment>,
-        localSpeakers: List<RaLocalSpeaker>,
-        localMentions: List<RaLocalMention>,
-        evidence: List<RaEvidence>,
-        build: RaChapterBuild?,
-        attributes: List<RaAttributeObservation>,
-        relations: List<RaRelationObservation>,
-    ) = withContext(Dispatchers.IO) {
+        expectedExtraction: RaChapterBuild?,
+    ): RaBuildPublication = withContext(Dispatchers.IO) {
         database.withTransaction {
-            // 同 analysisId 的阶段2迟到重复包不得把已收敛的段/人重新清空。
+            val current = dao.getBuild(build.bookKey, build.sourceKey, build.chapterIndex)
             val persisted = dao.getAnalysisById(analysis.id)
-            if (persisted?.status == "RESOLVED" && analysis.status == RaAnalysisStatus.EXTRACTED) {
-                return@withTransaction
+            val publish = if (expectedExtraction != null) {
+                current == expectedExtraction.toEntity() && current.state == RaChapterState.EXTRACTED.storageValue &&
+                    current.analysisId == analysis.id && persisted?.status == RaAnalysisStatus.EXTRACTED.storageValue
+            } else {
+                val newer = current == null || build.updatedAt > current.updatedAt ||
+                    (build.updatedAt == current.updatedAt && current.state !in publishedStates)
+                val wouldReplaceReady = current?.state == RaChapterState.IDENTITY_READY.storageValue &&
+                    current.contentHash == build.contentHash && build.state != RaChapterState.IDENTITY_READY &&
+                    current.analysisId?.let { dao.getAnalysisById(it) }?.resolverVersion == analysis.resolverVersion
+                newer && !wouldReplaceReady
             }
+            // 确定性 ID 可能复用。晚到结果只在历史 ID 尚不存在时入库，保护同 ID 的新段及人物外键。
+            if (!publish && persisted != null) return@withTransaction RaBuildPublication.IGNORED
+            val publishedSegments = if (publish && analysis.status != RaAnalysisStatus.EXTRACTED) {
+                val overrides = dao.overrides(analysis.bookKey, analysis.chapterIndex)
+                    .associateBy { it.paragraphIndex to it.textHash }
+                if (overrides.isEmpty()) segments else segments.map { segment ->
+                    overrides[segment.paragraphIndex to MD5Utils.md5Encode16(segment.text)]
+                        ?.let { segment.applyOverride(it) } ?: segment
+                }
+            } else segments
             dao.saveAnalysisBundle(
                 analysis = analysis.toEntity(),
-                segments = segments.map(RaSegment::toEntity),
+                segments = publishedSegments.map(RaSegment::toEntity),
                 localSpeakers = localSpeakers.map(RaLocalSpeaker::toEntity),
                 localMentions = localMentions.map(RaLocalMention::toEntity),
                 evidence = evidence.map(RaEvidence::toEntity),
             )
-            build?.let { incoming ->
-                // 旧任务晚归时不得覆盖新正文的有效指针：以任务读取正文的时间做版本比较。
-                val current = dao.getBuild(incoming.bookKey, incoming.sourceKey, incoming.chapterIndex)
-                val canWrite = current == null ||
-                    incoming.updatedAt >= current.updatedAt
-                if (canWrite) dao.upsertBuild(incoming.toEntity())
-            }
+            if (!publish) return@withTransaction RaBuildPublication.HISTORY_ONLY
+            dao.upsertBuild(build.toEntity())
             attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
             relations.forEach { characterDao.insertRelation(it.toEntity()) }
-            Unit
+            RaBuildPublication.PUBLISHED
         }
+    }
+
+    private val publishedStates = setOf(RaChapterState.EXTRACTED, RaChapterState.IDENTITY_READY, RaChapterState.FAILED)
+        .mapTo(HashSet()) { it.storageValue }
+
+    private fun RaSegment.applyOverride(override: RaSegmentOverrideEntity): RaSegment = when {
+        override.narrator -> copy(
+            roleType = SpeechRoleType.Narrator,
+            characterId = null,
+            localSpeakerId = null,
+            surfaceName = "",
+            seq = 0,
+            source = SpeechResolutionSource.User,
+        )
+        override.characterId != null -> copy(
+            roleType = if (roleType == SpeechRoleType.Narrator) SpeechRoleType.Character else roleType,
+            characterId = override.characterId,
+            source = SpeechResolutionSource.User,
+        )
+        else -> this
     }
 
     override suspend fun segments(analysisId: String): List<RaSegment> = withContext(Dispatchers.IO) {
@@ -226,18 +251,6 @@ class RaBuildRepository(
         dao.updateLocalSpeaker(localSpeakerId, characterId, resolution, System.currentTimeMillis())
     }
 
-    override suspend fun updateSegmentSpeaker(
-        segmentId: String,
-        characterId: String?,
-        surfaceName: String,
-    ) = withContext(Dispatchers.IO) {
-        dao.updateSegmentSpeaker(segmentId, characterId, surfaceName, System.currentTimeMillis())
-    }
-
-    override suspend fun markSegmentNarrator(segmentId: String) = withContext(Dispatchers.IO) {
-        dao.markSegmentNarrator(segmentId, System.currentTimeMillis())
-    }
-
     override suspend fun saveOverride(
         bookKey: String,
         chapterIndex: Int,
@@ -246,16 +259,22 @@ class RaBuildRepository(
         characterId: String?,
         narrator: Boolean,
     ) = withContext(Dispatchers.IO) {
-        dao.upsertOverride(
-            RaSegmentOverrideEntity(
+        database.withTransaction {
+            val override = RaSegmentOverrideEntity(
                 bookKey = bookKey,
                 chapterIndex = chapterIndex,
                 paragraphIndex = paragraphIndex,
                 textHash = textHash,
                 characterId = characterId,
                 narrator = narrator,
-            ),
-        )
+                updatedAt = System.currentTimeMillis(),
+            )
+            dao.upsertOverride(override)
+            val matches = dao.currentSegmentsForOverride(bookKey, chapterIndex, paragraphIndex)
+                .filter { MD5Utils.md5Encode16(it.text) == textHash }
+                .map { it.toDomain().applyOverride(override).copy(updatedAt = override.updatedAt).toEntity() }
+            if (matches.isNotEmpty()) dao.upsertSegments(matches)
+        }
     }
 
     override suspend fun deleteChapters(

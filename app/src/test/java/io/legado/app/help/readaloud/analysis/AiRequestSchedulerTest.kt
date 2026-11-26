@@ -243,6 +243,58 @@ class AiRequestSchedulerTest {
     }
 
     @Test
+    fun `same provider foreground resolve releases only the joined protected stream permit`() = runBlocking {
+        val scheduler = AiRequestScheduler()
+        val control = AiRequestControl()
+        val reference = ref(1)
+        val running = CompletableDeferred<Unit>()
+        val inNetwork = AtomicInteger()
+        val background = launch {
+            scheduler.withPermit(reference, ctx(AiPriority.P3_BACKGROUND, true).copy(control = control)) {
+                inNetwork.incrementAndGet()
+                running.complete(Unit)
+                try { awaitCancellation() } finally { inNetwork.decrementAndGet() }
+            }
+        }
+        try {
+            withTimeout(1_000) { running.await() }
+            control.foreground()
+            assertTrue(background.isActive)
+            withTimeout(1_000) {
+                scheduler.withPermit(reference, ctx(AiPriority.P0_CURRENT).copy(kind = AiTaskKind.RESOLVE)) {
+                    assertEquals(0, inNetwork.get())
+                }
+                background.join()
+            }
+            assertTrue(background.isCancelled)
+        } finally {
+            background.cancel()
+        }
+    }
+
+    @Test
+    fun `foreground joining a running nonincremental chapter cancels it`() = runBlocking {
+        val scheduler = AiRequestScheduler()
+        val control = AiRequestControl(incremental = false)
+        val started = CompletableDeferred<Unit>()
+        val holder = launch {
+            scheduler.withPermit(ref(1), ctx(AiPriority.P3_BACKGROUND, true).copy(control = control)) {
+                started.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        try {
+            withTimeout(1_000) { started.await() }
+            control.foreground()
+            withTimeout(1_000) { holder.join() }
+            assertTrue(holder.isCancelled)
+            withTimeout(1_000) { scheduler.withPermit(ref(1), ctx(AiPriority.P0_CURRENT)) { } }
+        } finally {
+            holder.cancel()
+        }
+    }
+
+    @Test
     fun `cancelled owner returns permit when lane lock is contended`() = runBlocking {
         val blockNext = java.util.concurrent.atomic.AtomicBoolean(false)
         val locked = java.util.concurrent.CountDownLatch(1)

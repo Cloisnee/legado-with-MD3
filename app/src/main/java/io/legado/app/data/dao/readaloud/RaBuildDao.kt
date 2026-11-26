@@ -126,6 +126,17 @@ interface RaBuildDao {
     )
     suspend fun analyses(bookKey: String, sourceKey: String): List<RaChapterAnalysisEntity>
 
+    @Query(
+        "select a.* from ra_chapter_analysis a inner join ra_chapter_build b " +
+            "on b.bookKey = a.bookKey and b.sourceKey = a.sourceKey and b.chapterIndex = a.chapterIndex " +
+            "and b.analysisId = a.id and b.contentHash = a.contentHash " +
+            "where a.bookKey = :bookKey and a.sourceKey = :sourceKey and a.batchId in (:batchIds) " +
+            "and b.state = 'IDENTITY_READY' and a.status = 'RESOLVED' order by a.chapterIndex"
+    )
+    suspend fun readyBatchAnalyses(
+        bookKey: String, sourceKey: String, batchIds: Set<String>,
+    ): List<RaChapterAnalysisEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAnalysis(entity: RaChapterAnalysisEntity)
 
@@ -170,11 +181,14 @@ interface RaBuildDao {
     @Query("delete from ra_segment where analysisId = :analysisId")
     suspend fun deleteSegments(analysisId: String)
 
-    @Query("update ra_segment set characterId = :characterId, surfaceName = :surfaceName, source = 'user', updatedAt = :updatedAt where id = :id")
-    suspend fun updateSegmentSpeaker(id: String, characterId: String?, surfaceName: String, updatedAt: Long)
-
-    @Query("update ra_segment set roleType = 'narrator', characterId = null, surfaceName = '', source = 'user', updatedAt = :updatedAt where id = :id")
-    suspend fun markSegmentNarrator(id: String, updatedAt: Long)
+    @Query(
+        "select distinct s.* from ra_segment s inner join ra_chapter_build b " +
+            "on b.bookKey = s.bookKey and b.chapterIndex = s.chapterIndex and b.analysisId = s.analysisId " +
+            "inner join ra_chapter_analysis a on a.id = s.analysisId " +
+            "where s.bookKey = :bookKey and s.chapterIndex = :chapterIndex and s.paragraphIndex = :paragraphIndex " +
+            "and a.status = 'RESOLVED'"
+    )
+    suspend fun currentSegmentsForOverride(bookKey: String, chapterIndex: Int, paragraphIndex: Int): List<RaSegmentEntity>
 
     @Query(
         "update ra_segment set characterId = :toCharacterId, updatedAt = :updatedAt " +

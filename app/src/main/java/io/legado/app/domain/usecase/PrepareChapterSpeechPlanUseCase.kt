@@ -79,6 +79,11 @@ class PrepareChapterSpeechPlanUseCase(
             }
         }
         if (analysis != null && analysis.status == RaAnalysisStatus.RESOLVED) {
+            runCatching { pipeline.ensureLegacyForReady(bookUrl, bookName, analysis, paragraphs) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    AppLog.putAnalysis("【V4·$chLabel·前台补做】${error.localizedMessage}", error)
+                }
             val segments = runCatching { raBuild.segments(analysis.id) }.getOrDefault(emptyList())
             if (segments.isNotEmpty()) {
                 val plan = runCatching { raDirection.plan(analysis.id, MODULE) }.getOrNull()
