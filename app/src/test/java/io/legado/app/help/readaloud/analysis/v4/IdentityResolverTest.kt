@@ -536,4 +536,36 @@ class IdentityResolverTest {
         assertEquals(setOf("弟子A【第3章】", "弟子A【第6章】"), names)
     }
 
+    @Test
+    fun `identity published between fast lookup and recall links before entering unknown arbitration`() = runBlocking {
+        val bookKey = "bk_publish_during_recall"
+        var aliasLookups = 0
+        var publishedId: String? = null
+        val gateway = object : io.legado.app.domain.gateway.RaCharacterGateway by characters {
+            override suspend fun charactersByAliases(
+                bookKey: String,
+                normalizedNames: Collection<String>,
+            ): List<io.legado.app.domain.model.readaloud.v4.RaCharacterAlias> {
+                aliasLookups++
+                if (aliasLookups == 2) {
+                    // 第1次快链查询为空，第2次（召回）前模拟另一章刚完成原子发布。
+                    publishedId = characters.ensureCharacter(
+                        bookKey, "沈孤鸿", "核心", "男", "男青年", 0,
+                        emptyList(), "ACTIVE", "ai", "default",
+                    ).id
+                }
+                return characters.charactersByAliases(bookKey, normalizedNames)
+            }
+        }
+        val localResolver = IdentityResolver(
+            gateway, WordLibraryRepository(ApplicationProvider.getApplicationContext<Application>()),
+        )
+        val result = localResolver.resolve(bookKey, 1,
+            speaker("published-second", "L1", "沈孤鸿", emptyList(), 1))
+        assertEquals(publishedId, result.characterId)
+        assertEquals(RaResolution.RESOLVED, result.resolution)
+        assertEquals(1, characters.charactersRaw(bookKey).size)
+        assertTrue(characters.provisionalCharacters(bookKey).isEmpty())
+    }
+
 }

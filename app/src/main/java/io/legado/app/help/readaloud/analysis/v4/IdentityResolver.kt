@@ -220,6 +220,27 @@ class IdentityResolver(
                 evidence = verifiedMain,
                 exclude = linkedThisChapter + blockedByContradiction,
             )
+            // 首次快链与候选召回之间，另一章可能刚发布了同一人物。
+            // 只复核“原来无精确命中”的窄时序，沿用全部快链/反证/同章占用条件。
+            if (exactTargets.isEmpty() && candidates.isNotEmpty()) {
+                val published = bookLock(bookKey).withLock {
+                    exactTargets(bookKey, speaker, contradictions).singleOrNull()?.takeIf { target ->
+                        isAllowed(target.id) && target.id !in blockedByContradiction &&
+                            (speaker.characterId == null || !isCannot(speaker.characterId, target.id))
+                    }
+                }
+                if (published != null) {
+                    resolutions[speaker.localKey] = link(
+                        bookKey = bookKey,
+                        chapterIndex = currentChapter,
+                        speaker = speaker,
+                        target = published,
+                        candidateIds = listOf(published.id),
+                    )
+                    linkedThisChapter.add(published.id)
+                    return@forEach
+                }
+            }
             val sameNameCount = candidates.count {
                 RaNameUtils.normalize(it.character.displayName) == RaNameUtils.normalize(speaker.primaryName)
             }
