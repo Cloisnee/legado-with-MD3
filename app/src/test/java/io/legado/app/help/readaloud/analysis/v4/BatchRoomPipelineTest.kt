@@ -228,7 +228,10 @@ class BatchRoomPipelineTest {
                     })
                 }
                 if (path >= 2) {
-                    assertSame(stop, outcome.exceptionOrNull())
+                    // 协程恢复堆栈时可能复制异常实例。
+                    val interruption = outcome.exceptionOrNull()
+                    assertEquals(stop.javaClass, interruption?.javaClass)
+                    assertEquals(stop.message, interruption?.message)
                     val order = if (path == 2) listOf(first, second) else listOf(second, first)
                     for (input in order) {
                         assertEquals(RaChapterState.EXTRACTED, f.builds.getBuild(book, "src", input.chapterIndex)?.state)
