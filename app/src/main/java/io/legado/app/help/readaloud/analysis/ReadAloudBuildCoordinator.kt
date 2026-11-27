@@ -8,6 +8,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.repository.sourceKeyOf
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.SpeechIdentity
@@ -99,6 +100,7 @@ class ReadAloudBuildCoordinator(
         val bookKey: String,
         val sourceKey: String,
         var window: Window,
+        val buildGeneration: Long,
         var budgetLeft: Int,
         var paused: Boolean,
     ) {
@@ -127,6 +129,7 @@ class ReadAloudBuildCoordinator(
         val priority: AiPriority,
         val force: Boolean,
         val generation: Long,
+        val buildGeneration: Long,
         val sessionId: Long? = null,
     ) {
         val bookUrl: String get() = book.bookUrl
@@ -140,6 +143,7 @@ class ReadAloudBuildCoordinator(
         var anchor: Int,
         var chapter: Int,
         var paused: Boolean,
+        val buildGeneration: Long,
     ) {
         var job: Job? = null
     }
@@ -159,7 +163,8 @@ class ReadAloudBuildCoordinator(
             pendingStart = null
             val existing = session
             if (existing != null && !existing.stopping && existing.owner === owner &&
-                existing.book.bookUrl == snapshot.bookUrl && existing.sourceKey == sourceKey
+                existing.book.bookUrl == snapshot.bookUrl && existing.sourceKey == sourceKey &&
+                raBuild.canUseGeneration(existing.bookKey, chapterIndex, existing.buildGeneration)
             ) {
                 existing.paused = paused
                 moveWindow(existing, chapterIndex)
@@ -167,7 +172,7 @@ class ReadAloudBuildCoordinator(
                 setStatus(BackgroundState.RUNNING, existing)
                 return
             }
-            val intent = StartIntent(request, owner, snapshot, sourceKey, chapterIndex, chapterIndex, paused)
+            val intent = StartIntent(request, owner, snapshot, sourceKey, chapterIndex, chapterIndex, paused, raBuild.generation())
             pendingStart = intent
             intent.job = scope.launch { beginSession(intent) }
         }
@@ -182,6 +187,7 @@ class ReadAloudBuildCoordinator(
         synchronized(lock) {
             if (pendingStart !== intent) return
             pendingStart = null
+            if (!raBuild.canUseGeneration(bookKey, intent.chapter, intent.buildGeneration)) return
             val old = session
             old?.background?.cancel()
             old?.watcher?.cancel()
@@ -192,7 +198,7 @@ class ReadAloudBuildCoordinator(
             val s = Session(
                 intent.id, intent.owner, intent.book, bookKey, intent.sourceKey,
                 Window(intent.anchor, intent.chapter..intent.chapter + preloadCount()),
-                cfg.bgSessionBudget, intent.paused,
+                intent.buildGeneration, cfg.bgSessionBudget, intent.paused,
             )
             session = s
             startForegroundWorker(s)
@@ -266,17 +272,19 @@ class ReadAloudBuildCoordinator(
     }
 
     fun reanalyze(bookUrl: String, chapterIndex: Int) {
+        val buildGeneration = raBuild.generation()
         scope.launch {
             val book = bookDao.getBook(bookUrl) ?: return@launch
             val sourceKey = sourceKeyOf(book)
             val bookKey = bookIdentity.keyOf(bookUrl, sourceKey)
             val queued = synchronized(lock) {
-                val s = session?.takeIf { !it.stopping && it.book.bookUrl == bookUrl && it.sourceKey == sourceKey }
+                val s = session?.takeIf { !it.stopping && it.book.bookUrl == bookUrl && it.sourceKey == sourceKey && it.bookKey == bookKey }
                 s?.foreground?.trySend(ForegroundTask(book, bookKey, sourceKey, chapterIndex,
-                    AiPriority.P0_CURRENT, force = true, generation = s.window.generation, sessionId = s.id))?.isSuccess == true
+                    AiPriority.P0_CURRENT, force = true, generation = s.window.generation,
+                    buildGeneration = buildGeneration, sessionId = s.id))?.isSuccess == true
             }
             if (!queued) processForeground(ForegroundTask(book, bookKey, sourceKey, chapterIndex,
-                AiPriority.P0_CURRENT, force = true, generation = -1))
+                AiPriority.P0_CURRENT, force = true, generation = -1, buildGeneration = buildGeneration))
         }
     }
 
@@ -316,16 +324,17 @@ class ReadAloudBuildCoordinator(
                 else -> AiPriority.P2_PRELOAD
             }
             s.foreground.trySend(ForegroundTask(s.book, s.bookKey, s.sourceKey, chapter, priority,
-                force = false, generation = window.generation, sessionId = s.id))
+                force = false, generation = window.generation, buildGeneration = s.buildGeneration, sessionId = s.id))
         }
     }
 
     private suspend fun processForeground(task: ForegroundTask) {
         val book = task.book
+        if (!raBuild.canUseGeneration(task.bookKey, task.chapterIndex, task.buildGeneration)) return
         val beforeLoad = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
         val text = textProvider.load(book, task.chapterIndex, allowDownload = true)
         if (text == null) {
-            markNoContent(task.bookUrl, task.bookKey, task.sourceKey, task.chapterIndex, beforeLoad)
+            markNoContent(task.bookUrl, task.bookKey, task.sourceKey, task.chapterIndex, beforeLoad, task.buildGeneration)
             return
         }
         val key = ChapterJobRegistry.Key(
@@ -345,7 +354,9 @@ class ReadAloudBuildCoordinator(
         text: ChapterTextProvider.Text,
         key: ChapterJobRegistry.Key,
     ) {
+        val input = RaBuildInput(task.buildGeneration, text.matchesContent)
         repeat(3) { attempt ->
+            if (!raBuild.canUseGeneration(task.bookKey, task.chapterIndex, input.generation) || !input.matchesContent()) return
             if (!task.force) {
                 val build = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
                 val analysis = build?.analysisId?.let { raBuild.analysisById(it) }
@@ -356,14 +367,14 @@ class ReadAloudBuildCoordinator(
                     }
                     if (build.state == RaChapterState.EXTRACTED) {
                         val local = batch.convergeExisting(task.bookKey, task.sourceKey,
-                            listOf(text.toBatchText(task.chapterIndex)), task.priority)
+                            listOf(text.toBatchText(input)), task.priority)
                         if (task.chapterIndex in local.ready) {
                             emitReady(task, message = "已就绪", usedAi = true)
                             return
                         }
                     }
                 }
-                if (attempt == 0 && tryReuseFromOtherSource(task.bookKey, task.sourceKey, text, task.chapterIndex)) {
+                if (attempt == 0 && tryReuseFromOtherSource(task.bookKey, task.sourceKey, text, input)) {
                     emitReady(task, message = "换源复用", usedAi = false)
                     return
                 }
@@ -394,13 +405,14 @@ class ReadAloudBuildCoordinator(
                                 sourceKey = task.sourceKey,
                             ),
                             taskStartedAt = text.loadedAt,
+                            input = input,
                         )
-                        val ok = result != null && result.analysis.status != RaAnalysisStatus.FAILED
-                        acquire.ticket.complete(
-                            if (ok) ChapterJobRegistry.Outcome.SUCCESS
-                            else ChapterJobRegistry.Outcome.FAILED,
-                        )
-                        if (ok) {
+                        acquire.ticket.complete(when (result?.analysis?.status) {
+                            null -> ChapterJobRegistry.Outcome.CANCELLED
+                            RaAnalysisStatus.FAILED -> ChapterJobRegistry.Outcome.FAILED
+                            else -> ChapterJobRegistry.Outcome.SUCCESS
+                        })
+                        if (result != null && result.analysis.status != RaAnalysisStatus.FAILED) {
                             emitReady(
                                 task,
                                 message = result.analysis.status.storageValue,
@@ -428,8 +440,9 @@ class ReadAloudBuildCoordinator(
         bookKey: String,
         sourceKey: String,
         text: ChapterTextProvider.Text,
-        chapterIndex: Int,
+        input: RaBuildInput,
     ): Boolean = runCatching {
+        val chapterIndex = text.chapterIndex
         val old = raBuild.analysisByContentHash(
             bookKey = bookKey,
             chapterIndex = chapterIndex,
@@ -526,6 +539,7 @@ class ReadAloudBuildCoordinator(
                 createdAt = older?.createdAt ?: now,
                 updatedAt = text.loadedAt,
             ),
+            input = input,
         )
         if (published != RaBuildPublication.PUBLISHED) return@runCatching false
         AppLog.putAnalysis("【V4·${labelFor(text, chapterIndex)}·换源复用】同正文分析来自 ${old.sourceKey}")
@@ -541,6 +555,7 @@ class ReadAloudBuildCoordinator(
         sourceKey: String,
         chapterIndex: Int,
         expected: RaChapterBuild?,
+        buildGeneration: Long,
     ) {
         val chapter = bookChapterDao.getChapter(bookUrl, chapterIndex) ?: return
         val existing = expected
@@ -560,22 +575,17 @@ class ReadAloudBuildCoordinator(
                 createdAt = existing?.createdAt ?: now,
                 updatedAt = now,
             ),
+            input = RaBuildInput(buildGeneration),
         )
     }
 
     private fun emitReady(task: ForegroundTask, message: String, usedAi: Boolean) {
         synchronized(lock) {
             if (task.sessionId != null && session?.id != task.sessionId) return
+            if (!raBuild.canUseGeneration(task.bookKey, task.chapterIndex, task.buildGeneration)) return
             session?.wake?.trySend(Unit)
+            _events.tryEmit(ReadyEvent(task.bookUrl, task.chapterIndex, usedAi, message))
         }
-        _events.tryEmit(
-            ReadyEvent(
-                bookUrl = task.bookUrl,
-                chapterIndex = task.chapterIndex,
-                usedAi = usedAi,
-                message = message,
-            ),
-        )
     }
 
     private fun label(task: ForegroundTask): String =
@@ -592,7 +602,7 @@ class ReadAloudBuildCoordinator(
                     raBuild.transitionBuild(build, build.copy(
                         state = RaChapterState.CACHED,
                         updatedAt = System.currentTimeMillis(),
-                    ))
+                    ), input = RaBuildInput(s.buildGeneration))
                 } else if (build?.state == RaChapterState.IDENTITY_READY) {
                     s.changedCache[saved.chapterIndex] = Any()
                 }
@@ -637,8 +647,8 @@ class ReadAloudBuildCoordinator(
                     val texts = extracted.mapNotNull { chapter ->
                         val beforeLoad = raBuild.getBuild(s.bookKey, s.sourceKey, chapter)
                         val text = textProvider.load(s.book, chapter, allowDownload = false)
-                        if (text == null) markNoContent(s.book.bookUrl, s.bookKey, s.sourceKey, chapter, beforeLoad)
-                        text?.toBatchText(chapter)
+                        if (text == null) markNoContent(s.book.bookUrl, s.bookKey, s.sourceKey, chapter, beforeLoad, s.buildGeneration)
+                        text?.toBatchText(RaBuildInput(s.buildGeneration, text.matchesContent))
                     }
                     if (texts.isEmpty()) continue
                     if (!canStartBackground(s, window)) continue
@@ -684,13 +694,13 @@ class ReadAloudBuildCoordinator(
                     if (s.changedCache[chapter] !== change || cachedModifiedAt(s.book, chapterInfo) != modifiedAt) {
                         reselect = true
                     } else if (text == null) {
-                        markNoContent(s.book.bookUrl, s.bookKey, s.sourceKey, chapter, beforeLoad)
+                        markNoContent(s.book.bookUrl, s.bookKey, s.sourceKey, chapter, beforeLoad, s.buildGeneration)
                         reselect = true
                     } else if (reuseCachedIdentity(s, text, modifiedAt)) {
                         if (change != null) s.changedCache.remove(chapter, change)
                         reselect = true
                     } else {
-                        texts.add(text.toBatchText(chapter))
+                        texts.add(text.toBatchText(RaBuildInput(s.buildGeneration, text.matchesContent)))
                     }
                 }
                 // 已就绪章和正文缺口都断开批次，按最新状态重新选连续章。
@@ -864,7 +874,7 @@ class ReadAloudBuildCoordinator(
                 attempts = (existing?.attempts ?: 0) + 1,
                 createdAt = existing?.createdAt ?: text.loadedAt,
                 updatedAt = text.loadedAt,
-            )).also { if (it) charge(s) }
+            ), input = text.input).also { if (it) charge(s) }
         }
     }
 
@@ -874,6 +884,8 @@ class ReadAloudBuildCoordinator(
         window: Window,
         text: BatchAnalysisRunner.ChapterText,
     ): Boolean? {
+        val input = requireNotNull(text.input)
+        if (!raBuild.canUseGeneration(s.bookKey, text.chapterIndex, input.generation) || !input.matchesContent()) return null
         val key = ChapterJobRegistry.Key(
             bookKey = s.bookKey,
             sourceKey = s.sourceKey,
@@ -906,6 +918,7 @@ class ReadAloudBuildCoordinator(
                         taskStartedAt = text.loadedAt,
                         skipLegacyAudio = true,
                         onPublished = { status -> published = status; charge(s) },
+                        input = input,
                     )
                 }.await()
             }
@@ -958,7 +971,7 @@ class ReadAloudBuildCoordinator(
         val ready = if (current.state == RaChapterState.IDENTITY_READY) current else {
             // 早期会话可能只根据缓存时间写过 STALE；正文未变时恢复同一指针。
             current.copy(state = RaChapterState.IDENTITY_READY, failReason = "").also {
-                if (!raBuild.transitionBuild(current, it)) return true // 指针已变，交回选批重读。
+                if (!raBuild.transitionBuild(current, it, input = RaBuildInput(s.buildGeneration, text.matchesContent))) return true // 指针已变，交回选批重读。
             }
         }
         s.verifiedCache[text.chapterIndex] = VerifiedCache(ready, modifiedAt)
@@ -970,6 +983,11 @@ class ReadAloudBuildCoordinator(
         val builds = raBuild.builds(s.bookKey, s.sourceKey).associateBy { it.chapterIndex }
         return chapters.associate { chapter ->
             val build = builds[chapter.index]
+            if (!raBuild.canUseGeneration(s.bookKey, chapter.index, s.buildGeneration)) {
+                // 本轮会话不能重新领取已删除的章。用户重析、重开可用新的代次。
+                val ready = build?.state == RaChapterState.IDENTITY_READY
+                return@associate chapter.index to if (ready) RaChapterState.IDENTITY_READY else RaChapterState.NO_CONTENT
+            }
             val hasContent = s.book.isLocal || BookHelp.hasContent(s.book, chapter)
             val fileUpdated = cachedModifiedAt(s.book, chapter)
             val state = when {
@@ -1024,7 +1042,7 @@ class ReadAloudBuildCoordinator(
         }
     }
 
-    private fun ChapterTextProvider.Text.toBatchText(chapterIndex: Int): BatchAnalysisRunner.ChapterText =
+    private fun ChapterTextProvider.Text.toBatchText(input: RaBuildInput): BatchAnalysisRunner.ChapterText =
         BatchAnalysisRunner.ChapterText(
             chapterIndex = chapterIndex,
             chapterLabel = ChapterLabels.of(title, chapterIndex),
@@ -1033,5 +1051,6 @@ class ReadAloudBuildCoordinator(
             nextText = nextText,
             contentHash = contentHash,
             loadedAt = loadedAt,
+            input = input,
         )
 }

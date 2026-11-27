@@ -880,7 +880,7 @@ object BookHelp {
     /**
      * 读取章节内容
      */
-    fun getContent(book: Book, bookChapter: BookChapter): String? {
+    fun getContent(book: Book, bookChapter: BookChapter, cacheEpub: Boolean = true): String? {
         val file = cachedChapterContentFile(book, bookChapter)
         if (file.exists()) {
             val string = file.readText()
@@ -891,7 +891,7 @@ object BookHelp {
         }
         if (book.isLocal) {
             val string = LocalBook.getContent(book, bookChapter)
-            if (string != null && book.isEpub) {
+            if (string != null && book.isEpub && cacheEpub) {
                 saveText(book, bookChapter, string)
             }
             return string

@@ -2,6 +2,7 @@ package io.legado.app.help.readaloud.analysis
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
@@ -42,6 +43,9 @@ import org.robolectric.annotation.Config
 import splitties.init.injectAsAppCtx
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
@@ -103,6 +107,134 @@ class ReadAloudBuildCoordinatorRoomTest {
                 println("R3-5 event=$event changed=$change requests=${f.calls.filter { it.second > 1 }} budget=${state.budgetLeft}")
             } finally { coordinator.stopSession() }
         }
+    }
+
+    @Test fun `changed body during stage2 leaves the last budget for the new hash`() = runBlocking {
+        val oldReceived = CompletableDeferred<Unit>()
+        val newReceived = CompletableDeferred<Unit>()
+        val replyOld = CountDownLatch(1)
+        val replyNew = CountDownLatch(1)
+        val requests = CopyOnWriteArrayList<String>()
+        fixture("content-in-flight", onStage2 = { exchange, body ->
+            val name = if ("一切顺利" in body) "李四" else {
+                check("来了" in body)
+                "张三"
+            }
+            requests.add(name)
+            if (name == "张三") {
+                oldReceived.complete(Unit)
+                check(replyOld.await(75, TimeUnit.SECONDS))
+            } else {
+                newReceived.complete(Unit)
+                check(replyNew.await(75, TimeUnit.SECONDS))
+            }
+            exchange.reply(batchResponse(batchRow(2, name)))
+        }) { f ->
+            val coordinator = f.coordinator()
+            try {
+                val old = requireNotNull(f.texts.load(f.book, 1, false))
+                val mtime = f.file(1).lastModified()
+                coordinator.startSession(f.book, 0)
+                withTimeout(25_000) { oldReceived.await() }
+                assertNull(f.builds.getBuild(f.bookKey, f.sourceKey, 1))
+                f.save(1, "李四说：“一切顺利。”")
+                assertTrue(f.file(1).setLastModified(mtime))
+                val fresh = requireNotNull(f.texts.load(f.book, 1, false))
+                assertNotEquals(old.contentHash, fresh.contentHash)
+                replyOld.countDown()
+                withTimeout(25_000) { newReceived.await() }
+                assertEquals(1, coordinator.status.value.budgetLeft)
+                assertNull(f.builds.getBuild(f.bookKey, f.sourceKey, 1))
+                assertTrue(f.people.charactersRaw(f.bookKey).isEmpty())
+                replyNew.countDown()
+                val settled = withTimeout(25_000) { coordinator.status.first { it.state == ReadAloudBuildCoordinator.BackgroundState.BUDGET_REACHED } }
+                val current = requireNotNull(f.builds.getBuild(f.bookKey, f.sourceKey, 1))
+                val resolved = f.builds.getAnalysis(f.bookKey, f.sourceKey, 1, fresh.contentHash, SpeechAnalysisPipelineV4.RESOLVER_VERSION)
+                val actor = f.people.charactersRaw(f.bookKey).single()
+                assertEquals(fresh.contentHash, current.contentHash)
+                assertEquals(current.analysisId, requireNotNull(resolved).id)
+                assertEquals(actor.id, f.builds.segments(resolved.id).single { it.seq == 1 }.characterId)
+                assertEquals(listOf("李四"), f.people.aliasesOfBook(f.bookKey).map { it.surface })
+                assertEquals(actor.id, f.people.voiceProfiles(f.bookKey).single().characterId)
+                assertEquals("李四", actor.displayName)
+                assertEquals(listOf("张三", "李四"), requests.toList())
+                assertEquals(0, settled.budgetLeft)
+                assertNull(f.builds.getBuild(f.bookKey, f.sourceKey, 2))
+                println("R4-4 old=${old.contentHash} new=${fresh.contentHash} current=${current.contentHash}/${current.state} actor=李四 budget=1→0 requests=$requests")
+            } finally { replyOld.countDown(); replyNew.countDown(); coordinator.stopSession() }
+        }
+    }
+
+    @Test fun `jump outside adopted batch gets provider before the old stream ends`() = runBlocking {
+        val tail = CountDownLatch(1)
+        val jumpRequest = CompletableDeferred<Unit>()
+        val continueBuild = CompletableDeferred<Unit>()
+        fixture("jump-after-takeover", chapterCount = 9, onStage2 = { exchange, body ->
+            when {
+                "=== ch=2 ===" in body && "=== ch=3 ===" in body -> {
+                    exchange.responseHeaders.set("Content-Type", "text/event-stream")
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.use { output ->
+                        val prefix = batchResponse(batchRow(2, "张三")).substringBefore("{\"type\":\"end\"}")
+                        val delta = JSONObject().put("delta", JSONObject().put("content", prefix))
+                        output.write("data: ${JSONObject().put("choices", JSONArray().put(delta))}\n\n".toByteArray())
+                        output.flush()
+                        check(tail.await(80, TimeUnit.SECONDS))
+                    }
+                }
+                "【本章正文】ch=9" in body -> {
+                    assertEquals(1L, tail.count)
+                    jumpRequest.complete(Unit)
+                    exchange.reply("""{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"李四","roletype":"核心"}]}""")
+                }
+                "=== ch=3 ===" in body -> {
+                    continueBuild.complete(Unit)
+                    exchange.reply(batchResponse(batchRow(3, "张三")))
+                }
+                else -> error("unexpected chapter in stage2 fixture: $body")
+            }
+        }) { f -> coroutineScope {
+            f.write(3, "庭院空荡荡。")
+            f.write(8, "李四说：“我来了。”")
+            f.configure(budget = 2, maxBatch = 2)
+            val coordinator = f.coordinator()
+            val secondReady = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 1 } }
+            val fourthReady = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 3 } }
+            val ninthReady = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 8 } }
+            try {
+                coordinator.startSession(f.book, 0)
+                val extracted = withTimeout(25_000) {
+                    var state = f.builds.getBuild(f.bookKey, f.sourceKey, 1)
+                    while (state?.state != RaChapterState.EXTRACTED) {
+                        delay(20)
+                        state = f.builds.getBuild(f.bookKey, f.sourceKey, 1)
+                    }
+                    state
+                }
+                coordinator.onChapterChanged(f.book.bookUrl, 1)
+                withTimeout(25_000) { secondReady.await() }
+                assertEquals(extracted.analysisId, f.builds.getBuild(f.bookKey, f.sourceKey, 1)?.analysisId)
+                assertEquals(2, coordinator.status.value.budgetLeft)
+                coordinator.onChapterChanged(f.book.bookUrl, 3)
+                withTimeout(25_000) { fourthReady.await() }
+                assertFalse(continueBuild.isCompleted)
+                assertNull(f.builds.getBuild(f.bookKey, f.sourceKey, 2))
+                assertEquals(listOf("stage2" to 2), f.calls.toList())
+                coordinator.onChapterChanged(f.book.bookUrl, 8)
+                withTimeout(25_000) { jumpRequest.await(); ninthReady.await(); continueBuild.await() }
+                val settled = withTimeout(25_000) { coordinator.status.first { it.state == ReadAloudBuildCoordinator.BackgroundState.WAITING_CACHE } }
+                assertEquals(1L, tail.count)
+                assertEquals(RaChapterState.IDENTITY_READY, f.builds.getBuild(f.bookKey, f.sourceKey, 8)?.state)
+                assertEquals(RaChapterState.IDENTITY_READY, f.builds.getBuild(f.bookKey, f.sourceKey, 2)?.state)
+                assertEquals(extracted.analysisId, f.builds.getBuild(f.bookKey, f.sourceKey, 1)?.analysisId)
+                assertEquals(1, settled.budgetLeft)
+                println("R4-2 held tail: chapter 9 request+READY, previous pointer retained, chapter 3 rebuilt, budget=2→1")
+            } finally {
+                tail.countDown()
+                coordinator.stopSession()
+                listOf(secondReady, fourthReady, ninthReady).forEach { it.cancelAndJoin() }
+            }
+        } }
     }
 
     @Test fun `return during cancellation queues one replacement that emits READY`() = runBlocking {
@@ -171,17 +303,18 @@ class ReadAloudBuildCoordinatorRoomTest {
             override suspend fun update(transform: (ReadAloudSettings) -> ReadAloudSettings) = Unit
         }
 
-        suspend fun configure(budget: Int, stage1: Boolean = false) {
+        suspend fun configure(budget: Int, stage1: Boolean = false, maxBatch: Int = 1) {
             bookKey = identity.keyOf(book.bookUrl, sourceKey)
             val provider = AiProvider("local", "fixture", "http://127.0.0.1:$port", "fixture-key")
             val entries = listOf("stage1", "stage2").map { AiModelEntry(it, provider.id, it, it, requestAttempts = 1) }
             assertTrue(models.save(AiModelsConfig(listOf(provider), entries, AiStageAssignments(
                 stage1 = if (stage1) listOf("stage1") else emptyList(), stage2 = listOf("stage2"),
             ))))
-            assertTrue(config.save(AnalysisConfigStore.Config(bgSessionBudget = budget, bgBatchMaxChapters = 1,
+            assertTrue(config.save(AnalysisConfigStore.Config(bgSessionBudget = budget, bgBatchMaxChapters = maxBatch,
                 prevLimit = 0, nextLimit = 0)))
         }
 
+        fun save(index: Int, text: String) = BookHelp.saveText(book, chapters[index], text)
         fun file(index: Int) = BookHelp.getChapterContentFile(book, chapters[index])
         fun write(index: Int, text: String) { file(index).apply { parentFile!!.mkdirs(); writeText(text) } }
         fun coordinator(pipelineBuilds: RaBuildGateway = builds) = ReadAloudBuildCoordinator(
@@ -190,11 +323,16 @@ class ReadAloudBuildCoordinatorRoomTest {
         )
     }
 
-    private suspend fun fixture(key: String, test: suspend (Fixture) -> Unit) {
+    private suspend fun fixture(
+        key: String,
+        chapterCount: Int = TEXTS.size,
+        onStage2: ((HttpExchange, String) -> Unit)? = null,
+        test: suspend (Fixture) -> Unit,
+    ) {
         val app = ApplicationProvider.getApplicationContext<Application>()
         app.injectAsAppCtx()
         val read = object : ReadSettingsGateway {
-            override val currentSettings = ReadSettings()
+            override val currentSettings = ReadSettings(tocCountWords = false)
             override val settings = flowOf(currentSettings)
             override suspend fun update(transform: (ReadSettings) -> ReadSettings) = Unit
         }
@@ -210,20 +348,27 @@ class ReadAloudBuildCoordinatorRoomTest {
                 val style = ReadStyleConfigStore(ReadStyleRepository(HighlightRuleRepository(db.highlightRuleDao, app)))
                 ReadBookConfig.initialize(style, read)
                 val book = Book(bookUrl = "https://fixture.invalid/$key", name = key, origin = "fixture-source")
-                val chapters = TEXTS.indices.map { BookChapter(url = "${book.bookUrl}/$it", bookUrl = book.bookUrl,
+                val chapters = (0 until chapterCount).map { BookChapter(url = "${book.bookUrl}/$it", bookUrl = book.bookUrl,
                     index = it, title = "目录${it + 1}") }
                 db.bookDao.insert(book)
                 db.bookChapterDao.insert(*chapters.toTypedArray())
                 val calls = CopyOnWriteArrayList<Pair<String, Int>>()
                 val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+                val pool = Executors.newCachedThreadPool()
+                server.executor = pool
                 val fixture = Fixture(app, book, chapters, db, read, server.address.port, calls)
                 server.createContext("/chat/completions") { exchange ->
                     try {
                         val request = JSONObject(exchange.requestBody.bufferedReader().use { it.readText() })
                         val model = request.getString("model")
                         val prompt = request.getJSONArray("messages").getJSONObject(1).getString("content")
-                        val chapter = Regex("=== ch=(\\d+) ===").find(prompt)?.groupValues?.get(1)?.toInt() ?: 1
+                        val body = prompt.substringAfterLast("=== 待分析文本 ===").substringBefore("【已知人物参考】")
+                        val chapter = Regex("(?:=== ch=|【本章正文】ch=)(\\d+)").find(body)?.groupValues?.get(1)?.toInt() ?: 1
                         calls.add(model to chapter)
+                        if (model == "stage2" && onStage2 != null) {
+                            onStage2(exchange, body)
+                            return@createContext
+                        }
                         val payload = if (model == "stage1") {
                             val units = ObservationAssembly.buildParaUnits(listOf(CanonicalSpeechParagraph(0,
                                 fixture.file(chapter - 1).readText(), 0))).single().units
@@ -233,16 +378,8 @@ class ReadAloudBuildCoordinatorRoomTest {
                             val paragraphs = JSONArray().put(selection)
                             if (chapter == 1) JSONObject().put("段落", paragraphs).toString()
                             else JSONObject().put("章节", JSONArray().put(JSONObject().put("ch", chapter).put("段落", paragraphs))).toString()
-                        } else {
-                            """{"type":"entities","entities":[{"bkey":"B1","name":"张三","roletype":"核心"}]}
-{"type":"chapter","ch":$chapter,"seqmap":{"1":"B1"},"localSpeakers":{"B1":{"name":"张三","aliases":[]}}}
-{"type":"end"}
-"""
-                        }
-                        val body = JSONObject().put("choices", JSONArray().put(JSONObject().put("message",
-                            JSONObject().put("content", payload)))).toString().toByteArray()
-                        exchange.sendResponseHeaders(200, body.size.toLong())
-                        exchange.responseBody.use { it.write(body) }
+                        } else batchResponse(batchRow(chapter, "张三"))
+                        exchange.reply(payload)
                     } finally { exchange.close() }
                 }
                 try {
@@ -250,9 +387,25 @@ class ReadAloudBuildCoordinatorRoomTest {
                     fixture.configure(budget = 1)
                     server.start()
                     test(fixture)
-                } finally { server.stop(0); BookHelp.clearCache(book) }
+                } finally { server.stop(0); pool.shutdownNow(); BookHelp.clearCache(book) }
             }
         } finally { stopKoin() }
+    }
+
+    private fun batchRow(chapter: Int, name: String) = JSONObject()
+        .put("type", "chapter").put("ch", chapter).put("seqmap", JSONObject().put("1", "B1"))
+        .put("localSpeakers", JSONObject().put("B1", JSONObject().put("name", name).put("aliases", JSONArray())))
+
+    private fun batchResponse(row: JSONObject) = listOf(
+        """{"type":"entities","entities":[{"bkey":"B1","name":"张三","roletype":"核心"}]}""",
+        row.toString(), """{"type":"end"}""",
+    ).joinToString("\n", postfix = "\n")
+
+    private fun HttpExchange.reply(payload: String) {
+        val body = JSONObject().put("choices", JSONArray().put(JSONObject().put("message",
+            JSONObject().put("content", payload)))).toString().toByteArray()
+        sendResponseHeaders(200, body.size.toLong())
+        responseBody.use { it.write(body) }
     }
 
     private fun ChapterTextProvider.Text.asBatch() = BatchAnalysisRunner.ChapterText(

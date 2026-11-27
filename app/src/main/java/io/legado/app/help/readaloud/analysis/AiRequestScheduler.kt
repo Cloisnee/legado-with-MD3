@@ -38,32 +38,42 @@ enum class AiPriority(val level: Int) {
         get() = level <= P2_PRELOAD.level
 }
 
-/** 同一批次跨阶段共用：前台接管后后续请求也保持前台优先级。 */
+/** 同一批次跨阶段共用；最后一个相关前台离开后恢复后台优先级。 */
 class AiRequestControl(private val incremental: Boolean = true) {
-    @Volatile var priority: AiPriority? = null
-        private set
-    @Volatile var protected: Boolean = false
-        private set
+    @Volatile private var foregroundClaims = 0
+    val priority: AiPriority? get() = if (protected) AiPriority.P0_CURRENT else null
+    val protected: Boolean get() = foregroundClaims > 0
     @Volatile var running: Boolean = false
         private set
     @Volatile private var owner: Job? = null
     @Volatile private var takeQueued: Boolean = false
-    @Volatile private var runningKind: AiTaskKind? = null
+    private var runningKind: AiTaskKind? = null
+    private var onUnprotected: (() -> Unit)? = null
 
     @Synchronized fun bind(job: Job?) {
         if (owner?.isActive != true) owner = job
         if (takeQueued) job?.cancel(CancellationException("foreground takes queued batch"))
     }
-    @Synchronized fun started(kind: AiTaskKind) { running = true; runningKind = kind }
-    @Synchronized fun finished() { running = false }
+    @Synchronized fun started(kind: AiTaskKind, onUnprotected: () -> Unit) {
+        running = true
+        runningKind = kind
+        this.onUnprotected = onUnprotected
+    }
+    @Synchronized fun finished() {
+        running = false
+        onUnprotected = null
+    }
     @Synchronized fun foreground() {
-        priority = AiPriority.P0_CURRENT
-        protected = true
+        if (++foregroundClaims > 1) return
         // 还未发网的批次让出目标章，前台重取；已经读流的批次继续逐章提交。
         if (!running || !incremental || runningKind != AiTaskKind.STAGE2) {
             takeQueued = true
             owner?.cancel(CancellationException("foreground takes queued batch"))
         }
+    }
+    @Synchronized fun leaveForeground() {
+        check(foregroundClaims > 0)
+        if (--foregroundClaims == 0) onUnprotected?.invoke()
     }
     @Synchronized fun yieldToForeground() {
         owner?.cancel(CancellationException("foreground needs batch provider"))
@@ -183,28 +193,21 @@ class AiRequestScheduler(
                 lane.waiting.add(waiter)
                 grantWaitersLocked(lane)
                 if (!waiter.granted && context.effectivePriority.foreground) {
-                    lane.running.values.filter { running ->
-                        val active = running.context
-                        // 接管只保护当前章的观察包；后续前台请求需要同一许可时，
-                        // 中断流尾，让已提交章继续裁决、情绪或导演，未完成章留待恢复。
-                        active.canPreempt || ((context.control == null || context.control !== active.control) &&
-                            (context.kind == AiTaskKind.RESOLVE || context.kind == AiTaskKind.DIRECTOR ||
-                                context.kind == AiTaskKind.EMOTION) &&
-                            active.kind == AiTaskKind.STAGE2 && active.preemptible &&
-                            active.bookKey == context.bookKey && active.sourceKey == context.sourceKey &&
-                            active.chapters.any { it in context.chapters })
-                    }
-                        .maxWithOrNull(compareBy<Running>(
-                            { it.context.effectivePriority.level }, { it.startedAt },
-                        ))?.let { running ->
-                            running.context.control?.yieldToForeground()
-                            running.job?.cancel(CancellationException("preempted by foreground"))
-                        }
+                    preemptForForegroundLocked(lane, context)
                 }
             }
             waiter.wake.receive()
             currentCoroutineContext().ensureActive()
-            context.control?.started(context.kind)
+            context.control?.started(context.kind) {
+                scope.launch {
+                    lane.lock.withLock {
+                        if (lane.running[id]?.context?.canPreempt != true) return@withLock
+                        lane.waiting.firstOrNull { !it.cancelled && it.job?.isActive != false &&
+                            it.context.effectivePriority.foreground
+                        }?.let { preemptForForegroundLocked(lane, it.context) }
+                    }
+                }
+            }
         } catch (e: CancellationException) {
             waiter.cancelled = true
             withContext(NonCancellable) {
@@ -215,6 +218,25 @@ class AiRequestScheduler(
                 }
             }
             throw e
+        }
+    }
+
+    private fun preemptForForegroundLocked(lane: Lane, context: AiSchedulerContext) {
+        if (lane.active < lane.limit) return
+        lane.running.values.filter { running ->
+            val active = running.context
+            if (running.job?.isActive == false || (context.control != null && context.control === active.control)) {
+                return@filter false
+            }
+            // 同章已提交观察包时，裁决、情绪或导演可以让受保护的流尾交回许可。
+            active.canPreempt || ((context.kind == AiTaskKind.RESOLVE || context.kind == AiTaskKind.DIRECTOR ||
+                context.kind == AiTaskKind.EMOTION) &&
+                active.kind == AiTaskKind.STAGE2 && active.preemptible &&
+                active.bookKey == context.bookKey && active.sourceKey == context.sourceKey &&
+                active.chapters.any { it in context.chapters })
+        }.maxWithOrNull(compareBy<Running>({ it.context.effectivePriority.level }, { it.startedAt }))?.let { running ->
+            running.context.control?.yieldToForeground()
+            running.job?.cancel(CancellationException("preempted by foreground"))
         }
     }
 

@@ -43,8 +43,11 @@ class ChapterJobRegistry {
     ) {
         internal val result = CompletableDeferred<Outcome>()
         suspend fun bindControl(value: AiRequestControl) = registry.lock.withLock {
-            registry.controls[key] = value
-            if (key in registry.foreground) value.foreground()
+            val previous = registry.controls.put(key, value)
+            if (previous !== value && key in registry.foreground) {
+                previous?.leaveForeground()
+                value.foreground()
+            }
         }
 
         suspend fun complete(outcome: Outcome) {
@@ -69,8 +72,9 @@ class ChapterJobRegistry {
 
     suspend fun <T> withForeground(key: Key, block: suspend () -> T): T {
         lock.withLock {
-            foreground[key] = foreground.getOrDefault(key, 0) + 1
-            controls[key]?.foreground()
+            val count = foreground.getOrDefault(key, 0)
+            foreground[key] = count + 1
+            if (count == 0) controls[key]?.foreground()
         }
         try {
             return block()
@@ -78,7 +82,12 @@ class ChapterJobRegistry {
             withContext(NonCancellable) {
                 lock.withLock {
                     val count = foreground.getValue(key)
-                    if (count == 1) foreground.remove(key) else foreground[key] = count - 1
+                    if (count == 1) {
+                        foreground.remove(key)
+                        controls[key]?.leaveForeground()
+                    } else {
+                        foreground[key] = count - 1
+                    }
                 }
             }
         }
@@ -86,8 +95,10 @@ class ChapterJobRegistry {
 
     suspend fun releaseControl(key: Key, control: AiRequestControl) = withContext(NonCancellable) {
         lock.withLock {
-            if (controls[key] === control) controls.remove(key)
-            Unit
+            if (controls[key] === control) {
+                controls.remove(key)
+                if (key in foreground) control.leaveForeground()
+            }
         }
     }
 

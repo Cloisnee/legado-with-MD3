@@ -15,6 +15,7 @@ import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
 import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
@@ -46,6 +47,46 @@ class RaBuildRepository(
     private val directionDao: RaDirectionDao,
 ) : RaBuildGateway {
 
+    // 只需要拦住同进程内尚未提交的任务。代次不落库，也不留在导出数据中。
+    private class Deletions {
+        var wholeBook = 0L
+        val chapters = HashMap<Int, Long>()
+        val rollbackFloors = java.util.TreeMap<Int, Long>()
+    }
+
+    private val deletionLock = Any()
+    private val deletions = HashMap<String, Deletions>()
+    private var generation = 0L
+
+    override fun generation(): Long = synchronized(deletionLock) { generation }
+
+    override fun canUseGeneration(bookKey: String, chapterIndex: Int, generation: Long): Boolean = synchronized(deletionLock) {
+        val since = deletions[bookKey] ?: return@synchronized true
+        generation >= maxOf(since.wholeBook, since.chapters[chapterIndex] ?: 0L,
+            since.rollbackFloors.floorEntry(chapterIndex)?.value ?: 0L)
+    }
+
+    private fun recordDeletion(bookKey: String, chapters: List<Int>? = null, rollbackFrom: Int? = null) {
+        synchronized(deletionLock) {
+            val revision = ++generation
+            val since = deletions.getOrPut(bookKey) { Deletions() }
+            if (chapters == null) {
+                since.wholeBook = revision
+                since.chapters.clear()
+                since.rollbackFloors.clear()
+            } else if (rollbackFrom != null) {
+                since.chapters.keys.removeAll { it >= rollbackFrom }
+                since.rollbackFloors.tailMap(rollbackFrom, true).clear()
+                since.rollbackFloors[rollbackFrom] = revision
+            } else {
+                chapters.forEach { since.chapters[it] = revision }
+            }
+        }
+    }
+
+    private fun matchesInput(build: RaChapterBuild, input: RaBuildInput?): Boolean = input == null ||
+        (canUseGeneration(build.bookKey, build.chapterIndex, input.generation) && input.matchesContent())
+
     override suspend fun getBuild(bookKey: String, sourceKey: String, chapterIndex: Int): RaChapterBuild? =
         withContext(Dispatchers.IO) {
             dao.getBuild(bookKey, sourceKey, chapterIndex)?.toDomain()
@@ -56,11 +97,13 @@ class RaBuildRepository(
             dao.builds(bookKey, sourceKey).map(RaChapterBuildEntity::toDomain)
         }
 
-    override suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild): Boolean =
+    override suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild, input: RaBuildInput?): Boolean =
         withContext(Dispatchers.IO) {
             database.withTransaction {
                 val current = dao.getBuild(next.bookKey, next.sourceKey, next.chapterIndex)
-                if (current != expected?.toEntity() || (current != null && next.updatedAt < current.updatedAt)) {
+                if (current != expected?.toEntity() || (current != null && next.updatedAt < current.updatedAt) ||
+                    !matchesInput(next, input)
+                ) {
                     return@withTransaction false
                 }
                 dao.upsertBuild(next.toEntity())
@@ -121,7 +164,7 @@ class RaBuildRepository(
             val currentTargets = targets.filter { target ->
                 val build = target.build
                 val current = dao.getBuild(build.bookKey, build.sourceKey, build.chapterIndex)
-                canPublish(target, current)
+                canPublish(target, current) && matchesInput(build, target.input)
             }
             write(currentTargets)
         }
@@ -137,8 +180,11 @@ class RaBuildRepository(
         attributes: List<RaAttributeObservation>,
         relations: List<RaRelationObservation>,
         expectedExtraction: RaChapterBuild?,
+        input: RaBuildInput?,
     ): RaBuildPublication = withContext(Dispatchers.IO) {
         database.withTransaction {
+            // 删除或换正文已撤销任务资格，连历史观察也不能由这些任务写回。
+            if (!matchesInput(build, input)) return@withTransaction RaBuildPublication.IGNORED
             val current = dao.getBuild(build.bookKey, build.sourceKey, build.chapterIndex)
             val publish = canPublish(RaIdentityCommit(analysis, build, expectedExtraction), current)
             // 确定性 ID 可能复用。晚到结果只在历史 ID 尚不存在时入库，保护同 ID 的新段及人物外键。
@@ -303,22 +349,23 @@ class RaBuildRepository(
         bookKey: String,
         sourceKey: String,
         chapterIndexes: List<Int>,
+        rollbackFrom: Int?,
     ) = withContext(Dispatchers.IO) {
-        if (chapterIndexes.isEmpty()) return@withContext
-        val analyses = dao.analysesForChapters(bookKey, chapterIndexes)
-        val analysisIds = analyses.map { it.id }
-        val localSpeakerIds = if (analysisIds.isEmpty()) {
-            emptyList()
-        } else {
-            dao.localSpeakerIdsOf(analysisIds)
-        }
-        val deletedEvidenceIds = if (analysisIds.isEmpty()) {
-            emptySet()
-        } else {
-            dao.evidenceByAnalysisIds(analysisIds).map { it.id }.toSet()
-        }
-        val links = characterDao.linksOfBook(bookKey)
+        if (chapterIndexes.isEmpty() && rollbackFrom == null) return@withContext
         database.withTransaction {
+            val targets = if (rollbackFrom == null) chapterIndexes else {
+                (chapterIndexes + dao.allBuildsOf(bookKey).map { it.chapterIndex } +
+                    dao.allAnalysesOf(bookKey).map { it.chapterIndex } + dao.overridesOfBook(bookKey).map { it.chapterIndex })
+                    .filter { it >= rollbackFrom }.distinct()
+            }
+            recordDeletion(bookKey, targets, rollbackFrom)
+            if (targets.isEmpty()) return@withTransaction
+            val analysisIds = dao.analysesForChapters(bookKey, targets).map { it.id }
+            val localSpeakerIds = if (analysisIds.isEmpty()) emptyList() else dao.localSpeakerIdsOf(analysisIds)
+            val deletedEvidenceIds = if (analysisIds.isEmpty()) emptySet() else {
+                dao.evidenceByAnalysisIds(analysisIds).map { it.id }.toSet()
+            }
+            val links = characterDao.linksOfBook(bookKey)
             if (analysisIds.isNotEmpty()) {
                 directionDao.plansOfAnalyses(analysisIds).forEach { plan ->
                     directionDao.deletePlanCompletely(plan.id)
@@ -329,18 +376,18 @@ class RaBuildRepository(
                 dao.deleteEvidenceByAnalysisIds(analysisIds)
                 dao.deleteAnalysesByIds(analysisIds)
             }
-            dao.deleteBuildsAllSources(bookKey, chapterIndexes)
-            dao.deleteOverridesOfChapters(bookKey, chapterIndexes)
+            dao.deleteBuildsAllSources(bookKey, targets)
+            dao.deleteOverridesOfChapters(bookKey, targets)
             if (localSpeakerIds.isNotEmpty()) {
                 characterDao.deleteDecisionsByLocalSpeakerIds(localSpeakerIds)
             }
             // 回滚/删章：清理这些章节贡献的观察与 AI 约束（用户手动编辑保留）
-            characterDao.deleteAttributesFromChapters(bookKey, chapterIndexes)
-            characterDao.deleteRelationsFromChapters(bookKey, chapterIndexes)
+            characterDao.deleteAttributesFromChapters(bookKey, targets)
+            characterDao.deleteRelationsFromChapters(bookKey, targets)
             // 别名按“是否仍有保留章节支持”删除；firstChapter 只是首次出现，不代表唯一贡献
-            val survivingSpeakers = dao.localSpeakersOutsideChapters(bookKey, chapterIndexes)
+            val survivingSpeakers = dao.localSpeakersOutsideChapters(bookKey, targets)
             characterDao.aliasesOfBook(bookKey)
-                .filter { it.source == "ai" && it.firstChapter in chapterIndexes }
+                .filter { it.source == "ai" && it.firstChapter in targets }
                 .forEach { alias ->
                     val supported = survivingSpeakers.any { speaker ->
                         speaker.characterId == alias.characterId &&
@@ -459,6 +506,7 @@ class RaBuildRepository(
 
     override suspend fun deleteBook(bookKey: String) = withContext(Dispatchers.IO) {
         database.withTransaction {
+            recordDeletion(bookKey)
             directionDao.deleteLinesOfBook(bookKey)
             directionDao.deleteAudioOfBook(bookKey)
             directionDao.deleteScenesOfBook(bookKey)

@@ -13,13 +13,24 @@ import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 /** 当前版本发布、只保留历史，或同 ID 已有更新结果。 */
 enum class RaBuildPublication { PUBLISHED, HISTORY_ONLY, IGNORED }
 
+/** 任务开始时的删除代次，以及正文快照是否仍匹配当前缓存。 */
+data class RaBuildInput(
+    val generation: Long,
+    val matchesContent: () -> Boolean = { true },
+)
+
 data class RaIdentityCommit(
     val analysis: RaAnalysis,
     val build: RaChapterBuild,
     val expectedExtraction: RaChapterBuild? = null,
+    val input: RaBuildInput? = null,
 )
 
 interface RaBuildGateway {
+
+    fun generation(): Long
+
+    fun canUseGeneration(bookKey: String, chapterIndex: Int, generation: Long): Boolean
 
     /**
      * 在同一写事务里筛选仍可发布的目标并执行其本地身份收敛、发声方案和章节提交。
@@ -35,7 +46,7 @@ interface RaBuildGateway {
     suspend fun builds(bookKey: String, sourceKey: String): List<RaChapterBuild>
 
     /** 只替换读取时的同一条状态（expected=null 表示尚无记录）。 */
-    suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild): Boolean
+    suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild, input: RaBuildInput? = null): Boolean
 
     /** 只载入同次模型响应里仍是当前版本的已就绪章，供分次收敛复用。 */
     suspend fun readyBatchAnalyses(bookKey: String, sourceKey: String, batchIds: Set<String>): List<RaAnalysis>
@@ -71,6 +82,7 @@ interface RaBuildGateway {
         attributes: List<RaAttributeObservation> = emptyList(),
         relations: List<RaRelationObservation> = emptyList(),
         expectedExtraction: RaChapterBuild? = null,
+        input: RaBuildInput? = null,
     ): RaBuildPublication
 
     suspend fun segments(analysisId: String): List<RaSegment>
@@ -104,7 +116,7 @@ interface RaBuildGateway {
         narrator: Boolean,
     )
 
-    suspend fun deleteChapters(bookKey: String, sourceKey: String, chapterIndexes: List<Int>)
+    suspend fun deleteChapters(bookKey: String, sourceKey: String, chapterIndexes: List<Int>, rollbackFrom: Int? = null)
 
     suspend fun deleteBook(bookKey: String)
 }

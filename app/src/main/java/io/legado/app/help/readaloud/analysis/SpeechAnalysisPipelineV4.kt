@@ -4,6 +4,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.data.repository.WordLibraryRepository
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.gateway.RaCharacterGateway
@@ -288,8 +289,11 @@ BGM 建议缺段从值集补全。
         taskStartedAt: Long = System.currentTimeMillis(),
         skipLegacyAudio: Boolean = false,
         onPublished: ((RaAnalysisStatus) -> Unit)? = null,
+        input: RaBuildInput = RaBuildInput(raBuild.generation()),
     ): RaPipelineResult? = withContext(Dispatchers.IO) {
-        if (paragraphs.isEmpty()) return@withContext null
+        if (paragraphs.isEmpty() || !raBuild.canUseGeneration(bookKey, chapterIndex, input.generation) ||
+            !input.matchesContent()
+        ) return@withContext null
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val chapterLabel = runCatching { catalog.chapterLabel(bookUrl, chapterIndex) }
             .getOrDefault("第${chapterIndex + 1}章")
@@ -499,13 +503,13 @@ BGM 建议缺段从值集补全。
             )
             currentCoroutineContext().ensureActive()
             val published = withContext(NonCancellable) {
-                raBuild.commitIdentity(listOf(RaIdentityCommit(analysis, build))) { eligible ->
+                raBuild.commitIdentity(listOf(RaIdentityCommit(analysis, build, input = input))) { eligible ->
                     if (eligible.isEmpty()) {
                         // 旧结果可留作历史观察包，不能为全书新增身份或改写既有身份。
                         val historical = if (stage2Failed) analysis else analysis.copy(status = RaAnalysisStatus.EXTRACTED)
                         val raw = SpeakerBinder.bind(bound, localSpeakers, emptyMap(), seqMap)
-                        check(raBuild.saveAnalysisBundle(historical, raw, localSpeakers, localMentions, evidence, build)
-                            != RaBuildPublication.PUBLISHED)
+                        check(raBuild.saveAnalysisBundle(historical, raw, localSpeakers, localMentions, evidence, build,
+                            input = input) != RaBuildPublication.PUBLISHED)
                         return@commitIdentity false
                     }
                     val result = resolver.applyChapter(
@@ -532,6 +536,7 @@ BGM 建议缺段从值集补全。
                         build = build,
                         attributes = attributeObs,
                         relations = relationObs,
+                        input = input,
                     )
                     check(publication == RaBuildPublication.PUBLISHED)
                     characters.forEach { raCharacters.recomputeAppearance(it.id) }

@@ -15,6 +15,7 @@ import io.legado.app.model.CacheBook
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 /**
  * 章节正文读取（02 §3）。
@@ -36,6 +37,7 @@ class ChapterTextProvider(
         val prevText: String,
         val nextText: String,
         val loadedAt: Long,
+        val matchesContent: () -> Boolean,
     )
 
     suspend fun load(book: Book, chapterIndex: Int, allowDownload: Boolean): Text? =
@@ -63,6 +65,14 @@ class ChapterTextProvider(
                 prevText = contextText(book, chapterIndex - 1),
                 nextText = contextText(book, chapterIndex + 1),
                 loadedAt = loadedAt,
+                // 提交时比较实际正文，避免时间戳碰撞、缓存事件延迟或同文重写影响判断。
+                matchesContent = {
+                    try {
+                        BookHelp.getContent(book, chapter, cacheEpub = false) == content
+                    } catch (_: IOException) {
+                        false
+                    }
+                },
             )
         }
 

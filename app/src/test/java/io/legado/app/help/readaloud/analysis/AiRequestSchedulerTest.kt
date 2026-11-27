@@ -243,6 +243,54 @@ class AiRequestSchedulerTest {
     }
 
     @Test
+    fun `last foreground claim releases a protected stream to an already queued jump`() = runBlocking {
+        val scheduler = AiRequestScheduler()
+        val registry = ChapterJobRegistry()
+        val keys = (0..1).map { ChapterJobRegistry.Key("bk", "src", it, "hash") }
+        val control = AiRequestControl()
+        val tickets = keys.map { checkNotNull(registry.acquireBackground(it)).also { ticket -> ticket.bindControl(control) } }
+        val started = CompletableDeferred<Unit>()
+        val entered = CompletableDeferred<Unit>()
+        val active = AtomicInteger()
+        val context = ctx(AiPriority.P3_BACKGROUND, true).copy(control = control, chapters = listOf(0, 1))
+        val background = launch {
+            scheduler.withPermit(ref(1), context) {
+                active.incrementAndGet()
+                started.complete(Unit)
+                try { awaitCancellation() } finally { active.decrementAndGet() }
+            }
+        }
+        try {
+            withTimeout(1_000) { started.await() }
+            lateinit var jump: Job
+            registry.withForeground(keys[0]) {
+                registry.withForeground(keys[1]) {
+                    jump = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                        scheduler.withPermit(ref(1), ctx(AiPriority.P0_CURRENT).copy(chapters = listOf(8))) {
+                            assertEquals(0, active.get())
+                            entered.complete(Unit)
+                        }
+                    }
+                    assertTrue(control.protected)
+                    assertFalse(entered.isCompleted)
+                }
+                assertTrue(control.protected)
+                assertEquals(AiPriority.P0_CURRENT, context.effectivePriority)
+                assertTrue(background.isActive)
+                assertFalse(entered.isCompleted)
+            }
+            withTimeout(2_000) { entered.await(); jump.join(); background.join() }
+            assertFalse(control.protected)
+            assertEquals(AiPriority.P3_BACKGROUND, context.effectivePriority)
+            assertTrue(background.isCancelled)
+        } finally {
+            background.cancel()
+            keys.forEach { registry.releaseControl(it, control) }
+            tickets.forEach { it.complete(ChapterJobRegistry.Outcome.CANCELLED) }
+        }
+    }
+
+    @Test
     fun `same provider foreground resolve releases only the joined protected stream permit`() = runBlocking {
         val scheduler = AiRequestScheduler()
         val control = AiRequestControl()

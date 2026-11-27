@@ -14,6 +14,9 @@ import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
+import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import io.legado.app.domain.usecase.BuildSpeechPlanUseCase
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.help.readaloud.analysis.*
@@ -144,6 +147,137 @@ class V43RoomRegressionTest {
         } }
     }
 
+    @Test fun `verified contradiction splits new identities in every batch recovery order`() = runBlocking {
+        val first = chapter(0, "张三正是白衣客。张三说：“我来了。”")
+        val second = chapter(1, "蒙面客绝不是白衣客。蒙面客说：“请进。”")
+        val firstRow = row(1, "张三").put("evidence", JSONArray().put(JSONObject()
+            .put("type", "ALIAS_EQUAL").put("subject", "B1").put("object", "白衣客")
+            .put("ch", 1).put("p", 1).put("quote", "张三正是白衣客")))
+        val secondRow = row(2, "蒙面客").put("evidence", JSONArray().put(JSONObject()
+            .put("type", "CONTRADICTION").put("subject", "B1").put("object", "白衣客")
+            .put("ch", 2).put("p", 1).put("quote", "蒙面客绝不是白衣客")))
+        fixture(handler = { _, exchange -> exchange.reply(batch(firstRow, secondRow)) }) { f ->
+            for (path in listOf("whole", "take-first", "recover-forward", "recover-reverse")) {
+                val book = "fresh-contradiction-$path"
+                val runner = f.runner()
+                assertTrue(f.people.charactersRaw(book).isEmpty())
+                val result = runCatching {
+                    runner.run(book, "src", listOf(first, second), "response", onChapterReady = { ch, ready ->
+                        if (!ready && ch == 0 && path == "take-first") {
+                            assertEquals(listOf(0), runner.convergeExisting(book, "src", listOf(first), AiPriority.P0_CURRENT).ready)
+                        }
+                        if (!ready && ch == 1 && path.startsWith("recover-")) error("stream interrupted")
+                    })
+                }
+                if (path.startsWith("recover-")) {
+                    assertEquals("stream interrupted", result.exceptionOrNull()?.message)
+                    val order = if (path == "recover-reverse") listOf(second, first) else listOf(first, second)
+                    for (input in order) {
+                        assertEquals(listOf(input.chapterIndex), runner.convergeExisting(book, "src", listOf(input)).ready)
+                    }
+                } else assertEquals(listOf(0, 1), result.getOrThrow().ready)
+                val builds = (0..1).map { requireNotNull(f.builds.getBuild(book, "src", it)) }
+                assertTrue(builds.all { it.state == RaChapterState.IDENTITY_READY })
+                val evidence = f.builds.evidence(builds[1].analysisId!!).single()
+                assertTrue(evidence.verified && evidence.scope == RaEvidenceScope.MAIN_TEXT)
+                assertEquals(RaEvidenceType.CONTRADICTION, evidence.type)
+                assertEquals("白衣客", evidence.objectText)
+                val people = f.people.charactersRaw(book).associateBy { it.displayName }
+                assertEquals(setOf("张三", "蒙面客"), people.keys)
+                val ids = listOf(people.getValue("张三").id, people.getValue("蒙面客").id)
+                assertEquals(ids, builds.map { f.builds.segments(it.analysisId!!).single { it.seq == 1 }.characterId })
+                assertEquals(listOf(setOf("张三"), setOf("蒙面客")), ids.map { id -> f.people.aliasesOf(id).map { it.surface }.toSet() })
+                val defaults = f.people.voiceProfiles(book)
+                assertEquals(ids.toSet(), defaults.map { it.characterId }.toSet())
+                assertEquals(listOf(RaVoiceProfileKind.DEFAULT, RaVoiceProfileKind.DEFAULT), defaults.map { it.kind })
+                ids.forEachIndexed { i, id -> f.people.setDefaultVoice(id, "voice-$i", "manual") }
+                val voices = listOf(first, second).map { input ->
+                    f.prepare("url", book, "src", input.chapterIndex, input.paragraphs).single { it.segment.seq == 1 }.voice?.displayName
+                }
+                assertEquals(listOf("voice-0", "voice-1"), voices)
+                println("R4-1 $path: 张三/蒙面客, ids=2, defaults=2, voices=$voices")
+            }
+        }
+    }
+
+    @Test fun `deleting chapter or book invalidates an in flight force analysis including its history`() = runBlocking {
+        val seed = chapter(0, "张三说：“此前来过。”")
+        val fresh = chapter(0, "沈孤鸿说：“刚到。”")
+        val other = chapter(1, "庭院里落着雨。")
+        fixture(handler = { request, exchange ->
+            val body = request.getJSONArray("messages").getJSONObject(1).getString("content").substringAfterLast("=== 待分析文本 ===")
+            val name = if ("刚到" in body) "沈孤鸿" else "张三"
+            exchange.reply("""{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"$name","roletype":"核心"}]}""")
+        }) { f ->
+            for (whole in listOf(false, true)) coroutineScope {
+                val url = "fixture-delete-$whole"
+                val source = "src"
+                val book = f.identity.keyOf(url, source)
+                val pipeline = f.pipeline()
+                assertNotNull(pipeline.run(url, "fixture", book, source, 0, seed.paragraphs, "", "", skipLegacyAudio = true))
+                assertNotNull(pipeline.run(url, "fixture", book, source, 1, other.paragraphs, "", "", skipLegacyAudio = true))
+                val retained = f.builds.getBuild(book, source, 1)
+                val gate = BeforeIdentityCommit(f.builds)
+                val callbacks = AtomicInteger()
+                val pending = async(Dispatchers.IO) {
+                    f.pipeline(gate).run(url, "fixture", book, source, 0, fresh.paragraphs, "", "", force = true,
+                        skipLegacyAudio = true, onPublished = { callbacks.incrementAndGet() })
+                }
+                try {
+                    val candidate = withTimeout(20_000) { gate.reached.await() }.single().analysis.id
+                    if (whole) f.maintenance.deleteBook(book, "fixture")
+                    else f.maintenance.deleteChapters(book, source, "fixture", listOf(0), false)
+                    assertNull(f.builds.getBuild(book, source, 0))
+                    gate.release.complete(Unit)
+                    assertNull(withTimeout(20_000) { pending.await() })
+                    assertNull(f.builds.getBuild(book, source, 0))
+                    assertNull(f.builds.analysisById(candidate))
+                    assertEquals(if (whole) null else retained, f.builds.getBuild(book, source, 1))
+                    assertTrue(f.people.charactersRaw(book).isEmpty())
+                    assertTrue(f.people.aliasesOfBook(book).isEmpty())
+                    assertTrue(f.people.voiceProfiles(book).isEmpty())
+                    assertEquals(0, callbacks.get())
+                    val remaining = f.builds.builds(book, source).map { it.chapterIndex }
+                    assertEquals(if (whole) emptyList<Int>() else listOf(1), remaining)
+                    val newKey = f.identity.keyOf(url, source)
+                    val rebuilt = pipeline.run(url, "fixture", newKey, source, 0, fresh.paragraphs, "", "", force = true, skipLegacyAudio = true)
+                    assertEquals(RaAnalysisStatus.RESOLVED, rebuilt?.analysis?.status)
+                    assertEquals("沈孤鸿", f.people.charactersRaw(newKey).single().displayName)
+                    println("R4-3 whole=$whole: retained=$remaining; late builds/actors/aliases/defaults/callbacks=0; new request READY")
+                } finally { gate.release.complete(Unit); pending.cancelAndJoin() }
+            }
+        }
+    }
+
+    @Test fun `rollback invalidates a batch chapter that has no observation yet`() = runBlocking {
+        val first = chapter(0, "张三说：“到了。”")
+        val last = chapter(1, "李四说：“请进。”")
+        val received = CompletableDeferred<Unit>()
+        val tail = CountDownLatch(1)
+        fixture(handler = { _, exchange ->
+            received.complete(Unit)
+            check(tail.await(60, TimeUnit.SECONDS))
+            exchange.reply(batch(row(1, "张三"), row(2, "李四", "B2")))
+        }) { f -> coroutineScope {
+            val book = "rollback-inflight"
+            val worker = async(Dispatchers.IO) { f.runner().run(book, "src", listOf(first, last), "before-rollback") }
+            try {
+                withTimeout(20_000) { received.await() }
+                assertTrue(f.builds.builds(book, "src").isEmpty())
+                f.maintenance.deleteChapters(book, "src", "fixture", listOf(1), true)
+                tail.countDown()
+                val result = withTimeout(20_000) { worker.await() }
+                assertEquals(listOf(0), result.ready)
+                assertTrue(result.failed.isEmpty())
+                assertTrue(result.extracted.isEmpty())
+                assertNull(f.builds.getBuild(book, "src", 1))
+                val analysisId = SpeechIdentity.analysisId(book, "src", 1, last.contentHash, SpeechAnalysisPipelineV4.RESOLVER_VERSION)
+                assertNull(f.builds.analysisById(analysisId))
+                assertEquals(listOf("张三"), f.people.charactersRaw(book).map { it.displayName })
+            } finally { tail.countDown(); worker.cancelAndJoin() }
+        } }
+    }
+
     @Test fun `late batch and single chapters cannot create global identities`() = runBlocking {
         val old = chapter(0, "沈孤鸿说：“你好。”")
         val fresh = chapter(0, "庭院只余风声。")
@@ -248,8 +382,9 @@ class V43RoomRegressionTest {
         private val words = WordLibraryRepository(app)
         val people = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao, words)
         private val casting = VoiceCastingService(ReadAloudVoicePoolRepository(app), people)
-        private val identity = RaBookIdentityRepository(db.raBuildDao, db.bookDao)
+        val identity = RaBookIdentityRepository(db.raBuildDao, db.bookDao)
         private val catalog = ReadAloudCatalogRepository(db.bookDao, db.bookChapterDao, db.raBuildDao, builds)
+        val maintenance = RaBookMaintenanceRepository(db, db.raBuildDao, db.raCharacterDao, ReadAloudAudioCacheRepository(app), catalog, builds)
         private val models = AiModelRepository(app)
         private val config = AnalysisConfigStore(app)
         private val ai = AiSpeechClient(models, config, AiRequestScheduler())

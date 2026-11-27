@@ -5,6 +5,7 @@ import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.help.readaloud.analysis.queueRefs
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.gateway.RaCharacterGateway
@@ -71,6 +72,7 @@ class BatchAnalysisRunner(
         val nextText: String,
         val contentHash: String,
         val loadedAt: Long = System.currentTimeMillis(),
+        val input: RaBuildInput? = null,
     )
 
     data class Outcome(
@@ -120,11 +122,12 @@ class BatchAnalysisRunner(
         onChapterReady: (suspend (chapterIndex: Int, identityReady: Boolean) -> Unit)? = null,
         control: AiRequestControl? = null,
     ): Outcome {
-        if (chapters.isEmpty()) return Outcome()
+        val currentChapters = eligibleChapters(bookKey, chapters)
+        if (currentChapters.isEmpty()) return Outcome()
         val cfg = runCatching { configStore.load() }.getOrDefault(AnalysisConfigStore.Config())
         val bareWords = runCatching { wordLibrary.bareWords() }.getOrDefault(emptySet())
         val specialWords = runCatching { wordLibrary.specialWords() }.getOrDefault(emptySet())
-        val works = chapters.map { text ->
+        val works = currentChapters.map { text ->
             val units = ObservationAssembly.buildParaUnits(text.paragraphs)
             val counts = units.associate { it.paraIndex to it.units.size }.toMutableMap()
             text.paragraphs.forEach { counts.putIfAbsent(it.index, 0) }
@@ -141,7 +144,7 @@ class BatchAnalysisRunner(
             kind = AiTaskKind.STAGE1,
             priority = priority,
             bookKey = bookKey,
-            chapters = chapters.map { it.chapterIndex },
+            chapters = currentChapters.map { it.chapterIndex },
             preemptible = !priority.foreground,
             control = control,
             sourceKey = sourceKey,
@@ -292,6 +295,7 @@ class BatchAnalysisRunner(
                 createdAt = older?.createdAt ?: now,
                 updatedAt = text.loadedAt,
             ),
+            input = text.input,
         )
     }
 
@@ -306,7 +310,7 @@ class BatchAnalysisRunner(
         onChapterReady: (suspend (Int, Boolean) -> Unit)? = null,
         control: AiRequestControl? = null,
     ): Outcome {
-        val items = chapters.mapNotNull { text ->
+        val items = eligibleChapters(bookKey, chapters).mapNotNull { text ->
             val build = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
                 ?: return@mapNotNull null
             if (build.state != RaChapterState.EXTRACTED) return@mapNotNull null
@@ -317,7 +321,7 @@ class BatchAnalysisRunner(
                 analysis.observationJson.isBlank()
             ) {
                 raBuild.transitionBuild(build, build.copy(state = RaChapterState.STALE,
-                    failReason = "正文或解析版本已变化", updatedAt = text.loadedAt))
+                    failReason = "正文或解析版本已变化", updatedAt = text.loadedAt), input = text.input)
                 return@mapNotNull null
             }
             val analysisId = analysis.id
@@ -354,7 +358,7 @@ class BatchAnalysisRunner(
             }.getOrElse { error ->
                 if (error is CancellationException) throw error
                 raBuild.transitionBuild(build, build.copy(state = RaChapterState.STALE,
-                    failReason = "观察包无法恢复", updatedAt = text.loadedAt))
+                    failReason = "观察包无法恢复", updatedAt = text.loadedAt), input = text.input)
                 return@mapNotNull null
             }
             val (payload, contexts) = restored
@@ -372,6 +376,16 @@ class BatchAnalysisRunner(
         if (items.isEmpty()) return Outcome()
         val result = converge(bookKey, items, priority, onChapterReady, control)
         return Outcome(ready = result.ready, extracted = result.extracted)
+    }
+
+    private fun eligibleChapters(bookKey: String, chapters: List<ChapterText>): List<ChapterText> {
+        val fallback = RaBuildInput(raBuild.generation())
+        return chapters.mapNotNull { text ->
+            val input = text.input ?: fallback
+            if (raBuild.canUseGeneration(bookKey, text.chapterIndex, input.generation) && input.matchesContent()) {
+                text.copy(input = input)
+            } else null
+        }
     }
 
     // ---------------- 阶段1 ----------------
@@ -586,6 +600,13 @@ class BatchAnalysisRunner(
         var pending = ordered.map { it.text.chapterIndex }.toSet()
 
         repeat(2) { round ->
+            val invalid = ordered.filter { it.text.chapterIndex in pending &&
+                it.text.input?.let { input ->
+                    !raBuild.canUseGeneration(bookKey, it.text.chapterIndex, input.generation) || !input.matchesContent()
+                } == true
+            }.map { it.text.chapterIndex }
+            superseded.addAll(invalid)
+            pending = pending - superseded
             if (pending.isEmpty()) return@repeat
             val active = ordered.filter { it.text.chapterIndex in pending }
             val promptFactory = { failHint: String ->
@@ -846,6 +867,7 @@ class BatchAnalysisRunner(
             localMentions = mentions,
             evidence = evidence,
             build = extractionBuild,
+            input = text.input,
         )
         if (publication != RaBuildPublication.PUBLISHED) return ChapterCommit.Superseded
         AppLog.putAnalysis(
@@ -943,6 +965,10 @@ class BatchAnalysisRunner(
             }
             val ready = ArrayList<Int>()
             val pending = extracted.filter { item ->
+                val input = item.text.input
+                if (input != null && (!raBuild.canUseGeneration(bookKey, item.text.chapterIndex, input.generation) ||
+                        !input.matchesContent())
+                ) return@filter false
                 val current = raBuild.getBuild(bookKey, item.build.sourceKey, item.text.chapterIndex)
                 if (current?.analysisId != item.analysisId || current.contentHash != item.text.contentHash) {
                     return@filter false
@@ -972,6 +998,7 @@ class BatchAnalysisRunner(
                 analysis.copy(status = RaAnalysisStatus.RESOLVED, updatedAt = System.currentTimeMillis()),
                 item.build.copy(state = RaChapterState.IDENTITY_READY, failReason = ""),
                 expectedExtraction = item.build,
+                input = item.text.input,
             )
         }
         val itemsById = extracted.associateBy { it.analysisId }
@@ -1024,6 +1051,7 @@ class BatchAnalysisRunner(
                             segments = segments, localSpeakers = speakers, localMentions = item.mentions, evidence = item.evidence,
                             build = target.build, attributes = attributes, relations = relations,
                             expectedExtraction = target.expectedExtraction,
+                            input = target.input,
                         )
                         check(publication == RaBuildPublication.PUBLISHED)
                     }

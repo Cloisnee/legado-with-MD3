@@ -74,20 +74,16 @@ class RaBookMaintenanceRepository(
     ) = withContext(Dispatchers.IO) {
         if (chapterIndexes.isEmpty()) return@withContext
         val floor = chapterIndexes.min()
-        val known = buildGateway.builds(bookKey, sourceKey).map { it.chapterIndex }
-        val targets = if (rollback) {
-            (known.filter { it >= floor } + chapterIndexes).distinct().sorted()
-        } else {
-            chapterIndexes.toList()
+        database.withTransaction {
+            buildGateway.deleteChapters(bookKey, sourceKey, chapterIndexes.toList(), rollbackFrom = floor.takeIf { rollback })
+            refreshCharacters(bookKey)
         }
-        buildGateway.deleteChapters(bookKey, sourceKey, targets)
         val audioTargets = if (rollback) {
             audioCache.listChapters(bookName).filter { it >= floor }
         } else {
             chapterIndexes.toList()
         }
         audioTargets.forEach { audioCache.deleteChapter(bookName, it) }
-        database.withTransaction { refreshCharacters(bookKey) }
     }
 
     suspend fun deleteBook(bookKey: String, bookName: String) = withContext(Dispatchers.IO) {
