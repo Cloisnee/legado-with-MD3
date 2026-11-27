@@ -273,6 +273,37 @@ class AiRequestSchedulerTest {
     }
 
     @Test
+    fun `foreground director releases joined protected stream permit`() = runBlocking {
+        val scheduler = AiRequestScheduler()
+        val control = AiRequestControl()
+        val reference = ref(1)
+        val running = CompletableDeferred<Unit>()
+        val network = AtomicInteger()
+        val background = launch {
+            scheduler.withPermit(reference, ctx(AiPriority.P3_BACKGROUND, true).copy(
+                control = control, sourceKey = "src",
+            )) {
+                network.incrementAndGet()
+                running.complete(Unit)
+                try { awaitCancellation() } finally { network.decrementAndGet() }
+            }
+        }
+        try {
+            withTimeout(1_000) { running.await() }
+            control.foreground()
+            withTimeout(1_000) {
+                scheduler.withPermit(reference, ctx(AiPriority.P0_CURRENT).copy(
+                    kind = AiTaskKind.DIRECTOR, sourceKey = "src",
+                )) { assertEquals(0, network.get()) }
+                background.join()
+            }
+            assertTrue(background.isCancelled)
+        } finally {
+            background.cancel()
+        }
+    }
+
+    @Test
     fun `foreground joining a running nonincremental chapter cancels it`() = runBlocking {
         val scheduler = AiRequestScheduler()
         val control = AiRequestControl(incremental = false)

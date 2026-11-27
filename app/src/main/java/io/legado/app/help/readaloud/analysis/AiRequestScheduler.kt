@@ -23,7 +23,7 @@ enum class AiTaskKind {
     STAGE2,
     RESOLVE,
     DIRECTOR,
-    NARRATIVE,
+    EMOTION,
 }
 
 /** 请求优先级（数值越小越优先）。P0~P2 视为前台，可抢占后台。 */
@@ -66,7 +66,7 @@ class AiRequestControl(private val incremental: Boolean = true) {
         }
     }
     @Synchronized fun yieldToForeground() {
-        owner?.cancel(CancellationException("foreground needs batch provider for identity resolution"))
+        owner?.cancel(CancellationException("foreground needs batch provider"))
     }
 }
 
@@ -185,7 +185,11 @@ class AiRequestScheduler(
                 if (!waiter.granted && context.effectivePriority.foreground) {
                     lane.running.values.filter { running ->
                         val active = running.context
-                        active.canPreempt || (context.kind == AiTaskKind.RESOLVE &&
+                        // 接管只保护当前章的观察包；后续前台请求需要同一许可时，
+                        // 中断流尾，让已提交章继续裁决、情绪或导演，未完成章留待恢复。
+                        active.canPreempt || ((context.control == null || context.control !== active.control) &&
+                            (context.kind == AiTaskKind.RESOLVE || context.kind == AiTaskKind.DIRECTOR ||
+                                context.kind == AiTaskKind.EMOTION) &&
                             active.kind == AiTaskKind.STAGE2 && active.preemptible &&
                             active.bookKey == context.bookKey && active.sourceKey == context.sourceKey &&
                             active.chapters.any { it in context.chapters })

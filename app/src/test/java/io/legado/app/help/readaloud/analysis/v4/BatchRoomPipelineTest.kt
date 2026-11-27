@@ -201,6 +201,59 @@ class BatchRoomPipelineTest {
         }
     }
 
+    @Test fun `conflicting same response key respects each chapter evidence in all convergence orders`() = runBlocking {
+        val first = chapter(0, "张三说：“到了。”")
+        val second = chapter(1, "蒙面客正是李四。蒙面客说：“请进。”")
+        val evidence = JSONObject().put("type", "ALIAS_EQUAL").put("subject", "B1").put("object", "李四")
+            .put("ch", 2).put("p", 1).put("quote", "蒙面客正是李四")
+        val response = batchResponse(entry(1, "张三", "1" to "B1"),
+            entry(2, "蒙面客", "1" to "B1").put("evidence", JSONArray().put(evidence)))
+        fixture(List(4) { response }) { f ->
+            for (path in 0..3) {
+                val book = "conflict-$path"
+                suspend fun character(name: String, voice: String) = f.characters.ensureCharacter(
+                    book, name, "核心", "男", "男青年", 0, emptyList(), "ACTIVE", "user", "default",
+                ).also { f.characters.setDefaultVoice(it.id, voice, voice) }
+                val a = character("张三", "张三的声线")
+                val b = character("李四", "李四的声线")
+                f.characters.saveCannotLink(book, a.id, b.id, "user")
+                val cannot = f.characters.linksOfBook(book).single()
+                val stop = IllegalStateException("模拟断流后重启")
+                val outcome = runCatching {
+                    f.runner().run(book, "src", listOf(first, second), "conflict", onChapterReady = { ch, ready ->
+                        if (path == 1 && ch == 0 && !ready) {
+                            assertEquals(listOf(0), f.runner().convergeExisting(book, "src", listOf(first), AiPriority.P0_CURRENT).ready)
+                        }
+                        if (path >= 2 && ch == 1 && !ready) throw stop
+                    })
+                }
+                if (path >= 2) {
+                    assertSame(stop, outcome.exceptionOrNull())
+                    val order = if (path == 2) listOf(first, second) else listOf(second, first)
+                    for (input in order) {
+                        assertEquals(RaChapterState.EXTRACTED, f.builds.getBuild(book, "src", input.chapterIndex)?.state)
+                        assertEquals(listOf(input.chapterIndex), f.runner().convergeExisting(book, "src", listOf(input)).ready)
+                    }
+                } else {
+                    assertEquals(listOf(0, 1), outcome.getOrThrow().ready)
+                }
+                val dialogue = (0..1).map { ch -> f.builds.segmentsOfChapter(book, "src", ch).single { it.seq == 1 } }
+                assertEquals(listOf(a.id, b.id), dialogue.map { it.characterId })
+                assertEquals(listOf("张三的声线", "李四的声线"),
+                    BuildSpeechPlanUseCase(f.characters, voices)(book, dialogue).map { it.voice?.displayName })
+                assertEquals(setOf("张三"), f.characters.aliasesOf(a.id).map { it.surface }.toSet())
+                assertEquals(setOf("李四", "蒙面客"), f.characters.aliasesOf(b.id).map { it.surface }.toSet())
+                assertEquals(listOf(cannot), f.characters.linksOfBook(book))
+                assertEquals(2, f.characters.voiceProfiles(book).size)
+                val storedEvidence = f.builds.evidence(f.builds.getBuild(book, "src", 1)!!.analysisId!!).single()
+                assertTrue(storedEvidence.verified)
+                assertEquals("蒙面客正是李四", storedEvidence.excerpt)
+                println("R3-2 path=$path: 张三/李四, distinct playback voices, aliases and user CANNOT verified")
+            }
+            assertEquals(4, f.requests.get())
+        }
+    }
+
     @Test fun `batch rebuild and recovery apply matching user overrides before playback`() = runBlocking {
         val old = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“旧句。”")
         val new = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“新句。”")

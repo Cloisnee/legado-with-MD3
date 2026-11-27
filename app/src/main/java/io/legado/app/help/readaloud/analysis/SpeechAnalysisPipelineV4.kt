@@ -5,6 +5,7 @@ import io.legado.app.data.repository.AiModelRepository
 import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.domain.gateway.RaBuildPublication
+import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.gateway.RaDirectionAudio
 import io.legado.app.domain.gateway.RaDirectionGateway
@@ -19,14 +20,6 @@ import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
-import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
-import io.legado.app.domain.model.readaloud.v4.RaCharacter
-import io.legado.app.domain.model.readaloud.v4.RaEvidence
-import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
-import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
-import io.legado.app.domain.model.readaloud.v4.RaLocalMention
-import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
-import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
@@ -81,7 +74,7 @@ import java.io.File
 class SpeechAnalysisPipelineV4(
     private val bookIdentity: io.legado.app.domain.gateway.RaBookIdentityGateway,
     private val raBuild: io.legado.app.domain.gateway.RaBuildGateway,
-    private val raCharacters: io.legado.app.domain.gateway.RaCharacterGateway,
+    private val raCharacters: RaCharacterGateway,
     private val raDirection: io.legado.app.domain.gateway.RaDirectionGateway,
     private val catalog: io.legado.app.data.repository.ReadAloudCatalogRepository,
     private val resolver: io.legado.app.help.readaloud.analysis.v4.IdentityResolver,
@@ -412,43 +405,10 @@ BGM 建议缺段从值集补全。
             val evidence = ObservationAssembly.buildEvidence(analysisId, bookKey, stage2?.evidence.orEmpty())
             val seqMap = stage2?.seqMap.orEmpty()
             val contextBySpeaker = ObservationAssembly.buildContextBySpeaker(paragraphs, segments, seqMap, localSpeakers)
-            val resolveResult = resolver.resolveChapter(
-                bookKey = bookKey,
-                chapterIndex = chapterIndex,
-                chapterLabel = chapterLabel,
-                speakers = localSpeakers,
-                mentions = localMentions,
-                evidence = evidence,
-                contextBySpeaker = contextBySpeaker,
-                context = aiContext?.copy(kind = AiTaskKind.RESOLVE),
+            val answers = resolver.prepareChapter(
+                bookKey, chapterIndex, chapterLabel, localSpeakers, evidence, contextBySpeaker,
+                aiContext?.copy(kind = AiTaskKind.RESOLVE),
             )
-            val keyToCharacter = HashMap<String, String>()
-            val keyToResolution = HashMap<String, RaResolution>()
-            val resolvedCharacters = ArrayList<RaCharacter>()
-            localSpeakers.forEach { speaker ->
-                val resolution = resolveResult.resolutions[speaker.localKey]
-                if (resolution != null) {
-                    keyToCharacter[speaker.localKey] = resolution.characterId
-                    keyToResolution[speaker.localKey] = resolution.resolution
-                    raCharacters.character(resolution.characterId)?.let(resolvedCharacters::add)
-                }
-            }
-            segments = SpeakerBinder.bind(segments, localSpeakers, keyToCharacter, seqMap)
-            val updatedSpeakers = localSpeakers.map { speaker ->
-                speaker.copy(
-                    characterId = keyToCharacter[speaker.localKey],
-                    resolution = keyToResolution[speaker.localKey] ?: RaResolution.PENDING,
-                )
-            }
-            if (localSpeakers.isNotEmpty()) {
-                val linked = resolveResult.resolutions.count { !it.value.created }
-                val provisional = resolveResult.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
-                AppLog.putAnalysis(
-                    "【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}" +
-                        "（新建 ${resolveResult.created.size}、链接 $linked、临时 $provisional）",
-                )
-            }
-            casting.ensureDefaultProfiles(bookKey, resolvedCharacters.distinctBy { it.id }, chapterLabel)
 
             // ===== 情绪（V4-1 仍用旧提示词；结果写 ra_direction_line） =====
             val emotionBySeq = HashMap<Int, String>()
@@ -494,7 +454,7 @@ BGM 建议缺段从值集补全。
                 }
             }
 
-            // ===== 落库（一个事务：analysis + segments + localSpeakers + evidence + build） =====
+            // ===== 落库（人物、发声方案和有效章节一起提交） =====
             val stage2Failed = dialogueSegs.isNotEmpty() && !usedAi2
             val now = System.currentTimeMillis()
             val analysis = RaAnalysis(
@@ -537,35 +497,59 @@ BGM 建议缺段从值集补全。
                 createdAt = olderBuild?.createdAt ?: now,
                 updatedAt = taskStartedAt,
             )
-            val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
-                bookKey = bookKey,
-                chapterIndex = chapterIndex,
-                payload = stage2,
-                keyToCharacter = keyToCharacter,
-                evidence = evidence,
-            )
             currentCoroutineContext().ensureActive()
-            val publication = withContext(NonCancellable) {
-                raBuild.saveAnalysisBundle(
-                    analysis = analysis,
-                    segments = bound,
-                    localSpeakers = updatedSpeakers,
-                    localMentions = localMentions,
-                    evidence = evidence,
-                    build = build,
-                    attributes = attributeObs,
-                    relations = relationObs,
-                ).also { if (it == RaBuildPublication.PUBLISHED) onPublished?.invoke(analysis.status) }
+            val published = withContext(NonCancellable) {
+                raBuild.commitIdentity(listOf(RaIdentityCommit(analysis, build))) { eligible ->
+                    if (eligible.isEmpty()) {
+                        // 旧结果可留作历史观察包，不能为全书新增身份或改写既有身份。
+                        val historical = if (stage2Failed) analysis else analysis.copy(status = RaAnalysisStatus.EXTRACTED)
+                        val raw = SpeakerBinder.bind(bound, localSpeakers, emptyMap(), seqMap)
+                        check(raBuild.saveAnalysisBundle(historical, raw, localSpeakers, localMentions, evidence, build)
+                            != RaBuildPublication.PUBLISHED)
+                        return@commitIdentity false
+                    }
+                    val result = resolver.applyChapter(
+                        bookKey, chapterIndex, localSpeakers, localMentions, evidence, contextBySpeaker, answers,
+                    )
+                    val keyToCharacter = result.resolutions.mapValues { it.value.characterId }
+                    val updatedSpeakers = localSpeakers.map { speaker ->
+                        val resolution = result.resolutions[speaker.localKey]
+                        if (resolution == null) speaker else speaker.copy(
+                            characterId = resolution.characterId, resolution = resolution.resolution,
+                        )
+                    }
+                    val characters = keyToCharacter.values.distinct().mapNotNull { raCharacters.character(it) }
+                    casting.ensureDefaultProfiles(bookKey, characters, chapterLabel)
+                    val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
+                        bookKey, chapterIndex, stage2, keyToCharacter, evidence,
+                    )
+                    val publication = raBuild.saveAnalysisBundle(
+                        analysis = analysis,
+                        segments = SpeakerBinder.bind(bound, localSpeakers, keyToCharacter, seqMap),
+                        localSpeakers = updatedSpeakers,
+                        localMentions = localMentions,
+                        evidence = evidence,
+                        build = build,
+                        attributes = attributeObs,
+                        relations = relationObs,
+                    )
+                    check(publication == RaBuildPublication.PUBLISHED)
+                    characters.forEach { raCharacters.recomputeAppearance(it.id) }
+                    if (localSpeakers.isNotEmpty()) {
+                        val linked = result.resolutions.count { !it.value.created }
+                        val provisional = result.resolutions.count { it.value.resolution == RaResolution.PROVISIONAL }
+                        AppLog.putAnalysis("【V4·$chapterLabel·收敛】完成：人物 ${localSpeakers.size}" +
+                            "（新建 ${result.created.size}、链接 $linked、临时 $provisional）")
+                    }
+                    true
+                }.also { if (it) onPublished?.invoke(analysis.status) }
             }
-            if (publication != RaBuildPublication.PUBLISHED) return@withContext null
+            if (!published) return@withContext null
             val publishedSegments = raBuild.segments(analysisId)
             AppLog.putAnalysis(
-                "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${updatedSpeakers.size}、AI=$usedAi2" +
+                "【V4·$chapterLabel·落库】完成：段 ${bound.size}、人物 ${localSpeakers.size}、AI=$usedAi2" +
                     (if (stage2Failed) "（阶段2失败，标记 FAILED 待重试）" else ""),
             )
-            resolvedCharacters.distinctBy { it.id }.forEach { character ->
-                runCatching { raCharacters.recomputeAppearance(character.id) }
-            }
 
             // ===== 导演行（情绪）与音频条目双写 Room =====
             if (!skipLegacyAudio) {
@@ -598,6 +582,7 @@ BGM 建议缺段从值集补全。
             val label = catalog.chapterLabel(bookUrl, analysis.chapterIndex)
             val context = aiContext ?: AiSchedulerContext(
                 AiTaskKind.DIRECTOR, AiPriority.P0_CURRENT, analysis.bookKey, listOf(analysis.chapterIndex), false,
+                sourceKey = analysis.sourceKey,
             )
             val units = ObservationAssembly.buildParaUnits(paragraphs)
             val flatUnits = units.flatMap { p -> p.units.map { it.text } }
@@ -916,7 +901,7 @@ BGM 建议缺段从值集补全。
             promptFactory,
             cfg.maxOutputTokens,
             logTag = "$label·情绪",
-            context = aiContext?.copy(kind = AiTaskKind.STAGE2),
+            context = aiContext?.copy(kind = AiTaskKind.EMOTION),
         ) { raw ->
             validateEmotion(raw, count)
         }

@@ -16,6 +16,7 @@ import io.legado.app.data.entities.readaloud.RaSegmentEntity
 import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaBuildPublication
+import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
@@ -112,6 +113,20 @@ class RaBuildRepository(
         dao.latestAnalysisForSource(bookKey, sourceKey, chapterIndex)?.toDomain()
     }
 
+    override suspend fun <T> commitIdentity(
+        targets: List<RaIdentityCommit>,
+        write: suspend (List<RaIdentityCommit>) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            val currentTargets = targets.filter { target ->
+                val build = target.build
+                val current = dao.getBuild(build.bookKey, build.sourceKey, build.chapterIndex)
+                canPublish(target, current)
+            }
+            write(currentTargets)
+        }
+    }
+
     override suspend fun saveAnalysisBundle(
         analysis: RaAnalysis,
         segments: List<RaSegment>,
@@ -125,20 +140,9 @@ class RaBuildRepository(
     ): RaBuildPublication = withContext(Dispatchers.IO) {
         database.withTransaction {
             val current = dao.getBuild(build.bookKey, build.sourceKey, build.chapterIndex)
-            val persisted = dao.getAnalysisById(analysis.id)
-            val publish = if (expectedExtraction != null) {
-                current == expectedExtraction.toEntity() && current.state == RaChapterState.EXTRACTED.storageValue &&
-                    current.analysisId == analysis.id && persisted?.status == RaAnalysisStatus.EXTRACTED.storageValue
-            } else {
-                val newer = current == null || build.updatedAt > current.updatedAt ||
-                    (build.updatedAt == current.updatedAt && current.state !in publishedStates)
-                val wouldReplaceReady = current?.state == RaChapterState.IDENTITY_READY.storageValue &&
-                    current.contentHash == build.contentHash && build.state != RaChapterState.IDENTITY_READY &&
-                    current.analysisId?.let { dao.getAnalysisById(it) }?.resolverVersion == analysis.resolverVersion
-                newer && !wouldReplaceReady
-            }
+            val publish = canPublish(RaIdentityCommit(analysis, build, expectedExtraction), current)
             // 确定性 ID 可能复用。晚到结果只在历史 ID 尚不存在时入库，保护同 ID 的新段及人物外键。
-            if (!publish && persisted != null) return@withTransaction RaBuildPublication.IGNORED
+            if (!publish && dao.getAnalysisById(analysis.id) != null) return@withTransaction RaBuildPublication.IGNORED
             val publishedSegments = if (publish && analysis.status != RaAnalysisStatus.EXTRACTED) {
                 val overrides = dao.overrides(analysis.bookKey, analysis.chapterIndex)
                     .associateBy { it.paragraphIndex to it.textHash }
@@ -160,6 +164,24 @@ class RaBuildRepository(
             relations.forEach { characterDao.insertRelation(it.toEntity()) }
             RaBuildPublication.PUBLISHED
         }
+    }
+
+    private suspend fun canPublish(target: RaIdentityCommit, current: RaChapterBuildEntity?): Boolean {
+        val (analysis, build, expected) = target
+        if (expected != null) {
+            if (current != expected.toEntity() || current.state != RaChapterState.EXTRACTED.storageValue ||
+                current.analysisId != analysis.id || current.contentHash != analysis.contentHash
+            ) return false
+            val extracted = dao.getAnalysisById(analysis.id) ?: return false
+            return extracted.status == RaAnalysisStatus.EXTRACTED.storageValue &&
+                extracted.resolverVersion == analysis.resolverVersion && extracted.contentHash == analysis.contentHash
+        }
+        val newer = current == null || build.updatedAt > current.updatedAt ||
+            (build.updatedAt == current.updatedAt && current.state !in publishedStates)
+        val wouldReplaceReady = current?.state == RaChapterState.IDENTITY_READY.storageValue &&
+            current.contentHash == build.contentHash && build.state != RaChapterState.IDENTITY_READY &&
+            current.analysisId?.let { dao.getAnalysisById(it) }?.resolverVersion == analysis.resolverVersion
+        return newer && !wouldReplaceReady
     }
 
     private val publishedStates = setOf(RaChapterState.EXTRACTED, RaChapterState.IDENTITY_READY, RaChapterState.FAILED)

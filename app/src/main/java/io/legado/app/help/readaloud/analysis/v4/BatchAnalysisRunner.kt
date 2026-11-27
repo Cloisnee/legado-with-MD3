@@ -6,6 +6,7 @@ import io.legado.app.data.repository.WordLibraryRepository
 import io.legado.app.help.readaloud.analysis.queueRefs
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaBuildPublication
+import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.gateway.RaCharacterGateway
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.SpeechIdentity
@@ -964,102 +965,109 @@ class BatchAnalysisRunner(
         control: AiRequestControl?,
     ): Convergence {
         if (extracted.isEmpty()) return Convergence()
-        val scopes = extracted.mapNotNull { it.batchId }.toSet()
         val sourceKey = extracted.first().build.sourceKey
-        val historicalAnchors = raBuild.readyBatchAnalyses(bookKey, sourceKey, scopes)
-        val inputs = extracted.map { item ->
+        val targets = extracted.mapNotNull { item ->
+            val analysis = raBuild.analysisById(item.analysisId) ?: return@mapNotNull null
+            RaIdentityCommit(
+                analysis.copy(status = RaAnalysisStatus.RESOLVED, updatedAt = System.currentTimeMillis()),
+                item.build.copy(state = RaChapterState.IDENTITY_READY, failReason = ""),
+                expectedExtraction = item.build,
+            )
+        }
+        val itemsById = extracted.associateBy { it.analysisId }
+        val context = AiSchedulerContext(
+            kind = AiTaskKind.RESOLVE,
+            priority = priority,
+            bookKey = bookKey,
+            chapters = extracted.map { it.text.chapterIndex },
+            preemptible = !priority.foreground,
+            control = control,
+            sourceKey = sourceKey,
+        )
+        val ready = try {
+            val answers = resolver.prepareBatch(bookKey, convergenceInputs(bookKey, sourceKey, extracted), context)
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) {
+                val committed = raBuild.commitIdentity(targets) { eligible ->
+                    if (eligible.isEmpty()) return@commitIdentity emptyList()
+                    val active = eligible.map { itemsById.getValue(it.analysis.id) }
+                    // 按事务内仍有效的观察包和锚点收敛，部分失效的章不会贡献别名或证据。
+                    val inputs = convergenceInputs(bookKey, sourceKey, active)
+                    val resolutions = resolver.applyBatch(bookKey, inputs, answers)
+                    val speakersByChapter = inputs.associate { input ->
+                        input.chapterIndex to input.speakers.map { speaker ->
+                            val resolution = resolutions.getValue(speaker.id)
+                            speaker.copy(characterId = resolution.characterId, resolution = resolution.resolution)
+                        }
+                    }
+                    val characters = active.flatMap { speakersByChapter.getValue(it.text.chapterIndex) }
+                        .mapNotNull { it.characterId }.distinct().mapNotNull { raCharacters.character(it) }
+                    casting.ensureDefaultProfiles(bookKey, characters, "后台")
+                    for (target in eligible) {
+                        val item = itemsById.getValue(target.analysis.id)
+                        val speakers = speakersByChapter.getValue(item.text.chapterIndex)
+                        val charBySpeaker = speakers.associate { it.id to it.characterId }
+                        val segments = raBuild.segments(item.analysisId).map { segment ->
+                            val characterId = segment.localSpeakerId?.let(charBySpeaker::get)
+                            if (characterId == null) segment else segment.copy(characterId = characterId)
+                        }
+                        check(segments.none { it.roleType != SpeechRoleType.Narrator &&
+                            (it.seq <= 0 || it.localSpeakerId == null || it.characterId == null) })
+                        val keyToCharacter = speakers.mapNotNull { speaker ->
+                            speaker.characterId?.let { speaker.localKey to it }
+                        }.toMap()
+                        val (attributes, relations) = ObservationAssembly.collectObservations(
+                            bookKey, item.text.chapterIndex, item.payload, keyToCharacter, item.evidence,
+                        )
+                        val publication = raBuild.saveAnalysisBundle(
+                            analysis = target.analysis,
+                            segments = segments, localSpeakers = speakers, localMentions = item.mentions, evidence = item.evidence,
+                            build = target.build, attributes = attributes, relations = relations,
+                            expectedExtraction = target.expectedExtraction,
+                        )
+                        check(publication == RaBuildPublication.PUBLISHED)
+                    }
+                    characters.forEach { raCharacters.recomputeAppearance(it.id) }
+                    eligible.map { it.build.chapterIndex }
+                }
+                // 等提交确认后才通知与扣额，Room 回滚不会发出 READY。
+                committed.forEach { onChapterReady?.invoke(it, true) }
+                committed
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.putAnalysis("【V4·后台·收敛】失败：${e.localizedMessage}，章节保留 EXTRACTED", e)
+            return Convergence(extracted = extracted.map { it.text.chapterIndex })
+        }
+        AppLog.putAnalysis("【V4·后台·收敛】完成：${ready.size} 章 → IDENTITY_READY")
+        return Convergence(ready, extracted.map { it.text.chapterIndex }.filterNot { it in ready })
+    }
+
+    private suspend fun convergenceInputs(
+        bookKey: String,
+        sourceKey: String,
+        extracted: List<Extracted>,
+    ): List<IdentityResolver.BatchChapterInput> {
+        val scopes = extracted.mapNotNull { it.batchId }.toSet()
+        val pendingChapters = extracted.mapTo(HashSet()) { it.text.chapterIndex }
+        val anchors = raBuild.readyBatchAnalyses(bookKey, sourceKey, scopes).filter {
+            it.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION && it.chapterIndex !in pendingChapters
+        }
+        return extracted.map { item ->
             IdentityResolver.BatchChapterInput(
                 chapterIndex = item.text.chapterIndex,
                 chapterLabel = item.text.chapterLabel,
                 speakers = raBuild.localSpeakers(item.analysisId),
-                evidence = raBuild.evidence(item.analysisId),
+                evidence = item.evidence,
                 contextBySpeaker = item.contextBySpeaker,
                 batchId = item.batchId,
             )
-        }
-        val allInputs = inputs + historicalAnchors.filter { a ->
-            a.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION && inputs.none { it.chapterIndex == a.chapterIndex }
-        }
-            .map { a -> IdentityResolver.BatchChapterInput(
-                a.chapterIndex, "第${a.chapterIndex + 1}章", raBuild.localSpeakers(a.id),
-                raBuild.evidence(a.id), batchId = a.batchId,
-            ) }
-        val resolutions = runCatching {
-            resolver.resolveBatch(
-                bookKey,
-                allInputs,
-                AiSchedulerContext(
-                    kind = AiTaskKind.RESOLVE,
-                    priority = priority,
-                    bookKey = bookKey,
-                    chapters = extracted.map { it.text.chapterIndex },
-                    preemptible = !priority.foreground,
-                    control = control,
-                    sourceKey = sourceKey,
-                ),
+        } + anchors.map { analysis ->
+            IdentityResolver.BatchChapterInput(
+                analysis.chapterIndex, "第${analysis.chapterIndex + 1}章", raBuild.localSpeakers(analysis.id),
+                raBuild.evidence(analysis.id), batchId = analysis.batchId,
             )
-        }.getOrElse { e ->
-            if (e is CancellationException) throw e
-            AppLog.putAnalysis("【V4·后台·收敛】失败：${e.localizedMessage}，章节保留 EXTRACTED", e)
-            return Convergence(extracted = extracted.map { it.text.chapterIndex })
         }
-        val ready = ArrayList<Int>()
-        // 先确保默认发声方案就绪，再发布 IDENTITY_READY，避免开播拿到“无方案”的章节。
-        val characters = resolutions.values.map { it.characterId }.distinct()
-            .mapNotNull { raCharacters.character(it) }
-        if (characters.isNotEmpty()) casting.ensureDefaultProfiles(bookKey, characters, "后台")
-        extracted.forEach { item ->
-            val speakers = raBuild.localSpeakers(item.analysisId).map { speaker ->
-                val resolution = resolutions[speaker.id]
-                if (resolution == null) {
-                    speaker
-                } else {
-                    speaker.copy(
-                        characterId = resolution.characterId,
-                        resolution = resolution.resolution,
-                    )
-                }
-            }
-            val charBySpeaker = speakers.associate { it.id to it.characterId }
-            val segments = raBuild.segments(item.analysisId).map { segment ->
-                val characterId = segment.localSpeakerId?.let(charBySpeaker::get)
-                if (characterId == null) segment else segment.copy(characterId = characterId)
-            }
-            if (segments.any {
-                    it.roleType != SpeechRoleType.Narrator &&
-                        (it.seq <= 0 || it.localSpeakerId == null || it.characterId == null)
-                }) return@forEach
-            val keyToCharacter = speakers.associate { it.localKey to it.characterId }
-                .filterValues { it != null }
-                .mapValues { it.value!! }
-            val (attributes, relations) = ObservationAssembly.collectObservations(
-                bookKey = bookKey, chapterIndex = item.text.chapterIndex, payload = item.payload,
-                keyToCharacter = keyToCharacter, evidence = item.evidence,
-            )
-            val analysis = raBuild.analysisById(item.analysisId) ?: return@forEach
-            currentCoroutineContext().ensureActive()
-            try {
-                withContext(NonCancellable) {
-                    val publication = raBuild.saveAnalysisBundle(
-                        analysis = analysis.copy(status = RaAnalysisStatus.RESOLVED, updatedAt = System.currentTimeMillis()),
-                        segments = segments, localSpeakers = speakers, localMentions = item.mentions, evidence = item.evidence,
-                        build = item.build.copy(state = RaChapterState.IDENTITY_READY, failReason = ""),
-                        attributes = attributes, relations = relations, expectedExtraction = item.build,
-                    )
-                    if (publication == RaBuildPublication.PUBLISHED) {
-                        ready.add(item.text.chapterIndex)
-                        onChapterReady?.invoke(item.text.chapterIndex, true)
-                    }
-                }
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                AppLog.putAnalysis("【V4·${item.text.chapterLabel}·收敛】提交失败：${error.localizedMessage}", error)
-            }
-        }
-        characters.forEach { character ->
-            runCatching { raCharacters.recomputeAppearance(character.id) }
-        }
-        AppLog.putAnalysis("【V4·后台·收敛】完成：${ready.size} 章 → IDENTITY_READY")
-        return Convergence(ready, extracted.map { it.text.chapterIndex }.filterNot { it in ready })
     }
 }

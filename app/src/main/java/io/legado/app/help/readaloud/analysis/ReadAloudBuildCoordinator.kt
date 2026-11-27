@@ -4,6 +4,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.repository.sourceKeyOf
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBuildGateway
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 朗读建库总调度（02 §1/§6/§7）：统一前后台建库。
@@ -108,7 +110,12 @@ class ReadAloudBuildCoordinator(
         var activeChapter: Int? = null
         var background: Job? = null
         var watcher: Job? = null
+        // 只由后台 worker 访问。保留核验结果，不改变 READY 记录的发布时间。
+        val verifiedCache = HashMap<Int, VerifiedCache>()
+        val changedCache = ConcurrentHashMap<Int, Any>()
     }
+
+    private data class VerifiedCache(val build: RaChapterBuild, val modifiedAt: Long)
 
     private data class Window(val anchor: Int, val chapters: IntRange, val generation: Long = 0)
 
@@ -299,7 +306,10 @@ class ReadAloudBuildCoordinator(
     private fun enqueueWindow(s: Session) {
         val window = s.window
         window.chapters.forEachIndexed { offset, chapter ->
-            if (chapter == s.activeChapter) return@forEachIndexed
+            // LAZY 任务领到后还可能没 start；取消中的任务则不能再为新窗口交付。
+            if (chapter == s.activeChapter && s.activeJob?.let { !it.isCancelled && !it.isCompleted } == true) {
+                return@forEachIndexed
+            }
             val priority = when (offset) {
                 0 -> AiPriority.P0_CURRENT
                 1 -> AiPriority.P1_NEXT
@@ -576,36 +586,17 @@ class ReadAloudBuildCoordinator(
     private fun startContentWatcher(s: Session) {
         s.watcher = scope.launch {
             ChapterContentEvents.events.collect { saved ->
-                if (saved.bookUrl == s.book.bookUrl) {
-                    val build = raBuild.getBuild(s.bookKey, s.sourceKey, saved.chapterIndex)
-                    val fileUpdated = runCatching {
-                        val chapter = bookChapterDao.getChapter(s.book.bookUrl, saved.chapterIndex)
-                        if (chapter == null) 0L else {
-                            BookHelp.getChapterContentFile(s.book, chapter).lastModified()
-                        }
-                    }.getOrDefault(0L)
-                    if (build != null) {
-                        when {
-                            build.state == RaChapterState.NO_CONTENT -> raBuild.transitionBuild(
-                                build,
-                                build.copy(
-                                    state = RaChapterState.CACHED,
-                                    updatedAt = System.currentTimeMillis(),
-                                ),
-                            )
-                            build.state == RaChapterState.IDENTITY_READY &&
-                                fileUpdated > build.updatedAt -> raBuild.transitionBuild(
-                                build,
-                                build.copy(
-                                    state = RaChapterState.STALE,
-                                    failReason = "正文已更新",
-                                    updatedAt = System.currentTimeMillis(),
-                                ),
-                            )
-                        }
-                    }
-                    s.wake.trySend(Unit)
+                if (saved.bookUrl != s.book.bookUrl) return@collect
+                val build = raBuild.getBuild(s.bookKey, s.sourceKey, saved.chapterIndex)
+                if (build?.state == RaChapterState.NO_CONTENT) {
+                    raBuild.transitionBuild(build, build.copy(
+                        state = RaChapterState.CACHED,
+                        updatedAt = System.currentTimeMillis(),
+                    ))
+                } else if (build?.state == RaChapterState.IDENTITY_READY) {
+                    s.changedCache[saved.chapterIndex] = Any()
                 }
+                s.wake.trySend(Unit)
             }
         }
     }
@@ -677,23 +668,33 @@ class ReadAloudBuildCoordinator(
                     deferredRecovery.clear()
                     continue
                 }
+                val metadata = chapters.associateBy { it.index }
                 val texts = ArrayList<BatchAnalysisRunner.ChapterText>()
-                var missing = false
-                batchIndices.forEach { chapter ->
+                var reselect = false
+                for (chapter in batchIndices) {
                     val beforeLoad = raBuild.getBuild(s.bookKey, s.sourceKey, chapter)
+                    val change = s.changedCache[chapter]
+                    val chapterInfo = metadata[chapter]
+                    if (chapterInfo == null) {
+                        reselect = true
+                        continue
+                    }
+                    val modifiedAt = cachedModifiedAt(s.book, chapterInfo)
                     val text = textProvider.load(s.book, chapter, allowDownload = false)
-                    if (text == null) {
-                        missing = true
+                    if (s.changedCache[chapter] !== change || cachedModifiedAt(s.book, chapterInfo) != modifiedAt) {
+                        reselect = true
+                    } else if (text == null) {
                         markNoContent(s.book.bookUrl, s.bookKey, s.sourceKey, chapter, beforeLoad)
+                        reselect = true
+                    } else if (reuseCachedIdentity(s, text, modifiedAt)) {
+                        if (change != null) s.changedCache.remove(chapter, change)
+                        reselect = true
                     } else {
                         texts.add(text.toBatchText(chapter))
                     }
                 }
-                if (missing) {
-                    // D7：缺口断开批次，不把缺口两侧拼成一批；下一轮从另一侧继续。
-                    setStatus(BackgroundState.RUNNING, s, computeStates(s))
-                    continue
-                }
+                // 已就绪章和正文缺口都断开批次，按最新状态重新选连续章。
+                if (reselect) continue
                 if (!canStartBackground(s, window)) continue
                 val started = System.currentTimeMillis()
                 val outcome = runBatchDegraded(s, window, texts)
@@ -932,7 +933,7 @@ class ReadAloudBuildCoordinator(
 
     // ---------------- 状态 ----------------
 
-    private fun estimateChapterTokens(book: Book, chapter: io.legado.app.data.entities.BookChapter): Int {
+    private fun estimateChapterTokens(book: Book, chapter: BookChapter): Int {
         val bytes = runCatching {
             BookHelp.getChapterContentFile(book, chapter).length()
         }.getOrDefault(0L)
@@ -941,35 +942,48 @@ class ReadAloudBuildCoordinator(
         return (dialogues * 60 + 800).coerceIn(400, 30_000)
     }
 
+    private fun cachedModifiedAt(book: Book, chapter: BookChapter): Long =
+        runCatching { BookHelp.getChapterContentFile(book, chapter).lastModified() }.getOrDefault(0L)
+
+    /** 同一份已解析正文不提交给模型，也不占用本次建库额度。 */
+    private suspend fun reuseCachedIdentity(s: Session, text: ChapterTextProvider.Text, modifiedAt: Long): Boolean {
+        val current = raBuild.getBuild(s.bookKey, s.sourceKey, text.chapterIndex) ?: return false
+        if (current.contentHash != text.contentHash ||
+            (current.state != RaChapterState.IDENTITY_READY && current.state != RaChapterState.STALE)
+        ) return false
+        val analysis = current.analysisId?.let { raBuild.analysisById(it) } ?: return false
+        if (analysis.status != RaAnalysisStatus.RESOLVED || analysis.contentHash != text.contentHash ||
+            analysis.resolverVersion != SpeechAnalysisPipelineV4.RESOLVER_VERSION
+        ) return false
+        val ready = if (current.state == RaChapterState.IDENTITY_READY) current else {
+            // 早期会话可能只根据缓存时间写过 STALE；正文未变时恢复同一指针。
+            current.copy(state = RaChapterState.IDENTITY_READY, failReason = "").also {
+                if (!raBuild.transitionBuild(current, it)) return true // 指针已变，交回选批重读。
+            }
+        }
+        s.verifiedCache[text.chapterIndex] = VerifiedCache(ready, modifiedAt)
+        return true
+    }
+
     private suspend fun computeStates(s: Session): Map<Int, RaChapterState> {
         val chapters = bookChapterDao.getChapterList(s.book.bookUrl)
-        val builds = runCatching { raBuild.builds(s.bookKey, s.sourceKey) }
-            .getOrDefault(emptyList())
-            .associateBy { it.chapterIndex }
+        val builds = raBuild.builds(s.bookKey, s.sourceKey).associateBy { it.chapterIndex }
         return chapters.associate { chapter ->
             val build = builds[chapter.index]
             val hasContent = s.book.isLocal || BookHelp.hasContent(s.book, chapter)
-            val fileUpdated = runCatching { BookHelp.getChapterContentFile(s.book, chapter).lastModified() }
-                .getOrDefault(0L)
+            val fileUpdated = cachedModifiedAt(s.book, chapter)
             val state = when {
                 build?.state == RaChapterState.IDENTITY_READY && hasContent &&
-                    fileUpdated > build.updatedAt -> RaChapterState.STALE
+                    (s.changedCache.containsKey(chapter.index) || (fileUpdated > build.updatedAt &&
+                        s.verifiedCache[chapter.index] != VerifiedCache(build, fileUpdated))) -> RaChapterState.STALE
                 build == null -> if (hasContent) RaChapterState.CACHED else RaChapterState.NO_CONTENT
-                build.state == RaChapterState.IDENTITY_READY ||
-                    build.state == RaChapterState.SKIPPED_EMPTY -> build.state
-                build.state == RaChapterState.EXTRACTED ||
-                    build.state == RaChapterState.STALE -> build.state
+                build.state == RaChapterState.IDENTITY_READY || build.state == RaChapterState.SKIPPED_EMPTY ||
+                    build.state == RaChapterState.EXTRACTED || build.state == RaChapterState.STALE -> build.state
                 build.state == RaChapterState.FAILED && build.attempts >= 3 -> build.state
                 build.state == RaChapterState.FAILED ->
                     if (hasContent) RaChapterState.CACHED else RaChapterState.NO_CONTENT
-                build.state == RaChapterState.NO_CONTENT -> {
-                    // 跨会话补缓存：文件比 NO_CONTENT 记录新才重新纳入；同文件不反复重试。
-                    val fileUpdated = runCatching {
-                        BookHelp.getChapterContentFile(s.book, chapter).lastModified()
-                    }.getOrDefault(0L)
-                    if (hasContent && fileUpdated > build.updatedAt) RaChapterState.CACHED
-                    else RaChapterState.NO_CONTENT
-                }
+                build.state == RaChapterState.NO_CONTENT ->
+                    if (hasContent && fileUpdated > build.updatedAt) RaChapterState.CACHED else RaChapterState.NO_CONTENT
                 else -> RaChapterState.CACHED
             }
             chapter.index to state

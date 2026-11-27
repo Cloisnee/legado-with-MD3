@@ -13,7 +13,22 @@ import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
 /** 当前版本发布、只保留历史，或同 ID 已有更新结果。 */
 enum class RaBuildPublication { PUBLISHED, HISTORY_ONLY, IGNORED }
 
+data class RaIdentityCommit(
+    val analysis: RaAnalysis,
+    val build: RaChapterBuild,
+    val expectedExtraction: RaChapterBuild? = null,
+)
+
 interface RaBuildGateway {
+
+    /**
+     * 在同一写事务里筛选仍可发布的目标并执行其本地身份收敛、发声方案和章节提交。
+     * [write] 只能使用通过验证的目标，模型调用和完成通知在事务外执行。
+     */
+    suspend fun <T> commitIdentity(
+        targets: List<RaIdentityCommit>,
+        write: suspend (List<RaIdentityCommit>) -> T,
+    ): T
 
     suspend fun getBuild(bookKey: String, sourceKey: String, chapterIndex: Int): RaChapterBuild?
 
