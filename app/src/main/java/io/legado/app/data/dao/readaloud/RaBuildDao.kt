@@ -131,9 +131,10 @@ interface RaBuildDao {
             "on b.bookKey = a.bookKey and b.sourceKey = a.sourceKey and b.chapterIndex = a.chapterIndex " +
             "and b.analysisId = a.id and b.contentHash = a.contentHash " +
             "where a.bookKey = :bookKey and a.sourceKey = :sourceKey and a.batchId in (:batchIds) " +
-            "and b.state = 'IDENTITY_READY' and a.status = 'RESOLVED' order by a.chapterIndex"
+            "and ((b.state = 'IDENTITY_READY' and a.status = 'RESOLVED') " +
+            "or (b.state = 'EXTRACTED' and a.status = 'EXTRACTED')) order by a.chapterIndex"
     )
-    suspend fun readyBatchAnalyses(
+    suspend fun currentBatchAnalyses(
         bookKey: String, sourceKey: String, batchIds: Set<String>,
     ): List<RaChapterAnalysisEntity>
 

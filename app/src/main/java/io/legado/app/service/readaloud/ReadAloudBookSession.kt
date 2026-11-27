@@ -57,6 +57,7 @@ class ReadAloudBookSession : KoinComponent {
         val styleName: String = "",
         val headerExtentPx: Float = 0f,
         val footerExtentPx: Float = 0f,
+        val analysisGeneration: Long = 0L,
     )
 
     private val _state = MutableStateFlow(Snapshot())

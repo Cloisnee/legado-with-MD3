@@ -1,25 +1,27 @@
 package io.legado.app.data.repository
 
+import androidx.room.withTransaction
+import io.legado.app.data.AppDatabase
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.readaloud.RaBuildDao
 import io.legado.app.data.entities.readaloud.RaBookIdentityEntity
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBookIdentityRow
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.model.readaloud.v4.RaIds
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class RaBookIdentityRepository(
+    private val database: AppDatabase,
     private val dao: RaBuildDao,
     private val bookDao: BookDao,
+    private val builds: RaBuildGateway,
 ) : RaBookIdentityGateway {
 
-    private val mutex = Mutex()
-
-    override suspend fun keyOf(bookUrl: String, sourceKey: String): String = withContext(Dispatchers.IO) {
-        mutex.withLock {
+    override suspend fun keyOf(bookUrl: String, sourceKey: String, generation: Long): String? = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            if (!builds.canResolveBookUrl(bookUrl, generation)) return@withTransaction null
             val existing = dao.getIdentity(bookUrl)
             if (existing != null) {
                 if (existing.sourceKey != sourceKey) {
@@ -27,7 +29,7 @@ class RaBookIdentityRepository(
                         existing.copy(sourceKey = sourceKey, updatedAt = System.currentTimeMillis()),
                     )
                 }
-                return@withLock existing.bookKey
+                return@withTransaction existing.bookKey
             }
             // 第二道防线：同一本书换 URL 后，按 同书名+同作者 的旧记录兜底
             val book = bookDao.getBook(bookUrl)
@@ -61,8 +63,8 @@ class RaBookIdentityRepository(
         newBookUrl: String,
         newSourceKey: String,
     ) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            if (oldBookUrl.isBlank() || newBookUrl.isBlank() || oldBookUrl == newBookUrl) return@withLock
+        database.withTransaction {
+            if (oldBookUrl.isBlank() || newBookUrl.isBlank() || oldBookUrl == newBookUrl) return@withTransaction
             val old = dao.getIdentity(oldBookUrl)
             if (old != null) {
                 dao.upsertIdentity(

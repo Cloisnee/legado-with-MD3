@@ -18,6 +18,7 @@ import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.RaIdentityCommit
+import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
@@ -35,10 +36,15 @@ import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
 
 class RaBuildRepository(
     private val database: AppDatabase,
@@ -56,6 +62,7 @@ class RaBuildRepository(
 
     private val deletionLock = Any()
     private val deletions = HashMap<String, Deletions>()
+    private val deletedUrls = HashMap<String, Long>()
     private var generation = 0L
 
     override fun generation(): Long = synchronized(deletionLock) { generation }
@@ -66,12 +73,22 @@ class RaBuildRepository(
             since.rollbackFloors.floorEntry(chapterIndex)?.value ?: 0L)
     }
 
-    private fun recordDeletion(bookKey: String, chapters: List<Int>? = null, rollbackFrom: Int? = null) {
+    override fun canResolveBookUrl(bookUrl: String, generation: Long): Boolean = synchronized(deletionLock) {
+        generation >= (deletedUrls[bookUrl] ?: 0L)
+    }
+
+    private fun recordDeletion(
+        bookKey: String,
+        chapters: List<Int>? = null,
+        rollbackFrom: Int? = null,
+        bookUrls: Set<String> = emptySet(),
+    ) {
         synchronized(deletionLock) {
             val revision = ++generation
             val since = deletions.getOrPut(bookKey) { Deletions() }
             if (chapters == null) {
                 since.wholeBook = revision
+                bookUrls.forEach { deletedUrls[it] = revision }
                 since.chapters.clear()
                 since.rollbackFloors.clear()
             } else if (rollbackFrom != null) {
@@ -111,11 +128,39 @@ class RaBuildRepository(
             }
         }
 
-    override suspend fun readyBatchAnalyses(bookKey: String, sourceKey: String, batchIds: Set<String>): List<RaAnalysis> =
-        withContext(Dispatchers.IO) {
-            if (batchIds.isEmpty()) emptyList()
-            else dao.readyBatchAnalyses(bookKey, sourceKey, batchIds).map(RaChapterAnalysisEntity::toDomain)
+    override suspend fun currentBatchAnalyses(
+        bookKey: String,
+        sourceKey: String,
+        batchIds: Set<String>,
+        excludedChapters: Set<Int>,
+        generation: Long,
+    ): List<RaAnalysis> = withContext(Dispatchers.IO) {
+        if (batchIds.isEmpty()) return@withContext emptyList()
+        val current = dao.currentBatchAnalyses(bookKey, sourceKey, batchIds).filter {
+            it.chapterIndex !in excludedChapters && canUseGeneration(bookKey, it.chapterIndex, generation)
         }
+        val snapshots = current.associateWith { analysis ->
+            runCatching { JSONObject(analysis.observationJson) }.getOrNull()
+        }
+        val byUrl = current.groupBy { snapshots[it]?.optString("bodyUrl").orEmpty() }
+        val urls = byUrl.keys.filter { it.isNotBlank() }.toSet()
+        val books = if (urls.isEmpty()) emptyMap() else database.bookDao.getBooksByUrls(urls).associateBy { it.bookUrl }
+        byUrl.flatMap { (url, chapters) ->
+            if (url.isEmpty()) return@flatMap chapters // Programmatic inputs without a reader cache.
+            val book = books[url]?.takeIf { sourceKeyOf(it) == sourceKey } ?: return@flatMap emptyList()
+            val metadata = database.bookChapterDao.getChaptersByIndexes(url, chapters.map { it.chapterIndex })
+                .associateBy { it.index }
+            chapters.filter { analysis ->
+                val chapter = metadata[analysis.chapterIndex] ?: return@filter false
+                val hash = snapshots[analysis]?.optString("bodyHash") ?: return@filter false
+                try {
+                    BookHelp.getContent(book, chapter, cacheEpub = false)?.let(SpeechIdentity::cachedBodyHash) == hash
+                } catch (_: IOException) {
+                    false
+                }
+            }
+        }.map(RaChapterAnalysisEntity::toDomain)
+    }
 
     override suspend fun getAnalysis(
         bookKey: String,
@@ -167,6 +212,28 @@ class RaBuildRepository(
                 canPublish(target, current) && matchesInput(build, target.input)
             }
             write(currentTargets)
+        }
+    }
+
+    override suspend fun commitDirection(
+        analysis: RaAnalysis,
+        input: RaBuildInput,
+        write: suspend () -> Unit,
+    ): Boolean = withContext(Dispatchers.IO + NonCancellable) {
+        database.withTransaction {
+            val current = dao.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
+                ?: return@withTransaction false
+            val state = when (analysis.status) {
+                RaAnalysisStatus.RESOLVED -> RaChapterState.IDENTITY_READY
+                RaAnalysisStatus.FAILED -> RaChapterState.FAILED
+                RaAnalysisStatus.EXTRACTED -> return@withTransaction false
+            }
+            if (current.analysisId != analysis.id || current.contentHash != analysis.contentHash ||
+                current.state != state.storageValue || dao.getAnalysisById(analysis.id) != analysis.toEntity() ||
+                !matchesInput(current.toDomain(), input)
+            ) return@withTransaction false
+            write()
+            true
         }
     }
 
@@ -350,6 +417,7 @@ class RaBuildRepository(
         sourceKey: String,
         chapterIndexes: List<Int>,
         rollbackFrom: Int?,
+        bookName: String,
     ) = withContext(Dispatchers.IO) {
         if (chapterIndexes.isEmpty() && rollbackFrom == null) return@withContext
         database.withTransaction {
@@ -361,15 +429,15 @@ class RaBuildRepository(
             recordDeletion(bookKey, targets, rollbackFrom)
             if (targets.isEmpty()) return@withTransaction
             val analysisIds = dao.analysesForChapters(bookKey, targets).map { it.id }
+            val urls = dao.identitiesOf(bookKey).map { it.bookUrl }.toSet()
+            if (bookName.isNotBlank()) AudioPlanStore.delete(bookName, urls, targets.toSet(), rollbackFrom)
             val localSpeakerIds = if (analysisIds.isEmpty()) emptyList() else dao.localSpeakerIdsOf(analysisIds)
             val deletedEvidenceIds = if (analysisIds.isEmpty()) emptySet() else {
                 dao.evidenceByAnalysisIds(analysisIds).map { it.id }.toSet()
             }
             val links = characterDao.linksOfBook(bookKey)
+            directionDao.plansOfChapters(bookKey, targets).forEach { directionDao.deletePlanCompletely(it.id) }
             if (analysisIds.isNotEmpty()) {
-                directionDao.plansOfAnalyses(analysisIds).forEach { plan ->
-                    directionDao.deletePlanCompletely(plan.id)
-                }
                 dao.deleteSegmentsByAnalysisIds(analysisIds)
                 dao.deleteLocalSpeakersByAnalysisIds(analysisIds)
                 dao.deleteLocalMentionsByAnalysisIds(analysisIds)
@@ -504,9 +572,12 @@ class RaBuildRepository(
         }
     }
 
-    override suspend fun deleteBook(bookKey: String) = withContext(Dispatchers.IO) {
+    override suspend fun deleteBook(bookKey: String, bookName: String) = withContext(Dispatchers.IO) {
         database.withTransaction {
-            recordDeletion(bookKey)
+            val identities = dao.identitiesOf(bookKey)
+            val urls = identities.map { it.bookUrl }.toSet()
+            recordDeletion(bookKey, bookUrls = urls)
+            if (bookName.isNotBlank()) AudioPlanStore.delete(bookName, urls)
             directionDao.deleteLinesOfBook(bookKey)
             directionDao.deleteAudioOfBook(bookKey)
             directionDao.deleteScenesOfBook(bookKey)
@@ -532,7 +603,7 @@ class RaBuildRepository(
             dao.allBuildsOf(bookKey).forEach {
                 dao.deleteBuilds(bookKey, it.sourceKey, listOf(it.chapterIndex))
             }
-            dao.identitiesOf(bookKey).forEach { dao.deleteIdentity(it.bookUrl) }
+            identities.forEach { dao.deleteIdentity(it.bookUrl) }
         }
     }
 }

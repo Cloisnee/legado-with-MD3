@@ -111,7 +111,7 @@ class BatchRoomPipelineTest {
             assertTrue(config.save(AnalysisConfigStore.Config(prevLimit = 0, nextLimit = 0)))
             val ai = AiSpeechClient(models, config, AiRequestScheduler())
             val pipeline = SpeechAnalysisPipelineV4(
-                RaBookIdentityRepository(db.raBuildDao, db.bookDao), builds, characters,
+                RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds), builds, characters,
                 RaDirectionRepository(db.raDirectionDao),
                 ReadAloudCatalogRepository(db.bookDao, db.bookChapterDao, db.raBuildDao, builds),
                 resolver, casting, words, models, ai, config,
@@ -385,7 +385,7 @@ class BatchRoomPipelineTest {
         private val ai = AiSpeechClient(models, config, AiRequestScheduler())
         val direction = RaDirectionRepository(db.raDirectionDao)
         val catalog = ReadAloudCatalogRepository(db.bookDao, db.bookChapterDao, db.raBuildDao, builds)
-        val pipeline = SpeechAnalysisPipelineV4(RaBookIdentityRepository(db.raBuildDao, db.bookDao),
+        val pipeline = SpeechAnalysisPipelineV4(RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds),
             builds, characters, direction, catalog, resolver, casting, words, models, ai, config)
 
         suspend fun configure(port: Int, emotion: Boolean) {

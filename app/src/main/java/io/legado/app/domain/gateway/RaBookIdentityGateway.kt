@@ -2,8 +2,8 @@ package io.legado.app.domain.gateway
 
 interface RaBookIdentityGateway {
 
-    /** 取书籍身份键；不存在则创建。调用方传 Book 的可变字段快照。 */
-    suspend fun keyOf(bookUrl: String, sourceKey: String): String
+    /** 取或建书籍键；排队前取得 [generation]，被整书删除撤销的请求返回 null。 */
+    suspend fun keyOf(bookUrl: String, sourceKey: String, generation: Long): String?
 
     suspend fun bookKeyOf(bookUrl: String): String?
 

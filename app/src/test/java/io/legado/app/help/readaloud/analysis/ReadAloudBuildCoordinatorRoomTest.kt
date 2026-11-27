@@ -8,6 +8,7 @@ import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.repository.*
+import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
@@ -105,7 +106,7 @@ class ReadAloudBuildCoordinatorRoomTest {
                     assertEquals(originalActor, f.builds.localSpeakers(original.analysisId).single().characterId)
                 }
                 println("R3-5 event=$event changed=$change requests=${f.calls.filter { it.second > 1 }} budget=${state.budgetLeft}")
-            } finally { coordinator.stopSession() }
+            } finally { withContext(NonCancellable) { coordinator.stopSession().joinAll() } }
         }
     }
 
@@ -161,7 +162,7 @@ class ReadAloudBuildCoordinatorRoomTest {
                 assertEquals(0, settled.budgetLeft)
                 assertNull(f.builds.getBuild(f.bookKey, f.sourceKey, 2))
                 println("R4-4 old=${old.contentHash} new=${fresh.contentHash} current=${current.contentHash}/${current.state} actor=李四 budget=1→0 requests=$requests")
-            } finally { replyOld.countDown(); replyNew.countDown(); coordinator.stopSession() }
+            } finally { replyOld.countDown(); replyNew.countDown(); withContext(NonCancellable) { coordinator.stopSession().joinAll() } }
         }
     }
 
@@ -231,7 +232,7 @@ class ReadAloudBuildCoordinatorRoomTest {
                 println("R4-2 held tail: chapter 9 request+READY, previous pointer retained, chapter 3 rebuilt, budget=2→1")
             } finally {
                 tail.countDown()
-                coordinator.stopSession()
+                withContext(NonCancellable) { coordinator.stopSession().joinAll() }
                 listOf(secondReady, fourthReady, ninthReady).forEach { it.cancelAndJoin() }
             }
         } }
@@ -271,7 +272,108 @@ class ReadAloudBuildCoordinatorRoomTest {
                 assertEquals(RaChapterState.IDENTITY_READY, f.builds.getBuild(f.bookKey, f.sourceKey, 0)?.state)
                 assertTrue(f.calls.isEmpty())
                 println("R3-4 1→2→1: two entries including cancelled original, current chapter emitted READY")
-            } finally { release.complete(Unit); ready.cancelAndJoin(); coordinator.stopSession() }
+            } finally { release.complete(Unit); ready.cancelAndJoin(); withContext(NonCancellable) { coordinator.stopSession().joinAll() } }
+        } }
+    }
+
+    @Test fun `current cache refresh resolves only the new body with no background budget`() = runBlocking {
+        val sent = CompletableDeferred<Unit>()
+        val release = CountDownLatch(1)
+        val requests = CopyOnWriteArrayList<String>()
+        fixture("current-rewrite", onStage2 = { exchange, body ->
+            val who = if ("新句" in body) "李四" else "张三"
+            requests.add(who)
+            if (who == "张三") { sent.complete(Unit); check(release.await(60, TimeUnit.SECONDS)) }
+            exchange.reply("""{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"$who","roletype":"核心"}]}""")
+        }) { f -> coroutineScope {
+            f.configure(budget = 0)
+            f.preload = 1
+            val oldBody = "张三说：“旧句。”"
+            f.write(0, oldBody)
+            f.write(1, "走廊里没有声音。")
+            val oldText = requireNotNull(f.texts.load(f.book, 0, false))
+            val coordinator = f.coordinator()
+            val notices = CopyOnWriteArrayList<Int>()
+            val watcher = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.events.collect { notices.add(it.chapterIndex) } }
+            val preloadReady = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 1 } }
+            try {
+                coordinator.startSession(f.book, 0)
+                withTimeout(20_000) { sent.await() }
+                f.save(0, oldBody)
+                f.save(0, "李四说：“新句。”")
+                f.save(0, "李四说：“新句。”")
+                val fresh = requireNotNull(f.texts.load(f.book, 0, false))
+                release.countDown()
+                withTimeout(20_000) { preloadReady.await() }
+                val found = requireNotNull(f.builds.getAnalysis(f.bookKey, f.sourceKey, 0, fresh.contentHash,
+                    SpeechAnalysisPipelineV4.RESOLVER_VERSION))
+                val id = requireNotNull(f.builds.segments(found.id).single { it.seq == 1 }.characterId)
+                assertEquals("李四", f.people.character(id)?.displayName)
+                assertNull(f.builds.getAnalysis(f.bookKey, f.sourceKey, 0, oldText.contentHash,
+                    SpeechAnalysisPipelineV4.RESOLVER_VERSION))
+                assertEquals(listOf("张三", "李四"), requests.toList())
+                assertEquals(1, notices.count { it == 0 })
+                assertEquals(0, coordinator.status.value.budgetLeft)
+            } finally { release.countDown(); watcher.cancelAndJoin(); preloadReady.cancelAndJoin(); withContext(NonCancellable) { coordinator.stopSession().joinAll() } }
+        } }
+    }
+
+    @Test fun `stored sibling observations are excluded when their cached body changes`() = runBlocking {
+        fixture("stale-batch-peer", onStage2 = { exchange, _ ->
+            exchange.reply(batchResponse(batchRow(2, "张三"), batchRow(3, "张三")))
+        }) { f ->
+            val inputs = (1..2).map { index -> requireNotNull(f.texts.load(f.book, index, false)).asBatch() }
+            val interrupted = runCatching {
+                f.runner.run(f.bookKey, f.sourceKey, inputs, "cache-peers", onChapterReady = { chapter, ready ->
+                    if (chapter == 2 && !ready) error("observations saved")
+                })
+            }
+            assertEquals("observations saved", interrupted.exceptionOrNull()?.message)
+            val analysis = requireNotNull(f.builds.getBuild(f.bookKey, f.sourceKey, 1)?.analysisId?.let {
+                f.builds.analysisById(it)
+            })
+            val response = setOf(requireNotNull(analysis.batchId))
+            suspend fun peers() = f.builds.currentBatchAnalyses(f.bookKey, f.sourceKey, response, setOf(1), f.builds.generation())
+            assertEquals(listOf(2), peers().map { it.chapterIndex })
+            val previousTime = f.file(2).lastModified()
+            f.save(2, "李四说：“换人了。”")
+            assertTrue(f.file(2).setLastModified(previousTime))
+            assertEquals(RaChapterState.EXTRACTED, f.builds.getBuild(f.bookKey, f.sourceKey, 2)?.state)
+            assertTrue(peers().isEmpty())
+        }
+    }
+
+    @Test fun `queued manual analysis cannot allocate a replacement book`() = queuedAfterDelete(reanalyze = true)
+    @Test fun `queued session cannot allocate a replacement book`() = queuedAfterDelete(reanalyze = false)
+
+    private fun queuedAfterDelete(reanalyze: Boolean) = runBlocking {
+        fixture("key-lookup-$reanalyze") { f -> coroutineScope {
+            f.configure(budget = 0)
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val result = CompletableDeferred<String?>()
+            val identities = object : RaBookIdentityGateway by f.identity {
+                override suspend fun keyOf(bookUrl: String, sourceKey: String, generation: Long): String? {
+                    reached.complete(Unit)
+                    release.await()
+                    return f.identity.keyOf(bookUrl, sourceKey, generation).also { result.complete(it) }
+                }
+            }
+            val coordinator = f.coordinator(identities = identities)
+            try {
+                if (reanalyze) coordinator.reanalyze(f.book.bookUrl, 0) else coordinator.startSession(f.book, 0)
+                withTimeout(20_000) { reached.await() }
+                f.builds.deleteBook(f.bookKey)
+                release.complete(Unit)
+                assertNull(withTimeout(20_000) { result.await() })
+                assertNull(f.identity.bookKeyOf(f.book.bookUrl))
+                assertTrue(f.builds.builds(f.bookKey, f.sourceKey).isEmpty())
+                assertTrue(f.calls.isEmpty())
+                val ready = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 0 } }
+                coordinator.startSession(f.book, 0)
+                withTimeout(20_000) { ready.await() }
+                assertNotEquals(f.bookKey, f.identity.bookKeyOf(f.book.bookUrl))
+            } finally { release.complete(Unit); withContext(NonCancellable) { coordinator.stopSession().joinAll() } }
         } }
     }
 
@@ -281,9 +383,9 @@ class ReadAloudBuildCoordinatorRoomTest {
         val calls: CopyOnWriteArrayList<Pair<String, Int>>,
     ) {
         val sourceKey = sourceKeyOf(book)
-        private val identity = RaBookIdentityRepository(db.raBuildDao, db.bookDao)
         lateinit var bookKey: String
         val builds = RaBuildRepository(db, db.raBuildDao, db.raCharacterDao, db.raDirectionDao)
+        val identity = RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds)
         private val words = WordLibraryRepository(app)
         val people = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao, words)
         private val resolver = IdentityResolver(people, words)
@@ -297,14 +399,15 @@ class ReadAloudBuildCoordinatorRoomTest {
             direction, catalog, resolver, casting, words, models, ai, config)
         val runner = BatchAnalysisRunner(builds, people, resolver, casting, models, ai, config, words, pipeline(builds))
         val texts = ChapterTextProvider(db.bookChapterDao, read)
+        var preload = 0
         private val settings = object : ReadAloudSettingsGateway {
-            override val currentSettings = ReadAloudSettings(audioPreDownloadNum = 0)
+            override val currentSettings get() = ReadAloudSettings(audioPreDownloadNum = preload)
             override val settings = flowOf(currentSettings)
             override suspend fun update(transform: (ReadAloudSettings) -> ReadAloudSettings) = Unit
         }
 
         suspend fun configure(budget: Int, stage1: Boolean = false, maxBatch: Int = 1) {
-            bookKey = identity.keyOf(book.bookUrl, sourceKey)
+            bookKey = requireNotNull(identity.keyOf(book.bookUrl, sourceKey, builds.generation()))
             val provider = AiProvider("local", "fixture", "http://127.0.0.1:$port", "fixture-key")
             val entries = listOf("stage1", "stage2").map { AiModelEntry(it, provider.id, it, it, requestAttempts = 1) }
             assertTrue(models.save(AiModelsConfig(listOf(provider), entries, AiStageAssignments(
@@ -317,8 +420,11 @@ class ReadAloudBuildCoordinatorRoomTest {
         fun save(index: Int, text: String) = BookHelp.saveText(book, chapters[index], text)
         fun file(index: Int) = BookHelp.getChapterContentFile(book, chapters[index])
         fun write(index: Int, text: String) { file(index).apply { parentFile!!.mkdirs(); writeText(text) } }
-        fun coordinator(pipelineBuilds: RaBuildGateway = builds) = ReadAloudBuildCoordinator(
-            pipeline(pipelineBuilds), runner, texts, builds, identity, db.bookDao, db.bookChapterDao,
+        fun coordinator(
+            pipelineBuilds: RaBuildGateway = builds,
+            identities: RaBookIdentityGateway = identity,
+        ) = ReadAloudBuildCoordinator(
+            pipeline(pipelineBuilds), runner, texts, builds, identities, db.bookDao, db.bookChapterDao,
             settings, config, ChapterJobRegistry(),
         )
     }
@@ -396,9 +502,9 @@ class ReadAloudBuildCoordinatorRoomTest {
         .put("type", "chapter").put("ch", chapter).put("seqmap", JSONObject().put("1", "B1"))
         .put("localSpeakers", JSONObject().put("B1", JSONObject().put("name", name).put("aliases", JSONArray())))
 
-    private fun batchResponse(row: JSONObject) = listOf(
+    private fun batchResponse(vararg rows: JSONObject) = listOf(
         """{"type":"entities","entities":[{"bkey":"B1","name":"张三","roletype":"核心"}]}""",
-        row.toString(), """{"type":"end"}""",
+        *rows.map(JSONObject::toString).toTypedArray(), """{"type":"end"}""",
     ).joinToString("\n", postfix = "\n")
 
     private fun HttpExchange.reply(payload: String) {
@@ -410,6 +516,7 @@ class ReadAloudBuildCoordinatorRoomTest {
 
     private fun ChapterTextProvider.Text.asBatch() = BatchAnalysisRunner.ChapterText(
         chapterIndex, title, paragraphs, prevText, nextText, contentHash, loadedAt,
+        cachedBody = cachedBody,
     )
 
     private companion object {

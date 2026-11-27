@@ -29,6 +29,8 @@ class ChapterTextProvider(
     private val readSettingsGateway: ReadSettingsGateway,
 ) {
 
+    data class CachedBody(val bookUrl: String, val hash: String)
+
     data class Text(
         val chapterIndex: Int,
         val title: String,
@@ -38,6 +40,7 @@ class ChapterTextProvider(
         val nextText: String,
         val loadedAt: Long,
         val matchesContent: () -> Boolean,
+        val cachedBody: CachedBody,
     )
 
     suspend fun load(book: Book, chapterIndex: Int, allowDownload: Boolean): Text? =
@@ -65,6 +68,7 @@ class ChapterTextProvider(
                 prevText = contextText(book, chapterIndex - 1),
                 nextText = contextText(book, chapterIndex + 1),
                 loadedAt = loadedAt,
+                cachedBody = CachedBody(book.bookUrl, SpeechIdentity.cachedBodyHash(content)),
                 // 提交时比较实际正文，避免时间戳碰撞、缓存事件延迟或同文重写影响判断。
                 matchesContent = {
                     try {

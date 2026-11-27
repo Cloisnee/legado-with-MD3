@@ -6,8 +6,11 @@ import android.text.TextPaint
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.repository.RaBookIdentityRepository
+import io.legado.app.data.repository.RaBuildRepository
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.AppShellSettingsGateway
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.domain.model.settings.OtherSettings
@@ -59,6 +62,7 @@ import java.util.concurrent.TimeUnit
 class ReadAloudBookSessionTest {
     private val mainDispatcher = StandardTestDispatcher()
     private lateinit var database: InMemoryAppDatabaseFixture
+    private lateinit var builds: RaBuildRepository
     private val sessions = ReadAloudSessionStore()
     private lateinit var a: Book
     private lateinit var b: Book
@@ -71,7 +75,10 @@ class ReadAloudBookSessionTest {
         RuntimeEnvironment.getApplication().injectAsAppCtx()
         AppConfigStore.init(RuntimeEnvironment.getApplication())
         database = InMemoryAppDatabaseFixture(RuntimeEnvironment.getApplication())
+        val db = database.database
+        builds = RaBuildRepository(db, db.raBuildDao, db.raCharacterDao, db.raDirectionDao)
         startKoin { modules(module {
+            single<RaBuildGateway> { builds }
             single { sessions }
             single<ReadAloudSettingsGateway> { AloudSettings() }
             single<ReadSettingsGateway> { ReadingSettings() }
@@ -210,6 +217,32 @@ class ReadAloudBookSessionTest {
         } finally {
             flag("isAlive", false)
         }
+    }
+
+    @Test
+    fun queuedPlaybackRetainsItsAnalysisGenerationUntilAnExplicitRestart() = runTest(mainDispatcher) {
+        val db = database.database
+        val identities = RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds)
+        val original = builds.generation()
+        val key = requireNotNull(identities.keyOf(b.bookUrl, b.origin, original))
+        val app = RuntimeEnvironment.getApplication()
+        val request = ReadAloudBookSession.Snapshot(book = b, chapterIndex = 5)
+        try {
+            flag("isAlive", true)
+            ReadAloud.playRequest(app, request)
+            runCurrent()
+            builds.deleteBook(key)
+            flag("isAlive", false)
+            advanceTimeBy(20)
+            runCurrent()
+            assertEquals(original, ReadAloud.bookSession.state.value.analysisGeneration)
+            ReadAloud.playRequest(app, request, continueAnalysisSession = true)
+            runCurrent()
+            assertEquals(original, ReadAloud.bookSession.state.value.analysisGeneration)
+            ReadAloud.playRequest(app, request)
+            runCurrent()
+            assertEquals(builds.generation(), ReadAloud.bookSession.state.value.analysisGeneration)
+        } finally { flag("isAlive", false) }
     }
 
     private fun environment(): ReaderPaginationEnvironment {

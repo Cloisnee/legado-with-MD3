@@ -27,6 +27,7 @@ import io.legado.app.help.readaloud.analysis.AiSchedulerContext
 import io.legado.app.help.readaloud.analysis.AiSpeechClient
 import io.legado.app.help.readaloud.analysis.AiTaskKind
 import io.legado.app.help.readaloud.analysis.AnalysisConfigStore
+import io.legado.app.help.readaloud.analysis.ChapterTextProvider
 import io.legado.app.help.readaloud.analysis.QuoteSpeechRules
 import io.legado.app.help.readaloud.analysis.SpeechAnalysisPipelineV4
 import io.legado.app.help.readaloud.analysis.ValidateOutcome
@@ -73,6 +74,7 @@ class BatchAnalysisRunner(
         val contentHash: String,
         val loadedAt: Long = System.currentTimeMillis(),
         val input: RaBuildInput? = null,
+        val cachedBody: ChapterTextProvider.CachedBody? = null,
     )
 
     data class Outcome(
@@ -817,6 +819,10 @@ class BatchAnalysisRunner(
         val snapshot = JSONObject().apply {
             put("speakers", packEntries(payload.speakers)); put("mentions", packEntries(payload.mentions))
             put("contexts", JSONObject(contexts))
+            text.cachedBody?.let {
+                put("bodyUrl", it.bookUrl)
+                put("bodyHash", it.hash)
+            }
         }.toString()
         val now = System.currentTimeMillis()
         val older = raBuild.getBuild(bookKey, sourceKey, text.chapterIndex)
@@ -1021,7 +1027,7 @@ class BatchAnalysisRunner(
                     // 按事务内仍有效的观察包和锚点收敛，部分失效的章不会贡献别名或证据。
                     val inputs = convergenceInputs(bookKey, sourceKey, active)
                     val resolutions = resolver.applyBatch(bookKey, inputs, answers)
-                    val speakersByChapter = inputs.associate { input ->
+                    val speakersByChapter = inputs.filter { it.publish }.associate { input ->
                         input.chapterIndex to input.speakers.map { speaker ->
                             val resolution = resolutions.getValue(speaker.id)
                             speaker.copy(characterId = resolution.characterId, resolution = resolution.resolution)
@@ -1079,9 +1085,9 @@ class BatchAnalysisRunner(
     ): List<IdentityResolver.BatchChapterInput> {
         val scopes = extracted.mapNotNull { it.batchId }.toSet()
         val pendingChapters = extracted.mapTo(HashSet()) { it.text.chapterIndex }
-        val anchors = raBuild.readyBatchAnalyses(bookKey, sourceKey, scopes).filter {
-            it.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION && it.chapterIndex !in pendingChapters
-        }
+        val generation = extracted.minOf { requireNotNull(it.text.input).generation }
+        val context = raBuild.currentBatchAnalyses(bookKey, sourceKey, scopes, pendingChapters, generation)
+            .filter { it.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION }
         return extracted.map { item ->
             IdentityResolver.BatchChapterInput(
                 chapterIndex = item.text.chapterIndex,
@@ -1091,10 +1097,10 @@ class BatchAnalysisRunner(
                 contextBySpeaker = item.contextBySpeaker,
                 batchId = item.batchId,
             )
-        } + anchors.map { analysis ->
+        } + context.map { analysis ->
             IdentityResolver.BatchChapterInput(
                 analysis.chapterIndex, "第${analysis.chapterIndex + 1}章", raBuild.localSpeakers(analysis.id),
-                raBuild.evidence(analysis.id), batchId = analysis.batchId,
+                raBuild.evidence(analysis.id), batchId = analysis.batchId, publish = false,
             )
         }
     }

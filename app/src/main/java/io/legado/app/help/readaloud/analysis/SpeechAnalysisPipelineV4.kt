@@ -557,9 +557,10 @@ BGM 建议缺段从值集补全。
             )
 
             // ===== 导演行（情绪）与音频条目双写 Room =====
-            if (!skipLegacyAudio) {
-                audioPlan?.let { runCatching { AudioPlanStore.save(bookName, bookUrl, chapterIndex, it) } }
-                saveDirectionRows(analysisId, bookKey, chapterIndex, publishedSegments, emotionBySeq, audioPlan)
+            if (!skipLegacyAudio && !publishDirection(
+                    bookName, bookUrl, analysis, publishedSegments, emotionBySeq, audioPlan, input,
+                )) {
+                return@withContext null
             }
             RaPipelineResult(analysis, publishedSegments, false)
         } finally {
@@ -578,8 +579,11 @@ BGM 建议缺段从值集补全。
         paragraphs: List<CanonicalSpeechParagraph>,
         aiContext: AiSchedulerContext? = null,
     ) {
+        val input = RaBuildInput(raBuild.generation())
         if (analysis.status != RaAnalysisStatus.RESOLVED || analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH) return
         legacyLocks.getOrPut(analysis.id) { Mutex() }.withLock {
+            val current = raBuild.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
+            if (current?.analysisId != analysis.id || current.state != RaChapterState.IDENTITY_READY) return@withLock
             if (raDirection.plan(analysis.id, "PLAYBACK_BASE")?.status == "READY") return@withLock
             val segments = raBuild.segments(analysis.id)
             if (segments.isEmpty()) return@withLock
@@ -618,12 +622,9 @@ BGM 建议缺段从值集补全。
             val audioPlan = (if (items != null) convertDirectorItems(items, units, segments)
                 else AudioPrefill.buildRulesPlan(buildFallbackSeeds(units, suggestions, segments)))
                 .copy(scriptHash = analysis.contentHash)
-            // 生成期间正文可能换版；只给仍有效的分析挂计划。
-            val current = raBuild.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
-            if (current?.analysisId != analysis.id || current.state != RaChapterState.IDENTITY_READY) return@withLock
-            AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, audioPlan)
-            saveDirectionRows(analysis.id, analysis.bookKey, analysis.chapterIndex, segments, emotions, audioPlan)
-            AppLog.putAnalysis("【V4·$label·前台补做】完成：情绪 ${emotions.size}、${audioPlan.countsText()}")
+            if (publishDirection(bookName, bookUrl, analysis, segments, emotions, audioPlan, input)) {
+                AppLog.putAnalysis("【V4·$label·前台补做】完成：情绪 ${emotions.size}、${audioPlan.countsText()}")
+            }
         }
     }
 
@@ -642,15 +643,16 @@ BGM 建议缺段从值集补全。
         return ObservationAssembly.assemble(paragraphs, ranges)
     }
 
-    private suspend fun saveDirectionRows(
-        analysisId: String,
-        bookKey: String,
-        chapterIndex: Int,
+    private suspend fun publishDirection(
+        bookName: String,
+        bookUrl: String,
+        analysis: RaAnalysis,
         segments: List<RaSegment>,
         emotionBySeq: Map<Int, String>,
         audioPlan: AudioPlan?,
-    ) {
-        val planId = "dp_${analysisId}_PLAYBACK_BASE"
+        input: RaBuildInput,
+    ): Boolean {
+        val planId = "dp_${analysis.id}_PLAYBACK_BASE"
         val lines = ArrayList<RaDirectionLine>()
         segments.forEach { segment ->
             if (segment.seq <= 0) return@forEach
@@ -681,21 +683,24 @@ BGM 建议缺段从值集补全。
                 )
             }
         }
-        raDirection.savePlan(
-            plan = RaDirectionPlan(
-                id = planId,
-                analysisId = analysisId,
-                bookKey = bookKey,
-                chapterIndex = chapterIndex,
-                module = "PLAYBACK_BASE",
-                status = "READY",
-                directorRevision = 1,
-                identityRevisionSnapshot = 0,
-                origin = "FOREGROUND",
-            ),
-            lines = lines,
-            audio = audio,
-        )
+        return raBuild.commitDirection(analysis, input) {
+            raDirection.savePlan(
+                plan = RaDirectionPlan(
+                    id = planId,
+                    analysisId = analysis.id,
+                    bookKey = analysis.bookKey,
+                    chapterIndex = analysis.chapterIndex,
+                    module = "PLAYBACK_BASE",
+                    status = "READY",
+                    directorRevision = 1,
+                    identityRevisionSnapshot = 0,
+                    origin = "FOREGROUND",
+                ),
+                lines = lines,
+                audio = audio,
+            )
+            audioPlan?.let { AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, it) }
+        }
     }
 
     private suspend fun stageA(

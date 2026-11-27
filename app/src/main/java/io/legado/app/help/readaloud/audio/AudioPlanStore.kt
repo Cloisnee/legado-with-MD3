@@ -90,19 +90,12 @@ object AudioPlanStore {
             runCatching {
                 val f = file(context, book)
                 f.parentFile?.mkdirs()
-                val root = runCatching {
-                    JSONObject(f.readText().removePrefix("\uFEFF"))
-                }.getOrElse { JSONObject() }
+                val root = runCatching { read(f) }.getOrElse { JSONObject() }
                 root.put("version", FILE_VERSION)
                 val plans = root.optJSONObject("plans") ?: JSONObject()
                 plans.put(key(bookUrl, chapterIndex), planToJson(plan))
                 root.put("plans", plans)
-                val tmp = File(f.parentFile, f.name + ".tmp")
-                tmp.writeText(root.toString())
-                if (!tmp.renameTo(f)) {
-                    tmp.copyTo(f, overwrite = true)
-                    tmp.delete()
-                }
+                write(f, root)
                 true
             }.getOrElse { e ->
                 AppLog.putAudio("【音效与背景音】音频计划写入失败：${e.localizedMessage}")
@@ -110,17 +103,53 @@ object AudioPlanStore {
             }
         }
 
+    /** 与导演发布使用同一个 Room 写事务队列。只移除指定 URL/章节。 */
+    internal suspend fun delete(
+        book: String,
+        bookUrls: Set<String>,
+        chapters: Set<Int>? = null,
+        rollbackFrom: Int? = null,
+    ) = withContext(Dispatchers.IO) {
+        val context = contextOrNull() ?: return@withContext
+        if (bookUrls.isEmpty()) return@withContext
+        val f = file(context, book)
+        if (!f.isFile) return@withContext
+        val root = read(f)
+        val plans = root.optJSONObject("plans") ?: return@withContext
+        val removed = plans.keys().asSequence().filter { entry ->
+            val chapter = entry.substringAfterLast('|').toIntOrNull() ?: return@filter false
+            entry.substringBeforeLast('|') in bookUrls &&
+                (chapters == null || chapter in chapters || (rollbackFrom != null && chapter >= rollbackFrom))
+        }.toList()
+        if (removed.isNotEmpty()) {
+            removed.forEach { plans.remove(it) }
+            write(f, root)
+        }
+    }
+
     suspend fun load(book: String, bookUrl: String, chapterIndex: Int): AudioPlan? =
         withContext(Dispatchers.IO) {
             val context = contextOrNull() ?: return@withContext null
             runCatching {
                 val f = file(context, book)
                 if (!f.isFile) return@runCatching null
-                val root = JSONObject(f.readText().removePrefix("\uFEFF"))
+                val root = read(f)
                 val plans = root.optJSONObject("plans") ?: return@runCatching null
                 plans.optJSONObject(key(bookUrl, chapterIndex))?.let { planFromJson(it) }
             }.getOrNull()
         }
+
+    private fun read(file: File) = JSONObject(file.readText().removePrefix("\uFEFF"))
+
+    private fun write(file: File, root: JSONObject) {
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        try {
+            tmp.writeText(root.toString())
+            if (!tmp.renameTo(file)) tmp.copyTo(file, overwrite = true)
+        } finally {
+            tmp.delete()
+        }
+    }
 
     private fun planToJson(plan: AudioPlan): JSONObject = JSONObject().apply {
         put("scriptHash", plan.scriptHash)

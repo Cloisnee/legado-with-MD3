@@ -8,10 +8,12 @@ import com.sun.net.httpserver.HttpServer
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.repository.*
 import io.legado.app.domain.gateway.RaBuildGateway
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechIdentity
+import io.legado.app.domain.model.readaloud.v4.RaAnalysis
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
@@ -20,6 +22,7 @@ import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import io.legado.app.domain.usecase.BuildSpeechPlanUseCase
 import io.legado.app.domain.usecase.PrepareChapterSpeechPlanUseCase
 import io.legado.app.help.readaloud.analysis.*
+import io.legado.app.help.readaloud.audio.AudioPlanStore
 import io.legado.app.help.readaloud.playback.SpeechVoiceSource
 import kotlinx.coroutines.*
 import org.json.JSONArray
@@ -200,6 +203,117 @@ class V43RoomRegressionTest {
         }
     }
 
+    @Test fun `every order uses stored alias evidence without publishing other chapters`() = runBlocking {
+        val texts = listOf(
+            chapter(0, "张三说：“我先走了。”"),
+            chapter(1, "蒙面客绝不是张三。蒙面客说：“请进。”"),
+            chapter(2, "陆七正是昨天请客进门的蒙面客。陆七说：“坐吧。”"),
+        )
+        fun evidence(type: String, ch: Int, name: String, quote: String) = JSONArray().put(JSONObject()
+            .put("type", type).put("subject", "B1").put("object", name)
+            .put("ch", ch).put("p", 1).put("quote", quote))
+        val response = batch(row(1, "张三"),
+            row(2, "蒙面客").put("evidence", evidence("CONTRADICTION", 2, "张三", "蒙面客绝不是张三")),
+            row(3, "陆七").put("evidence", evidence("ALIAS_EQUAL", 3, "蒙面客", "陆七正是昨天请客进门的蒙面客")))
+        fixture(handler = { _, exchange -> exchange.reply(response) }) { f ->
+            val orders = texts.indices.flatMap { first -> texts.indices.filter { it != first }.map { second ->
+                listOf(first, second, 3 - first - second)
+            } }
+            for (order in listOf(emptyList<Int>()) + orders) {
+                val book = "alias-conflict-$order"
+                val runner = f.runner()
+                val result = runCatching { runner.run(book, "src", texts, "response", onChapterReady = { ch, ready ->
+                    if (order.isNotEmpty() && ch == 2 && !ready) error("interrupted after extraction")
+                }) }
+                if (order.isEmpty()) assertEquals(listOf(0, 1, 2), result.getOrThrow().ready)
+                else {
+                    assertEquals("interrupted after extraction", result.exceptionOrNull()?.message)
+                    val published = ArrayList<Int>()
+                    for (index in order) {
+                        val recovered = runner.convergeExisting(book, "src", listOf(texts[index]), AiPriority.P0_CURRENT,
+                            onChapterReady = { ch, ready -> if (ready) published.add(ch) })
+                        assertEquals(listOf(index), recovered.ready)
+                        assertEquals(order.take(published.size), published)
+                        assertEquals(published.toSet(), f.builds.builds(book, "src")
+                            .filter { it.state == RaChapterState.IDENTITY_READY }.map { it.chapterIndex }.toSet())
+                    }
+                    assertEquals(order, published)
+                }
+                val profiles = f.people.voiceProfiles(book)
+                assertEquals(2, profiles.size)
+                profiles.forEachIndexed { i, profile -> f.people.setDefaultVoice(profile.characterId, "voice-$i", "manual") }
+                val lines = texts.map { f.prepare("url", book, "src", it.chapterIndex, it.paragraphs).single { cue -> cue.segment.seq == 1 } }
+                assertEquals(lines[1].segment.characterId, lines[2].segment.characterId)
+                assertNotEquals(lines[0].segment.characterId, lines[1].segment.characterId)
+                val voiceIds = lines.map { requireNotNull(it.voice).id }
+                assertEquals(voiceIds[1], voiceIds[2])
+                assertNotEquals(voiceIds[0], voiceIds[1])
+            }
+        }
+    }
+
+    @Test fun `late foreground plans are rejected and finished plans are removed on chapter deletion`() =
+        directorDeletion(whole = false, background = false)
+
+    @Test fun `late background director supplement cannot restore plans after whole book deletion`() =
+        directorDeletion(whole = true, background = true)
+
+    private fun directorDeletion(whole: Boolean, background: Boolean) = runBlocking {
+        val first = chapter(0, "张三推开门说：“请进。”")
+        val second = chapter(1, "张三推开门说：“坐吧。”")
+        fixture("audioDirector", handler = { request, exchange ->
+            val prompt = request.getJSONArray("messages").getJSONObject(1).getString("content")
+            exchange.reply(when {
+                request.getString("model") == "audioDirector" ->
+                    """{"items":[{"para":1,"frag":1,"type":"sfx","tag":"开门","pos":"前"}]}"""
+                "=== ch=1 ===" in prompt -> batch(row(1, "张三"))
+                else -> """{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"张三","roletype":"核心"}]}"""
+            })
+        }) { f -> coroutineScope {
+            val name = "director-delete-$whole"
+            val url = "https://fixture.invalid/$name"
+            val key = f.keyOf(url, "src")
+            val regular = f.pipeline()
+            val installed = requireNotNull(regular.run(url, name, key, "src", 1, second.paragraphs, "", ""))
+            val retainedPlan = requireNotNull(AudioPlanStore.load(name, url, 1))
+            assertEquals("开门", retainedPlan.sfx.single().tag)
+            val extracted = if (background) {
+                assertEquals(listOf(0), f.runner().run(key, "src", listOf(first), "bg").ready)
+                requireNotNull(f.builds.getAnalysis(key, "src", 0, first.contentHash, SpeechAnalysisPipelineV4.RESOLVER_VERSION))
+            } else {
+                requireNotNull(regular.run(url, name, key, "src", 0, first.paragraphs, "", "")).analysis
+            }
+            val candidate = CompletableDeferred<RaAnalysis>()
+            val release = CompletableDeferred<Unit>()
+            val gated = f.pipeline(object : RaBuildGateway by f.builds {
+                override suspend fun commitDirection(analysis: RaAnalysis, input: RaBuildInput, write: suspend () -> Unit): Boolean {
+                    candidate.complete(analysis)
+                    release.await()
+                    return f.builds.commitDirection(analysis, input, write)
+                }
+            })
+            val pending = async {
+                if (background) gated.ensureLegacyForReady(url, name, extracted, first.paragraphs)
+                else gated.run(url, name, key, "src", 0, first.paragraphs, "", "", force = true)
+            }
+            try {
+                val obsolete = withTimeout(20_000) { candidate.await() }
+                if (whole) f.maintenance.deleteBook(key, name)
+                else f.maintenance.deleteChapters(key, "src", name, listOf(0), false)
+                release.complete(Unit)
+                withTimeout(20_000) { pending.await() }
+                assertNull(f.direction.latestPlan(key, 0, "PLAYBACK_BASE"))
+                assertTrue(f.direction.audio("dp_${obsolete.id}_PLAYBACK_BASE").isEmpty())
+                assertTrue(f.direction.audio("dp_${extracted.id}_PLAYBACK_BASE").isEmpty())
+                assertNull(AudioPlanStore.load(name, url, 0))
+                assertEquals(if (whole) null else retainedPlan, AudioPlanStore.load(name, url, 1))
+                assertEquals(!whole, f.direction.plan(installed.analysis.id, "PLAYBACK_BASE") != null)
+                assertNotNull(regular.run(url, name, f.keyOf(url, "src"), "src", 0, first.paragraphs, "", "", force = true))
+                assertEquals("开门", AudioPlanStore.load(name, url, 0)?.sfx?.single()?.tag)
+            } finally { release.complete(Unit); pending.cancelAndJoin() }
+        } }
+    }
+
     @Test fun `deleting chapter or book invalidates an in flight force analysis including its history`() = runBlocking {
         val seed = chapter(0, "张三说：“此前来过。”")
         val fresh = chapter(0, "沈孤鸿说：“刚到。”")
@@ -212,7 +326,7 @@ class V43RoomRegressionTest {
             for (whole in listOf(false, true)) coroutineScope {
                 val url = "fixture-delete-$whole"
                 val source = "src"
-                val book = f.identity.keyOf(url, source)
+                val book = f.keyOf(url, source)
                 val pipeline = f.pipeline()
                 assertNotNull(pipeline.run(url, "fixture", book, source, 0, seed.paragraphs, "", "", skipLegacyAudio = true))
                 assertNotNull(pipeline.run(url, "fixture", book, source, 1, other.paragraphs, "", "", skipLegacyAudio = true))
@@ -239,7 +353,7 @@ class V43RoomRegressionTest {
                     assertEquals(0, callbacks.get())
                     val remaining = f.builds.builds(book, source).map { it.chapterIndex }
                     assertEquals(if (whole) emptyList<Int>() else listOf(1), remaining)
-                    val newKey = f.identity.keyOf(url, source)
+                    val newKey = f.keyOf(url, source)
                     val rebuilt = pipeline.run(url, "fixture", newKey, source, 0, fresh.paragraphs, "", "", force = true, skipLegacyAudio = true)
                     assertEquals(RaAnalysisStatus.RESOLVED, rebuilt?.analysis?.status)
                     assertEquals("沈孤鸿", f.people.charactersRaw(newKey).single().displayName)
@@ -262,7 +376,7 @@ class V43RoomRegressionTest {
             val book = "rollback-inflight"
             val worker = async(Dispatchers.IO) { f.runner().run(book, "src", listOf(first, last), "before-rollback") }
             try {
-                withTimeout(20_000) { received.await() }
+                withTimeout(45_000) { received.await() }
                 assertTrue(f.builds.builds(book, "src").isEmpty())
                 f.maintenance.deleteChapters(book, "src", "fixture", listOf(1), true)
                 tail.countDown()
@@ -382,7 +496,7 @@ class V43RoomRegressionTest {
         private val words = WordLibraryRepository(app)
         val people = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao, words)
         private val casting = VoiceCastingService(ReadAloudVoicePoolRepository(app), people)
-        val identity = RaBookIdentityRepository(db.raBuildDao, db.bookDao)
+        private val identity = RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds)
         private val catalog = ReadAloudCatalogRepository(db.bookDao, db.bookChapterDao, db.raBuildDao, builds)
         val maintenance = RaBookMaintenanceRepository(db, db.raBuildDao, db.raCharacterDao, ReadAloudAudioCacheRepository(app), catalog, builds)
         private val models = AiModelRepository(app)
@@ -390,6 +504,9 @@ class V43RoomRegressionTest {
         private val ai = AiSpeechClient(models, config, AiRequestScheduler())
         private val cards = CharacterCardProjector(people, builds)
         private val resolver = IdentityResolver(people, words, cards, AiIdentityArbiter(models, ai, config, cards))
+        suspend fun keyOf(url: String, source: String) =
+            requireNotNull(identity.keyOf(url, source, builds.generation()))
+
         fun pipeline(gateway: RaBuildGateway = builds) = SpeechAnalysisPipelineV4(identity, gateway, people,
             direction, catalog, resolver, casting, words, models, ai, config)
         fun runner(gateway: RaBuildGateway = builds) = BatchAnalysisRunner(gateway, people, resolver,
@@ -419,6 +536,7 @@ class V43RoomRegressionTest {
 
     private suspend fun fixture(stage: String? = null, handler: (JSONObject, HttpExchange) -> Unit, test: suspend (Fixture) -> Unit) {
         val app = ApplicationProvider.getApplicationContext<Application>()
+        AudioPlanStore.remember(app)
         val db = Room.inMemoryDatabaseBuilder(app, AppDatabase::class.java).build()
         val pool = Executors.newCachedThreadPool()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {

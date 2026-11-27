@@ -101,7 +101,7 @@ fun ReaderAudioDownloadSheet(
     ) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                val bookKey = bookIdentity.keyOf(bookUrl, sourceKeyOf(book))
+                val bookKey = bookIdentity.bookKeyOf(bookUrl) ?: return@runCatching emptySet()
                 val sourceKey = sourceKeyOf(book)
                 raBuild.lineCounts(bookKey, sourceKey).keys
             }.getOrDefault(emptySet())

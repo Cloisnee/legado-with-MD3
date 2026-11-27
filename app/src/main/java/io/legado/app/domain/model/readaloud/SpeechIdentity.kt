@@ -8,6 +8,8 @@ object SpeechIdentity {
     fun voiceId(engineType: String, engineId: String, speakerId: String): String =
         "voice:${sha256("$engineType\u0000$engineId\u0000$speakerId").take(32)}"
 
+    fun cachedBodyHash(text: String): String = sha256(text)
+
     fun chapterContentHash(paragraphs: List<CanonicalSpeechParagraph>): String = sha256(
         paragraphs.joinToString("\u0001") {
             "${it.index}\u0000${it.chapterPosition}\u0000${it.text}"

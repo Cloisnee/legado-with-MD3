@@ -389,7 +389,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                     if (appDb.bookChapterDao.getChapter(bookUrl, index) == null) break
                     val hasScript = runCatching {
                         val sourceKey = sourceKeyOf(book)
-                        val bookKey = bookIdentity.keyOf(book.bookUrl, sourceKey)
+                        val bookKey = bookIdentity.bookKeyOf(book.bookUrl) ?: return@runCatching false
                         val analysis = raBuild.getBuild(bookKey, sourceKey, index)?.analysisId
                             ?.let { raBuild.analysisById(it) }
                             ?: raBuild.latestAnalysisForSource(bookKey, sourceKey, index)
@@ -841,14 +841,14 @@ class HttpReadAloudService : BaseReadAloudService(),
         // 等该章朗读分析就绪再预合成：分析未就绪时会退化成「本地规则 + 默认声线」，
         // 白合成且污染缓存（用户实测：新章立刻用 duihuaA01 合成）
         val paragraphs = readAloudChapter.canonicalSpeechParagraphs()
-        if (!waitForChapterAnalysis(book, chapter.index, paragraphs)
-        ) {
+        val bookKey = bookIdentity.bookKeyOf(book.bookUrl)
+        if (bookKey == null || !waitForChapterAnalysis(book, bookKey, chapter.index, paragraphs)) {
             AppLog.putAudio(
                 "【音频缓存·${ChapterLabels.of(displayTitle, chapter.index)}】跳过预合成（朗读分析未就绪）"
             )
             return null
         }
-        val plan = buildSpeechPlan(book, chapter.index, paragraphs)
+        val plan = buildSpeechPlan(book, chapter.index, paragraphs, bookKey)
         val queue = runCatching {
             ReadAloudPlaybackQueue.from(plan)
                 .withChapterTitle(displayTitle, ReadAloudPlaybackQueue.narratorVoiceOf(plan))
@@ -866,6 +866,7 @@ class HttpReadAloudService : BaseReadAloudService(),
     /** 预合成只消费所传书籍快照对应的已解析正文。 */
     private suspend fun waitForChapterAnalysis(
         book: Book,
+        bookKey: String,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
     ): Boolean {
@@ -873,7 +874,6 @@ class HttpReadAloudService : BaseReadAloudService(),
         val timeoutMs = runCatching { analysisConfig.load().waitAnalysisSec * 1000L }
             .getOrDefault(180_000L)
         val sourceKey = sourceKeyOf(book)
-        val bookKey = runCatching { bookIdentity.keyOf(book.bookUrl, sourceKey) }.getOrNull() ?: return false
         val contentHash = SpeechIdentity.chapterContentHash(paragraphs)
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {

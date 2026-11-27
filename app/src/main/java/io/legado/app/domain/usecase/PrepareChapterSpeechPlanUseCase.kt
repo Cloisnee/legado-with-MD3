@@ -62,7 +62,7 @@ class PrepareChapterSpeechPlanUseCase(
         }.getOrNull()
         if (analysis?.status == RaAnalysisStatus.FAILED) {
             AppLog.putAudio("【V4·$chLabel·开播】本章分析失败 → 本地快速链（下次进入会重试）")
-        } else if (analysis?.status != RaAnalysisStatus.RESOLVED) {
+        } else if (bookKey.isNotEmpty() && analysis?.status != RaAnalysisStatus.RESOLVED) {
             val cfg = runCatching { analysisConfig.load() }.getOrElse {
                 if (it is CancellationException) throw it
                 AnalysisConfigStore.Config()

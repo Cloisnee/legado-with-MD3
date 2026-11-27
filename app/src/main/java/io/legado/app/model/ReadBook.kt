@@ -1287,7 +1287,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                         if (isScroll && pageChanged) {
                             ReadAloud.pause(appCtx)
                         } else {
-                            readAloud(!BaseReadAloudService.pause)
+                            ReadAloud.play(appCtx, !BaseReadAloudService.pause, continueAnalysisSession = true)
                         }
                     } else {
                         ReadAloud.syncLayout()

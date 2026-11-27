@@ -32,6 +32,8 @@ interface RaBuildGateway {
 
     fun canUseGeneration(bookKey: String, chapterIndex: Int, generation: Long): Boolean
 
+    fun canResolveBookUrl(bookUrl: String, generation: Long): Boolean
+
     /**
      * 在同一写事务里筛选仍可发布的目标并执行其本地身份收敛、发声方案和章节提交。
      * [write] 只能使用通过验证的目标，模型调用和完成通知在事务外执行。
@@ -41,6 +43,9 @@ interface RaBuildGateway {
         write: suspend (List<RaIdentityCommit>) -> T,
     ): T
 
+    /** 校验当前分析与任务代次，串行提交 Room 导演计划与其文件副本。 */
+    suspend fun commitDirection(analysis: RaAnalysis, input: RaBuildInput, write: suspend () -> Unit): Boolean
+
     suspend fun getBuild(bookKey: String, sourceKey: String, chapterIndex: Int): RaChapterBuild?
 
     suspend fun builds(bookKey: String, sourceKey: String): List<RaChapterBuild>
@@ -48,8 +53,14 @@ interface RaBuildGateway {
     /** 只替换读取时的同一条状态（expected=null 表示尚无记录）。 */
     suspend fun transitionBuild(expected: RaChapterBuild?, next: RaChapterBuild, input: RaBuildInput? = null): Boolean
 
-    /** 只载入同次模型响应里仍是当前版本的已就绪章，供分次收敛复用。 */
-    suspend fun readyBatchAnalyses(bookKey: String, sourceKey: String, batchIds: Set<String>): List<RaAnalysis>
+    /** 同响应仍有效的观察包和身份锚点；读取本身不领取或发布章节。 */
+    suspend fun currentBatchAnalyses(
+        bookKey: String,
+        sourceKey: String,
+        batchIds: Set<String>,
+        excludedChapters: Set<Int>,
+        generation: Long,
+    ): List<RaAnalysis>
 
     suspend fun getAnalysis(
         bookKey: String,
@@ -116,7 +127,13 @@ interface RaBuildGateway {
         narrator: Boolean,
     )
 
-    suspend fun deleteChapters(bookKey: String, sourceKey: String, chapterIndexes: List<Int>, rollbackFrom: Int? = null)
+    suspend fun deleteChapters(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndexes: List<Int>,
+        rollbackFrom: Int? = null,
+        bookName: String = "",
+    )
 
-    suspend fun deleteBook(bookKey: String)
+    suspend fun deleteBook(bookKey: String, bookName: String = "")
 }

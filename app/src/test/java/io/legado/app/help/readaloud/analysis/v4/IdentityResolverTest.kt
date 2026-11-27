@@ -482,6 +482,28 @@ class IdentityResolverTest {
     }
 
     @Test
+    fun `ambiguous batch peer cannot bypass a user cannot link`() = runBlocking {
+        val book = "bk_batch_cannot"
+        suspend fun person(name: String) = characters.ensureCharacter(
+            book, name, "核心", "男", "男青年", 0, listOf("蒙面客"), "ACTIVE", "user", "default",
+        )
+        val a = person("张三")
+        val b = person("李四")
+        characters.saveCannotLink(book, a.id, b.id, "user")
+        val first = speaker("c1", "B1", "张三", emptyList(), 0, batchEntityId = "B1").copy(
+            characterId = a.id, resolution = RaResolution.RESOLVED,
+        )
+        val second = speaker("c2", "B1", "蒙面客", emptyList(), 1, batchEntityId = "B1")
+        val resolved = resolver.resolveBatch(book, listOf(
+            IdentityResolver.BatchChapterInput(0, "第1章", listOf(first), emptyList(), batchId = "response", publish = false),
+            IdentityResolver.BatchChapterInput(1, "第2章", listOf(second), emptyList(), batchId = "response"),
+        ))
+        assertEquals(a.id, resolved.getValue(first.id).characterId)
+        assertTrue(resolved.getValue(second.id).characterId != a.id)
+        assertEquals("user", characters.linksOfBook(book).single().source)
+    }
+
+    @Test
     fun `batch passersby with same name get separate characters`() = runBlocking {
         val bookKey = "bk_batch_passersby"
         val first = speaker("p1", "B1", "弟子A", emptyList(), 0, roleType = "路人", batchEntityId = "B1")

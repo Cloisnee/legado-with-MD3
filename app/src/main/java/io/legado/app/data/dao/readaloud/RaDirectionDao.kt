@@ -34,8 +34,8 @@ interface RaDirectionDao {
     @Query("select * from ra_direction_plan where bookKey = :bookKey and chapterIndex = :chapterIndex")
     suspend fun plansOfChapter(bookKey: String, chapterIndex: Int): List<RaDirectionPlanEntity>
 
-    @Query("select * from ra_direction_plan where analysisId in (:analysisIds)")
-    suspend fun plansOfAnalyses(analysisIds: List<String>): List<RaDirectionPlanEntity>
+    @Query("select * from ra_direction_plan where bookKey = :bookKey and chapterIndex in (:indexes)")
+    suspend fun plansOfChapters(bookKey: String, indexes: List<Int>): List<RaDirectionPlanEntity>
 
     @Query("delete from ra_direction_plan where analysisId = :analysisId")
     suspend fun deletePlan(analysisId: String)

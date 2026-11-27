@@ -42,6 +42,7 @@ import io.legado.app.data.repository.ReadAloudCatalogRepository
 import io.legado.app.data.entities.Book
 import io.legado.app.data.repository.sourceKeyOf
 import io.legado.app.domain.gateway.RaBookIdentityGateway
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
@@ -563,10 +564,12 @@ abstract class BaseReadAloudService : BaseService(),
         sessionStore.restoreReadAloudFollow()
         clearFinishChapterTimerIfChapterChanged(bookSession.chapterIndex)
         val generation = ++prepareReadAloudGeneration
+        val builds: RaBuildGateway = get(RaBuildGateway::class.java)
         prepareReadAloudJob?.cancel()
         playStop()
         prepareReadAloudJob = execute(executeContext = IO) {
             val prepared = bookSession.prepareChapter()
+            val buildGeneration = prepared.analysisGeneration
             val book = requireNotNull(prepared.book)
             fun currentPreparation(): Boolean = generation == prepareReadAloudGeneration && !stopRequested &&
                 prepared.generation == bookSession.state.value.generation
@@ -602,25 +605,29 @@ abstract class BaseReadAloudService : BaseService(),
                 if (!currentPreparation()) return@withContext false
                 if (book.bookUrl.isNotEmpty()) {
                     val coordinator: ReadAloudBuildCoordinator = get(ReadAloudBuildCoordinator::class.java)
-                    coordinator.startSession(book, input.chapter.index, paused = !prepareShouldPlay, owner = analysisOwner)
+                    coordinator.startSession(book, input.chapter.index, paused = !prepareShouldPlay,
+                        owner = analysisOwner, buildGeneration = buildGeneration)
                 }
                 true
             }
             if (!installed) return@execute
-            runCatching {
+            val bookKey = runCatching {
                 val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
-                val bookKey = identity.keyOf(book.bookUrl, sourceKeyOf(book))
-                if (currentPreparation()) {
+                if (book.bookUrl.isEmpty() || !currentPreparation()) return@runCatching null
+                val key = identity.keyOf(book.bookUrl, sourceKeyOf(book), buildGeneration)
+                if (key != null && currentPreparation() && builds.canUseGeneration(key, input.chapter.index, buildGeneration)) {
                     val catalog: ReadAloudCatalogRepository = get(ReadAloudCatalogRepository::class.java)
-                    catalog.setCurrentBookKey(bookKey)
-                }
+                    catalog.setCurrentBookKey(key)
+                    key
+                } else null
             }.onFailure {
                 if (it is CancellationException) throw it
                 if (it !is io.legado.app.help.coroutine.ActivelyCancelException) {
                     AppLog.putAnalysis("记录最近朗读书名失败: ${it.localizedMessage}", it)
                 }
-            }
-            val preparedSpeechPlan = buildSpeechPlan(book, input.chapter.index, preparedChapter.canonicalSpeechParagraphs())
+            }.getOrNull()
+            val preparedSpeechPlan = buildSpeechPlan(book, input.chapter.index,
+                preparedChapter.canonicalSpeechParagraphs(), bookKey)
             if (!currentPreparation()) return@execute
             var preparedPlaybackQueue = runCatching {
                 ReadAloudPlaybackQueue.from(preparedSpeechPlan)
@@ -716,6 +723,7 @@ abstract class BaseReadAloudService : BaseService(),
         book: Book,
         chapterIndex: Int,
         paragraphs: List<CanonicalSpeechParagraph>,
+        bookKey: String?,
     ): List<SpeechPlanItem> {
         val bookUrl = book.bookUrl
         if (bookUrl.isEmpty()) return emptyList()
@@ -724,15 +732,12 @@ abstract class BaseReadAloudService : BaseService(),
         // 选的默认引擎。
         if (!multiSpeakerOn) return emptyList()
         val sourceKey = sourceKeyOf(book)
-        val identity: RaBookIdentityGateway = get(RaBookIdentityGateway::class.java)
-        val bookKey = runCatching { identity.keyOf(book.bookUrl, sourceKey) }.getOrNull()
-            ?: return emptyList()
         val prepareSpeechPlan: PrepareChapterSpeechPlanUseCase =
             get(PrepareChapterSpeechPlanUseCase::class.java)
         return try {
             prepareSpeechPlan(
                 bookUrl = bookUrl,
-                bookKey = bookKey,
+                bookKey = bookKey.orEmpty(),
                 sourceKey = sourceKey,
                 chapterIndex = chapterIndex,
                 paragraphs = paragraphs,

@@ -7,6 +7,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
 import io.legado.app.data.appDb
+import io.legado.app.data.repository.sourceKeyOf
+import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudEngineSelection
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
@@ -28,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import org.koin.core.context.GlobalContext
 import splitties.init.appCtx
 
 object ReadAloud {
@@ -115,15 +118,29 @@ object ReadAloud {
         /** Absolute position in the processed chapter; preferred by the Canvas reader. */
         chapterPosition: Int? = null,
         fromReader: Boolean = true,
+        continueAnalysisSession: Boolean = false,
     ) {
         val request = if (fromReader) ReadAloudBookSession.captureReader() else bookSession.state.value
         if (request?.book == null) return
-        playRequest(context, request, play, pageIndex, startPos, chapterPosition)
+        playRequest(context, request, play, pageIndex, startPos, chapterPosition, continueAnalysisSession)
     }
 
-    internal fun playRequest(context: Context, request: ReadAloudBookSession.Snapshot,
-        play: Boolean = true, pageIndex: Int = 0, startPos: Int = 0, chapterPosition: Int? = null) {
+    internal fun playRequest(
+        context: Context,
+        request: ReadAloudBookSession.Snapshot,
+        play: Boolean = true,
+        pageIndex: Int = 0,
+        startPos: Int = 0,
+        chapterPosition: Int? = null,
+        continueAnalysisSession: Boolean = false,
+    ) {
         val requestedBook = request.book ?: return
+        val previous = bookSession.state.value
+        val analysisGeneration = if (continueAnalysisSession && previous.book != null &&
+            previous.book.bookUrl == requestedBook.bookUrl && sourceKeyOf(previous.book) == sourceKeyOf(requestedBook)
+        ) {
+            previous.analysisGeneration
+        } else GlobalContext.get().get<RaBuildGateway>().generation()
         val id = ++requestId
         val application = context.applicationContext
         requests.launch {
@@ -138,7 +155,7 @@ object ReadAloud {
                 if (stopped == null || id != requestId) return@launch
             }
             if (id != requestId) return@launch
-            bookSession.adopt(request)
+            bookSession.adopt(request.copy(analysisGeneration = analysisGeneration))
             startPlayback(application, play, pageIndex, startPos, chapterPosition)
         }
     }
