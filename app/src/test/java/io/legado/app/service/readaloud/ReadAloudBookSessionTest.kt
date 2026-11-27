@@ -220,27 +220,33 @@ class ReadAloudBookSessionTest {
     }
 
     @Test
-    fun queuedPlaybackRetainsItsAnalysisGenerationUntilAnExplicitRestart() = runTest(mainDispatcher) {
+    fun queuedPlaybackRetainsItsAnalysisGenerationUntilAnExplicitRestart() = runBlocking {
         val db = database.database
         val identities = RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds)
         val original = builds.generation()
         val key = requireNotNull(identities.keyOf(b.bookUrl, b.origin, original))
         val app = RuntimeEnvironment.getApplication()
         val request = ReadAloudBookSession.Snapshot(book = b, chapterIndex = 5)
+        // Room uses real IO; do not auto-advance through the service timeout while deletion runs.
+        val clock = mainDispatcher.scheduler
         try {
             flag("isAlive", true)
             ReadAloud.playRequest(app, request)
-            runCurrent()
+            clock.runCurrent()
+            assertFalse(BaseReadAloudService.isRun)
+            assertEquals(a.bookUrl, ReadAloud.bookSession.book?.bookUrl)
             builds.deleteBook(key)
+            assertNull(identities.bookKeyOf(b.bookUrl))
             flag("isAlive", false)
-            advanceTimeBy(20)
-            runCurrent()
+            clock.advanceTimeBy(20)
+            clock.runCurrent()
+            assertEquals(b.bookUrl, ReadAloud.bookSession.book?.bookUrl)
             assertEquals(original, ReadAloud.bookSession.state.value.analysisGeneration)
             ReadAloud.playRequest(app, request, continueAnalysisSession = true)
-            runCurrent()
+            clock.runCurrent()
             assertEquals(original, ReadAloud.bookSession.state.value.analysisGeneration)
             ReadAloud.playRequest(app, request)
-            runCurrent()
+            clock.runCurrent()
             assertEquals(builds.generation(), ReadAloud.bookSession.state.value.analysisGeneration)
         } finally { flag("isAlive", false) }
     }
