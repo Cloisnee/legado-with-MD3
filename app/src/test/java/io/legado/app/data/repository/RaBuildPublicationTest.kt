@@ -149,7 +149,7 @@ class RaBuildPublicationTest {
             resolution = RaResolution.BATCH_LINKED)
         val other = weak.copy(id = "a#B2", localKey = "B2", primaryName = "旁人")
         val lines = listOf(weak, weak, other).mapIndexed { i, speaker ->
-            RaSegment("s$i", original.id, original.bookKey, 0, i, 0, 2, i * 10, "第$i句", SpeechRoleType.Character,
+            RaSegment("s$i", original.id, original.bookKey, 0, i, 0, 2, i * 10, "第${i}句", SpeechRoleType.Character,
                 seq = i + 1, localSpeakerId = speaker.id, characterId = speaker.characterId)
         }
         assertEquals(RaBuildPublication.PUBLISHED,
