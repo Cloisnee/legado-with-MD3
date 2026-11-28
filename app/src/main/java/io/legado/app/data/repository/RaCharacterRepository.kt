@@ -236,7 +236,12 @@ class RaCharacterRepository(
                 ),
             )
         }
-        if (rows.isNotEmpty()) dao.insertAliasesIgnore(rows)
+        if (rows.isNotEmpty()) {
+            database.withTransaction {
+                dao.insertAliasesIgnore(rows)
+                if (source == "ai") dao.confirmBatchAliases(characterId, rows.map { it.normalized }, chapterIndex, now)
+            }
+        }
     }
 
     override suspend fun attachAliases(
@@ -460,7 +465,7 @@ class RaCharacterRepository(
             database.withTransaction {
                 // 1. 台词与章内说话人外键
                 buildDao.reassignSegmentCharacter(from, to, now)
-                buildDao.reassignLocalSpeakerCharacter(from, to, now)
+                buildDao.reassignLocalSpeakerCharacter(from, to, now, confirmBatchLink = source == "user")
                 // 2. 别名迁移（同 normalized 已存在时删除来源行）
                 val targetNormalized = dao.aliasesOf(to).map { it.normalized }.toSet()
                 dao.aliasesOf(from).forEach { alias ->

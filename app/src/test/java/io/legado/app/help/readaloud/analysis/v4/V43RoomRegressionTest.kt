@@ -252,6 +252,33 @@ class V43RoomRegressionTest {
         }
     }
 
+    @Test fun `new body with no director plan removes only its old playback file entry`() = runBlocking {
+        val first = chapter(0, "张三推门说：“请进。”")
+        val second = chapter(1, "张三推门说：“坐吧。”")
+        fixture("audioDirector", handler = { request, exchange ->
+            exchange.reply(if (request.getString("model") == "audioDirector")
+                """{"items":[{"para":1,"frag":1,"type":"sfx","tag":"开门","pos":"前"}]}"""
+            else """{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"张三","roletype":"核心"}]}""")
+        }) { f ->
+            val name = "replacement-sound"
+            val url = "https://fixture.invalid/$name"
+            val key = f.keyOf(url, "src")
+            val pipeline = f.pipeline()
+            for (text in listOf(first, second)) {
+                assertNotNull(pipeline.run(url, name, key, "src", text.chapterIndex, text.paragraphs, "", ""))
+                assertEquals("开门", AudioPlanStore.load(name, url, text.chapterIndex)?.sfx?.single()?.tag)
+            }
+            val retained = AudioPlanStore.load(name, url, 1)
+            f.disableDirector()
+            val revised = chapter(0, "一加一等于二。")
+            val result = requireNotNull(pipeline.run(url, name, key, "src", 0, revised.paragraphs, "", ""))
+            val plan = requireNotNull(f.direction.plan(result.analysis.id, PrepareChapterSpeechPlanUseCase.MODULE))
+            assertTrue(f.direction.audio(plan.id).isEmpty())
+            assertNull(AudioPlanStore.load(name, url, 0))
+            assertEquals(retained, AudioPlanStore.load(name, url, 1))
+        }
+    }
+
     @Test fun `late foreground plans are rejected and finished plans are removed on chapter deletion`() =
         directorDeletion(whole = false, background = false)
 
@@ -529,6 +556,12 @@ class V43RoomRegressionTest {
             ))))
             assertTrue(config.save(AnalysisConfigStore.Config(prevLimit = 0, nextLimit = 0, timeoutSec = 90)))
         }
+
+        suspend fun disableDirector() {
+            val config = models.load()
+            assertTrue(models.save(config.copy(stages = config.stages.copy(audioDirector = emptyList()))))
+        }
+
         suspend fun person(book: String, name: String, aliases: List<String>) = people.ensureCharacter(
             book, name, "核心", "男", "男青年", 0, aliases, "ACTIVE", "user", "default",
         )

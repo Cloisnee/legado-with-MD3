@@ -11,7 +11,9 @@ import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
+import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVoiceProfileKind
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.usecase.BuildSpeechPlanUseCase
@@ -254,6 +256,102 @@ class BatchRoomPipelineTest {
                 println("R3-2 path=$path: 张三/李四, distinct playback voices, aliases and user CANNOT verified")
             }
             assertEquals(4, f.requests.get())
+        }
+    }
+
+    @Test fun `late evidence revises only automatic batch bindings without republishing chapters`() = runBlocking {
+        val texts = listOf(
+            chapter(0, "张三说：“我先走了。”"),
+            chapter(1, "蒙面客是守门人。蒙面客说：“请进。”", "蒙面客说：“等一下。”", "蒙面客说：“别着急。”"),
+            chapter(2, "陆七就是蒙面客，但陆七绝不是张三。陆七说：“坐吧。”"),
+        )
+        fun proof(ch: Int, type: String, other: String, quote: String) = JSONObject()
+            .put("type", type).put("subject", "B1").put("object", other).put("ch", ch).put("p", 1).put("quote", quote)
+        val response = batchResponse(
+            entry(1, "张三", "1" to "B1"),
+            entry(2, "蒙面客", "1" to "B1", "2" to "B1", "3" to "B1").put("evidence", JSONArray()
+                .put(proof(2, "ATTRIBUTE", "守门人", "蒙面客是守门人"))),
+            entry(3, "陆七", "1" to "B1").put("evidence", JSONArray()
+                .put(proof(3, "ALIAS_EQUAL", "蒙面客", "陆七就是蒙面客"))
+                .put(proof(3, "CONTRADICTION", "张三", "陆七绝不是张三"))),
+        )
+        fixture(List(2) { response }) { f ->
+            for (order in listOf(listOf(0, 1), listOf(1, 0))) {
+                val book = "late-proof-$order"
+                val runner = f.runner()
+                val foreground = ArrayList<Int>()
+                val background = ArrayList<Int>()
+                val earlyBuilds = ArrayList<io.legado.app.domain.model.readaloud.v4.RaChapterBuild>()
+                val seedChapter = order.first()
+                var seedId = ""
+                val outcome = runner.run(book, "src", texts, "late-proof", onChapterReady = { chapter, ready ->
+                    if (ready) background.add(chapter)
+                    if (ready || chapter != 1) return@run
+                    for (index in order) {
+                        assertNull(f.builds.getBuild(book, "src", 2))
+                        assertEquals(listOf(index), runner.convergeExisting(book, "src", listOf(texts[index]), AiPriority.P0_CURRENT,
+                            onChapterReady = { c, done -> if (done) foreground.add(c) }).ready)
+                    }
+                    earlyBuilds.addAll(f.builds.builds(book, "src"))
+                    seedId = f.characters.charactersRaw(book).single().id
+                    val weak = f.builds.localSpeakers(requireNotNull(earlyBuilds[order.last()].analysisId)).single()
+                    assertEquals(seedId, weak.characterId)
+                    assertEquals(RaResolution.BATCH_LINKED, weak.resolution)
+                    assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE,
+                        f.characters.aliasesOf(seedId).single { it.surface == weak.primaryName }.source)
+                    f.characters.setDefaultVoice(seedId, "locked-voice", "locked-entry")
+                    f.characters.setVoiceProfileLocked(f.characters.voiceProfilesOf(seedId).single().id, true)
+                    f.characters.attachAliases(book, seedId, listOf("手动别名"), seedChapter, "user")
+                    if (seedChapter == 0) {
+                        val lines = f.builds.segmentsOfChapter(book, "src", 1).filter { it.seq > 0 }
+                        for ((position, narrator) in listOf(1 to false, 2 to true)) {
+                            val line = lines[position]
+                            f.builds.saveOverride(book, 1, line.paragraphIndex, MD5Utils.md5Encode16(line.text),
+                                seedId.takeUnless { narrator }, narrator)
+                        }
+                    }
+                })
+                assertEquals(listOf(0, 1, 2), outcome.ready)
+                assertEquals(order, foreground)
+                assertEquals(listOf(2), background)
+                val builds = f.builds.builds(book, "src")
+                assertEquals(earlyBuilds, builds.take(2))
+                val ids = builds.map { build -> f.builds.localSpeakers(requireNotNull(build.analysisId)).single().characterId }
+                assertNotEquals(ids[0], ids[1])
+                assertEquals(ids[1], ids[2])
+                assertEquals(seedId, ids[seedChapter])
+                val actors = f.characters.charactersRaw(book)
+                assertEquals(ids.toSet(), actors.map { it.id }.toSet())
+                val correctedActor = requireNotNull(ids[1])
+                assertFalse(f.characters.aliasesOf(requireNotNull(ids[0])).any { it.surface == "蒙面客" })
+                assertEquals(setOf("蒙面客", "陆七"), f.characters.aliasesOf(correctedActor)
+                    .map { it.surface }.filterNot { it == "手动别名" }.toSet())
+                assertEquals("user", f.characters.aliasesOf(seedId).single { it.surface == "手动别名" }.source)
+                assertFalse(f.characters.attributesOf(requireNotNull(ids[0])).any { it.value == "守门人" })
+                assertEquals(1, f.characters.attributesOf(correctedActor).count { it.value == "守门人" })
+                val locked = f.characters.voiceProfilesOf(seedId).single()
+                assertEquals("locked-voice", locked.voiceTag)
+                assertTrue(locked.locked)
+                val newId = requireNotNull((ids.toSet() - seedId).single())
+                f.characters.setDefaultVoice(newId, "revised-voice", "revised-entry")
+                val playback = texts.map { input ->
+                    val lines = f.builds.segmentsOfChapter(book, "src", input.chapterIndex)
+                    BuildSpeechPlanUseCase(f.characters, voices)(book, lines)
+                }
+                assertEquals(ids, playback.map { it.single { cue -> cue.segment.seq == 1 }.segment.characterId })
+                val selectedVoices = playback.map { it.single { cue -> cue.segment.seq == 1 }.voice?.id }
+                assertNotEquals(selectedVoices[0], selectedVoices[1])
+                assertEquals(selectedVoices[1], selectedVoices[2])
+                if (seedChapter == 0) {
+                    assertEquals(2, f.builds.overrides(book, 1).size)
+                    val assigned = playback[1].single { it.segment.text.contains("等一下") }
+                    assertEquals(seedId, assigned.segment.characterId)
+                    assertEquals("locked-voice", assigned.voice?.id)
+                    val narrator = playback[1].single { it.segment.text.contains("别着急") }
+                    assertEquals(SpeechRoleType.Narrator, narrator.segment.roleType)
+                    assertNull(narrator.segment.characterId)
+                }
+            }
         }
     }
 

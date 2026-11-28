@@ -6,8 +6,11 @@ import android.text.TextPaint
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.repository.HighlightRuleRepository
 import io.legado.app.data.repository.RaBookIdentityRepository
 import io.legado.app.data.repository.RaBuildRepository
+import io.legado.app.data.repository.ReadStyleConfigStore
+import io.legado.app.data.repository.ReadStyleRepository
 import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.gateway.AppShellSettingsGateway
 import io.legado.app.domain.gateway.RaBuildGateway
@@ -18,15 +21,22 @@ import io.legado.app.domain.model.settings.AppShellSettings
 import io.legado.app.domain.model.settings.ReadAloudSettings
 import io.legado.app.domain.model.settings.ReadSettings
 import io.legado.app.feature.reader.core.model.ReaderTextStyle
+import io.legado.app.feature.reader.core.navigation.ReaderChapterPaginationSnapshot
 import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
+import io.legado.app.feature.reader.core.source.ReaderChapterSourceParser
+import io.legado.app.feature.reader.platform.AndroidReaderHtmlSemanticTextResolver
 import io.legado.app.feature.reader.platform.ReaderAndroidPaginationStyle
 import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.config.AppConfigStore
+import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.globalExecutor
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
 import io.legado.app.model.ReadBook
 import io.legado.app.model.ReaderPaginationEnvironment
+import io.legado.app.model.reader.ReaderChapterInput
+import io.legado.app.model.reader.ReaderChapterInputWindow
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.support.InMemoryAppDatabaseFixture
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -249,6 +259,53 @@ class ReadAloudBookSessionTest {
             clock.runCurrent()
             assertEquals(builds.generation(), ReadAloud.bookSession.state.value.analysisGeneration)
         } finally { flag("isAlive", false) }
+    }
+
+    @Test
+    fun paginationContinuesWithoutRestoringADeletedBookUntilExplicitPlay() = runBlocking {
+        val app = RuntimeEnvironment.getApplication()
+        val db = database.database
+        val identities = RaBookIdentityRepository(db, db.raBuildDao, db.bookDao, builds)
+        val oldGeneration = builds.generation()
+        val bookKey = requireNotNull(identities.keyOf(b.bookUrl, b.origin, oldGeneration))
+        val chapter = BookChapter(bookUrl = b.bookUrl, url = "b/5", title = "第五章", index = 5)
+        val style = ReadStyleConfigStore(ReadStyleRepository(HighlightRuleRepository(db.highlightRuleDao, app)))
+        ReadBookConfig.initialize(style, ReadingSettings())
+        val content = ContentProcessor.get(b).getContent(b, chapter, "张三说：“下一章。”", includeTitle = false)
+        val source = ReaderChapterSourceParser.parse(5, chapter.title, content.textList, includeTitle = false,
+            adaptSpecialStyle = false, htmlSemanticTextResolver = AndroidReaderHtmlSemanticTextResolver)
+        val input = ReaderChapterInput(b, null, chapter, chapter.title, content, source, content.hashCode(),
+            0, source.hashCode(), 0, 0L)
+        val readerWindow = ReadBook::class.java.getDeclaredField("readerChapterInputWindow").apply { isAccessible = true }
+        val serviceChapter = BaseReadAloudService::class.java.getDeclaredField("currentChapterIndex").apply { isAccessible = true }
+        val previousServiceChapter = serviceChapter.getInt(null)
+        try {
+            ReadAloud.bookSession.adopt(ReadAloudBookSession.Snapshot(book = b, chapterIndex = 4,
+                analysisGeneration = oldGeneration))
+            readerWindow.set(null, ReaderChapterInputWindow(current = input))
+            serviceChapter.setInt(null, 4)
+            builds.deleteBook(bookKey)
+            ReadBook.publishReaderPagination(listOf(ReaderChapterPaginationSnapshot(5, listOf(0), source.semanticContent.length, 1)))
+            mainDispatcher.scheduler.runCurrent()
+            assertNotNull(Shadows.shadowOf(app).nextStartedService)
+            val continued = ReadAloud.bookSession.prepareChapter()
+            assertEquals(5, continued.chapterIndex)
+            assertEquals(oldGeneration, continued.analysisGeneration)
+            assertNull(identities.keyOf(b.bookUrl, b.origin, continued.analysisGeneration))
+            assertNull(identities.bookKeyOf(b.bookUrl))
+            assertTrue(builds.builds(bookKey, b.origin).isEmpty())
+
+            ReadBook.readAloud()
+            mainDispatcher.scheduler.runCurrent()
+            assertNotNull(Shadows.shadowOf(app).nextStartedService)
+            val restarted = ReadAloud.bookSession.state.value.analysisGeneration
+            assertEquals(builds.generation(), restarted)
+            assertNotEquals(bookKey, requireNotNull(identities.keyOf(b.bookUrl, b.origin, restarted)))
+        } finally {
+            serviceChapter.setInt(null, previousServiceChapter)
+            readerWindow.set(null, ReaderChapterInputWindow())
+            ReadBook.clearReaderPagination()
+        }
     }
 
     private fun environment(): ReaderPaginationEnvironment {

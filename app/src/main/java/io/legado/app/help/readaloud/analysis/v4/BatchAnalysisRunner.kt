@@ -20,6 +20,7 @@ import io.legado.app.domain.model.readaloud.v4.RaChapterState
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.help.readaloud.analysis.AiPriority
 import io.legado.app.help.readaloud.analysis.AiRequestControl
@@ -339,21 +340,8 @@ class BatchAnalysisRunner(
             }.toMap()
             val restored = runCatching {
                 val snapshot = JSONObject(analysis.observationJson)
-                fun restoredEntries(key: String): List<Stage2Speaker> {
-                    val entries = snapshot.getJSONArray(key)
-                    return (0 until entries.length()).map { index ->
-                        val entry = entries.getJSONObject(index)
-                        val aliases = entry.getJSONArray("aliases")
-                        Stage2Speaker(
-                            key = entry.getString("key"), name = entry.getString("name"),
-                            aliases = (0 until aliases.length()).map(aliases::getString),
-                            roleType = entry.getString("roletype"), gender = entry.getString("gender"),
-                            ageBand = entry.getString("age"), genderSource = entry.getString("genderSource"),
-                            ageSource = entry.getString("ageSource"),
-                        )
-                    }
-                }
-                val payload = Stage2Payload(seqMap, restoredEntries("speakers"), restoredEntries("mentions"), emptyList())
+                val payload = Stage2Payload(seqMap, restoredEntries(snapshot, "speakers"),
+                    restoredEntries(snapshot, "mentions"), emptyList())
                 val savedContexts = snapshot.getJSONObject("contexts")
                 val contexts = savedContexts.keys().asSequence().associateWith(savedContexts::getString)
                 payload to contexts
@@ -378,6 +366,21 @@ class BatchAnalysisRunner(
         if (items.isEmpty()) return Outcome()
         val result = converge(bookKey, items, priority, onChapterReady, control)
         return Outcome(ready = result.ready, extracted = result.extracted)
+    }
+
+    private fun restoredEntries(snapshot: JSONObject, key: String): List<Stage2Speaker> {
+        val entries = snapshot.getJSONArray(key)
+        return (0 until entries.length()).map { index ->
+            val entry = entries.getJSONObject(index)
+            val aliases = entry.getJSONArray("aliases")
+            Stage2Speaker(
+                key = entry.getString("key"), name = entry.getString("name"),
+                aliases = (0 until aliases.length()).map(aliases::getString),
+                roleType = entry.getString("roletype"), gender = entry.getString("gender"),
+                ageBand = entry.getString("age"), genderSource = entry.getString("genderSource"),
+                ageSource = entry.getString("ageSource"),
+            )
+        }
     }
 
     private fun eligibleChapters(bookKey: String, chapters: List<ChapterText>): List<ChapterText> {
@@ -1033,9 +1036,18 @@ class BatchAnalysisRunner(
                             speaker.copy(characterId = resolution.characterId, resolution = resolution.resolution)
                         }
                     }
-                    val characters = active.flatMap { speakersByChapter.getValue(it.text.chapterIndex) }
-                        .mapNotNull { it.characterId }.distinct().mapNotNull { raCharacters.character(it) }
-                    casting.ensureDefaultProfiles(bookKey, characters, "后台")
+                    val revisedChapters = inputs.filterNot { it.publish }.mapNotNull { input ->
+                        val revised = input.speakers.mapNotNull speaker@{ speaker ->
+                            if (speaker.resolution != RaResolution.BATCH_LINKED) return@speaker null
+                            val next = resolutions[speaker.id]?.takeUnless { it.characterId == speaker.characterId }
+                                ?: return@speaker null
+                            speaker.copy(characterId = next.characterId, resolution = next.resolution)
+                        }
+                        if (revised.isEmpty()) null else input to revised
+                    }
+                    val assigned = speakersByChapter.values.flatten() + revisedChapters.flatMap { it.second }
+                    val characterIds = assigned.mapNotNullTo(LinkedHashSet()) { it.characterId }
+                    casting.ensureDefaultProfiles(bookKey, characterIds.mapNotNull { raCharacters.character(it) }, "后台")
                     for (target in eligible) {
                         val item = itemsById.getValue(target.analysis.id)
                         val speakers = speakersByChapter.getValue(item.text.chapterIndex)
@@ -1050,7 +1062,8 @@ class BatchAnalysisRunner(
                             speaker.characterId?.let { speaker.localKey to it }
                         }.toMap()
                         val (attributes, relations) = ObservationAssembly.collectObservations(
-                            bookKey, item.text.chapterIndex, item.payload, keyToCharacter, item.evidence,
+                            bookKey, item.text.chapterIndex, item.payload.speakers, keyToCharacter, item.evidence,
+                            batchAnalysisId = item.analysisId,
                         )
                         val publication = raBuild.saveAnalysisBundle(
                             analysis = target.analysis,
@@ -1061,7 +1074,22 @@ class BatchAnalysisRunner(
                         )
                         check(publication == RaBuildPublication.PUBLISHED)
                     }
-                    characters.forEach { raCharacters.recomputeAppearance(it.id) }
+                    val generation = active.minOf { requireNotNull(it.text.input).generation }
+                    for ((input, revised) in revisedChapters) {
+                        val analysis = requireNotNull(raBuild.analysisById(revised.first().analysisId))
+                        val replacementById = revised.associateBy { it.id }
+                        val keyToCharacter = input.speakers.mapNotNull { speaker ->
+                            val replacement = replacementById[speaker.id]
+                            if (replacement != null) speaker.characterId?.let(characterIds::add)
+                            (replacement?.characterId ?: speaker.characterId)?.let { speaker.localKey to it }
+                        }.toMap()
+                        val (attributes, relations) = ObservationAssembly.collectObservations(
+                            bookKey, input.chapterIndex, restoredEntries(JSONObject(analysis.observationJson), "speakers"),
+                            keyToCharacter, input.evidence, batchAnalysisId = analysis.id,
+                        )
+                        raBuild.reviseBatchIdentity(analysis, generation, revised, attributes, relations)
+                    }
+                    characterIds.forEach { raCharacters.recomputeAppearance(it) }
                     eligible.map { it.build.chapterIndex }
                 }
                 // 等提交确认后才通知与扣额，Room 回滚不会发出 READY。

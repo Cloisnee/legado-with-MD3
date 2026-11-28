@@ -544,6 +544,7 @@ class ReadAloudDelegate(
             context = context,
             play = resumePlaying,
             chapterPosition = chapterPosition.coerceAtLeast(0),
+            continueAnalysisSession = true,
         )
     }
 

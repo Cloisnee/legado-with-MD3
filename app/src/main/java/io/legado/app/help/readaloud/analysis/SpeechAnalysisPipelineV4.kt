@@ -21,6 +21,7 @@ import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
@@ -525,7 +526,7 @@ BGM 建议缺段从值集补全。
                     val characters = keyToCharacter.values.distinct().mapNotNull { raCharacters.character(it) }
                     casting.ensureDefaultProfiles(bookKey, characters, chapterLabel)
                     val (attributeObs, relationObs) = ObservationAssembly.collectObservations(
-                        bookKey, chapterIndex, stage2, keyToCharacter, evidence,
+                        bookKey, chapterIndex, stage2?.speakers.orEmpty(), keyToCharacter, evidence,
                     )
                     val publication = raBuild.saveAnalysisBundle(
                         analysis = analysis,
@@ -699,7 +700,11 @@ BGM 建议缺段从值集补全。
                 lines = lines,
                 audio = audio,
             )
-            audioPlan?.let { AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, it) }
+            if (audioPlan == null) {
+                AudioPlanStore.delete(bookName, setOf(bookUrl), setOf(analysis.chapterIndex))
+            } else {
+                AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, audioPlan)
+            }
         }
     }
 
@@ -789,7 +794,7 @@ BGM 建议缺段从值集补全。
         val all = runCatching { raCharacters.charactersRaw(bookKey) }.getOrDefault(emptyList())
         if (all.isEmpty()) return ""
         val aliases = runCatching { raCharacters.aliasesOfBook(bookKey) }.getOrDefault(emptyList())
-        val byId = aliases.groupBy { it.characterId }
+        val byId = aliases.filterNot { it.source == RaCharacterAlias.BATCH_LINK_SOURCE }.groupBy { it.characterId }
         val chapterText = paragraphs.joinToString("\n") { it.text }
         val hit = all.filter { character ->
             byId[character.id].orEmpty().any { alias ->

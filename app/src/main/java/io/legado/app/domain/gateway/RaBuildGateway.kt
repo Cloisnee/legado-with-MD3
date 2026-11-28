@@ -96,6 +96,15 @@ interface RaBuildGateway {
         input: RaBuildInput? = null,
     ): RaBuildPublication
 
+    /** Revise published automatic bindings inside the same identity commit, without publishing the chapter again. */
+    suspend fun reviseBatchIdentity(
+        analysis: RaAnalysis,
+        generation: Long,
+        speakers: List<RaLocalSpeaker>,
+        attributes: List<RaAttributeObservation>,
+        relations: List<RaRelationObservation>,
+    )
+
     suspend fun segments(analysisId: String): List<RaSegment>
 
     suspend fun segmentsOfChapter(bookKey: String, sourceKey: String, chapterIndex: Int): List<RaSegment>

@@ -1218,7 +1218,7 @@ class ReadBookViewModel(
                 if (intent.play) {
                     _effects.tryEmit(ReadBookEffect.ToggleReadAloud)
                 } else {
-                    ReadBook.readAloud(!BaseReadAloudService.pause)
+                    ReadBook.continueReadAloud()
                 }
             }
 
@@ -1722,7 +1722,7 @@ class ReadBookViewModel(
                 if (play) {
                     _effects.tryEmit(ReadBookEffect.ToggleReadAloud)
                 } else {
-                    ReadBook.readAloud(!BaseReadAloudService.pause)
+                    ReadBook.continueReadAloud()
                 }
             }
         }

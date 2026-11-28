@@ -145,6 +145,7 @@ class IdentityResolver(
         initialOccupancy: Map<Int, Set<String>> = emptyMap(),
         rejectedAnchors: Map<String, Set<String>> = emptyMap(),
         separateFrom: Map<String, Set<String>> = emptyMap(),
+        persistAliases: Boolean = true,
     ): ChapterResult {
         if (speakers.isEmpty()) return ChapterResult(emptyMap(), emptyList())
         val cannotPairs = cannotPairs(bookKey)
@@ -191,7 +192,7 @@ class IdentityResolver(
                 gender = speaker.gender.ifBlank { "男" },
                 ageBand = speaker.ageBand.ifBlank { "男青年" },
                 chapterIndex = chapter,
-                aliases = names,
+                aliases = if (persistAliases) names else emptyList(),
                 status = status.storageValue,
                 aliasSource = "ai",
                 attributeSource = "default",
@@ -239,6 +240,7 @@ class IdentityResolver(
                     speaker = speaker,
                     target = aliasEqualTarget,
                     candidateIds = listOf(aliasEqualTarget.id),
+                    persistAliases = persistAliases,
                 )
                 return@forEach
             }
@@ -271,6 +273,7 @@ class IdentityResolver(
                     speaker = speaker,
                     target = target,
                     candidateIds = listOf(target.id),
+                    persistAliases = persistAliases,
                 )
                 return@forEach
             }
@@ -299,6 +302,7 @@ class IdentityResolver(
                         speaker = speaker,
                         target = published,
                         candidateIds = listOf(published.id),
+                        persistAliases = persistAliases,
                     )
                     return@forEach
                 }
@@ -462,6 +466,7 @@ class IdentityResolver(
                             speaker = item.speaker,
                             target = target,
                             candidateIds = candidateIds,
+                            persistAliases = persistAliases,
                         )
                         resolutions[item.speaker.localKey] = resolution.copy(
                             candidateIds = candidateIds,
@@ -646,6 +651,10 @@ class IdentityResolver(
         val groups = LinkedHashMap<String, List<Pair<Int, RaLocalSpeaker>>>()
         val separated = HashMap<String, MutableSet<String>>()
         val contextTargets = HashMap<String, RaCharacter>()
+        val independentTargets = HashMap<String, String>()
+        val provenPeers = HashMap<String, Set<String>>()
+        val weakGroups = HashSet<String>()
+        val revisions = HashMap<String, List<String>>()
         proposedGroups.forEach { (key, members) ->
             if (members.size == 1) {
                 groups[key] = members
@@ -671,9 +680,12 @@ class IdentityResolver(
             val targets = members.associate { (_, speaker) ->
                 val verified = verifiedByMember.getValue(speaker.id)
                 val contradictions = denials.getValue(speaker.id)
-                val target = speaker.characterId?.let(finalIds::get)?.let { characters.character(it) }
+                val stored = speaker.characterId?.takeUnless { speaker.resolution == RaResolution.BATCH_LINKED }
+                    ?.let(finalIds::get)
+                val target = stored?.let { characters.character(it) }
                     ?: uniqueAliasTarget(bookKey, verified.objectsOf(RaEvidenceType.ALIAS_EQUAL), contradictions)
                     ?: exactByMember.getValue(speaker.id).singleOrNull()
+                target?.let { independentTargets[speaker.id] = it.id }
                 speaker.id to target
             }
             fun denies(a: String, b: String): Boolean {
@@ -704,24 +716,61 @@ class IdentityResolver(
                     }
                 }
             }
-            if (!conflict) {
-                groups[key] = members
-            } else {
-                // A conflicting bkey cannot join anybody by itself. Rebuild only explicit, compatible links.
-                val components = members.map { mutableListOf(it) }.toMutableList()
-                for ((_, speaker) in members) {
-                    for (alias in equalNames.getValue(speaker.id)) {
-                        val peer = members.singleOrNull { (_, other) ->
-                            other.id != speaker.id && alias in names.getValue(other.id)
-                        }?.second ?: continue
-                        val first = components.first { group -> group.any { it.second.id == speaker.id } }
-                        val second = components.first { group -> group.any { it.second.id == peer.id } }
-                        if (first !== second && first.none { (_, a) -> second.any { (_, b) -> b.id in separated[a.id].orEmpty() } }) {
-                            first.addAll(second)
-                            components.remove(second)
-                        }
+            val components = members.map { mutableListOf(it) }.toMutableList()
+            for ((_, speaker) in members) {
+                for (alias in equalNames.getValue(speaker.id)) {
+                    val peer = members.singleOrNull { (_, other) ->
+                        other.id != speaker.id && alias in names.getValue(other.id)
+                    }?.second ?: continue
+                    val first = components.first { group -> group.any { it.second.id == speaker.id } }
+                    val second = components.first { group -> group.any { it.second.id == peer.id } }
+                    if (first !== second && first.none { (_, a) -> second.any { (_, b) -> b.id in separated[a.id].orEmpty() } }) {
+                        first.addAll(second)
+                        components.remove(second)
                     }
                 }
+            }
+            val resolvingThisGroup = members.any { it.first in publishChapters }
+            for (component in components) {
+                val ids = component.mapTo(LinkedHashSet()) { it.second.id }
+                ids.forEach { provenPeers[it] = ids }
+                if (!resolvingThisGroup) continue
+                val independentId = ids.mapNotNull(independentTargets::get).distinct().singleOrNull()
+                val sameProof = ids.flatMap { verifiedByMember.getValue(it) }
+                    .filter { it.type == RaEvidenceType.ALIAS_EQUAL }
+                for ((_, speaker) in component) {
+                    if (speaker.resolution != RaResolution.BATCH_LINKED) continue
+                    val oldId = speaker.characterId ?: continue
+                    if (finalIds[oldId] != oldId) continue
+                    // A verified denial also applies to compatible peers joined by explicit alias evidence.
+                    val formerAnchors = components.filter { other ->
+                        other !== component && other.any { independentTargets[it.second.id] == oldId }
+                    }.flatten().map { it.second.id }
+                    val oldCharacter = characters.character(oldId) ?: continue
+                    val refutingMembers = LinkedHashSet<String>()
+                    for (id in ids) {
+                        if (oldId in deniedIds.getValue(id) || denials.getValue(id).any { matchesText(oldCharacter, it) }) {
+                            refutingMembers.add(id)
+                        }
+                        for (anchor in formerAnchors) {
+                            if (denies(id, anchor)) refutingMembers.add(id)
+                            if (denies(anchor, id)) refutingMembers.add(anchor)
+                        }
+                    }
+                    val refutations = refutingMembers.flatMap { verifiedByMember.getValue(it) }
+                        .filter { it.type == RaEvidenceType.CONTRADICTION }
+                    val aliasProvesDifferentTarget = independentId != null && independentId != oldId && sameProof.isNotEmpty()
+                    if (refutations.isNotEmpty() || aliasProvesDifferentTarget) {
+                        revisions[speaker.id] = (sameProof + refutations).map { it.id }.distinct()
+                        conflict = true
+                    }
+                }
+            }
+            if (!conflict) {
+                groups[key] = members
+                weakGroups.add(key)
+            } else {
+                // A conflicting bkey cannot join anybody by itself. Keep compatible ALIAS_EQUAL edges.
                 components.forEach { group ->
                     group.sortBy { it.first }
                     groups["solo:${group.first().second.id}"] = group
@@ -742,29 +791,60 @@ class IdentityResolver(
         val separateFrom = HashMap<String, Set<String>>()
         val groupBySpeaker = groups.flatMap { (key, members) -> members.map { it.second.id to key } }.toMap()
 
+        suspend fun assign(
+            key: String,
+            members: List<Pair<Int, RaLocalSpeaker>>,
+            result: Resolution,
+            seed: String? = null,
+        ) {
+            for ((chapter, speaker) in members) {
+                val supported = provenPeers[speaker.id].orEmpty().any {
+                    independentTargets[it] == result.characterId || it == seed
+                }
+                val resolution = if (key in weakGroups && !supported) RaResolution.BATCH_LINKED else result.resolution
+                characters.attachAliasesIfAbsent(
+                    bookKey, result.characterId, speaker.surfaceNames + speaker.primaryName, chapter,
+                    source = if (resolution == RaResolution.BATCH_LINKED) RaCharacterAlias.BATCH_LINK_SOURCE else "ai",
+                )
+                revisions[speaker.id]?.let { evidenceIds ->
+                    characters.saveDecision(bookKey, speaker, listOf(requireNotNull(speaker.characterId)),
+                        RaVerdict.DIFFERENT.storageValue, result.characterId, 1f,
+                        "同批正文证据修订弱归属", "", evidenceIds)
+                }
+                out[speaker.id] = result.copy(resolution = resolution)
+            }
+        }
+
         groups.values.flatten().forEach { (chapter, speaker) ->
+            if (speaker.id in revisions) return@forEach
             val id = speaker.characterId?.let(finalIds::get) ?: return@forEach
             out[speaker.id] = Resolution(id, speaker.resolution, false)
             occupied.getOrPut(chapter) { HashSet() }.add(id)
         }
         groups.forEach { (key, members) ->
-            val pending = members.filter { it.first in publishChapters && it.second.id !in out }
+            val pending = members.filter { (chapter, speaker) ->
+                speaker.id in revisions || (chapter in publishChapters && speaker.id !in out)
+            }
             if (pending.isEmpty()) return@forEach
             val separateIds = members.flatMap { (_, speaker) -> separated[speaker.id].orEmpty() }.toSet()
             val anchorIds = members.mapNotNull { (_, speaker) ->
                 out[speaker.id]?.characterId ?: contextTargets[speaker.id]?.id
             }.toSet()
             val separatedTargets = separateIds.mapNotNull { out[it]?.characterId ?: contextTargets[it]?.id }.toSet()
-            val candidate = anchorIds.singleOrNull()?.takeUnless { it in separatedTargets }?.let { characters.character(it) }
+            val excluded = separatedTargets + pending.mapNotNull { (_, speaker) ->
+                speaker.characterId?.takeIf { speaker.id in revisions }?.let(finalIds::get)
+            }
+            val candidate = anchorIds.singleOrNull()?.takeUnless { it in excluded }?.let { characters.character(it) }
             if (candidate != null && pending.none { (chapter, _) -> candidate.id in occupied[chapter].orEmpty() }) {
-                pending.forEach { (chapter, speaker) ->
-                    if (collect == null) out[speaker.id] = link(bookKey, chapter, speaker, candidate, listOf(candidate.id))
-                    occupied.getOrPut(chapter) { HashSet() }.add(candidate.id)
+                if (collect == null) {
+                    val (chapter, speaker) = pending.first()
+                    assign(key, pending, link(bookKey, chapter, speaker, candidate, listOf(candidate.id), persistAliases = false))
                 }
+                pending.forEach { (chapter, _) -> occupied.getOrPut(chapter) { HashSet() }.add(candidate.id) }
                 return@forEach
             }
             // 拒绝的锚点不再从称呼快链重新进入。
-            val rejectedIds = anchorIds + separatedTargets
+            val rejectedIds = anchorIds + excluded
             if (rejectedIds.isNotEmpty()) rejected[key] = rejectedIds
             if (separateIds.isNotEmpty()) separateFrom[key] = separateIds.mapNotNullTo(HashSet(), groupBySpeaker::get)
             groupsToResolve[key] = pending
@@ -784,7 +864,7 @@ class IdentityResolver(
                     resolution = RaResolution.PENDING,
                 ),
             )
-            pending.forEach { (_, speaker) ->
+            (if (key in weakGroups) pending else members).forEach { (_, speaker) ->
                 evidenceBySpeaker[speaker.id].orEmpty().forEach { e ->
                     syntheticEvidence.add(e.copy(subjectLocalId = syntheticId))
                 }
@@ -807,10 +887,11 @@ class IdentityResolver(
             initialOccupancy = occupied,
             rejectedAnchors = rejected,
             separateFrom = separateFrom,
+            persistAliases = false,
         )
         groupsToResolve.forEach { (key, members) ->
             val resolution = result.resolutions[key] ?: return@forEach
-            members.forEach { (_, speaker) -> out[speaker.id] = resolution }
+            assign(key, members, resolution, seed = members.first().second.id.takeIf { resolution.created })
         }
         return out
     }
@@ -878,7 +959,7 @@ class IdentityResolver(
         val normalized = names.map(RaNameUtils::normalize).filter { it.isNotEmpty() }.distinct()
         if (normalized.isEmpty()) return null
         val hits = characters.charactersByAliases(bookKey, normalized)
-            .filterNot { it.isGeneric }
+            .filterNot { it.isGeneric || it.source == RaCharacterAlias.BATCH_LINK_SOURCE }
             .map { it.characterId }
             .distinct()
         val contradictionIds = contradictionIds(bookKey, contradictions)
@@ -904,7 +985,7 @@ class IdentityResolver(
             .distinct()
         if (nonGeneric.isEmpty()) return emptyList()
         val hits = characters.charactersByAliases(bookKey, nonGeneric)
-            .filterNot { it.isGeneric }
+            .filterNot { it.isGeneric || it.source == RaCharacterAlias.BATCH_LINK_SOURCE }
             .map { it.characterId }
             .distinct()
         val contradictionIds = contradictionIds(bookKey, contradictions)
@@ -973,7 +1054,8 @@ class IdentityResolver(
                     scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, 0.4f)
                 }
             } else {
-                scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, 1.0f)
+                val score = if (row.source == RaCharacterAlias.BATCH_LINK_SOURCE) 0.3f else 1.0f
+                scores[row.characterId] = maxOf(scores[row.characterId] ?: 0f, score)
             }
         }
         // PROVISIONAL 关联：称呼有交集/包含时纳入再审（最多 3 次）
@@ -1046,7 +1128,8 @@ class IdentityResolver(
             }
             if (pair in cannotPairs) return@forEach
             val provisionalNames = (listOf(provisional.displayName) +
-                runCatching { characters.aliasesOf(provisional.id) }.getOrDefault(emptyList()).map { it.surface })
+                runCatching { characters.aliasesOf(provisional.id) }.getOrDefault(emptyList())
+                    .filterNot { it.source == RaCharacterAlias.BATCH_LINK_SOURCE }.map { it.surface })
                 .map(RaNameUtils::normalize)
                 .filter { it.isNotEmpty() }
                 .toSet()
@@ -1070,19 +1153,15 @@ class IdentityResolver(
         speaker: RaLocalSpeaker,
         target: RaCharacter,
         candidateIds: List<String>,
+        persistAliases: Boolean = true,
     ): Resolution {
         val finalId = runCatching { characters.finalCharacterId(target.id) }.getOrDefault(target.id)
         val finalTarget = runCatching { characters.character(finalId) }.getOrNull() ?: target
-        characters.attachAliasesIfAbsent(
-            bookKey = bookKey,
-            characterId = finalTarget.id,
-            names = (speaker.surfaceNames + speaker.primaryName)
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-                .distinct(),
-            chapterIndex = chapterIndex,
-            source = "ai",
-        )
+        if (persistAliases) {
+            characters.attachAliasesIfAbsent(
+                bookKey, finalTarget.id, speaker.surfaceNames + speaker.primaryName, chapterIndex, source = "ai",
+            )
+        }
         return Resolution(
             characterId = finalTarget.id,
             resolution = if (finalTarget.status == RaCharacterStatus.PROVISIONAL) {
@@ -1147,6 +1226,7 @@ class IdentityResolver(
         if (normalized.isEmpty()) return emptySet()
         return runCatching { characters.charactersByAliases(bookKey, normalized) }
             .getOrDefault(emptyList())
+            .filterNot { it.source == RaCharacterAlias.BATCH_LINK_SOURCE }
             .map { it.characterId }
             .toSet()
     }

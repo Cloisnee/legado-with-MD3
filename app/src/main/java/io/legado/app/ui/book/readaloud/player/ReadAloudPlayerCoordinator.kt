@@ -289,7 +289,8 @@ class ReadAloudPlayerCoordinator(
 
     fun seekTo(chapterPosition: Int, chapterLength: Int) {
         val position = chapterPosition.coerceIn(0, chapterLength)
-        ReadAloud.play(application, play = true, chapterPosition = position, fromReader = false)
+        ReadAloud.play(application, play = true, chapterPosition = position, fromReader = false,
+            continueAnalysisSession = true)
     }
 
     private companion object {

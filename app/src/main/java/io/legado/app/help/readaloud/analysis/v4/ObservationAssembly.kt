@@ -269,23 +269,24 @@ object ObservationAssembly {
         return out
     }
 
-    /** 属性/关系观察与章节分析同事务写入（default 来源不写）。 */
+    /** 属性/关系观察与章节分析同事务写入（default 来源不写）。批内观察用 localSpeaker 键，修订归属时覆盖同一行。 */
     fun collectObservations(
         bookKey: String,
         chapterIndex: Int,
-        payload: Stage2Payload?,
+        speakers: List<Stage2Speaker>,
         keyToCharacter: Map<String, String>,
         evidence: List<RaEvidence>,
+        batchAnalysisId: String? = null,
     ): Pair<List<RaAttributeObservation>, List<RaRelationObservation>> {
         val attributes = ArrayList<RaAttributeObservation>()
         val relations = ArrayList<RaRelationObservation>()
-        if (payload == null) return attributes to relations
-        payload.speakers.forEach { speaker ->
+        speakers.forEach { speaker ->
             val characterId = keyToCharacter[speaker.key] ?: return@forEach
+            val subject = batchAnalysisId?.let { "$it#${speaker.key}" } ?: characterId
             if (speaker.genderSource != "default" && speaker.gender.isNotBlank()) {
                 attributes.add(
                     RaAttributeObservation(
-                        id = "att_${characterId}_gender_$chapterIndex",
+                        id = "att_${subject}_gender_$chapterIndex",
                         bookKey = bookKey,
                         characterId = characterId,
                         key = "gender",
@@ -298,7 +299,7 @@ object ObservationAssembly {
             if (speaker.ageSource != "default" && speaker.ageBand.isNotBlank()) {
                 attributes.add(
                     RaAttributeObservation(
-                        id = "att_${characterId}_ageBand_$chapterIndex",
+                        id = "att_${subject}_ageBand_$chapterIndex",
                         bookKey = bookKey,
                         characterId = characterId,
                         key = "ageBand",

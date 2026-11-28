@@ -324,7 +324,7 @@ class HttpReadAloudService : BaseReadAloudService(),
         if (!requestFocus()) return
         if (contentList.isEmpty()) {
             AppLog.putDebug("朗读列表为空")
-            ReadBook.readAloud()
+            ReadBook.continueReadAloud(play = true)
         } else {
             super.play()
             downloadAndPlayAudios()

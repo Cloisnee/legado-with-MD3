@@ -653,7 +653,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         if (!readAloudSessionStore.state.value.followReadAloudPosition) return
         if (readerPagination() == null) return
         if (BaseReadAloudService.currentChapterIndex == durChapterIndex) return
-        readAloud(play = !BaseReadAloudService.pause)
+        continueReadAloud()
     }
 
     /**
@@ -1066,7 +1066,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     private fun followReadAloudAfterManualNavigation(): Boolean {
         if (!isCurrentBookReadAloud || BaseReadAloudService.speechDrivingNavigation) return false
         if (ReadBookConfig.readAloudDetachReminderEnabled) return false
-        readAloud(play = !BaseReadAloudService.pause)
+        continueReadAloud()
         return true
     }
 
@@ -1287,7 +1287,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                         if (isScroll && pageChanged) {
                             ReadAloud.pause(appCtx)
                         } else {
-                            ReadAloud.play(appCtx, !BaseReadAloudService.pause, continueAnalysisSession = true)
+                            continueReadAloud()
                         }
                     } else {
                         ReadAloud.syncLayout()
@@ -1306,6 +1306,12 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         book ?: return
         readerChapterInputWindow.current ?: return
         ReadAloud.play(appCtx, play, chapterPosition = chapterPosition)
+    }
+
+    /** Rebuild playback for the reader position without starting a new analysis session. */
+    fun continueReadAloud(play: Boolean = !BaseReadAloudService.pause) {
+        if (!isCurrentBookReadAloud || readerChapterInputWindow.current == null) return
+        ReadAloud.play(appCtx, play, continueAnalysisSession = true)
     }
 
     fun syncReadAloudPage(chapterIndex: Int, chapterPos: Int) {

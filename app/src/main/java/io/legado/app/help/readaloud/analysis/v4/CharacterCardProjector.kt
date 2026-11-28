@@ -6,6 +6,7 @@ import io.legado.app.domain.model.readaloud.v4.RaCardEvidenceRef
 import io.legado.app.domain.model.readaloud.v4.RaCardRelationFact
 import io.legado.app.domain.model.readaloud.v4.RaCardTimelineFact
 import io.legado.app.domain.model.readaloud.v4.RaCardVoiceProfile
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaCharacterCard
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 
@@ -22,7 +23,7 @@ class CharacterCardProjector(
 
     suspend fun build(characterId: String): RaCharacterCard? {
         val character = characters.character(characterId) ?: return null
-        val aliases = characters.aliasesOf(characterId)
+        val aliases = characters.aliasesOf(characterId).filterNot { it.source == RaCharacterAlias.BATCH_LINK_SOURCE }
         val attributes = characters.attributesOf(characterId)
         val relations = characters.relationsOf(characterId)
         val profiles = characters.voiceProfilesOf(characterId)

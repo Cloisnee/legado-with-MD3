@@ -107,6 +107,12 @@ interface RaCharacterDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAliasesIgnore(entities: List<RaCharacterAliasEntity>)
 
+    @Query(
+        "update ra_character_alias set source = 'ai', firstChapter = :chapterIndex, updatedAt = :updatedAt " +
+            "where characterId = :characterId and source = 'batch_link' and normalized in (:names)",
+    )
+    suspend fun confirmBatchAliases(characterId: String, names: List<String>, chapterIndex: Int, updatedAt: Long)
+
     @Query("delete from ra_character_alias where characterId = :characterId and normalized = :normalized")
     suspend fun deleteAlias(characterId: String, normalized: String)
 

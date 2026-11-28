@@ -135,10 +135,11 @@ object ReadAloud {
         continueAnalysisSession: Boolean = false,
     ) {
         val requestedBook = request.book ?: return
-        val previous = bookSession.state.value
-        val analysisGeneration = if (continueAnalysisSession && previous.book != null &&
-            previous.book.bookUrl == requestedBook.bookUrl && sourceKeyOf(previous.book) == sourceKeyOf(requestedBook)
-        ) {
+        val analysisGeneration = if (continueAnalysisSession) {
+            val previous = bookSession.state.value
+            val playingBook = previous.book ?: return
+            // An automatic restart cannot adopt another book or grant a fresh analysis generation.
+            if (playingBook.bookUrl != requestedBook.bookUrl || sourceKeyOf(playingBook) != sourceKeyOf(requestedBook)) return
             previous.analysisGeneration
         } else GlobalContext.get().get<RaBuildGateway>().generation()
         val id = ++requestId

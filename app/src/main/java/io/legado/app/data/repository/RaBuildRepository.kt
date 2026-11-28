@@ -27,11 +27,13 @@ import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaAttributeObservation
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaEvidence
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceScope
 import io.legado.app.domain.model.readaloud.v4.RaEvidenceType
 import io.legado.app.domain.model.readaloud.v4.RaLocalMention
 import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
+import io.legado.app.domain.model.readaloud.v4.RaNameUtils
 import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
@@ -139,13 +141,20 @@ class RaBuildRepository(
         val current = dao.currentBatchAnalyses(bookKey, sourceKey, batchIds).filter {
             it.chapterIndex !in excludedChapters && canUseGeneration(bookKey, it.chapterIndex, generation)
         }
+        matchingBatchBodies(sourceKey, current).map(RaChapterAnalysisEntity::toDomain)
+    }
+
+    private suspend fun matchingBatchBodies(
+        sourceKey: String,
+        current: List<RaChapterAnalysisEntity>,
+    ): List<RaChapterAnalysisEntity> {
         val snapshots = current.associateWith { analysis ->
             runCatching { JSONObject(analysis.observationJson) }.getOrNull()
         }
         val byUrl = current.groupBy { snapshots[it]?.optString("bodyUrl").orEmpty() }
         val urls = byUrl.keys.filter { it.isNotBlank() }.toSet()
         val books = if (urls.isEmpty()) emptyMap() else database.bookDao.getBooksByUrls(urls).associateBy { it.bookUrl }
-        byUrl.flatMap { (url, chapters) ->
+        return byUrl.flatMap { (url, chapters) ->
             if (url.isEmpty()) return@flatMap chapters // Programmatic inputs without a reader cache.
             val book = books[url]?.takeIf { sourceKeyOf(it) == sourceKey } ?: return@flatMap emptyList()
             val metadata = database.bookChapterDao.getChaptersByIndexes(url, chapters.map { it.chapterIndex })
@@ -159,7 +168,7 @@ class RaBuildRepository(
                     false
                 }
             }
-        }.map(RaChapterAnalysisEntity::toDomain)
+        }
     }
 
     override suspend fun getAnalysis(
@@ -276,6 +285,56 @@ class RaBuildRepository(
             attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
             relations.forEach { characterDao.insertRelation(it.toEntity()) }
             RaBuildPublication.PUBLISHED
+        }
+    }
+
+    override suspend fun reviseBatchIdentity(
+        analysis: RaAnalysis,
+        generation: Long,
+        speakers: List<RaLocalSpeaker>,
+        attributes: List<RaAttributeObservation>,
+        relations: List<RaRelationObservation>,
+    ) = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            val current = dao.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
+            val saved = analysis.toEntity()
+            check(analysis.batchId != null && analysis.status == RaAnalysisStatus.RESOLVED &&
+                current?.analysisId == analysis.id && current.contentHash == analysis.contentHash &&
+                current.state == RaChapterState.IDENTITY_READY.storageValue && dao.getAnalysisById(analysis.id) == saved &&
+                canUseGeneration(analysis.bookKey, analysis.chapterIndex, generation) &&
+                matchingBatchBodies(analysis.sourceKey, listOf(saved)).isNotEmpty())
+
+            val stored = dao.localSpeakers(analysis.id).associateBy { it.id }
+            val revised = speakers.associateBy { it.id }
+            val previous = speakers.map { replacement ->
+                val old = stored.getValue(replacement.id)
+                check(old.resolution == RaResolution.BATCH_LINKED.storageValue && old.characterId != null &&
+                    replacement.analysisId == analysis.id && replacement.characterId != null &&
+                    old.characterId != replacement.characterId)
+                old.toDomain()
+            }
+            val now = System.currentTimeMillis()
+            val segments = dao.segments(analysis.id).mapNotNull { segment ->
+                val speaker = revised[segment.localSpeakerId] ?: return@mapNotNull null
+                if (segment.source == SpeechResolutionSource.User.storageValue ||
+                    segment.characterId != stored.getValue(speaker.id).characterId
+                ) return@mapNotNull null
+                segment.copy(characterId = speaker.characterId, updatedAt = now)
+            }
+            dao.upsertLocalSpeakers(speakers.map { it.copy(updatedAt = now).toEntity() })
+            if (segments.isNotEmpty()) dao.upsertSegments(segments)
+            attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
+            relations.forEach { characterDao.insertRelation(it.toEntity()) }
+
+            for ((characterId, moved) in previous.groupBy { requireNotNull(it.characterId) }) {
+                val oldNames = RaNameUtils.normalizeAll(moved.flatMap { it.surfaceNames + it.primaryName })
+                val liveNames = RaNameUtils.normalizeAll(dao.currentSpeakersOfCharacter(characterId).flatMap {
+                    jsonArrayToList(it.surfaceNames) + it.primaryName
+                })
+                characterDao.aliasesOf(characterId).filter {
+                    it.source == RaCharacterAlias.BATCH_LINK_SOURCE && it.normalized in oldNames && it.normalized !in liveNames
+                }.forEach { characterDao.deleteAlias(characterId, it.normalized) }
+            }
         }
     }
 
@@ -455,7 +514,7 @@ class RaBuildRepository(
             // 别名按“是否仍有保留章节支持”删除；firstChapter 只是首次出现，不代表唯一贡献
             val survivingSpeakers = dao.localSpeakersOutsideChapters(bookKey, targets)
             characterDao.aliasesOfBook(bookKey)
-                .filter { it.source == "ai" && it.firstChapter in targets }
+                .filter { (it.source == "ai" || it.source == RaCharacterAlias.BATCH_LINK_SOURCE) && it.firstChapter in targets }
                 .forEach { alias ->
                     val supported = survivingSpeakers.any { speaker ->
                         speaker.characterId == alias.characterId &&

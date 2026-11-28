@@ -232,6 +232,12 @@ interface RaBuildDao {
         chapters: List<Int>,
     ): List<RaLocalSpeakerEntity>
 
+    @Query(
+        "select s.* from ra_local_speaker s inner join ra_chapter_build b on b.analysisId = s.analysisId " +
+            "where s.characterId = :characterId and b.state = 'IDENTITY_READY'",
+    )
+    suspend fun currentSpeakersOfCharacter(characterId: String): List<RaLocalSpeakerEntity>
+
     @Query("update ra_local_speaker set characterId = :characterId, updatedAt = :updatedAt where id in (:ids)")
     suspend fun updateLocalSpeakerCharacterByIds(
         ids: List<String>,
@@ -267,13 +273,15 @@ interface RaBuildDao {
     )
 
     @Query(
-        "update ra_local_speaker set characterId = :toCharacterId, updatedAt = :updatedAt " +
+        "update ra_local_speaker set characterId = :toCharacterId, updatedAt = :updatedAt, " +
+            "resolution = case when :confirmBatchLink and resolution = 'BATCH_LINKED' then 'RESOLVED' else resolution end " +
             "where characterId = :fromCharacterId"
     )
     suspend fun reassignLocalSpeakerCharacter(
         fromCharacterId: String,
         toCharacterId: String,
         updatedAt: Long,
+        confirmBatchLink: Boolean,
     )
 
     @Query("delete from ra_local_speaker where analysisId = :analysisId")

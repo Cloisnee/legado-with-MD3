@@ -105,7 +105,8 @@ class ReadAloudBuildCoordinator(
         var paused: Boolean,
     ) {
         var stopping = false
-        val foreground = Channel<ForegroundTask>(Channel.UNLIMITED)
+        val foregroundWake = Channel<Unit>(Channel.CONFLATED)
+        val pendingForeground = LinkedHashMap<Int, ForegroundTask>()
         val wake = Channel<Unit>(Channel.CONFLATED)
         var worker: Job? = null
         var activeJob: Job? = null
@@ -115,7 +116,6 @@ class ReadAloudBuildCoordinator(
         // 只由后台 worker 访问。保留核验结果，不改变 READY 记录的发布时间。
         val verifiedCache = HashMap<Int, VerifiedCache>()
         val changedCache = ConcurrentHashMap<Int, Any>()
-        val pendingForeground = HashMap<Int, ForegroundTask>()
     }
 
     private data class VerifiedCache(val build: RaChapterBuild, val modifiedAt: Long)
@@ -129,7 +129,6 @@ class ReadAloudBuildCoordinator(
         val chapterIndex: Int,
         val priority: AiPriority,
         val force: Boolean,
-        val generation: Long,
         val buildGeneration: Long,
         val sessionId: Long? = null,
         val cacheRefresh: Boolean = false,
@@ -205,7 +204,8 @@ class ReadAloudBuildCoordinator(
             old?.background?.cancel()
             old?.watcher?.cancel()
             if (old != null && !old.stopping) {
-                old.foreground.cancel()
+                old.pendingForeground.clear()
+                old.foregroundWake.cancel()
                 old.worker?.cancel()
             }
             val s = Session(
@@ -248,7 +248,6 @@ class ReadAloudBuildCoordinator(
         val chapters = chapterIndex..chapterIndex + preloadCount()
         s.window = Window(if (chapterIndex == previous + 1) old.anchor else chapterIndex, chapters, old.generation + 1)
         if (s.activeChapter !in chapters) s.activeJob?.cancel()
-        while (s.foreground.tryReceive().isSuccess) { /* 撤掉旧窗口里尚未领到的任务。 */ }
         s.pendingForeground.clear()
         enqueueWindow(s)
         s.wake.trySend(Unit)
@@ -280,7 +279,7 @@ class ReadAloudBuildCoordinator(
         current.background?.cancel()
         current.watcher?.cancel()
         // 已入队的前台预加载继续跑完。
-        current.foreground.close()
+        current.foregroundWake.close()
         setStatus(BackgroundState.STOPPED, current)
         listOfNotNull(starting, current.worker, current.background, current.watcher)
     }
@@ -292,14 +291,16 @@ class ReadAloudBuildCoordinator(
             val sourceKey = sourceKeyOf(book)
             val bookKey = bookIdentity.keyOf(bookUrl, sourceKey, buildGeneration) ?: return@launch
             if (!raBuild.canUseGeneration(bookKey, chapterIndex, buildGeneration)) return@launch
+            val task = ForegroundTask(book, bookKey, sourceKey, chapterIndex,
+                AiPriority.P0_CURRENT, force = true, buildGeneration = buildGeneration)
             val queued = synchronized(lock) {
-                val s = session?.takeIf { !it.stopping && it.book.bookUrl == bookUrl && it.sourceKey == sourceKey && it.bookKey == bookKey }
-                s?.foreground?.trySend(ForegroundTask(book, bookKey, sourceKey, chapterIndex,
-                    AiPriority.P0_CURRENT, force = true, generation = s.window.generation,
-                    buildGeneration = buildGeneration, sessionId = s.id))?.isSuccess == true
+                val s = session?.takeIf { !it.stopping && it.book.bookUrl == bookUrl &&
+                    it.sourceKey == sourceKey && it.bookKey == bookKey } ?: return@synchronized false
+                s.pendingForeground[chapterIndex] = task.copy(sessionId = s.id)
+                s.foregroundWake.trySend(Unit)
+                true
             }
-            if (!queued) processForeground(ForegroundTask(book, bookKey, sourceKey, chapterIndex,
-                AiPriority.P0_CURRENT, force = true, generation = -1, buildGeneration = buildGeneration))
+            if (!queued) processForeground(task)
         }
     }
 
@@ -307,15 +308,22 @@ class ReadAloudBuildCoordinator(
 
     private fun startForegroundWorker(s: Session) {
         s.worker = scope.launch {
-            for (task in s.foreground) {
+            while (isActive) {
                 val job = synchronized(lock) {
-                    s.pendingForeground.remove(task.chapterIndex, task)
-                    if (task.generation != s.window.generation || (session !== s && !s.stopping)) return@synchronized null
+                    if (session !== s && !s.stopping) return@synchronized null
+                    // Pick by priority when the worker is free, not when a cache event arrives.
+                    val task = s.pendingForeground.values.minByOrNull { it.priority.level }
+                        ?: return@synchronized null
+                    s.pendingForeground.remove(task.chapterIndex)
                     launch(start = CoroutineStart.LAZY) { processForeground(task) }.also {
                         s.activeJob = it
                         s.activeChapter = task.chapterIndex
                     }
-                } ?: continue
+                }
+                if (job == null) {
+                    if (s.foregroundWake.receiveCatching().isClosed) break
+                    continue
+                }
                 job.start()
                 job.join()
                 synchronized(lock) {
@@ -346,11 +354,11 @@ class ReadAloudBuildCoordinator(
     // Called under lock. Each queued task reads the latest body on acquisition.
     private fun enqueueForeground(s: Session, chapter: Int, cacheRefresh: Boolean) {
         if (chapter in s.pendingForeground) return
-        val window = s.window
-        val task = ForegroundTask(s.book, s.bookKey, s.sourceKey, chapter, priorityInWindow(window, chapter),
-            force = false, generation = window.generation, buildGeneration = s.buildGeneration,
-            sessionId = s.id, cacheRefresh = cacheRefresh)
-        if (s.foreground.trySend(task).isSuccess) s.pendingForeground[chapter] = task
+        s.pendingForeground[chapter] = ForegroundTask(
+            s.book, s.bookKey, s.sourceKey, chapter, priorityInWindow(s.window, chapter),
+            force = false, buildGeneration = s.buildGeneration, sessionId = s.id, cacheRefresh = cacheRefresh,
+        )
+        s.foregroundWake.trySend(Unit)
     }
 
     private fun refreshPriority(task: ForegroundTask): AiPriority? = synchronized(lock) {

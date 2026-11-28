@@ -47,6 +47,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
@@ -318,6 +319,62 @@ class ReadAloudBuildCoordinatorRoomTest {
         } }
     }
 
+    @Test fun `a refreshed current chapter runs before an unstarted preload`() = runBlocking {
+        val secondStarted = CompletableDeferred<Unit>()
+        val release = CountDownLatch(1)
+        val requested = CopyOnWriteArrayList<String>()
+        fixture("refresh-priority", onStage2 = { exchange, body ->
+            val name = when {
+                "新版" in body -> "李四"
+                "第一" in body -> "张三"
+                "第二" in body -> "王五"
+                "第三" in body -> "赵六"
+                else -> error("Unexpected text: $body")
+            }
+            requested.add(name)
+            if (name == "王五") {
+                secondStarted.complete(Unit)
+                check(release.await(75, TimeUnit.SECONDS))
+            }
+            exchange.reply("""{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"$name","roletype":"核心"}]}""")
+        }) { f -> coroutineScope {
+            f.configure(budget = 0)
+            f.preload = 2
+            val third = "赵六说：“第三章。”"
+            f.write(0, "张三说：“第一章。”")
+            f.write(1, "王五说：“第二章。”")
+            f.write(2, third)
+            val watching = AtomicBoolean()
+            val fence = CompletableDeferred<Unit>()
+            val observed = object : RaBuildGateway by f.builds {
+                override suspend fun getBuild(bookKey: String, sourceKey: String, chapterIndex: Int) =
+                    f.builds.getBuild(bookKey, sourceKey, chapterIndex).also {
+                        if (watching.get() && chapterIndex == 2) fence.complete(Unit)
+                    }
+            }
+            val coordinator = f.coordinator(coordinatorBuilds = observed)
+            try {
+                coordinator.startSession(f.book, 0)
+                withTimeout(20_000) { secondStarted.await() }
+                watching.set(true)
+                f.save(0, "李四说：“新版。”")
+                f.save(0, "李四说：“新版。”")
+                f.save(2, third)
+                // While chapter 2 holds the worker, only the cache watcher can visit chapter 3.
+                withTimeout(15_000) { fence.await() }
+                val last = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 2 } }
+                release.countDown()
+                withTimeout(35_000) { last.await() }
+                assertEquals(listOf("张三", "王五", "李四", "赵六"), requested.toList())
+                val current = f.builds.segmentsOfChapter(f.bookKey, f.sourceKey, 0).single { it.seq == 1 }
+                assertEquals("李四", f.people.character(requireNotNull(current.characterId))?.displayName)
+            } finally {
+                release.countDown()
+                withContext(NonCancellable) { coordinator.stopSession().joinAll() }
+            }
+        } }
+    }
+
     @Test fun `stored sibling observations are excluded when their cached body changes`() = runBlocking {
         fixture("stale-batch-peer", onStage2 = { exchange, _ ->
             exchange.reply(batchResponse(batchRow(2, "张三"), batchRow(3, "张三")))
@@ -423,8 +480,9 @@ class ReadAloudBuildCoordinatorRoomTest {
         fun coordinator(
             pipelineBuilds: RaBuildGateway = builds,
             identities: RaBookIdentityGateway = identity,
+            coordinatorBuilds: RaBuildGateway = builds,
         ) = ReadAloudBuildCoordinator(
-            pipeline(pipelineBuilds), runner, texts, builds, identities, db.bookDao, db.bookChapterDao,
+            pipeline(pipelineBuilds), runner, texts, coordinatorBuilds, identities, db.bookDao, db.bookChapterDao,
             settings, config, ChapterJobRegistry(),
         )
     }

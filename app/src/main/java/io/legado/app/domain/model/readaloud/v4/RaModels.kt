@@ -71,6 +71,8 @@ enum class RaAnalysisOrigin(val storageValue: String) {
 enum class RaResolution(val storageValue: String) {
     PENDING("PENDING"),
     RESOLVED("RESOLVED"),
+    /** Playable assignment supported only by the entity key in this batch response. */
+    BATCH_LINKED("BATCH_LINKED"),
     PROVISIONAL("PROVISIONAL"),
     UNKNOWN("UNKNOWN");
 
@@ -280,7 +282,11 @@ data class RaCharacterAlias(
     val firstChapter: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-)
+) {
+    companion object {
+        const val BATCH_LINK_SOURCE = "batch_link"
+    }
+}
 
 data class RaVoiceProfile(
     val id: String,
