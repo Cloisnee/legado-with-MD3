@@ -31,6 +31,7 @@ import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onSubscription
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -82,7 +83,13 @@ class ReadAloudBuildCoordinatorRoomTest {
             f.calls.clear()
             val coordinator = f.coordinator()
             try {
-                coordinator.startSession(f.book, 0)
+                // Measure cache reuse without the opening chapter preempting the background request.
+                withTimeout(25_000) {
+                    coordinator.events.onSubscription {
+                        coordinator.startSession(f.book, 0, paused = true)
+                    }.first { it.chapterIndex == 0 }
+                }
+                coordinator.resumeBackground()
                 val state = withTimeout(25_000) {
                     coordinator.status.first { it.state == ReadAloudBuildCoordinator.BackgroundState.BUDGET_REACHED }
                 }
