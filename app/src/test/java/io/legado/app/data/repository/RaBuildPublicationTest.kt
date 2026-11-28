@@ -187,6 +187,40 @@ class RaBuildPublicationTest {
         assertNull(builds.getBuild("bk", "late-copy", 0))
     }
 
+    @Test fun `only independently resolved retained editions can be reused from history`() = runBlocking {
+        val words = WordLibraryRepository(ApplicationProvider.getApplicationContext())
+        val characters = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao, words)
+        val actor = characters.ensureCharacter("bk", "张三", "核心", "男", "男青年", 0, emptyList(),
+            "ACTIVE", "ai", "default")
+        val h1 = analysis("first", "h1", RaAnalysisStatus.RESOLVED)
+        val speaker = RaLocalSpeaker("first#L1", h1.id, "L1", listOf("张三"), "张三", characterId = actor.id,
+            resolution = RaResolution.RESOLVED)
+        val line = RaSegment("first-line", h1.id, "bk", 0, 0, 0, 2, 0, "你好", SpeechRoleType.Character,
+            seq = 1, localSpeakerId = speaker.id, characterId = actor.id)
+        assertEquals(RaBuildPublication.PUBLISHED,
+            builds.saveAnalysisBundle(h1, listOf(line), listOf(speaker), emptyList(), emptyList(), build(h1, 100)))
+        val h2 = analysis("second", "h2", RaAnalysisStatus.RESOLVED)
+        save(h2, 200)
+        fun target(source: String) = build(h1, 300).copy(sourceKey = source, analysisId = null)
+        val generation = RaBuildInput(builds.generation())
+        assertNull(builds.reuseAnalysis(target("other-text").copy(contentHash = "different"), h1.resolverVersion, generation))
+        assertNull(builds.reuseAnalysis(target("other-version"), "wrong-version", generation))
+        assertEquals("src", builds.reuseAnalysis(target("copy"), h1.resolverVersion, generation))
+        val copied = requireNotNull(builds.getBuild("bk", "copy", 0)?.analysisId)
+        assertEquals(RaAnalysisOrigin.CROSS_SOURCE_REUSE, builds.analysisById(copied)?.origin)
+        assertEquals(actor.id, builds.segments(copied).single().characterId)
+        assertEquals(h2.id, builds.getBuild("bk", "src", 0)?.analysisId)
+        val copy = requireNotNull(builds.getBuild("bk", "copy", 0))
+        assertTrue(builds.transitionBuild(copy, copy.copy(state = RaChapterState.STALE, updatedAt = 400)))
+        db.raBuildDao.updateLocalSpeaker(speaker.id, actor.id, RaResolution.BATCH_LINKED.storageValue, 500)
+        assertNull(builds.reuseAnalysis(target("weak-binding"), h1.resolverVersion, generation))
+        db.raBuildDao.updateLocalSpeaker(speaker.id, actor.id, RaResolution.RESOLVED.storageValue, 501)
+        characters.attachAliases("bk", actor.id, listOf("张三"), 0, RaCharacterAlias.BATCH_LINK_SOURCE)
+        assertNull(builds.reuseAnalysis(target("weak-alias"), h1.resolverVersion, generation))
+        builds.deleteChapters("bk", "src", listOf(0))
+        assertNull(builds.reuseAnalysis(target("deleted"), h1.resolverVersion, RaBuildInput(builds.generation())))
+    }
+
     @Test fun `single and batch assembly persist two voices and narrator with same identities`() = runBlocking {
         val words = listOf(CanonicalSpeechParagraph(0, "甲乙丙", 0))
         val raw = ObservationAssembly.assemble(words, listOf(

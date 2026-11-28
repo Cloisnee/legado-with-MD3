@@ -572,7 +572,7 @@ BGM 建议缺段从值集补全。
 
     private val legacyLocks = ConcurrentHashMap<String, Mutex>()
 
-    /** 后台只建身份；首次前台消费时补齐本批仍使用的旧情绪/导演产物。 */
+    /** 后台建库和换源复用只提交身份；首次消费时为当前 URL 补齐旧情绪/导演产物。 */
     suspend fun ensureLegacyForReady(
         bookUrl: String,
         bookName: String,
@@ -581,7 +581,10 @@ BGM 建议缺段从值集补全。
         aiContext: AiSchedulerContext? = null,
     ) {
         val input = RaBuildInput(raBuild.generation())
-        if (analysis.status != RaAnalysisStatus.RESOLVED || analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH) return
+        if (analysis.status != RaAnalysisStatus.RESOLVED ||
+            (analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH && analysis.origin != RaAnalysisOrigin.CROSS_SOURCE_REUSE) ||
+            SpeechIdentity.chapterContentHash(paragraphs) != analysis.contentHash
+        ) return
         legacyLocks.getOrPut(analysis.id) { Mutex() }.withLock {
             val current = raBuild.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
             if (current?.analysisId != analysis.id || current.state != RaChapterState.IDENTITY_READY) return@withLock

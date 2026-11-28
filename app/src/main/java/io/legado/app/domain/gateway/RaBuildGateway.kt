@@ -72,7 +72,7 @@ interface RaBuildGateway {
 
     suspend fun analysisById(id: String): RaAnalysis?
 
-    /** Copy a current, matching analysis from another source and return its source key on publication. */
+    /** Copy a matching, reusable analysis from another source and return its source key on publication. */
     suspend fun reuseAnalysis(
         build: RaChapterBuild,
         resolverVersion: String,

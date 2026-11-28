@@ -396,6 +396,144 @@ class BatchRoomPipelineTest {
         }
     }
 
+    @Test fun `alias object needs no second speaker or duplicate alias field`() = runBlocking {
+        val texts = listOf(chapter(0, "张三说：“出发。”"),
+            chapter(1, "张三就是蒙面客。张三说：“正是我。”"), chapter(2, "蒙面客说：“再会。”"))
+        val reveal = proof(2, "蒙面客", "张三就是蒙面客")
+        for (duplicate in listOf(false, true)) {
+            val row = entry(2, "张三", "1" to "B1").put("evidence", JSONArray().put(reveal))
+            if (duplicate) row.getJSONObject("localSpeakers").getJSONObject("B1").getJSONArray("aliases").put("蒙面客")
+            fixture(listOf(batchResponse(entry(1, "张三", "1" to "B1"), row), single("蒙面客"))) { f ->
+                val book = "first-text-alias-$duplicate"
+                assertEquals(listOf(0, 1), f.runner().run(book, "src", texts.take(2), "reveal").ready)
+                val actor = f.characters.charactersRaw(book).single().id
+                assertEquals(RaCharacterAlias.BATCH_PROOF_SOURCE, f.characters.aliasesOf(actor).single { it.surface == "蒙面客" }.source)
+                f.characters.setDefaultVoice(actor, "original", "fixture")
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 2, texts[2].paragraphs, "", ""))
+                val lines = texts.indices.map { f.line(book, it) }
+                assertEquals(List(3) { actor }, lines.map { it.characterId })
+                assertEquals(List(3) { "original" }, BuildSpeechPlanUseCase(f.characters, voices)(book, lines).map { it.voice?.id })
+                assertEquals(2, f.requests.get())
+            }
+        }
+    }
+
+    @Test fun `a duplicate optional alias cannot bypass ambiguity denial or the generic name filter`() = runBlocking {
+        val source = chapter(0, "张三就是蒙面客。张三绝不是蒙面客。张三又称师兄。张三说：“走吧。”")
+        val ambiguous = proof(1, "蒙面客", "张三就是蒙面客")
+        val denied = JSONObject().put("type", "CONTRADICTION").put("subject", "B1").put("object", "蒙面客")
+            .put("ch", 1).put("p", 1).put("quote", "张三绝不是蒙面客")
+        val generic = proof(1, "师兄", "张三又称师兄")
+        val responses = listOf(
+            batchResponse(entry(1, "张三", "1" to "B1").put("evidence", JSONArray().put(ambiguous))),
+            batchResponse(entry(1, "张三", "1" to "B1").put("evidence", JSONArray().put(ambiguous).put(denied).put(generic)).also {
+                it.getJSONObject("localSpeakers").getJSONObject("B1").put("aliases", JSONArray(listOf("蒙面客", "师兄")))
+            }),
+        )
+        fixture(responses) { f ->
+            val ambiguousBook = "ambiguous-text-object"
+            for (name in listOf("李四", "王五")) {
+                f.characters.ensureCharacter(ambiguousBook, name, "核心", "男", "男青年", 0, listOf("蒙面客"),
+                    "ACTIVE", "user", "default")
+            }
+            for (book in listOf(ambiguousBook, "denied-text-object")) {
+                assertEquals(listOf(0), f.runner().run(book, "src", listOf(source), "guarded").ready)
+                val actor = requireNotNull(f.line(book, 0).characterId)
+                assertEquals(setOf("张三"), f.characters.aliasesOf(actor).map { it.surface }.toSet())
+            }
+            assertEquals(2, f.requests.get())
+        }
+    }
+
+    @Test fun `remaining independent text proof keeps the binding when either proof chapter is deleted`() = runBlocking {
+        val texts = listOf(chapter(0, "张三说：“出发。”"), chapter(1, "蒙面客说：“你好。”"),
+            chapter(2, "张三就是蒙面客。张三说：“没错。”"),
+            chapter(3, "众人记得张三就是蒙面客。张三说：“回来吧。”"), chapter(4, "蒙面客说：“再会。”"))
+        val quote = "张三就是蒙面客"
+        val response = batchResponse(entry(1, "张三", "1" to "B1"), entry(2, "蒙面客", "1" to "B1"),
+            entry(3, "张三", "1" to "B1").put("evidence", JSONArray().put(proof(3, "蒙面客", quote))),
+            entry(4, "张三", "1" to "B1").put("evidence", JSONArray().put(proof(4, "蒙面客", quote))))
+        fixture(listOf(response, single("蒙面客"), response, single("蒙面客"))) { f ->
+            for (deleted in listOf(2, 3)) {
+                val book = "alternative-proof-$deleted"
+                assertEquals((0..3).toList(), f.runner().run(book, "src", texts.take(4), "reveal").ready)
+                val actor = requireNotNull(f.line(book, 0).characterId)
+                f.characters.setDefaultVoice(actor, "original", "fixture")
+                f.builds.deleteChapters(book, "src", listOf(deleted))
+                val second = requireNotNull(f.builds.getBuild(book, "src", 1)?.analysisId)
+                assertEquals(RaResolution.RESOLVED, f.builds.localSpeakers(second).single().resolution)
+                assertEquals(RaCharacterAlias.BATCH_PROOF_SOURCE, f.characters.aliasesOf(actor).single { it.surface == "蒙面客" }.source)
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 4, texts[4].paragraphs, "", ""))
+                val lines = listOf(f.line(book, 1), f.line(book, 4))
+                assertEquals(listOf(actor, actor), lines.map { it.characterId })
+                assertEquals(listOf("original", "original"), BuildSpeechPlanUseCase(f.characters, voices)(book, lines).map { it.voice?.id })
+            }
+            assertEquals(4, f.requests.get())
+        }
+    }
+
+    @Test fun `losing a necessary link in a real batch proof revokes its alias`() = runBlocking {
+        val texts = listOf(chapter(0, "张三说：“出发。”"), chapter(1, "蒙面客说：“你好。”"),
+            chapter(2, "张三就是白衣客。张三说：“没错。”"),
+            chapter(3, "白衣客就是蒙面客。白衣客说：“回来吧。”"), chapter(4, "蒙面客说：“再会。”"))
+        val response = batchResponse(entry(1, "张三", "1" to "B1"), entry(2, "蒙面客", "1" to "B1"),
+            entry(3, "张三", "1" to "B1").put("evidence", JSONArray().put(proof(3, "白衣客", "张三就是白衣客"))),
+            entry(4, "白衣客", "1" to "B1").put("evidence", JSONArray().put(proof(4, "蒙面客", "白衣客就是蒙面客"))))
+        fixture(listOf(response, single("蒙面客"))) { f ->
+            val book = "deleted-chain-link"
+            assertEquals((0..3).toList(), f.runner().run(book, "src", texts.take(4), "chain").ready)
+            val actor = requireNotNull(f.line(book, 0).characterId)
+            val speaker = f.builds.localSpeakers(requireNotNull(f.builds.getBuild(book, "src", 1)?.analysisId)).single()
+            assertEquals(RaResolution.RESOLVED, speaker.resolution)
+            assertEquals(listOf(2), f.characters.decisionsForCharacter(actor).filter { it.localSpeakerId == speaker.id }
+                .map { it.evidenceIds.size })
+            f.builds.deleteChapters(book, "src", listOf(2))
+            val after = f.builds.localSpeakers(speaker.analysisId).single()
+            assertEquals(actor, after.characterId)
+            assertEquals(RaResolution.BATCH_LINKED, after.resolution)
+            assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE, f.characters.aliasesOf(actor).single { it.surface == "蒙面客" }.source)
+            assertNotNull(f.pipeline.run("fixture", book, book, "src", 4, texts[4].paragraphs, "", ""))
+            assertNotEquals(actor, f.line(book, 4).characterId)
+            assertEquals(2, f.requests.get())
+        }
+    }
+
+    @Test fun `deleting proof and binding owners does not let later occurrences prove an alias`() = runBlocking {
+        val texts = listOf(chapter(0, "张三说：“出发。”"), chapter(1, "蒙面客说：“你好。”"),
+            chapter(2, "张三就是蒙面客。张三说：“没错。”"), chapter(3, "蒙面客说：“后来。”"),
+            chapter(4, "蒙面客说：“再会。”"))
+        val response = batchResponse(entry(1, "张三", "1" to "B1"), entry(2, "蒙面客", "1" to "B1"),
+            entry(3, "张三", "1" to "B1").put("evidence", JSONArray().put(proof(3, "蒙面客", "张三就是蒙面客"))))
+        fixture(listOf(response, single("蒙面客"), single("蒙面客"), response, single("蒙面客"), single("蒙面客"))) { f ->
+            for (manual in listOf(false, true)) {
+                val book = "deleted-owner-$manual"
+                assertEquals((0..2).toList(), f.runner().run(book, "src", texts.take(3), "reveal").ready)
+                val actor = requireNotNull(f.line(book, 0).characterId)
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 3, texts[3].paragraphs, "", ""))
+                val existing = f.line(book, 3)
+                assertEquals(actor, existing.characterId)
+                if (manual) f.characters.attachAliases(book, actor, listOf("蒙面客"), 2, "user")
+                f.builds.deleteChapters(book, "src", listOf(1, 2))
+                assertEquals(existing, f.line(book, 3))
+                assertEquals(if (manual) "user" else RaCharacterAlias.BATCH_LINK_SOURCE,
+                    f.characters.aliasesOf(actor).single { it.surface == "蒙面客" }.source)
+                assertTrue(f.characters.decisionsForCharacter(actor).isEmpty())
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 4, texts[4].paragraphs, "", ""))
+                assertEquals(manual, actor == f.line(book, 4).characterId)
+            }
+            assertEquals(6, f.requests.get())
+        }
+    }
+
+    private fun proof(ch: Int, alias: String, quote: String) = JSONObject().put("type", "ALIAS_EQUAL")
+        .put("subject", "B1").put("object", alias).put("ch", ch).put("p", 1).put("quote", quote)
+
+    private fun single(name: String) =
+        """{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"$name","roletype":"核心"}]}"""
+
+    private suspend fun Fixture.line(book: String, chapter: Int) =
+        builds.segmentsOfChapter(book, "src", chapter).single { it.seq == 1 }
+
     @Test fun `batch rebuild and recovery apply matching user overrides before playback`() = runBlocking {
         val old = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“旧句。”")
         val new = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“新句。”")

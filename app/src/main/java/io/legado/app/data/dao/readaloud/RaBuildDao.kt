@@ -113,6 +113,24 @@ interface RaBuildDao {
     ): List<RaChapterAnalysisEntity>
 
     @Query(
+        "select a.* from ra_chapter_analysis a inner join ra_chapter_build b " +
+            "on b.bookKey = a.bookKey and b.sourceKey = a.sourceKey and b.chapterIndex = a.chapterIndex " +
+            "inner join ra_chapter_analysis live on live.id = b.analysisId and live.contentHash = b.contentHash " +
+            "where a.bookKey = :bookKey and a.sourceKey != :sourceKey and a.chapterIndex = :chapterIndex " +
+            "and a.contentHash = :contentHash and a.resolverVersion = :resolverVersion and a.status = 'RESOLVED' " +
+            "and a.batchId is null and a.origin in ('FOREGROUND', 'USER_REANALYZE') " +
+            "and b.state = 'IDENTITY_READY' and live.status = 'RESOLVED' and b.contentHash != a.contentHash " +
+            "order by a.updatedAt desc, a.id"
+    )
+    suspend fun historicalAnalysesByContentHash(
+        bookKey: String,
+        sourceKey: String,
+        chapterIndex: Int,
+        contentHash: String,
+        resolverVersion: String,
+    ): List<RaChapterAnalysisEntity>
+
+    @Query(
         "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
             "and chapterIndex = :chapterIndex order by updatedAt desc limit 1"
     )
@@ -334,6 +352,9 @@ interface RaBuildDao {
 
     @Query("select * from ra_evidence where analysisId in (:analysisIds)")
     suspend fun evidenceByAnalysisIds(analysisIds: List<String>): List<RaEvidenceEntity>
+
+    @Query("select * from ra_evidence where id in (:ids)")
+    suspend fun evidenceByIds(ids: List<String>): List<RaEvidenceEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEvidence(entities: List<RaEvidenceEntity>)

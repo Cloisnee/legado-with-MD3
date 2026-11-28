@@ -189,7 +189,8 @@ class V43RoomRegressionTest {
                 assertEquals(setOf("张三", "蒙面客"), people.keys)
                 val ids = listOf(people.getValue("张三").id, people.getValue("蒙面客").id)
                 assertEquals(ids, builds.map { f.builds.segments(it.analysisId!!).single { it.seq == 1 }.characterId })
-                assertEquals(listOf(setOf("张三"), setOf("蒙面客")), ids.map { id -> f.people.aliasesOf(id).map { it.surface }.toSet() })
+                assertEquals(listOf(setOf("张三", "白衣客"), setOf("蒙面客")), ids.map { id -> f.people.aliasesOf(id).map { it.surface }.toSet() })
+                assertEquals("batch_proof", f.people.aliasesOf(ids[0]).single { it.surface == "白衣客" }.source)
                 val defaults = f.people.voiceProfiles(book)
                 assertEquals(ids.toSet(), defaults.map { it.characterId }.toSet())
                 assertEquals(listOf(RaVoiceProfileKind.DEFAULT, RaVoiceProfileKind.DEFAULT), defaults.map { it.kind })
@@ -249,6 +250,48 @@ class V43RoomRegressionTest {
                 assertEquals(voiceIds[1], voiceIds[2])
                 assertNotEquals(voiceIds[0], voiceIds[1])
             }
+        }
+    }
+
+    @Test fun `first source switch supplements playback effects without a donor plan`() = reusedPlaybackEffects(false)
+    @Test fun `first source switch supplements playback effects even with a donor plan`() = reusedPlaybackEffects(true)
+
+    private fun reusedPlaybackEffects(played: Boolean) = runBlocking {
+        val text = chapter(0, "张三推开门说：“请进。”")
+        val requests = AtomicInteger()
+        val effects = AtomicInteger()
+        fixture("audioDirector", handler = { request, exchange ->
+            if (request.getString("model") == "audioDirector") {
+                effects.incrementAndGet()
+                exchange.reply("""{"items":[{"para":1,"frag":1,"type":"sfx","tag":"开门","pos":"前"}]}""")
+            } else {
+                requests.incrementAndGet()
+                exchange.reply(batch(row(1, "张三")))
+            }
+        }) { f ->
+            val name = "shared-director-$played"
+            val url = "https://fixture.invalid/$name"
+            val copyUrl = "$url/b"
+            val book = f.keyOf(url, "src")
+            val input = RaBuildInput(f.builds.generation())
+            assertEquals(listOf(0), f.runner().run(book, "src", listOf(text), "donor").ready)
+            val donor = requireNotNull(f.builds.getBuild(book, "src", 0))
+            if (played) f.prepare(url, book, "src", 0, text.paragraphs, bookName = name)
+            assertEquals(if (played) 1 else 0, effects.get())
+            assertEquals("src", f.builds.reuseAnalysis(donor.copy(sourceKey = "copy", analysisId = null),
+                SpeechAnalysisPipelineV4.RESOLVER_VERSION, input))
+            val id = requireNotNull(f.builds.getBuild(book, "copy", 0)?.analysisId)
+            assertNull(f.direction.plan(id, PrepareChapterSpeechPlanUseCase.MODULE))
+            val actor = f.builds.segments(donor.analysisId!!).single { it.seq == 1 }.characterId
+            repeat(2) {
+                assertEquals(actor, f.prepare(copyUrl, book, "copy", 0, text.paragraphs, bookName = name)
+                    .single { it.segment.seq == 1 }.segment.characterId)
+                val plan = requireNotNull(f.direction.plan(id, PrepareChapterSpeechPlanUseCase.MODULE))
+                assertEquals(listOf("开门"), f.direction.audio(plan.id).map { it.tag })
+                assertEquals(listOf("开门"), AudioPlanStore.load(name, copyUrl, 0)?.sfx?.map { it.tag })
+            }
+            assertEquals(if (played) 2 else 1, effects.get())
+            assertEquals(1, requests.get())
         }
     }
 

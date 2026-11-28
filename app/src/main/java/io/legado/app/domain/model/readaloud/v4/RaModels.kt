@@ -59,6 +59,7 @@ enum class RaAnalysisStatus(val storageValue: String) {
 enum class RaAnalysisOrigin(val storageValue: String) {
     FOREGROUND("FOREGROUND"),
     BACKGROUND_BATCH("BACKGROUND_BATCH"),
+    CROSS_SOURCE_REUSE("CROSS_SOURCE_REUSE"),
     USER_REANALYZE("USER_REANALYZE");
 
     companion object {
@@ -418,6 +419,7 @@ data class RaIdentityLink(
 
 internal const val BATCH_BINDING_REVISION = "同批正文证据修订弱归属"
 internal const val BATCH_BINDING_CONFIRMATION = "同批正文证据确认弱归属"
+internal const val TEXT_ALIAS_PROOF = "正文证据确认等价别名"
 
 data class RaIdentityDecision(
     val id: String,

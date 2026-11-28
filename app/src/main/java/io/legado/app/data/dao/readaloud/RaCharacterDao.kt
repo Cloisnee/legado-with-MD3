@@ -31,9 +31,6 @@ interface RaCharacterDao {
     @Query("delete from ra_identity_link where bookKey = :bookKey and (aCharacterId = :characterId or bCharacterId = :characterId)")
     suspend fun deleteLinksForCharacter(bookKey: String, characterId: String)
 
-    @Query("delete from ra_identity_decision where localSpeakerId in (:localSpeakerIds)")
-    suspend fun deleteDecisionsByLocalSpeakerIds(localSpeakerIds: List<String>)
-
     @Query("delete from ra_identity_decision where chosenCharacterId = :characterId")
     suspend fun deleteDecisionsByChosenCharacter(characterId: String)
 
