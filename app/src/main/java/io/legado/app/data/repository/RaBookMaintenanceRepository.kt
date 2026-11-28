@@ -98,7 +98,7 @@ class RaBookMaintenanceRepository(
             summaries.firstOrNull { it.name == name || it.bookKey == name }
         }.distinctBy { it.bookKey }
         if (selected.isEmpty()) return@withContext 0
-        val packages = selected.map { summary -> exportBook(summary.bookKey) }
+        val packages = database.withTransaction { selected.map { exportBook(it.bookKey) } }
         out.bufferedWriter().use { writer ->
             writer.write(Gson().toJson(ExportPackage(books = packages)))
         }

@@ -23,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
@@ -919,14 +920,16 @@ fun MainActivity.mainEntryProvider(
                 },
             )
 
-            DisposableEffect(controller, lifecycleOwner, route.readAloud) {
+            val pendingReadAloudStart = rememberSaveable(route) { mutableStateOf(route.startReadAloud) }
+            DisposableEffect(controller, lifecycleOwner, pendingReadAloudStart) {
                 activeReadBookInputHandler = controller
                 activeReadBookRoute = route
                 MainActivity.hasActiveReadBookRoute = true
                 controller.onClose = { onNavigateBack() }
                 controller.onStartContentLoadFinish = {
-                    if (route.readAloud) {
-                        io.legado.app.model.ReadBook.readAloud()
+                    if (pendingReadAloudStart.value && ReadBook.readerChapterInputWindow.current != null) {
+                        pendingReadAloudStart.value = false
+                        if (!ReadBook.isCurrentBookReadAloud) ReadBook.readAloud()
                     }
                 }
 
@@ -953,6 +956,7 @@ fun MainActivity.mainEntryProvider(
                     }
                     MainActivity.hasActiveReadBookRoute = false
                     controller.onClose = null
+                    controller.onStartContentLoadFinish = null
                     controller.clearTts()
                     this@mainEntryProvider.toggleSystemBar(configuration.appShell.showStatusBar)
                 }

@@ -30,6 +30,9 @@ class MainIntentTest {
             intent.getStringExtra(MainIntent.EXTRA_START_ROUTE),
         )
         assertTrue(intent.getBooleanExtra(MainIntent.EXTRA_READ_ALOUD, false))
+        val route = MainNavigator.resolveStartRoute(intent) as MainRouteReadBook
+        assertTrue(route.readAloud)
+        assertFalse(route.startReadAloud)
         assertTrue(MainIntent.shouldOpenRouteWithHomeParent(intent))
     }
 
@@ -43,6 +46,7 @@ class MainIntentTest {
             Intent.FLAG_ACTIVITY_CLEAR_TOP or
             Intent.FLAG_ACTIVITY_SINGLE_TOP
         assertEquals(0, intent.flags and mediaControlFlags)
+        assertTrue((MainNavigator.resolveStartRoute(intent) as MainRouteReadBook).startReadAloud)
         assertFalse(MainIntent.shouldOpenRouteWithHomeParent(intent))
     }
 }

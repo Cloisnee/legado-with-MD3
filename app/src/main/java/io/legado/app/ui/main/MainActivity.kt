@@ -233,12 +233,14 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
             readAloud: Boolean = false,
             inBookshelf: Boolean = true,
             chapterChanged: Boolean = false,
+            startReadAloud: Boolean = readAloud,
         ): Intent = MainIntent.createReadBookIntent(
             context = context,
             bookUrl = bookUrl,
             readAloud = readAloud,
             inBookshelf = inBookshelf,
             chapterChanged = chapterChanged,
+            startReadAloud = startReadAloud,
         )
 
         fun createReadBookMediaControlIntent(context: Context): Intent =
@@ -1015,6 +1017,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
             outState.putBoolean(KEY_RESTORE_READ_ROUTE, true)
             outState.putString(KEY_RESTORE_READ_BOOK_URL, readRoute.bookUrl)
             outState.putBoolean(KEY_RESTORE_READ_ALOUD, readRoute.readAloud)
+            // 自动开播是一次性显式意图，旋转/进程重建只恢复阅读页，不重复开播。
             outState.putBoolean(KEY_RESTORE_READ_IN_BOOKSHELF, readRoute.inBookshelf)
             outState.putBoolean(KEY_RESTORE_READ_CHAPTER_CHANGED, readRoute.chapterChanged)
         }
@@ -1025,6 +1028,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         return MainRouteReadBook(
             bookUrl = getString(KEY_RESTORE_READ_BOOK_URL),
             readAloud = getBoolean(KEY_RESTORE_READ_ALOUD, false),
+            startReadAloud = false,
             inBookshelf = getBoolean(KEY_RESTORE_READ_IN_BOOKSHELF, true),
             chapterChanged = getBoolean(KEY_RESTORE_READ_CHAPTER_CHANGED, false),
         )

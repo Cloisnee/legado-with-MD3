@@ -239,7 +239,9 @@ class RaCharacterRepository(
         if (rows.isNotEmpty()) {
             database.withTransaction {
                 dao.insertAliasesIgnore(rows)
-                if (source == "ai") dao.confirmBatchAliases(characterId, rows.map { it.normalized }, chapterIndex, now)
+                if (source == "ai" || source == RaCharacterAlias.BATCH_PROOF_SOURCE) {
+                    dao.confirmBatchAliases(characterId, rows.map { it.normalized }, source, chapterIndex, now)
+                }
             }
         }
     }

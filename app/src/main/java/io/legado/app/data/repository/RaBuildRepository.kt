@@ -21,6 +21,8 @@ import io.legado.app.domain.gateway.RaIdentityCommit
 import io.legado.app.domain.model.readaloud.SpeechIdentity
 import io.legado.app.domain.model.readaloud.SpeechResolutionSource
 import io.legado.app.domain.model.readaloud.SpeechRoleType
+import io.legado.app.domain.model.readaloud.v4.BATCH_BINDING_CONFIRMATION
+import io.legado.app.domain.model.readaloud.v4.BATCH_BINDING_REVISION
 import io.legado.app.domain.model.readaloud.v4.RaAnalysis
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
@@ -193,13 +195,54 @@ class RaBuildRepository(
         dao.getAnalysisById(id)?.toDomain()
     }
 
-    override suspend fun analysisByContentHash(
-        bookKey: String,
-        chapterIndex: Int,
-        contentHash: String,
+    override suspend fun reuseAnalysis(
+        build: RaChapterBuild,
         resolverVersion: String,
-    ): RaAnalysis? = withContext(Dispatchers.IO) {
-        dao.analysisByContentHash(bookKey, chapterIndex, contentHash, resolverVersion)?.toDomain()
+        input: RaBuildInput,
+    ): String? = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            val (bookKey, sourceKey, chapter, hash) = build
+            if (!matchesInput(build, input)) return@withTransaction null
+            val candidates = dao.currentAnalysesByContentHash(bookKey, chapter, hash, resolverVersion)
+            if (candidates.any { it.sourceKey == sourceKey }) return@withTransaction null
+            val old = candidates.firstOrNull() ?: return@withTransaction null
+            val id = SpeechIdentity.analysisId(bookKey, sourceKey, chapter, hash, resolverVersion) + ":reuse"
+            val oldSegments = dao.segments(old.id)
+            if (oldSegments.isEmpty()) return@withTransaction null
+            val observation = observationOf(old).apply {
+                // Copies refer to the exact original analysis version, even through multiple source switches.
+                if (!has("reusedFromAnalysisId")) {
+                    put("reusedFromAnalysisId", old.id)
+                    put("reusedFromCreatedAt", old.createdAt)
+                }
+                remove("bodyUrl")
+                remove("bodyHash")
+            }
+            val now = System.currentTimeMillis()
+            val speakers = dao.localSpeakers(old.id)
+            val mentions = dao.localMentions(old.id)
+            val localIds = speakers.associate { it.id to "$id#${it.localKey}" } +
+                mentions.associate { it.id to "$id#${it.localKey}" }
+            val publication = saveAnalysisBundle(
+                analysis = old.toDomain().copy(id = id, sourceKey = sourceKey, origin = RaAnalysisOrigin.FOREGROUND,
+                    batchId = null, observationJson = observation.toString(), createdAt = now, updatedAt = now),
+                segments = oldSegments.map { segment ->
+                    segment.toDomain().copy(id = SpeechIdentity.segmentId(id, segment.paragraphIndex, segment.start, segment.end),
+                        analysisId = id, localSpeakerId = segment.localSpeakerId?.let(localIds::get), createdAt = now, updatedAt = now)
+                },
+                localSpeakers = speakers.map { it.toDomain().copy(id = localIds.getValue(it.id), analysisId = id) },
+                localMentions = mentions.map { it.toDomain().copy(id = localIds.getValue(it.id), analysisId = id) },
+                evidence = dao.evidence(old.id).map { proof ->
+                    val subject = localIds[proof.subjectLocalId] ?: proof.subjectLocalId
+                    proof.toDomain().copy(id = SpeechIdentity.evidenceId(id, proof.sourceChapter, proof.paragraphIndex,
+                        proof.start, proof.type, subject, proof.objectText, proof.excerpt),
+                        analysisId = id, subjectLocalId = subject, createdAt = now, updatedAt = now)
+                },
+                build = build.copy(analysisId = id),
+                input = input,
+            )
+            old.sourceKey.takeIf { publication == RaBuildPublication.PUBLISHED }
+        }
     }
 
     override suspend fun latestAnalysisForSource(
@@ -310,24 +353,19 @@ class RaBuildRepository(
                 val old = stored.getValue(replacement.id)
                 check(old.resolution == RaResolution.BATCH_LINKED.storageValue && old.characterId != null &&
                     replacement.analysisId == analysis.id && replacement.characterId != null &&
-                    old.characterId != replacement.characterId)
-                old.toDomain()
+                    (old.characterId != replacement.characterId || old.resolution != replacement.resolution.storageValue))
+                old
             }
-            val now = System.currentTimeMillis()
-            val segments = dao.segments(analysis.id).mapNotNull { segment ->
-                val speaker = revised[segment.localSpeakerId] ?: return@mapNotNull null
-                if (segment.source == SpeechResolutionSource.User.storageValue ||
-                    segment.characterId != stored.getValue(speaker.id).characterId
-                ) return@mapNotNull null
-                segment.copy(characterId = speaker.characterId, updatedAt = now)
-            }
-            dao.upsertLocalSpeakers(speakers.map { it.copy(updatedAt = now).toEntity() })
-            if (segments.isNotEmpty()) dao.upsertSegments(segments)
+            val changes = previous.associate { old -> old.localKey to (old to revised.getValue(old.id).toEntity()) }
+            reviseAutomaticBindings(saved, changes)
+            for (copy in reuseCopies(saved)) reviseAutomaticBindings(copy, changes)
             attributes.forEach { characterDao.insertAttribute(it.toEntity()) }
             relations.forEach { characterDao.insertRelation(it.toEntity()) }
 
-            for ((characterId, moved) in previous.groupBy { requireNotNull(it.characterId) }) {
-                val oldNames = RaNameUtils.normalizeAll(moved.flatMap { it.surfaceNames + it.primaryName })
+            val movedByCharacter = previous.filter { revised.getValue(it.id).characterId != it.characterId }
+                .groupBy { requireNotNull(it.characterId) }
+            for ((characterId, moved) in movedByCharacter) {
+                val oldNames = RaNameUtils.normalizeAll(moved.flatMap { jsonArrayToList(it.surfaceNames) + it.primaryName })
                 val liveNames = RaNameUtils.normalizeAll(dao.currentSpeakersOfCharacter(characterId).flatMap {
                     jsonArrayToList(it.surfaceNames) + it.primaryName
                 })
@@ -336,6 +374,39 @@ class RaBuildRepository(
                 }.forEach { characterDao.deleteAlias(characterId, it.normalized) }
             }
         }
+    }
+
+    private fun observationOf(analysis: RaChapterAnalysisEntity): JSONObject =
+        runCatching { JSONObject(analysis.observationJson) }.getOrElse { JSONObject() }
+
+    private suspend fun reuseCopies(origin: RaChapterAnalysisEntity) =
+        dao.currentAnalysesByContentHash(origin.bookKey, origin.chapterIndex, origin.contentHash, origin.resolverVersion)
+            .filter {
+                val observation = observationOf(it)
+                observation.optString("reusedFromAnalysisId") == origin.id &&
+                    observation.optLong("reusedFromCreatedAt", -1) == origin.createdAt
+            }
+
+    private suspend fun reviseAutomaticBindings(
+        analysis: RaChapterAnalysisEntity,
+        changes: Map<String, Pair<RaLocalSpeakerEntity, RaLocalSpeakerEntity>>,
+    ) {
+        val now = System.currentTimeMillis()
+        val updates = dao.localSpeakers(analysis.id).mapNotNull { speaker ->
+            val (old, next) = changes[speaker.localKey] ?: return@mapNotNull null
+            if (speaker.characterId != old.characterId || speaker.resolution != old.resolution) return@mapNotNull null
+            speaker to speaker.copy(characterId = next.characterId, resolution = next.resolution, updatedAt = now)
+        }
+        if (updates.isEmpty()) return
+        dao.upsertLocalSpeakers(updates.map { it.second })
+        val moved = updates.filter { (old, next) -> old.characterId != next.characterId }.associateBy { it.first.id }
+        if (moved.isEmpty()) return
+        val segments = dao.segments(analysis.id).mapNotNull { segment ->
+            val (old, next) = moved[segment.localSpeakerId] ?: return@mapNotNull null
+            if (segment.source == SpeechResolutionSource.User.storageValue || segment.characterId != old.characterId) return@mapNotNull null
+            segment.copy(characterId = next.characterId, updatedAt = now)
+        }
+        if (segments.isNotEmpty()) dao.upsertSegments(segments)
     }
 
     private suspend fun canPublish(target: RaIdentityCommit, current: RaChapterBuildEntity?): Boolean {
@@ -508,13 +579,14 @@ class RaBuildRepository(
             if (localSpeakerIds.isNotEmpty()) {
                 characterDao.deleteDecisionsByLocalSpeakerIds(localSpeakerIds)
             }
+            pruneDecisionEvidence(bookKey, deletedEvidenceIds)
             // 回滚/删章：清理这些章节贡献的观察与 AI 约束（用户手动编辑保留）
             characterDao.deleteAttributesFromChapters(bookKey, targets)
             characterDao.deleteRelationsFromChapters(bookKey, targets)
             // 别名按“是否仍有保留章节支持”删除；firstChapter 只是首次出现，不代表唯一贡献
             val survivingSpeakers = dao.localSpeakersOutsideChapters(bookKey, targets)
             characterDao.aliasesOfBook(bookKey)
-                .filter { (it.source == "ai" || it.source == RaCharacterAlias.BATCH_LINK_SOURCE) && it.firstChapter in targets }
+                .filter { it.source in automaticAliases && it.firstChapter in targets }
                 .forEach { alias ->
                     val supported = survivingSpeakers.any { speaker ->
                         speaker.characterId == alias.characterId &&
@@ -561,6 +633,58 @@ class RaBuildRepository(
             }
         }
     }
+
+    private val automaticAliases = setOf("ai", RaCharacterAlias.BATCH_LINK_SOURCE, RaCharacterAlias.BATCH_PROOF_SOURCE)
+
+    private suspend fun pruneDecisionEvidence(bookKey: String, deleted: Set<String>) {
+        if (deleted.isEmpty()) return
+        val decisions = characterDao.decisionsOfBook(bookKey)
+        val survivingProofs = HashSet<Pair<String, String>>()
+        val affected = ArrayList<Pair<String, String>>()
+        for (decision in decisions) {
+            val ids = jsonArrayToList(decision.evidenceIds)
+            val retained = ids.filterNot { it in deleted }
+            val binding = decision.chosenCharacterId?.takeIf {
+                decision.reason == BATCH_BINDING_CONFIRMATION || decision.reason == BATCH_BINDING_REVISION
+            }?.let { decision.localSpeakerId to it }
+            if (retained.size == ids.size) {
+                if (binding != null && ids.isNotEmpty()) survivingProofs.add(binding)
+                continue
+            }
+            // A batch proof can combine a chain of alias evidence with a refutation. A surviving
+            // fragment alone cannot justify that assignment; a separate intact proof still can.
+            if (retained.isEmpty() || binding != null) {
+                characterDao.deleteDecision(decision.id)
+                if (binding != null) affected.add(binding)
+            } else {
+                characterDao.updateDecisionEvidenceIds(decision.id, listToJsonArray(retained))
+            }
+        }
+        val aliasesToCheck = HashMap<String, MutableSet<String>>()
+        val now = System.currentTimeMillis()
+        for ((speakerId, characterId) in affected.distinct()) {
+            if (speakerId to characterId in survivingProofs) continue
+            val speaker = dao.localSpeaker(speakerId) ?: continue
+            if (speaker.characterId != characterId || speaker.resolution != RaResolution.RESOLVED.storageValue) continue
+            val analysis = dao.getAnalysisById(speaker.analysisId) ?: continue
+            dao.updateLocalSpeaker(speaker.id, characterId, RaResolution.BATCH_LINKED.storageValue, now)
+            for (copy in reuseCopies(analysis)) {
+                reviseAutomaticBindings(copy, mapOf(speaker.localKey to (speaker to speaker.copy(resolution = RaResolution.BATCH_LINKED.storageValue))))
+            }
+            aliasesToCheck.getOrPut(characterId) { HashSet() }.addAll(speaker.normalizedNames())
+        }
+        for ((characterId, names) in aliasesToCheck) {
+            val independentlySupported = dao.currentSpeakersOfCharacter(characterId)
+                .filter { it.id to characterId in survivingProofs }
+                .flatMapTo(HashSet()) { it.normalizedNames() }
+            val downgraded = characterDao.aliasesOf(characterId).filter {
+                it.source == RaCharacterAlias.BATCH_PROOF_SOURCE && it.normalized in names && it.normalized !in independentlySupported
+            }.map { it.copy(source = RaCharacterAlias.BATCH_LINK_SOURCE, updatedAt = now) }
+            if (downgraded.isNotEmpty()) characterDao.upsertAliases(downgraded)
+        }
+    }
+
+    private fun RaLocalSpeakerEntity.normalizedNames() = RaNameUtils.normalizeAll(jsonArrayToList(surfaceNames) + primaryName)
 
     private suspend fun restoreMergeSnapshot(
         fromCharacterId: String,

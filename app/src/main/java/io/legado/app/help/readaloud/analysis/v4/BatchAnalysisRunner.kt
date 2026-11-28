@@ -1039,8 +1039,8 @@ class BatchAnalysisRunner(
                     val revisedChapters = inputs.filterNot { it.publish }.mapNotNull { input ->
                         val revised = input.speakers.mapNotNull speaker@{ speaker ->
                             if (speaker.resolution != RaResolution.BATCH_LINKED) return@speaker null
-                            val next = resolutions[speaker.id]?.takeUnless { it.characterId == speaker.characterId }
-                                ?: return@speaker null
+                            val next = resolutions[speaker.id] ?: return@speaker null
+                            if (next.characterId == speaker.characterId && next.resolution == speaker.resolution) return@speaker null
                             speaker.copy(characterId = next.characterId, resolution = next.resolution)
                         }
                         if (revised.isEmpty()) null else input to revised

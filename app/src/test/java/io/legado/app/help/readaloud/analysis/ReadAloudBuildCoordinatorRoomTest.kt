@@ -326,12 +326,16 @@ class ReadAloudBuildCoordinatorRoomTest {
         } }
     }
 
-    @Test fun `a refreshed current chapter runs before an unstarted preload`() = runBlocking {
+    @Test fun `a refreshed current chapter runs before an unstarted preload`() = refreshPriority(false)
+    @Test fun `an invalidated in-flight preload reacquires after the refreshed current chapter`() = refreshPriority(true)
+
+    private fun refreshPriority(refreshPreload: Boolean) = runBlocking {
         val secondStarted = CompletableDeferred<Unit>()
         val release = CountDownLatch(1)
         val requested = CopyOnWriteArrayList<String>()
-        fixture("refresh-priority", onStage2 = { exchange, body ->
+        fixture("refresh-priority-$refreshPreload", onStage2 = { exchange, body ->
             val name = when {
+                "第二章改稿" in body -> "周七"
                 "新版" in body -> "李四"
                 "第一" in body -> "张三"
                 "第二" in body -> "王五"
@@ -366,15 +370,20 @@ class ReadAloudBuildCoordinatorRoomTest {
                 watching.set(true)
                 f.save(0, "李四说：“新版。”")
                 f.save(0, "李四说：“新版。”")
+                if (refreshPreload) repeat(2) { f.save(1, "周七说：“第二章改稿。”") }
                 f.save(2, third)
                 // While chapter 2 holds the worker, only the cache watcher can visit chapter 3.
                 withTimeout(15_000) { fence.await() }
                 val last = async(start = CoroutineStart.UNDISPATCHED) { coordinator.events.first { it.chapterIndex == 2 } }
                 release.countDown()
                 withTimeout(35_000) { last.await() }
-                assertEquals(listOf("张三", "王五", "李四", "赵六"), requested.toList())
+                val expected = if (refreshPreload) listOf("张三", "王五", "李四", "周七", "赵六")
+                    else listOf("张三", "王五", "李四", "赵六")
+                assertEquals(expected, requested.toList())
                 val current = f.builds.segmentsOfChapter(f.bookKey, f.sourceKey, 0).single { it.seq == 1 }
                 assertEquals("李四", f.people.character(requireNotNull(current.characterId))?.displayName)
+                val preload = f.builds.segmentsOfChapter(f.bookKey, f.sourceKey, 1).single { it.seq == 1 }
+                assertEquals(if (refreshPreload) "周七" else "王五", f.people.character(requireNotNull(preload.characterId))?.displayName)
             } finally {
                 release.countDown()
                 withContext(NonCancellable) { coordinator.stopSession().joinAll() }

@@ -121,6 +121,7 @@ data object MainRouteBookCacheManage : MainRoute
 data class MainRouteReadBook(
     val bookUrl: String? = null,
     val readAloud: Boolean = false,
+    val startReadAloud: Boolean = false,
     val inBookshelf: Boolean = true,
     val chapterChanged: Boolean = false,
     val sharedCoverKey: String? = null,

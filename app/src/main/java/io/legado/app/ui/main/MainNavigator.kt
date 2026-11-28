@@ -530,6 +530,7 @@ object MainNavigator {
             MainRouteConst.ROUTE_READ_BOOK -> MainRouteReadBook(
                 bookUrl = intent?.getStringExtra(MainIntent.EXTRA_BOOK_URL),
                 readAloud = intent?.getBooleanExtra(MainIntent.EXTRA_READ_ALOUD, false) == true,
+                startReadAloud = intent?.getBooleanExtra(MainIntent.EXTRA_START_READ_ALOUD, false) == true,
                 inBookshelf = intent?.getBooleanExtra(MainIntent.EXTRA_IN_BOOKSHELF, true) != false,
                 chapterChanged = intent?.getBooleanExtra(
                     MainIntent.EXTRA_CHAPTER_CHANGED,

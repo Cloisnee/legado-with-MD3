@@ -2,6 +2,8 @@ package io.legado.app.help.readaloud.analysis.v4
 
 import io.legado.app.domain.gateway.GenericNameClassifier
 import io.legado.app.domain.gateway.RaCharacterGateway
+import io.legado.app.domain.model.readaloud.v4.BATCH_BINDING_CONFIRMATION
+import io.legado.app.domain.model.readaloud.v4.BATCH_BINDING_REVISION
 import io.legado.app.domain.model.readaloud.v4.RaCharacter
 import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
 import io.legado.app.domain.model.readaloud.v4.RaCharacterCard
@@ -653,6 +655,7 @@ class IdentityResolver(
         val contextTargets = HashMap<String, RaCharacter>()
         val independentTargets = HashMap<String, String>()
         val provenPeers = HashMap<String, Set<String>>()
+        val acceptedProof = HashMap<String, MutableList<RaEvidence>>()
         val weakGroups = HashSet<String>()
         val revisions = HashMap<String, List<String>>()
         proposedGroups.forEach { (key, members) ->
@@ -717,16 +720,43 @@ class IdentityResolver(
                 }
             }
             val components = members.map { mutableListOf(it) }.toMutableList()
+            fun join(a: String, b: String): Boolean {
+                val first = components.first { group -> group.any { it.second.id == a } }
+                val second = components.first { group -> group.any { it.second.id == b } }
+                if (first === second) return true
+                if (first.any { (_, x) -> second.any { (_, y) -> y.id in separated[x.id].orEmpty() } }) return false
+                first.addAll(second)
+                components.remove(second)
+                return true
+            }
+            suspend fun unambiguousName(peers: List<RaLocalSpeaker>, name: String): Boolean =
+                name.isNotEmpty() && peers.all {
+                    RaNameUtils.normalize(it.primaryName) == name && !isGeneric(it.primaryName) &&
+                        exactByMember.getValue(it.id).size <= 1
+                } && peers.flatMap { peer ->
+                    listOfNotNull(independentTargets[peer.id]) + exactByMember.getValue(peer.id).map { it.id }
+                }.distinct().size <= 1 && peers.none { a -> peers.any { b -> b.id in separated[a.id].orEmpty() } }
+
             for ((_, speaker) in members) {
-                for (alias in equalNames.getValue(speaker.id)) {
-                    val peer = members.singleOrNull { (_, other) ->
-                        other.id != speaker.id && alias in names.getValue(other.id)
-                    }?.second ?: continue
-                    val first = components.first { group -> group.any { it.second.id == speaker.id } }
-                    val second = components.first { group -> group.any { it.second.id == peer.id } }
-                    if (first !== second && first.none { (_, a) -> second.any { (_, b) -> b.id in separated[a.id].orEmpty() } }) {
-                        first.addAll(second)
-                        components.remove(second)
+                for (proof in verifiedByMember.getValue(speaker.id).filter { it.type == RaEvidenceType.ALIAS_EQUAL }) {
+                    val alias = RaNameUtils.normalize(proof.objectText)
+                    val peers = members.map { it.second }.filter { it.id != speaker.id && alias in names.getValue(it.id) }
+                    if (peers.size > 1 && !unambiguousName(peers, alias)) continue
+                    var accepted = false
+                    for (peer in peers) if (join(speaker.id, peer.id)) accepted = true
+                    if (accepted) acceptedProof.getOrPut(speaker.id) { ArrayList() }.add(proof)
+                }
+            }
+            // The proof's subject can be a later mention of the character that seeded the group.
+            // Equal names alone never promote a bkey or bridge a separated component.
+            if (!conflict) {
+                members.map { it.second }.groupBy { RaNameUtils.normalize(it.primaryName) }.forEach { (name, peers) ->
+                    val peerIds = peers.mapTo(HashSet()) { it.id }
+                    if (peers.size > 1 && unambiguousName(peers, name) && components.any { component ->
+                            component.any { it.second.id in acceptedProof } && component.any { it.second.id in peerIds }
+                        }
+                    ) {
+                        peers.drop(1).forEach { join(peers.first().id, it.id) }
                     }
                 }
             }
@@ -797,21 +827,47 @@ class IdentityResolver(
             result: Resolution,
             seed: String? = null,
         ) {
+            fun proofOf(speaker: RaLocalSpeaker): List<RaEvidence> {
+                val peers = provenPeers[speaker.id].orEmpty()
+                if (peers.none { independentTargets[it] == result.characterId || it == seed }) return emptyList()
+                return peers.flatMap { acceptedProof[it].orEmpty() }
+            }
+
+            suspend fun recordProof(speaker: RaLocalSpeaker, evidenceIds: List<String>, reassigned: Boolean) {
+                characters.saveDecision(bookKey, speaker, listOf(speaker.characterId ?: result.characterId),
+                    if (reassigned) RaVerdict.DIFFERENT.storageValue else RaVerdict.SAME.storageValue,
+                    result.characterId, 1f, if (reassigned) BATCH_BINDING_REVISION else BATCH_BINDING_CONFIRMATION, "", evidenceIds)
+            }
+
             for ((chapter, speaker) in members) {
-                val supported = provenPeers[speaker.id].orEmpty().any {
-                    independentTargets[it] == result.characterId || it == seed
-                }
-                val resolution = if (key in weakGroups && !supported) RaResolution.BATCH_LINKED else result.resolution
-                characters.attachAliasesIfAbsent(
-                    bookKey, result.characterId, speaker.surfaceNames + speaker.primaryName, chapter,
-                    source = if (resolution == RaResolution.BATCH_LINKED) RaCharacterAlias.BATCH_LINK_SOURCE else "ai",
-                )
-                revisions[speaker.id]?.let { evidenceIds ->
-                    characters.saveDecision(bookKey, speaker, listOf(requireNotNull(speaker.characterId)),
-                        RaVerdict.DIFFERENT.storageValue, result.characterId, 1f,
-                        "同批正文证据修订弱归属", "", evidenceIds)
-                }
+                val proof = proofOf(speaker)
+                val independent = independentTargets[speaker.id] == result.characterId || speaker.id == seed
+                val resolution = if (key in weakGroups && !independent && proof.isEmpty()) {
+                    RaResolution.BATCH_LINKED
+                } else result.resolution
+                val proofIds = revisions[speaker.id]
+                    ?: proof.takeIf { !independent && resolution == RaResolution.RESOLVED }?.map { it.id }?.distinct()
+                val names = speaker.surfaceNames + speaker.primaryName
+                characters.attachAliasesIfAbsent(bookKey, result.characterId, names, chapter, source = when {
+                    resolution == RaResolution.BATCH_LINKED -> RaCharacterAlias.BATCH_LINK_SOURCE
+                    proofIds?.isNotEmpty() == true -> RaCharacterAlias.BATCH_PROOF_SOURCE
+                    else -> "ai"
+                })
+                if (!proofIds.isNullOrEmpty()) recordProof(speaker, proofIds, speaker.id in revisions)
                 out[speaker.id] = result.copy(resolution = resolution)
+            }
+            if (result.resolution != RaResolution.RESOLVED) return
+            for ((chapter, speaker) in groups.getValue(key)) {
+                val existing = out[speaker.id] ?: continue
+                if (existing.resolution != RaResolution.BATCH_LINKED || speaker.characterId != result.characterId ||
+                    existing.characterId != result.characterId || speaker.id in revisions || members.any { it.second.id == speaker.id }
+                ) continue
+                val proof = proofOf(speaker)
+                if (proof.isEmpty()) continue
+                characters.attachAliasesIfAbsent(bookKey, result.characterId, speaker.surfaceNames + speaker.primaryName,
+                    chapter, source = RaCharacterAlias.BATCH_PROOF_SOURCE)
+                recordProof(speaker, proof.map { it.id }.distinct(), reassigned = false)
+                out[speaker.id] = existing.copy(resolution = RaResolution.RESOLVED)
             }
         }
 

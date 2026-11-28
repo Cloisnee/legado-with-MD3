@@ -20,6 +20,9 @@ import io.legado.app.data.entities.readaloud.RaLocalMentionEntity
 import io.legado.app.data.entities.readaloud.RaLocalSpeakerEntity
 import io.legado.app.data.entities.readaloud.RaSegmentEntity
 import io.legado.app.data.entities.readaloud.RaSegmentOverrideEntity
+import io.legado.app.domain.model.readaloud.v4.BATCH_BINDING_REVISION
+import io.legado.app.domain.model.readaloud.v4.RaCharacterAlias
+import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -263,6 +266,36 @@ class RaBuildDeletionTest {
         assertNotNull(db.raBuildDao.getBuild(BOOK, SOURCE, 2))
         assertEquals(1, db.raBuildDao.segments("a2").size)
         assertNotNull(db.raDirectionDao.plan("a2", "PLAYBACK_BASE"))
+    }
+
+    @Test fun `rollback removes cross chapter proof without overwriting manual playback`() = rollbackProof(false)
+    @Test fun `rollback retains a separate surviving proof for the same binding`() = rollbackProof(true)
+
+    private fun rollbackProof(independent: Boolean) = runBlocking {
+        val actor = "chr_test"
+        val speaker = requireNotNull(db.raBuildDao.localSpeaker("l1"))
+        db.raBuildDao.upsertLocalSpeakers(listOf(speaker.copy(primaryName = "蒙面客", surfaceNames = "[]")))
+        db.raCharacterDao.upsertAliases(listOf(RaCharacterAliasEntity(BOOK, "蒙面客", actor, "蒙面客",
+            source = RaCharacterAlias.BATCH_PROOF_SOURCE, firstChapter = 1)))
+        db.raCharacterDao.insertDecision(RaIdentityDecisionEntity("cross-chapter", BOOK, "l1", verdict = "DIFFERENT",
+            chosenCharacterId = actor, reason = BATCH_BINDING_REVISION, evidenceIds = "[\"e2\"]"))
+        if (independent) {
+            db.raCharacterDao.insertDecision(RaIdentityDecisionEntity("independent", BOOK, "l1", verdict = "DIFFERENT",
+                chosenCharacterId = actor, reason = BATCH_BINDING_REVISION, evidenceIds = "[\"e1\"]"))
+        }
+        val oldLine = db.raBuildDao.segments("a1").single()
+        db.raBuildDao.upsertSegments(listOf(oldLine.copy(localSpeakerId = speaker.id, characterId = actor)))
+        repository.saveOverride(BOOK, 1, oldLine.paragraphIndex, MD5Utils.md5Encode16(oldLine.text), "chr_manual", false)
+        val manual = db.raBuildDao.segments("a1").single()
+        assertEquals("chr_manual", manual.characterId)
+        repository.deleteChapters(BOOK, SOURCE, listOf(2), rollbackFrom = 2)
+        assertEquals(manual, db.raBuildDao.segments("a1").single())
+        assertEquals(actor, db.raBuildDao.localSpeaker("l1")?.characterId)
+        assertEquals(if (independent) "RESOLVED" else "BATCH_LINKED", db.raBuildDao.localSpeaker("l1")?.resolution)
+        val aliases = db.raCharacterDao.aliasesOf(actor).associate { it.surface to it.source }
+        assertEquals(if (independent) RaCharacterAlias.BATCH_PROOF_SOURCE else RaCharacterAlias.BATCH_LINK_SOURCE, aliases["蒙面客"])
+        assertEquals(if (independent) listOf("independent") else emptyList(),
+            db.raCharacterDao.decisionsOf("l1").filter { it.reason == BATCH_BINDING_REVISION }.map { it.id })
     }
 
     @Test

@@ -285,6 +285,7 @@ data class RaCharacterAlias(
 ) {
     companion object {
         const val BATCH_LINK_SOURCE = "batch_link"
+        const val BATCH_PROOF_SOURCE = "batch_proof"
     }
 }
 
@@ -414,6 +415,9 @@ data class RaIdentityLink(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
+
+internal const val BATCH_BINDING_REVISION = "同批正文证据修订弱归属"
+internal const val BATCH_BINDING_CONFIRMATION = "同批正文证据确认弱归属"
 
 data class RaIdentityDecision(
     val id: String,

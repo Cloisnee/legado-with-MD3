@@ -355,6 +355,47 @@ class BatchRoomPipelineTest {
         }
     }
 
+    @Test fun `verified alias confirms even a published weak binding and is usable by the next chapter`() = runBlocking {
+        val texts = listOf(
+            chapter(0, "张三说：“先走吧。”"),
+            chapter(1, "蒙面客说：“请进。”"),
+            chapter(2, "张三就是蒙面客。张三说：“坐吧。”"),
+            chapter(3, "青衫客说：“你好。”"),
+            chapter(4, "蒙面客说：“又见面了。”"),
+        )
+        val proof = JSONObject().put("type", "ALIAS_EQUAL").put("subject", "B1")
+            .put("object", "蒙面客").put("ch", 3).put("p", 1).put("quote", "张三就是蒙面客")
+        val response = batchResponse(entry(1, "张三", "1" to "B1"), entry(2, "蒙面客", "1" to "B1"),
+            entry(3, "张三", "1" to "B1").put("evidence", JSONArray().put(proof)), entry(4, "青衫客", "1" to "B1"))
+        val following = """{"seqmap":{"1":"L1"},"speakers":[{"key":"L1","name":"蒙面客","roletype":"核心"}]}"""
+        fixture(listOf(response, following, response, following)) { f ->
+            for (early in listOf(false, true)) {
+                val book = "confirmed-$early"
+                val runner = f.runner()
+                val ready = runner.run(book, "src", texts.take(4), "confirmation", onChapterReady = { index, published ->
+                    if (early && index == 1 && !published) {
+                        for (i in 0..1) assertEquals(listOf(i), runner.convergeExisting(book, "src", listOf(texts[i])).ready)
+                        val second = requireNotNull(f.builds.getBuild(book, "src", 1)?.analysisId)
+                        assertEquals(RaResolution.BATCH_LINKED, f.builds.localSpeakers(second).single().resolution)
+                    }
+                })
+                assertEquals((0..3).toList(), ready.ready)
+                val actor = f.characters.charactersRaw(book).single().id
+                f.characters.setDefaultVoice(actor, "original-voice", "test")
+                val aliases = f.characters.aliasesOf(actor).associate { it.surface to it.source }
+                assertEquals(RaCharacterAlias.BATCH_PROOF_SOURCE, aliases["蒙面客"])
+                assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE, aliases["青衫客"])
+                val second = requireNotNull(f.builds.getBuild(book, "src", 1)?.analysisId)
+                assertEquals(RaResolution.RESOLVED, f.builds.localSpeakers(second).single().resolution)
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 4, texts[4].paragraphs, "", ""))
+                val lines = (0..4).map { f.builds.segmentsOfChapter(book, "src", it).single { segment -> segment.seq == 1 } }
+                assertTrue(lines.all { it.characterId == actor })
+                assertEquals(List(5) { "original-voice" }, BuildSpeechPlanUseCase(f.characters, voices)(book, lines).map { it.voice?.id })
+            }
+            assertEquals(4, f.requests.get())
+        }
+    }
+
     @Test fun `batch rebuild and recovery apply matching user overrides before playback`() = runBlocking {
         val old = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“旧句。”")
         val new = chapter(0, "张三说：“你好。”", "张三说：“我来。”", "张三说：“新句。”")

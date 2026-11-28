@@ -17,6 +17,7 @@ object MainIntent {
     const val EXTRA_BOOK_COVER = "coverPath"
     const val EXTRA_OPEN_READ_ALOUD_PLAYER = "openReadAloudPlayer"
     const val EXTRA_READ_ALOUD = "readAloud"
+    const val EXTRA_START_READ_ALOUD = "startReadAloud"
     const val EXTRA_IN_BOOKSHELF = "inBookshelf"
     const val EXTRA_CHAPTER_CHANGED = "chapterChanged"
     const val EXTRA_EXPLORE_NAME = "exploreName"
@@ -212,11 +213,13 @@ object MainIntent {
         readAloud: Boolean = false,
         inBookshelf: Boolean = true,
         chapterChanged: Boolean = false,
+        startReadAloud: Boolean = readAloud,
     ): Intent {
         return createLauncherIntent(context).apply {
             putExtra(EXTRA_START_ROUTE, MainRouteConst.ROUTE_READ_BOOK)
             bookUrl?.let { putExtra(EXTRA_BOOK_URL, it) }
             putExtra(EXTRA_READ_ALOUD, readAloud)
+            putExtra(EXTRA_START_READ_ALOUD, startReadAloud)
             putExtra(EXTRA_IN_BOOKSHELF, inBookshelf)
             putExtra(EXTRA_CHAPTER_CHANGED, chapterChanged)
         }
@@ -224,7 +227,7 @@ object MainIntent {
 
     fun createReadBookMediaControlIntent(context: Context): Intent =
         createReadBookIntent(context, bookUrl = io.legado.app.model.ReadAloud.bookSession.book?.bookUrl,
-            readAloud = true).apply {
+            readAloud = true, startReadAloud = false).apply {
             // 复用 launcher Activity 并移除其上层的旧 Activity；Nav3 父栈另行重建，
             // 让阅读页返回时始终落到主页。
             addFlags(

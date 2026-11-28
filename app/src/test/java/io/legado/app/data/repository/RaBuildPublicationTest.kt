@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.legado.app.data.AppDatabase
+import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.readaloud.v4.*
@@ -15,6 +16,7 @@ import io.legado.app.domain.model.readaloud.CanonicalSpeechParagraph
 import io.legado.app.domain.usecase.BuildSpeechPlanUseCase
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.help.readaloud.playback.SpeechVoiceSource
+import io.legado.app.utils.MD5Utils
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -141,6 +143,50 @@ class RaBuildPublicationTest {
         assertEquals(RaAnalysisStatus.RESOLVED, builds.analysisById("a")?.status)
         assertEquals("chr", builds.segments("a").single().characterId)
     }
+    @Test fun `batch correction follows only current reuse copies and the same automatic speaker`() = runBlocking {
+        val original = analysis("a", "h", RaAnalysisStatus.RESOLVED).copy(batchId = "batch")
+        val weak = RaLocalSpeaker("a#B1", "a", "B1", listOf("蒙面客"), "蒙面客", characterId = "old",
+            resolution = RaResolution.BATCH_LINKED)
+        val other = weak.copy(id = "a#B2", localKey = "B2", primaryName = "旁人")
+        val lines = listOf(weak, weak, other).mapIndexed { i, speaker ->
+            RaSegment("s$i", original.id, original.bookKey, 0, i, 0, 2, i * 10, "第$i句", SpeechRoleType.Character,
+                seq = i + 1, localSpeakerId = speaker.id, characterId = speaker.characterId)
+        }
+        assertEquals(RaBuildPublication.PUBLISHED,
+            builds.saveAnalysisBundle(original, lines, listOf(weak, other), emptyList(), emptyList(), build(original, 100)))
+        val input = RaBuildInput(builds.generation())
+        suspend fun copyTo(source: String) = builds.reuseAnalysis(
+            build(original, 200).copy(sourceKey = source, analysisId = null), original.resolverVersion, input,
+        )
+        assertEquals("src", copyTo("copy"))
+        assertNotNull(copyTo("second-copy"))
+        assertNotNull(copyTo("stale-copy"))
+        val stale = requireNotNull(builds.getBuild("bk", "stale-copy", 0))
+        assertTrue(builds.transitionBuild(stale, stale.copy(state = RaChapterState.STALE, updatedAt = 220)))
+        val independent = analysis("independent", "h", RaAnalysisStatus.RESOLVED).copy(sourceKey = "separate")
+        val different = analysis("other-text", "different", RaAnalysisStatus.RESOLVED).copy(sourceKey = "different")
+        for (own in listOf(independent, different)) {
+            val speaker = weak.copy(id = "${own.id}#B1", analysisId = own.id)
+            assertEquals(RaBuildPublication.PUBLISHED, builds.saveAnalysisBundle(own,
+                listOf(lines.first().copy(id = "${own.id}-line", analysisId = own.id, localSpeakerId = speaker.id)),
+                listOf(speaker), emptyList(), emptyList(), build(own, 300).copy(sourceKey = own.sourceKey)))
+        }
+        builds.saveOverride("bk", 0, lines[1].paragraphIndex, MD5Utils.md5Encode16(lines[1].text), "manual", false)
+        builds.reviseBatchIdentity(original, input.generation,
+            listOf(weak.copy(characterId = "correct", resolution = RaResolution.RESOLVED)), emptyList(), emptyList())
+        for (source in listOf("src", "copy", "second-copy")) {
+            assertEquals(listOf("correct", "manual", "old"), builds.segmentsOfChapter("bk", source, 0).map { it.characterId })
+            val current = requireNotNull(builds.getBuild("bk", source, 0)?.analysisId)
+            assertEquals(mapOf("B1" to "correct", "B2" to "old"), builds.localSpeakers(current).associate { it.localKey to it.characterId })
+        }
+        for (source in listOf("stale-copy", "separate", "different")) {
+            assertEquals("old", builds.segmentsOfChapter("bk", source, 0).first().characterId)
+        }
+        builds.deleteChapters("bk", "src", listOf(0))
+        assertNull(copyTo("late-copy"))
+        assertNull(builds.getBuild("bk", "late-copy", 0))
+    }
+
     @Test fun `single and batch assembly persist two voices and narrator with same identities`() = runBlocking {
         val words = listOf(CanonicalSpeechParagraph(0, "甲乙丙", 0))
         val raw = ObservationAssembly.assemble(words, listOf(

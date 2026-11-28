@@ -9,15 +9,10 @@ import io.legado.app.data.repository.sourceKeyOf
 import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaBuildInput
-import io.legado.app.domain.gateway.RaBuildPublication
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.domain.model.readaloud.SpeechIdentity
-import io.legado.app.domain.model.readaloud.v4.RaAnalysis
-import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
-import io.legado.app.domain.model.readaloud.v4.RaPipelineResult
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.readaloud.analysis.v4.BatchAnalysisRunner
@@ -370,24 +365,30 @@ class ReadAloudBuildCoordinator(
     }
 
     private suspend fun processForeground(task: ForegroundTask) {
-        var current = task
-        while (raBuild.canUseGeneration(task.bookKey, task.chapterIndex, task.buildGeneration)) {
-            if (current.cacheRefresh && refreshPriority(current) == null) return
-            val beforeLoad = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
-            val text = textProvider.load(task.book, task.chapterIndex, allowDownload = !current.cacheRefresh)
-            if (text == null) {
-                if (!current.cacheRefresh) markNoContent(task.bookUrl, task.bookKey, task.sourceKey,
-                    task.chapterIndex, beforeLoad, task.buildGeneration)
-                return
+        if (!raBuild.canUseGeneration(task.bookKey, task.chapterIndex, task.buildGeneration)) return
+        if (task.cacheRefresh && refreshPriority(task) == null) return
+        val beforeLoad = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
+        val text = textProvider.load(task.book, task.chapterIndex, allowDownload = !task.cacheRefresh)
+        if (text == null) {
+            if (!task.cacheRefresh) markNoContent(task.bookUrl, task.bookKey, task.sourceKey,
+                task.chapterIndex, beforeLoad, task.buildGeneration)
+            return
+        }
+        val flight = ChapterJobRegistry.Key(task.bookKey, task.sourceKey, task.chapterIndex, text.contentHash,
+            SpeechAnalysisPipelineV4.RESOLVER_VERSION, stage = "EXTRACT")
+        val key = if (task.force) flight.copy(stage = "REANALYZE-${System.nanoTime()}") else flight
+        jobs.withForeground(flight) { finishForeground(task, text, key) }
+        currentCoroutineContext().ensureActive()
+        if (text.matchesContent()) return
+        // Let the worker pick by priority again, including any current chapter queued in flight.
+        synchronized(lock) {
+            val s = session ?: return@synchronized
+            val priority = refreshPriority(task) ?: return@synchronized
+            val pending = s.pendingForeground[task.chapterIndex]
+            if (pending?.force != true) {
+                s.pendingForeground[task.chapterIndex] = task.copy(priority = priority, cacheRefresh = true)
             }
-            val flight = ChapterJobRegistry.Key(task.bookKey, task.sourceKey, task.chapterIndex, text.contentHash,
-                SpeechAnalysisPipelineV4.RESOLVER_VERSION, stage = "EXTRACT")
-            val key = if (current.force) flight.copy(stage = "REANALYZE-${System.nanoTime()}") else flight
-            jobs.withForeground(flight) { finishForeground(current, text, key) }
-            currentCoroutineContext().ensureActive()
-            if (text.matchesContent()) return
-            // Only a changed body in the live window is eligible for automatic reacquisition.
-            current = current.copy(priority = refreshPriority(current) ?: return, cacheRefresh = true)
+            s.foregroundWake.trySend(Unit)
         }
     }
 
@@ -420,9 +421,22 @@ class ReadAloudBuildCoordinator(
                         }
                     }
                 }
-                if (attempt == 0 && tryReuseFromOtherSource(task.bookKey, task.sourceKey, text, input)) {
-                    emitReady(task, text, message = "换源复用", usedAi = false)
-                    return
+                if (attempt == 0) {
+                    val reusedSource = raBuild.reuseAnalysis(
+                        build = RaChapterBuild(
+                            bookKey = task.bookKey, sourceKey = task.sourceKey, chapterIndex = task.chapterIndex,
+                            contentHash = text.contentHash, state = RaChapterState.IDENTITY_READY,
+                            attempts = build?.attempts ?: 0, createdAt = build?.createdAt ?: text.loadedAt,
+                            updatedAt = text.loadedAt,
+                        ),
+                        resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
+                        input = input,
+                    )
+                    if (reusedSource != null) {
+                        AppLog.putAnalysis("【V4·${labelFor(text, task.chapterIndex)}·换源复用】同正文分析来自 $reusedSource")
+                        emitReady(task, text, message = "换源复用", usedAi = false)
+                        return
+                    }
                 }
             }
             when (val acquire = jobs.acquire(key)) {
@@ -478,120 +492,6 @@ class ReadAloudBuildCoordinator(
             }
         }
     }
-
-    /**
-     * 换源复用（02 §8）：同 bookKey、同 chapterIndex、同 contentHash 已有其他 sourceKey 的 RESOLVED 分析时，
-     * 复制段落/章内说话人/提及/证据到当前 sourceKey，不调用 AI。
-     */
-    private suspend fun tryReuseFromOtherSource(
-        bookKey: String,
-        sourceKey: String,
-        text: ChapterTextProvider.Text,
-        input: RaBuildInput,
-    ): Boolean = runCatching {
-        val chapterIndex = text.chapterIndex
-        val old = raBuild.analysisByContentHash(
-            bookKey = bookKey,
-            chapterIndex = chapterIndex,
-            contentHash = text.contentHash,
-            resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
-        ) ?: return@runCatching false
-        if (old.sourceKey == sourceKey) return@runCatching false
-        val oldSegments = raBuild.segments(old.id)
-        if (oldSegments.isEmpty()) return@runCatching false
-        val oldSpeakers = raBuild.localSpeakers(old.id)
-        val oldMentions = raBuild.localMentions(old.id)
-        val oldEvidence = raBuild.evidence(old.id)
-        val newAnalysisId = SpeechIdentity.analysisId(
-            bookKey = bookKey,
-            sourceKey = sourceKey,
-            chapterIndex = chapterIndex,
-            contentHash = text.contentHash,
-            resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
-        )
-        val speakerIds = HashMap<String, String>()
-        oldSpeakers.forEach { speaker -> speakerIds[speaker.id] = "$newAnalysisId#${speaker.localKey}" }
-        oldMentions.forEach { mention -> speakerIds[mention.id] = "$newAnalysisId#${mention.localKey}" }
-        val now = System.currentTimeMillis()
-        val newSpeakers = oldSpeakers.map { speaker ->
-            speaker.copy(id = speakerIds.getValue(speaker.id), analysisId = newAnalysisId)
-        }
-        val newMentions = oldMentions.map { mention ->
-            mention.copy(id = speakerIds.getValue(mention.id), analysisId = newAnalysisId)
-        }
-        val newSegments = oldSegments.map { segment ->
-            segment.copy(
-                id = SpeechIdentity.segmentId(
-                    newAnalysisId,
-                    segment.paragraphIndex,
-                    segment.start,
-                    segment.end,
-                ),
-                analysisId = newAnalysisId,
-                bookKey = bookKey,
-                chapterIndex = chapterIndex,
-                localSpeakerId = segment.localSpeakerId?.let(speakerIds::get),
-                createdAt = now,
-                updatedAt = now,
-            )
-        }
-        val newEvidence = oldEvidence.map { evidence ->
-            val subject = speakerIds[evidence.subjectLocalId] ?: evidence.subjectLocalId
-            evidence.copy(
-                id = SpeechIdentity.evidenceId(
-                    analysisId = newAnalysisId,
-                    sourceChapter = evidence.sourceChapter,
-                    paragraphIndex = evidence.paragraphIndex,
-                    start = evidence.start,
-                    type = evidence.type.storageValue,
-                    subjectLocalId = subject,
-                    objectText = evidence.objectText,
-                    quote = evidence.excerpt,
-                ),
-                analysisId = newAnalysisId,
-                subjectLocalId = subject,
-                createdAt = now,
-                updatedAt = now,
-            )
-        }
-        val older = raBuild.getBuild(bookKey, sourceKey, chapterIndex)
-        val published = raBuild.saveAnalysisBundle(
-            analysis = RaAnalysis(
-                id = newAnalysisId,
-                bookKey = bookKey,
-                sourceKey = sourceKey,
-                chapterIndex = chapterIndex,
-                contentHash = text.contentHash,
-                resolverVersion = SpeechAnalysisPipelineV4.RESOLVER_VERSION,
-                status = RaAnalysisStatus.RESOLVED,
-                origin = RaAnalysisOrigin.FOREGROUND,
-                modelId = old.modelId,
-                observationJson = old.observationJson,
-                createdAt = now,
-                updatedAt = now,
-            ),
-            segments = newSegments,
-            localSpeakers = newSpeakers,
-            localMentions = newMentions,
-            evidence = newEvidence,
-            build = RaChapterBuild(
-                bookKey = bookKey,
-                sourceKey = sourceKey,
-                chapterIndex = chapterIndex,
-                contentHash = text.contentHash,
-                state = RaChapterState.IDENTITY_READY,
-                analysisId = newAnalysisId,
-                failReason = "",
-                attempts = older?.attempts ?: 0,
-                createdAt = older?.createdAt ?: now,
-                updatedAt = text.loadedAt,
-            ),
-            input = input,
-        )
-        if (published != RaBuildPublication.PUBLISHED) return@runCatching false
-        AppLog.putAnalysis("【V4·${labelFor(text, chapterIndex)}·换源复用】同正文分析来自 ${old.sourceKey}")
-        true
-    }.getOrDefault(false)
 
     private fun labelFor(text: ChapterTextProvider.Text, chapterIndex: Int): String =
         ChapterLabels.of(text.title, chapterIndex)

@@ -108,10 +108,10 @@ interface RaCharacterDao {
     suspend fun insertAliasesIgnore(entities: List<RaCharacterAliasEntity>)
 
     @Query(
-        "update ra_character_alias set source = 'ai', firstChapter = :chapterIndex, updatedAt = :updatedAt " +
+        "update ra_character_alias set source = :source, firstChapter = :chapterIndex, updatedAt = :updatedAt " +
             "where characterId = :characterId and source = 'batch_link' and normalized in (:names)",
     )
-    suspend fun confirmBatchAliases(characterId: String, names: List<String>, chapterIndex: Int, updatedAt: Long)
+    suspend fun confirmBatchAliases(characterId: String, names: List<String>, source: String, chapterIndex: Int, updatedAt: Long)
 
     @Query("delete from ra_character_alias where characterId = :characterId and normalized = :normalized")
     suspend fun deleteAlias(characterId: String, normalized: String)
@@ -218,6 +218,12 @@ interface RaCharacterDao {
 
     @Query("select * from ra_identity_decision where bookKey = :bookKey")
     suspend fun decisionsOfBook(bookKey: String): List<RaIdentityDecisionEntity>
+
+    @Query("delete from ra_identity_decision where id = :id")
+    suspend fun deleteDecision(id: String)
+
+    @Query("update ra_identity_decision set evidenceIds = :evidenceIds where id = :id")
+    suspend fun updateDecisionEvidenceIds(id: String, evidenceIds: String)
 
     // ---------------- 重定向 ----------------
 
