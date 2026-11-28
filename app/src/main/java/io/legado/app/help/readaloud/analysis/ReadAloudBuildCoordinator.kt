@@ -10,6 +10,7 @@ import io.legado.app.domain.gateway.RaBookIdentityGateway
 import io.legado.app.domain.gateway.RaBuildGateway
 import io.legado.app.domain.gateway.RaBuildInput
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
+import io.legado.app.domain.model.readaloud.v4.RaAnalysisOrigin
 import io.legado.app.domain.model.readaloud.v4.RaAnalysisStatus
 import io.legado.app.domain.model.readaloud.v4.RaChapterBuild
 import io.legado.app.domain.model.readaloud.v4.RaChapterState
@@ -405,7 +406,11 @@ class ReadAloudBuildCoordinator(
                 val build = raBuild.getBuild(task.bookKey, task.sourceKey, task.chapterIndex)
                 val analysis = build?.analysisId?.let { raBuild.analysisById(it) }
                 if (build?.contentHash == text.contentHash && analysis?.resolverVersion == SpeechAnalysisPipelineV4.RESOLVER_VERSION) {
-                    if (build.state == RaChapterState.IDENTITY_READY && analysis.status == RaAnalysisStatus.RESOLVED) {
+                    if (build.state == RaChapterState.IDENTITY_READY && analysis.status == RaAnalysisStatus.RESOLVED &&
+                        (analysis.origin != RaAnalysisOrigin.CROSS_SOURCE_REUSE ||
+                            raBuild.getAnalysis(task.bookKey, task.sourceKey, task.chapterIndex,
+                                text.contentHash, analysis.resolverVersion)?.id == analysis.id)
+                    ) {
                         if (!task.cacheRefresh) emitReady(task, text, message = "已就绪", usedAi = true)
                         return
                     }

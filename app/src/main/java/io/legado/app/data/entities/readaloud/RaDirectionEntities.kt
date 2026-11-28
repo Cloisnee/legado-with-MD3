@@ -90,7 +90,7 @@ data class RaDirectionAudioEntity(
     @ColumnInfo(defaultValue = "0")
     val delayMs: Int = 0,
     @ColumnInfo(defaultValue = "0")
-    val hold: Boolean = false,
+    val hold: Int = 0,
     @ColumnInfo(defaultValue = "")
     val theme: String = "",
     @ColumnInfo(defaultValue = "")

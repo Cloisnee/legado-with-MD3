@@ -17,7 +17,8 @@ import io.legado.app.domain.model.readaloud.v4.RaLocalSpeaker
 import io.legado.app.domain.model.readaloud.v4.RaNameUtils
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaVerdict
-import io.legado.app.domain.model.readaloud.v4.TEXT_ALIAS_PROOF
+import io.legado.app.domain.model.readaloud.v4.RaTextAliasEdge
+import io.legado.app.domain.model.readaloud.v4.quotedSubjects
 import io.legado.app.help.readaloud.analysis.AiSchedulerContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -105,6 +106,21 @@ class IdentityResolver(
         val answers = prepareChapter(bookKey, chapterIndex, chapterLabel, speakers, evidence, contextBySpeaker, context)
         return bookLock(bookKey).withLock {
             applyChapter(bookKey, chapterIndex, speakers, mentions, evidence, contextBySpeaker, answers)
+        }
+    }
+
+    internal suspend fun chapterMergeGuard(bookKey: String): (List<String>, List<String>) -> Boolean {
+        val cannot = cannotPairs(bookKey)
+        if (cannot.isEmpty()) return { _, _ -> true }
+        val constrained = cannot.flatMapTo(HashSet()) { listOf(it.first, it.second) }
+        val owners = characters.aliasesOfBook(bookKey).filter {
+            it.characterId in constrained && !it.isGeneric && it.source != RaCharacterAlias.BATCH_LINK_SOURCE
+        }.groupBy({ it.normalized }, { it.characterId })
+        fun ids(names: List<String>) = RaNameUtils.normalizeAll(names).flatMapTo(HashSet()) { owners[it].orEmpty() }
+        return { left, right ->
+            val a = ids(left)
+            val b = ids(right)
+            a.none { from -> b.any { to -> pairOf(from, to) in cannot } }
         }
     }
 
@@ -213,15 +229,24 @@ class IdentityResolver(
             val currentChapter = chaptersOf(speaker).minOrNull() ?: chapterIndex
             val verifiedMain = verifiedBySpeaker[speaker.id].orEmpty()
             val contradictions = verifiedMain.objectsOf(RaEvidenceType.CONTRADICTION)
-            val aliasEqualNames = verifiedMain.objectsOf(RaEvidenceType.ALIAS_EQUAL)
+            val equalities = speaker.textEqualities(verifiedMain)
+            val ownTargets = if (equalities.isNotEmpty() || speaker.characterId != null) {
+                exactTargets(bookKey, speaker, emptyList()).mapTo(HashSet()) { it.id }
+            } else emptySet()
+            val previous = speaker.characterId?.let { characters.finalCharacterId(it) }
+            fun conflictsWithIdentity(targetId: String) =
+                previous?.let { isCannot(it, targetId) } == true ||
+                    (targetId !in ownTargets && ownTargets.any { isCannot(it, targetId) })
 
-            // ①a ALIAS_EQUAL：把当前称呼与已有人物的非泛称别名连起来
-            val aliasEqualTarget = uniqueAliasTarget(bookKey, aliasEqualNames, contradictions)
-            if (aliasEqualTarget != null && isAllowed(speaker, aliasEqualTarget.id) &&
-                (speaker.characterId == null || !isCannot(speaker.characterId, aliasEqualTarget.id))) {
+            // 已知主体和客体之间的 CANNOT 不依赖新 localSpeaker 是否已经有外键。
+            val aliasEqualTarget = aliasEqualTarget(bookKey, equalities, contradictions, ownTargets + listOfNotNull(previous), cannotPairs)
+            if (aliasEqualTarget != null && isAllowed(speaker, aliasEqualTarget.id)) {
                 claim(speaker, aliasEqualTarget.id)
                 if (collect != null) return@forEach
-                val evidenceIds = verifiedMain.map { it.id }
+                val matched = equalities.filter {
+                    uniqueAliasTarget(bookKey, listOf(it.objectText), contradictions)?.id == aliasEqualTarget.id
+                }
+                val evidenceIds = matched.map { it.id }
                 val decisionId = charDecision(
                     bookKey = bookKey,
                     speaker = speaker,
@@ -229,9 +254,14 @@ class IdentityResolver(
                     verdict = RaVerdict.SAME,
                     chosen = aliasEqualTarget.id,
                     confidence = 1f,
-                    reason = "ALIAS_EQUAL 确定性链接",
+                    reason = "正文等价证据链接",
                     evidenceIds = evidenceIds,
                 )
+                if (persistAliases) {
+                    // 先登记弱称呼，只有明确引用到的两个称呼才能由正文证明提升。
+                    characters.attachAliasesIfAbsent(bookKey, aliasEqualTarget.id, speaker.surfaceNames + speaker.primaryName,
+                        currentChapter, source = RaCharacterAlias.BATCH_LINK_SOURCE)
+                }
                 // 新证据命中正式人物：回溯合并此前同称呼的临时人物
                 mergeRelatedProvisionals(
                     bookKey = bookKey,
@@ -248,7 +278,7 @@ class IdentityResolver(
                     speaker = speaker,
                     target = aliasEqualTarget,
                     candidateIds = listOf(aliasEqualTarget.id),
-                    persistAliases = persistAliases,
+                    persistAliases = false,
                 )
                 return@forEach
             }
@@ -271,7 +301,9 @@ class IdentityResolver(
 
             // ①b 非泛称称呼精确命中且唯一 ACTIVE
             val exactTargets = exactTargets(bookKey, speaker, contradictions)
-            if (exactTargets.size == 1 && isAllowed(speaker, exactTargets.first().id)) {
+            if (exactTargets.size == 1 && isAllowed(speaker, exactTargets.first().id) &&
+                !conflictsWithIdentity(exactTargets.first().id)
+            ) {
                 val target = exactTargets.first()
                 claim(speaker, target.id)
                 if (collect != null) return@forEach
@@ -287,7 +319,10 @@ class IdentityResolver(
             }
 
             // ② 候选召回；排除同场已链接人物、本章明确反证的人物
-            val blockedByContradiction = contradictionIds(bookKey, contradictions) + blocked(speaker)
+            val blockedByContradiction = contradictionIds(bookKey, contradictions) + blocked(speaker) +
+                cannotPairs.flatMap { (a, b) ->
+                    listOfNotNull(a.takeIf(::conflictsWithIdentity), b.takeIf(::conflictsWithIdentity))
+                }
             val candidates = recallCandidates(
                 bookKey = bookKey,
                 speaker = speaker,
@@ -299,7 +334,7 @@ class IdentityResolver(
             if (exactTargets.isEmpty() && candidates.isNotEmpty()) {
                 val published = exactTargets(bookKey, speaker, contradictions).singleOrNull()?.takeIf { target ->
                     isAllowed(speaker, target.id) && target.id !in blockedByContradiction &&
-                        (speaker.characterId == null || !isCannot(speaker.characterId, target.id))
+                        !conflictsWithIdentity(target.id)
                 }
                 if (published != null) {
                     claim(speaker, published.id)
@@ -565,7 +600,7 @@ class IdentityResolver(
 
         if (persistAliases && evidence.any { it.type == RaEvidenceType.ALIAS_EQUAL }) {
             val byId = speakers.mapNotNull { speaker -> resolutions[speaker.localKey]?.let { speaker.id to it } }.toMap()
-            registerTextAliases(bookKey, speakers.map { chapterIndex to it }, evidence.groupBy { it.subjectLocalId },
+            registerTextAliases(bookKey, speakersToResolve.map { chapterIndex to it }, evidence.groupBy { it.subjectLocalId },
                 byId, cannotPairs)
         }
 
@@ -577,13 +612,7 @@ class IdentityResolver(
                 contradictions = emptyList(),
             ).singleOrNull { it.id !in occupancy[chapterIndex].orEmpty() }
             if (target != null) {
-                characters.attachAliasesIfAbsent(
-                    bookKey = bookKey,
-                    characterId = target.id,
-                    names = mention.surfaceNames + mention.primaryName,
-                    chapterIndex = chapterIndex,
-                    source = "ai",
-                )
+                attachLinkedAliases(bookKey, target.id, mention.surfaceNames + mention.primaryName, chapterIndex)
             }
         }
 
@@ -669,13 +698,11 @@ class IdentityResolver(
         val contextTargets = HashMap<String, RaCharacter>()
         val independentTargets = HashMap<String, String>()
         val confirmationEdges = HashMap<String, List<ProofEdge>>()
+        val reverseTargets = HashMap<String, String>()
+        val independentAnchors = HashSet<String>()
         val weakGroups = HashSet<String>()
         val revisions = HashMap<String, List<String>>()
         proposedGroups.forEach { (key, members) ->
-            if (members.size == 1) {
-                groups[key] = members
-                return@forEach
-            }
             val verifiedByMember = members.associate { (_, speaker) ->
                 speaker.id to evidenceBySpeaker[speaker.id].orEmpty().filter {
                     it.verified && it.scope == RaEvidenceScope.MAIN_TEXT
@@ -684,7 +711,10 @@ class IdentityResolver(
             val names = members.associate { (_, speaker) ->
                 speaker.id to RaNameUtils.normalizeAll(speaker.surfaceNames + speaker.primaryName)
             }
-            val equalNames = verifiedByMember.mapValues { (_, evidence) ->
+            val equalities = members.associate { (_, speaker) ->
+                speaker.id to speaker.textEqualities(verifiedByMember.getValue(speaker.id))
+            }
+            val equalNames = equalities.mapValues { (_, evidence) ->
                 RaNameUtils.normalizeAll(evidence.objectsOf(RaEvidenceType.ALIAS_EQUAL))
             }
             val denials = verifiedByMember.mapValues { (_, evidence) -> evidence.objectsOf(RaEvidenceType.CONTRADICTION) }
@@ -694,14 +724,26 @@ class IdentityResolver(
                 speaker.id to exactTargets(bookKey, speaker, denials.getValue(speaker.id))
             }
             val targets = members.associate { (_, speaker) ->
-                val verified = verifiedByMember.getValue(speaker.id)
                 val contradictions = denials.getValue(speaker.id)
                 val stored = speaker.characterId?.takeUnless { speaker.resolution == RaResolution.BATCH_LINKED }
                     ?.let(finalIds::get)
-                val target = stored?.let { characters.character(it) }
-                    ?: uniqueAliasTarget(bookKey, verified.objectsOf(RaEvidenceType.ALIAS_EQUAL), contradictions)
+                val claims = equalities.getValue(speaker.id)
+                val subjectIds = if (claims.isNotEmpty()) {
+                    exactTargets(bookKey, speaker, emptyList()).map { it.id }.toSet()
+                } else emptySet()
+                val equalityTarget = aliasEqualTarget(bookKey, claims, contradictions,
+                    subjectIds + listOfNotNull(stored), cannotPairs)
+                val target = stored?.let { characters.character(it) } ?: equalityTarget
                     ?: exactByMember.getValue(speaker.id).singleOrNull()
-                target?.let { independentTargets[speaker.id] = it.id }
+                target?.let {
+                    independentTargets[speaker.id] = it.id
+                    if (hasIndependentAlias(bookKey, it.id, speaker.surfaceNames + speaker.primaryName)) {
+                        independentAnchors.add(speaker.id)
+                    }
+                }
+                if (equalityTarget != null && equalityTarget.id !in subjectIds) {
+                    reverseTargets[speaker.id] = equalityTarget.id
+                }
                 speaker.id to target
             }
             fun denies(a: String, b: String): Boolean {
@@ -752,7 +794,7 @@ class IdentityResolver(
                 }.distinct().size <= 1 && peers.none { a -> peers.any { b -> b.id in separated[a.id].orEmpty() } }
 
             for ((_, speaker) in members) {
-                for (proof in verifiedByMember.getValue(speaker.id).filter { it.type == RaEvidenceType.ALIAS_EQUAL }) {
+                for (proof in equalities.getValue(speaker.id)) {
                     val alias = RaNameUtils.normalize(proof.objectText)
                     if (alias.isEmpty() || isGeneric(proof.objectText) || alias in deniedNames.getValue(speaker.id)) continue
                     val peers = members.map { it.second }.filter { it.id != speaker.id && alias in names.getValue(it.id) }
@@ -817,7 +859,7 @@ class IdentityResolver(
             }
             if (!conflict) {
                 groups[key] = members
-                weakGroups.add(key)
+                if (members.size > 1) weakGroups.add(key)
             } else {
                 // A conflicting bkey cannot join anybody by itself. Keep compatible ALIAS_EQUAL edges.
                 components.forEach { group ->
@@ -845,7 +887,9 @@ class IdentityResolver(
             result: Resolution,
             seed: String? = null,
         ) {
-            val anchors = (independentTargets.filterValues { it == result.characterId }.keys + listOfNotNull(seed))
+            val anchors = (independentTargets.filter { (id, target) ->
+                target == result.characterId && id in independentAnchors
+            }.keys + listOfNotNull(seed))
                 .filterNotTo(HashSet()) { it in revisions }
             fun proofOf(speaker: RaLocalSpeaker): List<Set<String>> {
                 val edges = confirmationEdges[speaker.id].orEmpty()
@@ -876,6 +920,9 @@ class IdentityResolver(
                 characters.attachAliasesIfAbsent(bookKey, result.characterId, names, chapter, source = when {
                     resolution == RaResolution.BATCH_LINKED -> RaCharacterAlias.BATCH_LINK_SOURCE
                     proofs.isNotEmpty() -> RaCharacterAlias.BATCH_PROOF_SOURCE
+                    reverseTargets[speaker.id] == result.characterId ||
+                        (independentTargets[speaker.id] == result.characterId && speaker.id !in independentAnchors) ->
+                        RaCharacterAlias.BATCH_LINK_SOURCE
                     else -> "ai"
                 })
                 proofs.forEach { recordProof(speaker, it.toList(), revision != null) }
@@ -976,7 +1023,9 @@ class IdentityResolver(
         }
         if (collect == null && evidenceBySpeaker.values.any { evidence -> evidence.any { it.type == RaEvidenceType.ALIAS_EQUAL } }) {
             registerTextAliases(bookKey, speakersByChapter, evidenceBySpeaker, out, cannotPairs,
-                eligible = speakersByChapter.filter { (chapter, _) -> chapter in publishChapters }.mapTo(HashSet()) { it.second.id },
+                eligible = speakersByChapter.filter { (chapter, speaker) ->
+                    chapter in publishChapters || speaker.characterId != null
+                }.mapTo(HashSet()) { it.second.id },
                 revisions = revisions.keys)
         }
         return out
@@ -1023,7 +1072,7 @@ class IdentityResolver(
         val textBySpeaker = evidenceBySpeaker.mapValues { (_, evidence) -> evidence.filter {
             it.verified && it.scope == RaEvidenceScope.MAIN_TEXT
         } }
-        val claims = textBySpeaker.values.flatten().filter { it.type == RaEvidenceType.ALIAS_EQUAL }
+        val claims = textBySpeaker.filterKeys { it in eligible }.values.flatten().filter { it.type == RaEvidenceType.ALIAS_EQUAL }
             .groupBy { RaNameUtils.normalize(it.objectText) }
         val denials = textBySpeaker.mapValues { (_, evidence) -> evidence.objectsOf(RaEvidenceType.CONTRADICTION) }
         val deniedByActor = denials.entries.filter { resolved[it.key] != null }
@@ -1031,6 +1080,7 @@ class IdentityResolver(
         val namedPeers = speakers.flatMap { (chapter, speaker) ->
             RaNameUtils.normalizeAll(speaker.surfaceNames + speaker.primaryName).map { it to (chapter to speaker.id) }
         }.groupBy({ it.first }, { it.second })
+        val recorded = HashMap<String, MutableSet<Triple<String, String, String>>>()
         for ((chapter, speaker) in speakers) {
             if (speaker.id !in eligible || speaker.id in revisions) continue
             val result = resolved[speaker.id]?.takeIf { it.resolution == RaResolution.RESOLVED } ?: continue
@@ -1041,41 +1091,57 @@ class IdentityResolver(
             val contradictions = denials[speaker.id].orEmpty()
             val target = characters.character(result.characterId)?.takeIf { it.status == RaCharacterStatus.ACTIVE } ?: continue
             if (target.id in contradictionIds(bookKey, contradictions) || contradictions.any { matchesText(target, it) }) continue
-            val subject = RaNameUtils.normalize(speaker.primaryName)
-            if (subject.isEmpty()) continue
-            val subjectHits = characters.charactersByAliases(bookKey, listOf(subject)).filterNot {
+            val ownNames = RaNameUtils.normalizeAll(speaker.surfaceNames + speaker.primaryName)
+            val actorAliases = characters.aliasesOf(target.id).filterNot {
                 it.isGeneric || it.source == RaCharacterAlias.BATCH_LINK_SOURCE
             }
-            if (subjectHits.map { it.characterId }.distinct().singleOrNull() != target.id ||
-                subjectHits.none { it.source != RaCharacterAlias.BATCH_PROOF_SOURCE }
-            ) continue
+            // For a different quoted name, the local attribution must identify this actor independently
+            // of the current object. A bkey or an unconfirmed alias is insufficient.
+            val actorAnchored = uniqueAliasTarget(bookKey, ownNames, contradictions)?.id == target.id
             for (proof in equalities) {
                 val objectName = proof.objectText.trim()
-                val alias = RaNameUtils.normalize(objectName)
-                val quote = RaNameUtils.normalize(proof.excerpt)
-                if (alias.isEmpty() || alias == subject || isGeneric(objectName) || alias !in quote || subject !in quote ||
-                    deniedByActor[target.id].orEmpty().any { alias in it }
-                ) continue
-                if (namedPeers[alias].orEmpty().any { (otherChapter, peer) ->
+                val other = RaNameUtils.normalize(objectName)
+                if (other.isEmpty() || isGeneric(objectName)) continue
+                val names = if (actorAnchored) ownNames + actorAliases.map { it.normalized } else ownNames
+                val subject = proof.quotedSubjects(names).singleOrNull() ?: continue
+                if (isGeneric(subject) || deniedByActor[target.id].orEmpty().any { subject in it || other in it }) continue
+                val subjectOwner = uniqueAliasTarget(bookKey, listOf(subject), contradictions)?.id
+                val objectOwner = uniqueAliasTarget(bookKey, listOf(other), contradictions)?.id
+                val introduced = when {
+                    actorAnchored && subjectOwner == target.id -> other
+                    subject in ownNames && objectOwner == target.id -> subject
+                    else -> continue
+                }
+                if (namedPeers[introduced].orEmpty().any { (otherChapter, peer) ->
                         peer != speaker.id && (otherChapter == chapter || resolved[peer] != null) &&
-                            resolved[peer]?.characterId != result.characterId
+                            resolved[peer]?.characterId != target.id
                     }
                 ) continue
-                if (claims[alias].orEmpty().any { other ->
-                        resolved[other.subjectLocalId]?.characterId?.let { it != target.id } == true
+                if (claims[introduced].orEmpty().any { claim ->
+                        resolved[claim.subjectLocalId]?.characterId?.let { it != target.id } == true
                     }
                 ) continue
-                val hits = characters.charactersByAliases(bookKey, listOf(alias)).filterNot { it.isGeneric }
+                val hits = characters.charactersByAliases(bookKey, listOf(subject, other)).filterNot { it.isGeneric }
                 if (hits.any { hit ->
-                        hit.characterId != result.characterId &&
-                            (hit.source != RaCharacterAlias.BATCH_LINK_SOURCE ||
-                                pairOf(hit.characterId, result.characterId) in cannotPairs)
+                        hit.characterId != target.id && (pairOf(hit.characterId, target.id) in cannotPairs ||
+                            (hit.source != RaCharacterAlias.BATCH_LINK_SOURCE &&
+                                characters.character(hit.characterId)?.status == RaCharacterStatus.ACTIVE))
                     }
                 ) continue
-                // A normal use of an alias is not a new proof. Only this specific object is promoted.
-                characters.saveDecision(bookKey, speaker, listOf(target.id), RaVerdict.SAME.storageValue,
-                    target.id, 1f, TEXT_ALIAS_PROOF, "", listOf(proof.id))
-                characters.attachAliasesIfAbsent(bookKey, target.id, listOf(objectName), chapter,
+                val reason = RaTextAliasEdge(subject, other).reason()
+                if (reason.length > 200) continue // The decision reason column stores at most 200 characters.
+                val actorProofs = recorded[target.id] ?: characters.decisionsForCharacter(target.id)
+                    .mapNotNull { decision ->
+                        decision.evidenceIds.singleOrNull()?.let { Triple(decision.localSpeakerId, decision.reason, it) }
+                    }.toHashSet().also { recorded[target.id] = it }
+                if (actorProofs.add(Triple(speaker.id, reason, proof.id))) {
+                    characters.saveDecision(bookKey, speaker, listOf(target.id), RaVerdict.SAME.storageValue,
+                        target.id, 1f, reason, "", listOf(proof.id))
+                }
+                val surface = if (introduced == other) objectName else {
+                    (speaker.surfaceNames + speaker.primaryName).first { RaNameUtils.normalize(it) == subject }
+                }
+                characters.attachAliasesIfAbsent(bookKey, target.id, listOf(surface), chapter,
                     source = RaCharacterAlias.BATCH_PROOF_SOURCE)
             }
         }
@@ -1143,6 +1209,22 @@ class IdentityResolver(
         return copy(surfaceNames = surfaceNames.filterNot { name ->
             RaNameUtils.normalize(name).let { it != primary && it in objects }
         })
+    }
+
+    private fun RaLocalSpeaker.textEqualities(evidence: List<RaEvidence>): List<RaEvidence> =
+        evidence.filter { it.type == RaEvidenceType.ALIAS_EQUAL &&
+            it.quotedSubjects(surfaceNames + primaryName).isNotEmpty() }
+
+    private suspend fun aliasEqualTarget(
+        bookKey: String,
+        equalities: List<RaEvidence>,
+        contradictions: List<String>,
+        subjectIds: Set<String>,
+        cannotPairs: Set<Pair<String, String>>,
+    ): RaCharacter? {
+        val target = uniqueAliasTarget(bookKey, equalities.objectsOf(RaEvidenceType.ALIAS_EQUAL), contradictions)
+            ?: return null
+        return target.takeUnless { subjectIds.any { id -> pairOf(id, target.id) in cannotPairs } }
     }
 
     private suspend fun uniqueAliasTarget(
@@ -1353,9 +1435,7 @@ class IdentityResolver(
         val finalId = runCatching { characters.finalCharacterId(target.id) }.getOrDefault(target.id)
         val finalTarget = runCatching { characters.character(finalId) }.getOrNull() ?: target
         if (persistAliases) {
-            characters.attachAliasesIfAbsent(
-                bookKey, finalTarget.id, speaker.surfaceNames + speaker.primaryName, chapterIndex, source = "ai",
-            )
+            attachLinkedAliases(bookKey, finalTarget.id, speaker.surfaceNames + speaker.primaryName, chapterIndex)
         }
         return Resolution(
             characterId = finalTarget.id,
@@ -1367,6 +1447,17 @@ class IdentityResolver(
             created = false,
             candidateIds = candidateIds,
         )
+    }
+
+    private suspend fun hasIndependentAlias(bookKey: String, actor: String, names: List<String>): Boolean =
+        characters.charactersByAliases(bookKey, RaNameUtils.normalizeAll(names)).any {
+            it.characterId == actor && !it.isGeneric && it.source != RaCharacterAlias.BATCH_LINK_SOURCE &&
+                it.source != RaCharacterAlias.BATCH_PROOF_SOURCE
+        }
+
+    private suspend fun attachLinkedAliases(bookKey: String, actor: String, names: List<String>, chapter: Int) {
+        val source = if (hasIndependentAlias(bookKey, actor, names)) "ai" else RaCharacterAlias.BATCH_LINK_SOURCE
+        characters.attachAliasesIfAbsent(bookKey, actor, names, chapter, source)
     }
 
     private val bookLocks = ConcurrentHashMap<String, Mutex>()

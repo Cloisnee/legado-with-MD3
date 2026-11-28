@@ -45,7 +45,7 @@ data class RaDirectionAudio(
     val tag: String = "",
     val desc: String = "",
     val delayMs: Int = 0,
-    val hold: Boolean = false,
+    val hold: Int = 0,
     val theme: String = "",
     val scene: String = "",
     val mood: String = "",

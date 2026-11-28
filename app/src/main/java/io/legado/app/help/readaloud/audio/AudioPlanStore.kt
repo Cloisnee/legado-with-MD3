@@ -44,6 +44,7 @@ data class AudioPlan(
     val ambience: List<AudioPlanItem> = emptyList(),
     val bgm: List<AudioPlanItem> = emptyList(),
     val sfx: List<AudioPlanItem> = emptyList(),
+    val analysisId: String = "",
 ) {
     val itemCount: Int get() = ambience.size + bgm.size + sfx.size
     val isEmpty: Boolean get() = itemCount == 0
@@ -153,6 +154,7 @@ object AudioPlanStore {
 
     private fun planToJson(plan: AudioPlan): JSONObject = JSONObject().apply {
         put("scriptHash", plan.scriptHash)
+        if (plan.analysisId.isNotEmpty()) put("analysisId", plan.analysisId)
         put("source", plan.source)
         put("updatedAt", System.currentTimeMillis())
         put("lanes", JSONObject().apply {
@@ -185,6 +187,7 @@ object AudioPlanStore {
         return AudioPlan(
             source = o.optString("source", "ai"),
             scriptHash = o.optString("scriptHash"),
+            analysisId = o.optString("analysisId"),
             ambience = itemsFromJson(lanes?.optJSONArray("ambience"), AudioTagCodec.TYPE_AMB),
             bgm = itemsFromJson(lanes?.optJSONArray("bgm"), AudioTagCodec.TYPE_BGM),
             sfx = itemsFromJson(lanes?.optJSONArray("sfx"), AudioTagCodec.TYPE_SFX),

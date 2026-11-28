@@ -388,6 +388,7 @@ BGM 建议缺段从值集补全。
                     chapterLabel = chapterLabel,
                     bareWords = bareWordsCache,
                     specialWords = specialWordsCache,
+                    canMergeSpeakers = resolver.chapterMergeGuard(bookKey),
                 )
                 if (s2 != null) {
                     usedAi2 = true
@@ -572,7 +573,7 @@ BGM 建议缺段从值集补全。
 
     private val legacyLocks = ConcurrentHashMap<String, Mutex>()
 
-    /** 后台建库和换源复用只提交身份；首次消费时为当前 URL 补齐旧情绪/导演产物。 */
+    /** 按当前 URL 准备播放文件。身份就绪但没有计划时，仅后台和换源副本需要补做导演。 */
     suspend fun ensureLegacyForReady(
         bookUrl: String,
         bookName: String,
@@ -582,13 +583,42 @@ BGM 建议缺段从值集补全。
     ) {
         val input = RaBuildInput(raBuild.generation())
         if (analysis.status != RaAnalysisStatus.RESOLVED ||
-            (analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH && analysis.origin != RaAnalysisOrigin.CROSS_SOURCE_REUSE) ||
             SpeechIdentity.chapterContentHash(paragraphs) != analysis.contentHash
         ) return
         legacyLocks.getOrPut(analysis.id) { Mutex() }.withLock {
             val current = raBuild.getBuild(analysis.bookKey, analysis.sourceKey, analysis.chapterIndex)
             if (current?.analysisId != analysis.id || current.state != RaChapterState.IDENTITY_READY) return@withLock
-            if (raDirection.plan(analysis.id, "PLAYBACK_BASE")?.status == "READY") return@withLock
+            if (raDirection.plan(analysis.id, "PLAYBACK_BASE")?.status == "READY") {
+                val cached = AudioPlanStore.load(bookName, bookUrl, analysis.chapterIndex)
+                if (cached?.analysisId == analysis.id && cached.scriptHash == analysis.contentHash) return@withLock
+                raBuild.commitDirection(analysis, input) {
+                    val plan = raDirection.plan(analysis.id, "PLAYBACK_BASE")
+                        ?.takeIf { it.status == "READY" } ?: return@commitDirection
+                    val lanes = raDirection.audio(plan.id).map { row ->
+                        AudioPlanItem(
+                            para = row.para, type = row.type, tag = row.tag, desc = row.desc,
+                            delayMs = row.delayMs.toLong(), posRatio = row.posRatio, hold = row.hold,
+                            theme = row.theme, scene = row.scene, mood = row.mood, speed = row.speed,
+                            anchor = row.anchor,
+                        )
+                    }.groupBy { it.type }
+                    if (lanes.isEmpty()) {
+                        AudioPlanStore.delete(bookName, setOf(bookUrl), setOf(analysis.chapterIndex))
+                    } else {
+                        AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, AudioPlan(
+                            scriptHash = analysis.contentHash,
+                            ambience = lanes[AudioTagCodec.TYPE_AMB].orEmpty(),
+                            bgm = lanes[AudioTagCodec.TYPE_BGM].orEmpty(),
+                            sfx = lanes[AudioTagCodec.TYPE_SFX].orEmpty(),
+                            analysisId = analysis.id,
+                        ))
+                    }
+                }
+                return@withLock
+            }
+            if (analysis.origin != RaAnalysisOrigin.BACKGROUND_BATCH && analysis.origin != RaAnalysisOrigin.CROSS_SOURCE_REUSE) {
+                return@withLock
+            }
             val segments = raBuild.segments(analysis.id)
             if (segments.isEmpty()) return@withLock
             val cfg = configStore.load()
@@ -677,7 +707,7 @@ BGM 建议缺段从值集补全。
                         tag = item.tag,
                         desc = item.desc,
                         delayMs = item.delayMs.toInt(),
-                        hold = item.hold != 0,
+                        hold = item.hold,
                         theme = item.theme,
                         scene = item.scene,
                         mood = item.mood,
@@ -706,7 +736,7 @@ BGM 建议缺段从值集补全。
             if (audioPlan == null) {
                 AudioPlanStore.delete(bookName, setOf(bookUrl), setOf(analysis.chapterIndex))
             } else {
-                AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, audioPlan)
+                AudioPlanStore.save(bookName, bookUrl, analysis.chapterIndex, audioPlan.copy(analysisId = analysis.id))
             }
         }
     }
@@ -837,6 +867,7 @@ BGM 建议缺段从值集补全。
         chapterLabel: String,
         bareWords: Set<String>,
         specialWords: Set<String>,
+        canMergeSpeakers: (List<String>, List<String>) -> Boolean,
     ): Stage2Payload? {
         val prev = ObservationAssembly.takeContextByParagraphs(prevText, cfg.prevLimit, fromTail = true)
         val next = ObservationAssembly.takeContextByParagraphs(nextText, cfg.nextLimit, fromTail = false)
@@ -877,6 +908,7 @@ BGM 建议缺段从值集补全。
             isBareClassWord = { word -> word.trim().let { it.isNotEmpty() && (it.length <= 1 || it in bareWords) } },
             isSpecialClassWord = { word -> word.trim() in specialWords },
             log = { message -> AppLog.putAnalysis("【V4·$chapterLabel·阶段2】$message") },
+            canMergeSpeakers = canMergeSpeakers,
         )
         return ai.completeValidated(
             refs,

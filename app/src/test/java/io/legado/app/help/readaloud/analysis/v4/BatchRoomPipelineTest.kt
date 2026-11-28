@@ -525,6 +525,71 @@ class BatchRoomPipelineTest {
         }
     }
 
+    @Test fun `sequential evidence can extend a confirmed alias and loses it when disconnected`() = runBlocking {
+        val book = "sequential-evidence"
+        val names = listOf("张三", "张三", "青衣客", "蒙面客", "蒙面客")
+        val first = "张三就是青衣客"
+        val second = "青衣客就是蒙面客"
+        val lines = listOf("张三说：“出发。”", "$first。张三说：“是我。”", "$second。青衣客说：“你好。”",
+            "蒙面客说：“再会。”", "蒙面客说：“回来了。”")
+        fun revealed(ch: Int, name: String, alias: String, quote: String) = JSONObject(single(name))
+            .put("evidence", JSONArray().put(proof(ch, alias, quote).put("subject", "L1"))).toString()
+        val replies = listOf(single(names[0]), revealed(2, names[1], names[2], first),
+            revealed(3, names[2], names[3], second), single(names[3]), single(names[4]))
+        fixture(replies) { f ->
+            suspend fun analyze(i: Int) = requireNotNull(f.pipeline.run("fixture", book, book, "src", i,
+                chapter(i, lines[i]).paragraphs, "", ""))
+            for (i in 0..3) analyze(i)
+            val actor = requireNotNull(f.line(book, 0).characterId)
+            f.characters.setDefaultVoice(actor, "original", "fixture")
+            val linesBeforeDelete = (0..3).map { f.line(book, it) }
+            assertEquals(List(4) { actor }, linesBeforeDelete.map { it.characterId })
+            assertEquals(List(4) { "original" }, BuildSpeechPlanUseCase(f.characters, voices)(book, linesBeforeDelete).map { it.voice?.id })
+            f.builds.deleteChapters(book, "src", listOf(1))
+            assertEquals(listOf(second), f.builds.evidence(linesBeforeDelete[2].analysisId).map { it.excerpt })
+            assertEquals(actor, f.line(book, 3).characterId)
+            val aliases = f.characters.aliasesOf(actor).associate { it.surface to it.source }
+            assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE, aliases[names[2]])
+            assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE, aliases[names[3]])
+            analyze(4)
+            assertNotEquals(actor, f.line(book, 4).characterId)
+        }
+    }
+
+    @Test fun `each branch of a diamond can be removed but losing both revokes the binding`() = runBlocking {
+        val names = listOf("张三", "蒙面客", "张三", "白衣客", "张三", "青衣客", "蒙面客", "蒙面客")
+        val aliases = mapOf(2 to "白衣客", 3 to "蒙面客", 4 to "青衣客", 5 to "蒙面客")
+        val quotes = aliases.mapValues { (i, name) -> "${names[i]}就是$name" }
+        val texts = names.mapIndexed { i, name ->
+            chapter(i, quotes[i]?.let { "$it。" }.orEmpty() + "${name}说：“第${i + 1}次见面。”")
+        }
+        val response = batchResponse(*(0..5).map { i -> entry(i + 1, names[i], "1" to "B1").apply {
+            aliases[i]?.let { put("evidence", JSONArray().put(proof(i + 1, it, quotes.getValue(i)))) }
+        } }.toTypedArray())
+        fixture(List(2) { listOf(response, single(names[6]), single(names[7])) }.flatten()) { f ->
+            for ((first, second) in listOf(3 to 5, 5 to 3)) {
+                val book = "diamond-$first"
+                assertEquals((0..5).toList(), f.runner().run(book, "src", texts.take(6), "diamond").ready)
+                val original = f.line(book, 1)
+                val id = requireNotNull(original.characterId)
+                f.characters.setDefaultVoice(id, "original", "fixture")
+                f.builds.deleteChapters(book, "src", listOf(first))
+                assertEquals(RaResolution.RESOLVED, f.builds.localSpeakers(original.analysisId).single().resolution)
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 6, texts[6].paragraphs, "", ""))
+                val lines = listOf(original, f.line(book, 6))
+                assertEquals(listOf(id, id), lines.map { it.characterId })
+                assertEquals(listOf("original", "original"), BuildSpeechPlanUseCase(f.characters, voices)(book, lines).map { it.voice?.id })
+                f.builds.deleteChapters(book, "src", listOf(second))
+                assertEquals(RaResolution.BATCH_LINKED, f.builds.localSpeakers(original.analysisId).single().resolution)
+                assertEquals(RaCharacterAlias.BATCH_LINK_SOURCE, f.characters.aliasesOf(id).single { it.surface == names[1] }.source)
+                assertEquals(original, f.line(book, 1))
+                assertEquals(id, f.line(book, 6).characterId)
+                assertNotNull(f.pipeline.run("fixture", book, book, "src", 7, texts[7].paragraphs, "", ""))
+                assertNotEquals(id, f.line(book, 7).characterId)
+            }
+        }
+    }
+
     private fun proof(ch: Int, alias: String, quote: String) = JSONObject().put("type", "ALIAS_EQUAL")
         .put("subject", "B1").put("object", alias).put("ch", ch).put("p", 1).put("quote", quote)
 

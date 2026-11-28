@@ -112,6 +112,7 @@ interface RaBuildDao {
         resolverVersion: String,
     ): List<RaChapterAnalysisEntity>
 
+    // Select one authoritative edition per source before applying donor quality checks.
     @Query(
         "select a.* from ra_chapter_analysis a inner join ra_chapter_build b " +
             "on b.bookKey = a.bookKey and b.sourceKey = a.sourceKey and b.chapterIndex = a.chapterIndex " +
@@ -120,7 +121,12 @@ interface RaBuildDao {
             "and a.contentHash = :contentHash and a.resolverVersion = :resolverVersion and a.status = 'RESOLVED' " +
             "and a.batchId is null and a.origin in ('FOREGROUND', 'USER_REANALYZE') " +
             "and b.state = 'IDENTITY_READY' and live.status = 'RESOLVED' and b.contentHash != a.contentHash " +
-            "order by a.updatedAt desc, a.id"
+            "and not exists (select 1 from ra_chapter_analysis newer where newer.bookKey = a.bookKey " +
+            "and newer.sourceKey = a.sourceKey and newer.chapterIndex = a.chapterIndex " +
+            "and newer.contentHash = a.contentHash and newer.resolverVersion = a.resolverVersion " +
+            "and newer.status = 'RESOLVED' and newer.origin != 'CROSS_SOURCE_REUSE' " +
+            "and (newer.createdAt > a.createdAt or (newer.createdAt = a.createdAt and newer.rowid > a.rowid))) " +
+            "order by a.createdAt desc, a.rowid desc"
     )
     suspend fun historicalAnalysesByContentHash(
         bookKey: String,
@@ -129,6 +135,15 @@ interface RaBuildDao {
         contentHash: String,
         resolverVersion: String,
     ): List<RaChapterAnalysisEntity>
+
+    @Query(
+        "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +
+            "and chapterIndex = :chapterIndex and contentHash = :contentHash and resolverVersion = :resolverVersion " +
+            "and status = 'RESOLVED' and origin != 'CROSS_SOURCE_REUSE' order by createdAt desc, rowid desc limit 1"
+    )
+    suspend fun latestOriginalAnalysis(
+        bookKey: String, sourceKey: String, chapterIndex: Int, contentHash: String, resolverVersion: String,
+    ): RaChapterAnalysisEntity?
 
     @Query(
         "select * from ra_chapter_analysis where bookKey = :bookKey and sourceKey = :sourceKey " +

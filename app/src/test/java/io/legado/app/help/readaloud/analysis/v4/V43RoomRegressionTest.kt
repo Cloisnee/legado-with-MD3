@@ -295,6 +295,68 @@ class V43RoomRegressionTest {
         }
     }
 
+    @Test fun `the same source at a new address restores all playback tracks from Room`() = runBlocking {
+        val text = chapter(0, "张三推开门说：“请进。”")
+        val references = AtomicInteger()
+        val director = AtomicInteger()
+        fixture("audioDirector", handler = { request, exchange ->
+            if (request.getString("model") == "audioDirector") {
+                director.incrementAndGet()
+                exchange.reply("""{"items":[{"type":"sfx","para":1,"frag":1,"tag":"开门","pos":"中","delayMs":360},
+                    {"type":"amb","para":1,"frag":1,"tag":"客栈大堂"},
+                    {"type":"bgm","para":1,"frag":1,"theme":"武侠","scene":"日常","mood":"平静","speed":"慢速","hold":19}]}""")
+            } else {
+                references.incrementAndGet()
+                exchange.reply(batch(row(1, "张三")))
+            }
+        }) { f ->
+            val name = "same-source-urls"
+            val oldUrl = "https://fixture.invalid/$name/1"
+            val newUrl = "https://fixture.invalid/$name/2"
+            val book = f.keyOf(oldUrl, "src")
+            assertEquals(listOf(0), f.runner().run(book, "src", listOf(text), "batch").ready)
+            val donor = requireNotNull(f.builds.getBuild(book, "src", 0))
+            assertEquals("src", f.builds.reuseAnalysis(donor.copy(sourceKey = "copy", analysisId = null),
+                SpeechAnalysisPipelineV4.RESOLVER_VERSION, RaBuildInput(f.builds.generation())))
+            // Both reader addresses refer to the same copy for this source.
+            f.prepare(oldUrl, book, "copy", 0, text.paragraphs, bookName = name)
+            val expected = requireNotNull(AudioPlanStore.load(name, oldUrl, 0))
+            assertEquals("客栈大堂", expected.ambience.single().tag)
+            assertEquals("开门", expected.sfx.single().tag)
+            assertEquals(360L, expected.sfx.single().delayMs)
+            assertEquals(19, expected.bgm.single().hold)
+            repeat(2) {
+                f.prepare(newUrl, book, "copy", 0, text.paragraphs, bookName = name)
+                assertEquals(expected, AudioPlanStore.load(name, newUrl, 0))
+            }
+            assertEquals(1, references.get())
+            assertEquals(1, director.get())
+        }
+    }
+
+    @Test fun `existing user constraint keeps two speaking keys through stage 2 and playback`() = runBlocking {
+        val text = chapter(0, "张三就是李四。张三说：“坐吧。”李四说：“请进。”")
+        val reply = """{"seqmap":{"1":"L1","2":"L2"},
+            "speakers":[{"key":"L1","name":"张三","aliases":["李四"]},{"key":"L2","name":"李四"}],
+            "evidence":[{"type":"ALIAS_EQUAL","subject":"L1","object":"李四","ch":1,"p":1,"quote":"张三就是李四"}]}"""
+        fixture(handler = { _, exchange -> exchange.reply(reply) }) { f ->
+            val book = "both-names-with-denial"
+            val a = f.person(book, "张三", emptyList())
+            val b = f.person(book, "李四", emptyList())
+            f.people.saveCannotLink(book, a.id, b.id, "user")
+            f.people.setDefaultVoice(a.id, "zhang", "fixture")
+            f.people.setDefaultVoice(b.id, "li", "fixture")
+            val edition = requireNotNull(f.pipeline().run("fixture", book, book, "src", 0, text.paragraphs, "", ""))
+            val dialogue = f.prepare("fixture", book, "src", 0, text.paragraphs, bookName = book).filter { it.segment.seq > 0 }
+            assertEquals(listOf(a.id, b.id), dialogue.map { it.segment.characterId })
+            assertEquals(listOf("zhang", "li"), dialogue.map { it.voice?.id })
+            assertEquals(2, f.builds.localSpeakers(edition.analysis.id).size)
+            assertEquals(listOf("李四"), f.people.aliasesOf(b.id).map { it.surface })
+            assertEquals(listOf("张三"), f.people.aliasesOf(a.id).map { it.surface })
+            assertEquals("user", f.people.linksOfBook(book).single().source)
+        }
+    }
+
     @Test fun `new body with no director plan removes only its old playback file entry`() = runBlocking {
         val first = chapter(0, "张三推门说：“请进。”")
         val second = chapter(1, "张三推门说：“坐吧。”")

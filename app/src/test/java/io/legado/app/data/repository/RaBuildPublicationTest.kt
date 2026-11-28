@@ -221,6 +221,38 @@ class RaBuildPublicationTest {
         assertNull(builds.reuseAnalysis(target("deleted"), h1.resolverVersion, RaBuildInput(builds.generation())))
     }
 
+    @Test fun `a corrected same-body edition shadows both old history and its ready copies`() = runBlocking {
+        val characters = RaCharacterRepository(db, db.raCharacterDao, db.raBuildDao,
+            WordLibraryRepository(ApplicationProvider.getApplicationContext()))
+        val actor = characters.ensureCharacter("bk", "张三", "核心", "男", "男青年", 0, emptyList(),
+            "ACTIVE", "ai", "default")
+        val corrected = characters.ensureCharacter("bk", "掌柜", "路人", "男", "男青年", 0, emptyList(),
+            "ACTIVE", "ai", "default")
+        val original = analysis("original", "h1", RaAnalysisStatus.RESOLVED).copy(createdAt = 100, updatedAt = 900)
+        val correction = original.copy(id = "corrected", origin = RaAnalysisOrigin.USER_REANALYZE, updatedAt = 200)
+        val nextBody = original.copy(id = "h2", contentHash = "h2", createdAt = 300, updatedAt = 300)
+        suspend fun publish(analysis: RaAnalysis, name: String, actorId: String, epoch: Long) {
+            val speaker = RaLocalSpeaker("${analysis.id}#L1", analysis.id, "L1", listOf(name), name,
+                characterId = actorId, resolution = RaResolution.RESOLVED)
+            val line = RaSegment("${analysis.id}-line", analysis.id, "bk", 0, 0, 0, 2, 0, "你好", SpeechRoleType.Character,
+                seq = 1, localSpeakerId = speaker.id, characterId = actorId)
+            assertEquals(RaBuildPublication.PUBLISHED, builds.saveAnalysisBundle(analysis, listOf(line), listOf(speaker),
+                emptyList(), emptyList(), build(analysis, epoch)))
+        }
+        val input = RaBuildInput(builds.generation())
+        fun target(source: String) = build(original, 400).copy(sourceKey = source, analysisId = null)
+        publish(original, "张三", actor.id, 100)
+        assertEquals("src", builds.reuseAnalysis(target("copy"), original.resolverVersion, input))
+        val staleCopy = requireNotNull(builds.getAnalysis("bk", "copy", 0, "h1", original.resolverVersion))
+        publish(correction, "掌柜", corrected.id, 200)
+        publish(nextBody, "张三", actor.id, 300)
+        assertEquals(original.id, builds.analysisById(original.id)?.id)
+        assertNull(builds.getAnalysis("bk", "copy", 0, "h1", original.resolverVersion))
+        assertFalse(builds.commitDirection(staleCopy, input) { error("obsolete copy wrote a plan") })
+        assertNull(builds.reuseAnalysis(target("new-source"), original.resolverVersion, input))
+        assertNull(builds.getBuild("bk", "new-source", 0))
+    }
+
     @Test fun `single and batch assembly persist two voices and narrator with same identities`() = runBlocking {
         val words = listOf(CanonicalSpeechParagraph(0, "甲乙丙", 0))
         val raw = ObservationAssembly.assemble(words, listOf(

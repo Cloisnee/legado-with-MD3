@@ -41,6 +41,8 @@ import io.legado.app.domain.model.readaloud.v4.RaRelationObservation
 import io.legado.app.domain.model.readaloud.v4.RaResolution
 import io.legado.app.domain.model.readaloud.v4.RaSegment
 import io.legado.app.domain.model.readaloud.v4.RaSegmentOverride
+import io.legado.app.domain.model.readaloud.v4.RaTextAliasEdge
+import io.legado.app.domain.model.readaloud.v4.quotedSubjects
 import io.legado.app.domain.model.readaloud.v4.TEXT_ALIAS_PROOF
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.readaloud.audio.AudioPlanStore
@@ -189,7 +191,8 @@ class RaBuildRepository(
             if (build.contentHash != contentHash || build.state !in publishedStates) return@withTransaction null
             build.analysisId?.let { dao.getAnalysisById(it) }?.takeIf {
                 it.contentHash == contentHash && it.resolverVersion == resolverVersion &&
-                    (build.state != RaChapterState.FAILED.storageValue || it.status == RaAnalysisStatus.FAILED.storageValue)
+                    (build.state != RaChapterState.FAILED.storageValue || it.status == RaAnalysisStatus.FAILED.storageValue) &&
+                    hasCurrentOrigin(it)
             }?.toDomain()
         }
     }
@@ -207,8 +210,10 @@ class RaBuildRepository(
             val (bookKey, sourceKey, chapter, hash) = build
             if (!matchesInput(build, input)) return@withTransaction null
             val candidates = dao.currentAnalysesByContentHash(bookKey, chapter, hash, resolverVersion)
-            if (candidates.any { it.sourceKey == sourceKey }) return@withTransaction null
-            val donor = candidates.firstNotNullOfOrNull { reuseDonor(it, historical = false) }
+            if (candidates.any { it.sourceKey == sourceKey && hasCurrentOrigin(it) }) return@withTransaction null
+            val donor = candidates.firstNotNullOfOrNull {
+                if (it.sourceKey == sourceKey) null else reuseDonor(it, historical = false)
+            }
                 ?: dao.historicalAnalysesByContentHash(bookKey, sourceKey, chapter, hash, resolverVersion)
                     .firstNotNullOfOrNull { reuseDonor(it, historical = true) }
                 ?: return@withTransaction null
@@ -259,7 +264,17 @@ class RaBuildRepository(
         val speakers: List<RaLocalSpeakerEntity>,
     )
 
+    private suspend fun hasCurrentOrigin(analysis: RaChapterAnalysisEntity): Boolean {
+        if (analysis.origin != RaAnalysisOrigin.CROSS_SOURCE_REUSE.storageValue) return true
+        val lineage = observationOf(analysis)
+        val original = dao.getAnalysisById(lineage.optString("reusedFromAnalysisId")) ?: return false
+        return original.createdAt == lineage.optLong("reusedFromCreatedAt") &&
+            dao.latestOriginalAnalysis(analysis.bookKey, original.sourceKey, analysis.chapterIndex,
+                analysis.contentHash, analysis.resolverVersion)?.id == original.id
+    }
+
     private suspend fun reuseDonor(analysis: RaChapterAnalysisEntity, historical: Boolean): ReuseDonor? {
+        if (!hasCurrentOrigin(analysis)) return null
         val segments = dao.segments(analysis.id)
         if (segments.isEmpty()) return null
         val speakers = dao.localSpeakers(analysis.id)
@@ -327,9 +342,10 @@ class RaBuildRepository(
                 RaAnalysisStatus.FAILED -> RaChapterState.FAILED
                 RaAnalysisStatus.EXTRACTED -> return@withTransaction false
             }
+            val saved = dao.getAnalysisById(analysis.id) ?: return@withTransaction false
             if (current.analysisId != analysis.id || current.contentHash != analysis.contentHash ||
-                current.state != state.storageValue || dao.getAnalysisById(analysis.id) != analysis.toEntity() ||
-                !matchesInput(current.toDomain(), input)
+                current.state != state.storageValue || saved != analysis.toEntity() ||
+                !matchesInput(current.toDomain(), input) || !hasCurrentOrigin(saved)
             ) return@withTransaction false
             write()
             true
@@ -625,7 +641,6 @@ class RaBuildRepository(
             }
             dao.deleteBuildsAllSources(bookKey, targets)
             dao.deleteOverridesOfChapters(bookKey, targets)
-            revokeUnsupportedProofs(bookKey, lostProofs)
             // 回滚/删章：清理这些章节贡献的观察与 AI 约束（用户手动编辑保留）
             characterDao.deleteAttributesFromChapters(bookKey, targets)
             characterDao.deleteRelationsFromChapters(bookKey, targets)
@@ -679,39 +694,66 @@ class RaBuildRepository(
                     }
                 }
             }
+            revokeUnsupportedProofs(bookKey, lostProofs)
         }
     }
 
     private val ordinaryAutomaticAliases = setOf("ai", RaCharacterAlias.BATCH_LINK_SOURCE)
 
     private data class PublishedProof(
-        val characterId: String,
+        val decision: RaIdentityDecisionEntity,
         val speaker: RaLocalSpeakerEntity,
-        val aliasNames: List<String>,
-        val binding: Boolean,
-    )
-
-    private fun RaIdentityDecisionEntity.isBindingProof() =
-        reason == BATCH_BINDING_CONFIRMATION || reason == BATCH_BINDING_REVISION
-
-    private fun RaIdentityDecisionEntity.isProof() = isBindingProof() || reason == TEXT_ALIAS_PROOF
+        val aliasNames: Set<String>,
+        val evidenceIds: List<String>,
+        val edge: RaTextAliasEdge? = null,
+        val legacyChapter: Int? = null,
+    ) {
+        val characterId: String get() = requireNotNull(decision.chosenCharacterId)
+        val binding: Boolean get() = decision.isBindingProof()
+    }
 
     private suspend fun readProof(
         decision: RaIdentityDecisionEntity,
         evidence: Map<String, RaEvidenceEntity>,
     ): PublishedProof? {
-        val binding = decision.isBindingProof()
         if (!decision.isProof()) return null
         val actor = decision.chosenCharacterId ?: return null
         val speaker = dao.localSpeaker(decision.localSpeakerId) ?: return null
         if (speaker.characterId != actor) return null
         val ids = jsonArrayToList(decision.evidenceIds)
         if (ids.isEmpty()) return null
-        val names = if (binding) jsonArrayToList(speaker.surfaceNames) + speaker.primaryName else {
-            ids.mapNotNull { evidence[it]?.objectText }
+        val ownNames = jsonArrayToList(speaker.surfaceNames) + speaker.primaryName
+        if (decision.isBindingProof()) {
+            return PublishedProof(decision, speaker, RaNameUtils.normalizeAll(ownNames).toSet(), ids)
         }
-        return PublishedProof(actor, speaker, RaNameUtils.normalizeAll(names), binding)
+        val edge = RaTextAliasEdge.fromReason(decision.reason)
+        if (edge != null) {
+            val excerpt = ids.singleOrNull()?.let(evidence::get)?.toDomain() ?: return null
+            if (!excerpt.isVerifiedEqualityFor(speaker) || RaNameUtils.normalize(excerpt.objectText) != edge.other ||
+                edge.subject !in excerpt.quotedSubjects(listOf(edge.subject))
+            ) return null
+            return PublishedProof(decision, speaker, setOf(edge.subject, edge.other), ids, edge)
+        }
+        val legacy = ids.mapNotNull(evidence::get).map { it.toDomain() }.filter { it.isVerifiedEqualityFor(speaker) }
+        if (decision.reason == LEGACY_ALIAS_LINK) {
+            // 旧版从客体快链时，把新主体写成普通 ai 别名。只有证据所在章新增的称呼受影响。
+            val introduced = legacy.flatMap { it.quotedSubjects(ownNames) }.toSet()
+            val chapter = legacy.firstOrNull()?.sourceChapter?.minus(1) ?: return null
+            val excerpt = legacy.singleOrNull()
+            val subject = introduced.singleOrNull()
+            val edge = if (subject != null && excerpt != null && ids.size == 1) {
+                RaTextAliasEdge(subject, RaNameUtils.normalize(excerpt.objectText))
+            } else null
+            return PublishedProof(decision, speaker, introduced, ids, edge, legacyChapter = chapter)
+        }
+        val excerpt = legacy.singleOrNull() ?: return null
+        val subject = excerpt.quotedSubjects(listOf(speaker.primaryName)).singleOrNull() ?: return null
+        val other = RaNameUtils.normalize(excerpt.objectText)
+        return PublishedProof(decision, speaker, setOf(subject, other), ids, RaTextAliasEdge(subject, other))
     }
+
+    private fun RaEvidence.isVerifiedEqualityFor(speaker: RaLocalSpeakerEntity) =
+        verified && scope == RaEvidenceScope.MAIN_TEXT && type == RaEvidenceType.ALIAS_EQUAL && subjectLocalId == speaker.id
 
     private suspend fun pruneDecisionEvidence(
         bookKey: String,
@@ -724,10 +766,10 @@ class RaBuildRepository(
             val retained = ids.filterNot { it in deletedEvidence }
             val removeOwner = decision.localSpeakerId in deletedSpeakers
             if (!removeOwner && retained.size == ids.size) continue
-            val evidence = if (decision.reason == TEXT_ALIAS_PROOF && ids.isNotEmpty())
-                dao.evidenceByIds(ids).associateBy { it.id } else emptyMap()
-            val proof = readProof(decision, evidence)
-            if (proof != null) lost.add(proof)
+            if (decision.isProof()) {
+                val excerpts = if (decision.isBindingProof()) emptyMap() else dao.evidenceByIds(ids).associateBy { it.id }
+                readProof(decision, excerpts)?.let(lost::add)
+            }
             // Never shorten a proof path. A separate complete path is a separate decision.
             if (removeOwner || retained.isEmpty() || decision.isProof()) {
                 characterDao.deleteDecision(decision.id)
@@ -740,35 +782,78 @@ class RaBuildRepository(
 
     private suspend fun revokeUnsupportedProofs(bookKey: String, lost: List<PublishedProof>) {
         if (lost.isEmpty()) return
-        val actors = lost.mapTo(HashSet()) { it.characterId }
+        val lostByActor = lost.groupBy { it.characterId }
         val paths = characterDao.decisionsOfBook(bookKey)
-            .filter { it.chosenCharacterId in actors && it.isProof() }
+            .filter { it.chosenCharacterId in lostByActor && it.isProof() }
             .associateWith { jsonArrayToList(it.evidenceIds) }
         val evidence = paths.values.flatten().distinct().chunked(500)
             .flatMap { dao.evidenceByIds(it) }.associateBy { it.id }
-        val surviving = paths.mapNotNull { (decision, ids) ->
+        val remaining = paths.mapNotNull { (decision, ids) ->
             if (ids.any { it !in evidence }) null else readProof(decision, evidence)
-        }
-        val liveBindings = surviving.filter { it.binding }.mapTo(HashSet()) { it.speaker.id to it.characterId }
+        }.groupBy { it.characterId }
         val now = System.currentTimeMillis()
-        for ((characterId, speaker) in lost.filter { it.binding }.distinctBy { it.speaker.id to it.characterId }) {
-            if (speaker.id to characterId in liveBindings || dao.localSpeaker(speaker.id) == null ||
-                speaker.resolution != RaResolution.RESOLVED.storageValue
-            ) continue
-            val analysis = dao.getAnalysisById(speaker.analysisId) ?: continue
-            val weak = speaker.copy(resolution = RaResolution.BATCH_LINKED.storageValue)
-            dao.updateLocalSpeaker(speaker.id, characterId, weak.resolution, now)
-            for (copy in reuseCopies(analysis)) reviseAutomaticBindings(copy, mapOf(speaker.localKey to (speaker to weak)))
-        }
-        val namesByCharacter = surviving.groupBy { it.characterId }
-        for ((characterId, proofs) in lost.groupBy { it.characterId }) {
-            val lostNames = proofs.flatMapTo(HashSet()) { it.aliasNames }
-            val liveNames = namesByCharacter[characterId].orEmpty().flatMapTo(HashSet()) { it.aliasNames }
-            val downgraded = characterDao.aliasesOf(characterId).filter {
-                it.source == RaCharacterAlias.BATCH_PROOF_SOURCE && it.normalized in lostNames && it.normalized !in liveNames
+        for ((actor, lostPaths) in lostByActor) {
+            val aliases = characterDao.aliasesOf(actor)
+            val candidates = remaining[actor].orEmpty()
+            val legacyNames = (lostPaths + candidates).filter { it.legacyChapter != null }
+                .flatMapTo(HashSet()) { proof -> proof.aliasNames.map { it to proof.legacyChapter } }
+            val roots = aliases.filterNot { alias ->
+                alias.isGeneric || alias.source in dependentAliases ||
+                    (alias.source == "ai" && (alias.normalized to alias.firstChapter) in legacyNames)
+            }.mapTo(HashSet()) { it.normalized }
+            val reachable = reachableAliases(roots, candidates)
+            val complete = candidates.filter { proof -> proof.binding || proof.edge?.subject in reachable }
+            val liveNames = complete.flatMapTo(HashSet()) { it.aliasNames }
+            val liveBindings = complete.filter { it.binding }.mapTo(HashSet()) { it.speaker.id }
+            for (path in lostPaths.filter { it.binding }.distinctBy { it.speaker.id }) {
+                val speaker = dao.localSpeaker(path.speaker.id) ?: continue
+                if (speaker.characterId != actor || speaker.id in liveBindings ||
+                    speaker.resolution != RaResolution.RESOLVED.storageValue
+                ) continue
+                val primary = RaNameUtils.normalize(speaker.primaryName)
+                if (primary in reachable) {
+                    val chain = generateSequence(reachable[primary]) { reachable[it.first] }.map { it.second }.toList()
+                    if (chain.isNotEmpty()) characterDao.insertDecision(path.decision.copy(
+                        evidenceIds = listToJsonArray(chain.asReversed()), createdAt = now,
+                    ))
+                    continue
+                }
+                val analysis = dao.getAnalysisById(speaker.analysisId) ?: continue
+                val weak = speaker.copy(resolution = RaResolution.BATCH_LINKED.storageValue)
+                dao.updateLocalSpeaker(speaker.id, actor, weak.resolution, now)
+                for (copy in reuseCopies(analysis)) reviseAutomaticBindings(copy, mapOf(speaker.localKey to (speaker to weak)))
+            }
+            val affectedNames = (lostPaths + candidates.filter { it.edge != null }).flatMapTo(HashSet()) { it.aliasNames }
+            val downgraded = aliases.filter { alias ->
+                val dependent = alias.source == RaCharacterAlias.BATCH_PROOF_SOURCE ||
+                    (alias.source == "ai" && (alias.normalized to alias.firstChapter) in legacyNames)
+                dependent && alias.normalized in affectedNames && alias.normalized !in liveNames && alias.normalized !in reachable
             }.map { it.copy(source = RaCharacterAlias.BATCH_LINK_SOURCE, updatedAt = now) }
             if (downgraded.isNotEmpty()) characterDao.upsertAliases(downgraded)
         }
+    }
+
+    /** One search per affected character, over only the accepted and surviving evidence edges. */
+    private fun reachableAliases(roots: Set<String>, proofs: List<PublishedProof>): Map<String, Pair<String, String>?> {
+        val edges = HashMap<String, MutableList<Pair<String, String>>>()
+        for (proof in proofs) {
+            val (a, b) = proof.edge ?: continue
+            val evidenceId = proof.evidenceIds.single()
+            edges.getOrPut(a) { ArrayList() }.add(b to evidenceId)
+            edges.getOrPut(b) { ArrayList() }.add(a to evidenceId)
+        }
+        val reachable = HashMap<String, Pair<String, String>?>()
+        roots.forEach { reachable[it] = null }
+        val pending = ArrayDeque(roots)
+        while (pending.isNotEmpty()) {
+            val name = pending.removeFirst()
+            for ((neighbor, evidenceId) in edges[name].orEmpty()) {
+                if (neighbor in reachable) continue
+                reachable[neighbor] = name to evidenceId
+                pending.add(neighbor)
+            }
+        }
+        return reachable
     }
 
     private suspend fun restoreMergeSnapshot(
@@ -1086,3 +1171,13 @@ internal fun jsonArrayToList(raw: String): List<String> = runCatching {
 internal fun listToJsonArray(values: Collection<String>): String = runCatching {
     JSONArray().apply { values.forEach { put(it) } }.toString()
 }.getOrDefault("[]")
+
+private const val LEGACY_ALIAS_LINK = "ALIAS_EQUAL 确定性链接"
+
+private val dependentAliases = setOf(RaCharacterAlias.BATCH_LINK_SOURCE, RaCharacterAlias.BATCH_PROOF_SOURCE)
+
+private fun RaIdentityDecisionEntity.isBindingProof() =
+    reason == BATCH_BINDING_CONFIRMATION || reason == BATCH_BINDING_REVISION
+
+private fun RaIdentityDecisionEntity.isProof() = isBindingProof() || reason == TEXT_ALIAS_PROOF ||
+    reason == LEGACY_ALIAS_LINK || RaTextAliasEdge.fromReason(reason) != null

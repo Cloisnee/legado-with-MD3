@@ -126,7 +126,7 @@ class IdentityResolverTest {
         paragraphIndex = 0,
         start = 0,
         end = 1,
-        excerpt = "原文",
+        excerpt = if (type == RaEvidenceType.ALIAS_EQUAL) "${speaker.primaryName}就是$objectText" else "原文",
         type = type,
         subjectLocalId = speaker.id,
         objectText = objectText,

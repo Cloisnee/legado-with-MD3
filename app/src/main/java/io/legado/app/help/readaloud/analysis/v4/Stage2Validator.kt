@@ -69,6 +69,7 @@ class Stage2Validator(
     private val isBareClassWord: (String) -> Boolean,
     private val isSpecialClassWord: (String) -> Boolean,
     private val log: (String) -> Unit,
+    private val canMergeSpeakers: (List<String>, List<String>) -> Boolean = { _, _ -> true },
 ) {
 
     private val pronouns = setOf("你", "我", "他", "她", "它", "祂")
@@ -308,7 +309,7 @@ class Stage2Validator(
                         j++
                         continue
                     }
-                    if (!isSamePerson(a, b, confirmedSame)) {
+                    if (!isSamePerson(a, b, confirmedSame) || !canMergeSpeakers(a.allNames, b.allNames)) {
                         j++
                         continue
                     }

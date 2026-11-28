@@ -781,6 +781,7 @@ class BatchAnalysisRunner(
             },
             isSpecialClassWord = { word -> word.trim() in specialWords },
             log = { message -> AppLog.putAnalysis("【V4·${text.chapterLabel}·阶段2】$message") },
+            canMergeSpeakers = resolver.chapterMergeGuard(bookKey),
         )
         val outcome = validator.validate(json, expected)
         val payload = outcome.data ?: run {
